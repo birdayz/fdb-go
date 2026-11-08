@@ -37,9 +37,9 @@ import (
 
 const nsViolation = "com.apple.foundationdb.record.RecordIndexUniquenessViolation"
 
-// nsRecords is the records file: Rec{id, a, b, c, sub}, Sub{x, tags}. syntax
-// is "proto2" or "proto3" (implicit presence: a field at its default is
-// absent to protobuf-java's hasField).
+// nsRecords is the records file: Rec{id, a, b, c, sub, ps: repeated Sub},
+// Sub{x, tags}. syntax is "proto2" or "proto3" (implicit presence: a field at
+// its default is absent to protobuf-java's hasField).
 func nsRecords(syntax string) *descriptorpb.FileDescriptorProto {
 	label := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
 	field := func(name string, number int32, typ descriptorpb.FieldDescriptorProto_Type) *descriptorpb.FieldDescriptorProto {
@@ -52,6 +52,8 @@ func nsRecords(syntax string) *descriptorpb.FileDescriptorProto {
 	}
 	tags := field("tags", 2, descriptorpb.FieldDescriptorProto_TYPE_STRING)
 	tags.Label = descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()
+	ps := message("ps", 6, ".nullstandin.Sub")
+	ps.Label = descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()
 	return &descriptorpb.FileDescriptorProto{
 		Name:    proto.String("null_standin_" + syntax + ".proto"),
 		Package: proto.String("nullstandin"),
@@ -66,6 +68,7 @@ func nsRecords(syntax string) *descriptorpb.FileDescriptorProto {
 				field("b", 3, descriptorpb.FieldDescriptorProto_TYPE_INT64),
 				field("c", 4, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 				message("sub", 5, ".nullstandin.Sub"),
+				ps,
 			}},
 			{Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{
 				message("_Rec", 1, ".nullstandin.Rec"),
@@ -132,6 +135,11 @@ type nsRec struct {
 	a, b *int64
 	c    *string
 	sub  bool // set an empty Sub
+	// subX and subTags set sub's fields (and so sub); ps holds one Sub per
+	// value, with that x.
+	subX    *int64
+	subTags []string
+	ps      []int64
 }
 
 type nsCase struct {
@@ -180,13 +188,42 @@ func nsRecordBytes(desc protoreflect.MessageDescriptor, r nsRec) []byte {
 	if r.c != nil {
 		set("c", protoreflect.ValueOfString(*r.c))
 	}
-	if r.sub {
-		fd := desc.Fields().ByName("sub")
-		set("sub", protoreflect.ValueOfMessage(dynamicpb.NewMessage(fd.Message())))
+	subD := desc.Fields().ByName("sub").Message()
+	if r.sub || r.subX != nil || r.subTags != nil {
+		sub := dynamicpb.NewMessage(subD)
+		if r.subX != nil {
+			sub.Set(subD.Fields().ByName("x"), protoreflect.ValueOfInt64(*r.subX))
+		}
+		tags := sub.Mutable(subD.Fields().ByName("tags")).List()
+		for _, tag := range r.subTags {
+			tags.Append(protoreflect.ValueOfString(tag))
+		}
+		set("sub", protoreflect.ValueOfMessage(sub))
+	}
+	ps := m.Mutable(desc.Fields().ByName("ps")).List()
+	for _, x := range r.ps {
+		p := dynamicpb.NewMessage(subD)
+		p.Set(subD.Fields().ByName("x"), protoreflect.ValueOfInt64(x))
+		ps.Append(protoreflect.ValueOfMessage(p))
 	}
 	b, err := proto.Marshal(m)
 	Expect(err).NotTo(HaveOccurred())
 	return b
+}
+
+// nsFanOutComposite is Nest(sub, Then(x, tags FanOut)): a composite with a
+// FanOut child under a singular parent.
+func nsFanOutComposite() *gen.KeyExpression {
+	return nsNest(nsNull, nsThen(nsScalar("x", nsNull), &gen.KeyExpression{Field: nsField("tags", gen.Field_FAN_OUT, nsNull)}))
+}
+
+// nsPsX is Nest(ps FanOut, x): one entry per ps element.
+func nsPsX() *gen.KeyExpression {
+	return &gen.KeyExpression{Nesting: &gen.Nesting{Parent: nsField("ps", gen.Field_FAN_OUT, nsNull), Child: nsScalar("x", nsNull)}}
+}
+
+func nsGrouping(wholeKey *gen.KeyExpression, groupedCount int32) *gen.KeyExpression {
+	return &gen.KeyExpression{Grouping: &gen.Grouping{WholeKey: wholeKey, GroupedCount: proto.Int32(groupedCount)}}
 }
 
 var _ = Describe("RFC-257 NullStandin: absent fields, unique indexes and COUNT_NOT_NULL", func() {
@@ -338,6 +375,113 @@ var _ = Describe("RFC-257 NullStandin: absent fields, unique indexes and COUNT_N
 			}},
 			records:      []nsRec{{id: 1, b: i64(4)}, {id: 2, c: str("x"), b: i64(5)}, {id: 3, c: str("x")}},
 			javaVerdicts: []string{"ok", "ok", "ok"},
+		},
+		// Fan-out shapes whose entries and counts changed from earlier Go
+		// (DIVERGENCES.md, "A fan-out composite under an absent parent").
+		// Records sharing an id are an insert, then updates.
+		{
+			name: "fan-out composite under an absent parent: no VALUE entry", syntax: "proto2", indexType: "value",
+			root: nsFanOutComposite(),
+			records: []nsRec{
+				{id: 1},
+				{id: 2, sub: true},
+				{id: 3, subX: i64(7), subTags: []string{"t0", "t1"}},
+				{id: 4, subX: i64(8), subTags: []string{"t2"}},
+				{id: 4},
+			},
+			javaVerdicts: []string{"ok", "ok", "ok", "ok", "ok"},
+		},
+		{
+			name: "fan-out composite under an absent parent: no COUNT", syntax: "proto2", indexType: "count",
+			root: nsGrouping(nsFanOutComposite(), 0),
+			records: []nsRec{
+				{id: 1},
+				{id: 2, sub: true},
+				{id: 3, subX: i64(7), subTags: []string{"t0", "t1"}},
+				{id: 4, subX: i64(8), subTags: []string{"t2"}},
+				{id: 4},
+			},
+			javaVerdicts: []string{"ok", "ok", "ok", "ok", "ok"},
+		},
+		{
+			name: "fan-out composite under an absent parent: no COUNT_UPDATES", syntax: "proto2", indexType: "count_updates",
+			root: nsGrouping(nsFanOutComposite(), 0),
+			records: []nsRec{
+				{id: 1},
+				{id: 2, sub: true},
+				{id: 3, subX: i64(7), subTags: []string{"t0", "t1"}},
+				{id: 4, subX: i64(8), subTags: []string{"t2"}},
+				{id: 4},
+			},
+			javaVerdicts: []string{"ok", "ok", "ok", "ok", "ok"},
+		},
+		{
+			name: "NOT_NULL Concatenate in a composite under an absent parent: the empty list", syntax: "proto2", indexType: "value",
+			root:         nsNest(nsNull, nsThen(nsScalar("x", nsNull), &gen.KeyExpression{Field: nsField("tags", gen.Field_CONCATENATE, nsNotNull)})),
+			records:      []nsRec{{id: 1}, {id: 2, sub: true}, {id: 3, subX: i64(7), subTags: []string{"t0"}}},
+			javaVerdicts: []string{"ok", "ok", "ok"},
+		},
+		{
+			name: "COUNT grouped by a fan-out nesting counts every element, through updates", syntax: "proto2", indexType: "count",
+			root: nsGrouping(nsPsX(), 0),
+			records: []nsRec{
+				{id: 1},
+				{id: 2, ps: []int64{10, 10, 20}},
+				{id: 3, ps: []int64{30}},
+				{id: 2, ps: []int64{10}},
+				{id: 3},
+				{id: 1, ps: []int64{40}},
+			},
+			javaVerdicts: []string{"ok", "ok", "ok", "ok", "ok", "ok"},
+		},
+		{
+			name: "COUNT_UPDATES grouped by a fan-out nesting counts every element", syntax: "proto2", indexType: "count_updates",
+			root: nsGrouping(nsPsX(), 0),
+			records: []nsRec{
+				{id: 1}, {id: 2, ps: []int64{10, 10, 20}}, {id: 2, ps: []int64{10}}, {id: 3, ps: []int64{30}},
+			},
+			javaVerdicts: []string{"ok", "ok", "ok", "ok"},
+		},
+		// Per group a: [10] -> [10, 10]; [10, 10] -> [10]; the walk
+		// [10] -> [10, 10] -> [10]; [10] -> [10, 20] -> [20]; and, for
+		// COUNT_NOT_NULL, [10] -> [10, 20]. An update drops every entry old and
+		// new share, all occurrences, so the SUM of a is not always the sum of
+		// its current elements.
+		{
+			name: "SUM over a fan-out nesting, updated with repeated values", syntax: "proto2", indexType: "sum",
+			root: nsGrouping(nsThen(nsScalar("a", nsNull), nsPsX()), 1),
+			records: []nsRec{
+				{id: 1, a: i64(1), ps: []int64{10}},
+				{id: 1, a: i64(1), ps: []int64{10, 10}},
+				{id: 2, a: i64(2), ps: []int64{10, 10}},
+				{id: 2, a: i64(2), ps: []int64{10}},
+				{id: 3, a: i64(3), ps: []int64{10}},
+				{id: 3, a: i64(3), ps: []int64{10, 10}},
+				{id: 3, a: i64(3), ps: []int64{10}},
+				{id: 4, a: i64(4), ps: []int64{10}},
+				{id: 4, a: i64(4), ps: []int64{10, 20}},
+				{id: 4, a: i64(4), ps: []int64{20}},
+			},
+			javaVerdicts: []string{"ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"},
+		},
+		{
+			name: "COUNT_NOT_NULL over a fan-out nesting, updated with repeated values", syntax: "proto2", indexType: "count_not_null",
+			root: nsGrouping(nsThen(nsScalar("a", nsNull), nsPsX()), 1),
+			records: []nsRec{
+				{id: 1, a: i64(1), ps: []int64{10}},
+				{id: 1, a: i64(1), ps: []int64{10, 10}},
+				{id: 2, a: i64(2), ps: []int64{10, 10}},
+				{id: 2, a: i64(2), ps: []int64{10}},
+				{id: 3, a: i64(3), ps: []int64{10}},
+				{id: 3, a: i64(3), ps: []int64{10, 10}},
+				{id: 3, a: i64(3), ps: []int64{10}},
+				{id: 4, a: i64(4), ps: []int64{10}},
+				{id: 4, a: i64(4), ps: []int64{10, 20}},
+				{id: 4, a: i64(4), ps: []int64{20}},
+				{id: 5, a: i64(5), ps: []int64{10}},
+				{id: 5, a: i64(5), ps: []int64{10, 20}},
+			},
+			javaVerdicts: []string{"ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"},
 		},
 	}
 

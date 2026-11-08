@@ -4936,7 +4936,13 @@ is not the arithmetic count of the record's current entries (the SUM stays 10
 above); Go reproduces it. VALUE indexes already matched: their update
 (`RemoveCommonEntries`) drops every shared entry.
 
-Go now matches Java in all of these cases. There is no automatic migration.
+Go now writes what Java writes in all of these cases, measured against Java
+4.14.2.0: the fan-out cases of `conformance/null_standin_conformance_test.go`
+save the same records and updates through both engines and compare every
+index key-value pair, VALUE entries and COUNT, COUNT_UPDATES, COUNT_NOT_NULL
+and SUM values (including the [10] to [10, 10] to [10] walk).
+
+There is no automatic migration.
 When Go updates or deletes such a record, it evaluates the old record as Java
 does, so what an earlier build wrote is never corrected: a stale VALUE entry
 stays visible to Go and Java index scans, and a count or sum stays off by what
@@ -4947,10 +4953,11 @@ the earlier build added. After upgrading, rebuild:
 - every atomic index grouped by a fan-out nesting;
 - every SUM or COUNT_NOT_NULL index over a fan-out that earlier Go updated.
 
-Pinned by `pkg/recordlayer/key_expression_fanout_absent_parent_test.go`:
-evaluation; VALUE, COUNT, COUNT_UPDATES and SUM through insert, an online
-rebuild and delete; and updates of VALUE, COUNT, COUNT_UPDATES,
-COUNT_NOT_NULL and SUM over a fan-out with repeated values.
+Pinned against Java by those conformance cases, and in Go alone by
+`pkg/recordlayer/key_expression_fanout_absent_parent_test.go`: evaluation;
+VALUE, COUNT, COUNT_UPDATES and SUM through insert, an online rebuild and
+delete; and updates of VALUE, COUNT, COUNT_UPDATES, COUNT_NOT_NULL and SUM
+over a fan-out with repeated values.
 
 ## Native FDB client read hedging
 
