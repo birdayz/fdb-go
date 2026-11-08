@@ -2677,18 +2677,28 @@ tracked only.
   404 instead. Both recovered minutes later; the tagged v0.2.0 first-use install
   passed. The cause is unknown (#1033). Re-check a cold `go install` of the next tag
   and capture the root `.info` response if it fails.
-- [ ] Downloads from GitHub releases need a retry window that survives short GitHub
+- [x] Downloads from GitHub releases need a retry window that survives short GitHub
   outages. On 2026-11-08, about a minute of HTTP 504s from the release-download
   endpoint failed CI's `just ensure-buf` (bare `curl`, no retry) before any test ran.
   The same outage made the installer exhaust `curl --retry 3` on `checksums.txt`
   and refuse to install, which is correct. Census every `curl`/`wget` fetch in
   `justfile`, workflows, scripts and `install.sh`, and give each a bounded retry.
-- [ ] The v0.2.0 GitHub release body must be regenerated from the merged notes after
-  #1037 merges (`RELEASE.md` step 6).
-- [ ] Cold-lane container teardown flake: Docker's forced removal exceeded the 30s
+  Done in #1039 (`9c34c96c`): `ensure-buf` builds `buf` from the checksum-verified Go
+  module proxy, CI/provisioning/installer curl downloads have bounded retries and
+  per-attempt stall bounds, and the FoundationDB source archive integrity is pinned
+  and guarded in `MODULE.bazel`.
+- [x] The v0.2.0 GitHub release body must be regenerated from the merged notes after
+  #1037 merges (`RELEASE.md` step 6). Done 2026-11-08 from merged master `c1d88d29`:
+  the pre-edit diff against the live body showed only the updated CLI bullet, the
+  pinned Install line and a trailing newline, and the live release body now matches
+  `scripts/release-notes.sh v0.2.0`.
+- [x] Cold-lane container teardown flake: Docker's forced removal exceeded the 30s
   teardown budget under a fully uncached `just test`
   (`//tools/clientbench/integration:integration_test`). #1038 moves teardown sites to a
-  shared two-minute `TerminateTimeout`; close this entry when it merges.
+  shared two-minute `TerminateTimeout`; close this entry when it merges. Done in
+  #1038 (`3ab4766b`): `TerminateTimeout`, `Teardown` and `TeardownT` give teardown
+  sites and failed-startup cleanup a fresh two-minute budget, verified by the full
+  lane (run 42479134946).
 
 ### Follow-ups from the fix PRs' reviews
 
