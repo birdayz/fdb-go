@@ -54,9 +54,9 @@ client or written asynchronously:
     transformed serializer with **zlib level 1** (`--record-compression zlib-1`).
     About 392 B of value and 95 B of key per span.
   - 2 native Record Layer VALUE indexes: `span_id_v2` and `span_time_v2`
-    ([`intrinsic.go`](../../layers/otel/intrinsic.go)).
+    ([`intrinsic.go`](https://github.com/birdayz/fdb-go/blob/archive/otel-relational/custom-store/layers/otel/intrinsic.go)).
   - 8 covering custom secondary postings, one per attribute
-    ([`index.go`](../../layers/otel/index.go)). The key is
+    ([`index.go`](https://github.com/birdayz/fdb-go/blob/archive/otel-relational/custom-store/layers/otel/index.go)). The key is
     `("eq_v1", tenant, scope, sha256(key)[:8], type, sha256(value)[:8], -start, ^trace, span_id, ordinal)`.
     The value is the compact 5-element FDB tuple `(scope, key, type, value, start)`
     (`--posting-value-format tuple`, `--hash-bytes 8`). Each query decodes the
@@ -68,11 +68,11 @@ client or written asynchronously:
   validates every old image through the normal Record Layer path, which adds
   the standard conflicts. `CoalesceIndexWriteConflicts` comes from
   `--bulk-index-conflicts=true`.
-  Code: [`ingest.go`](../../layers/otel/ingest.go) (`prefetchIngestRecords`,
+  Code: [`ingest.go`](https://github.com/birdayz/fdb-go/blob/archive/otel-relational/custom-store/layers/otel/ingest.go) (`prefetchIngestRecords`,
   `saveIngestBatchRun`) and
   [`store_batch_prefetch.go`](../../pkg/recordlayer/store_batch_prefetch.go).
-- **Transaction guards** ([`ingest.go`](../../layers/otel/ingest.go),
-  [`fdb.go`](../../layers/otel/fdb.go)):
+- **Transaction guards** ([`ingest.go`](https://github.com/birdayz/fdb-go/blob/archive/otel-relational/custom-store/layers/otel/ingest.go),
+  [`fdb.go`](https://github.com/birdayz/fdb-go/blob/archive/otel-relational/custom-store/layers/otel/fdb.go)):
   - 1,500 ms FDB transaction timeout and a retry limit of 10.
   - A conservative 300 KB admission estimate per batch.
   - An approximate-size guard of 500 KB, measured with `GetApproximateSize`
@@ -540,14 +540,14 @@ Local receipts (not committed), root `/var/tmp/fdb-perf-scaling.v4O6xf/`:
 
 Code:
 
-- Ingest path: [`layers/otel/ingest.go`](../../layers/otel/ingest.go)
+- Ingest path: [`layers/otel/ingest.go`](https://github.com/birdayz/fdb-go/blob/archive/otel-relational/custom-store/layers/otel/ingest.go)
   (`prepareIngestBatch` 300 KB estimate, `prefetchIngestRecords`,
   `saveIngestBatchRun` with the 500 KB / 1 s guard)
-- Transaction options: [`layers/otel/fdb.go`](../../layers/otel/fdb.go)
+- Transaction options: [`layers/otel/fdb.go`](https://github.com/birdayz/fdb-go/blob/archive/otel-relational/custom-store/layers/otel/fdb.go)
   (`SetTimeout(1500)`, `SetRetryLimit(10)`, `Audit`)
-- Covering postings: [`layers/otel/index.go`](../../layers/otel/index.go)
+- Covering postings: [`layers/otel/index.go`](https://github.com/birdayz/fdb-go/blob/archive/otel-relational/custom-store/layers/otel/index.go)
   (`termPrefix`, `encodeCoveringValue`, collision-checking `Query`)
-- Intrinsic indexes: [`layers/otel/intrinsic.go`](../../layers/otel/intrinsic.go)
+- Intrinsic indexes: [`layers/otel/intrinsic.go`](https://github.com/birdayz/fdb-go/blob/archive/otel-relational/custom-store/layers/otel/intrinsic.go)
 - Batch prefetch: [`pkg/recordlayer/store_batch_prefetch.go`](../../pkg/recordlayer/store_batch_prefetch.go)
 - Harness: [`layers/otel/bench/ops/horizontal/scaling.py`](../../layers/otel/bench/ops/horizontal/scaling.py)
   (`run_name`, `producer_grant`, `validate_ingest`, `wave_metrics`,
