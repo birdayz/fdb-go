@@ -37,7 +37,7 @@ func (h *qrHarness) logStore(t *testing.T, ctx context.Context, run string, tena
 	if mutate != nil {
 		mutate(&cfg)
 	}
-	serializer, err := recordSerializer(cfg.RecordCompression)
+	serializer, err := RecordSerializer(cfg.RecordCompression)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func lrUnitStore(t *testing.T) *relLogStore {
 	if err != nil {
 		t.Fatal(err)
 	}
-	serializer, err := recordSerializer(lrConfig().RecordCompression)
+	serializer, err := RecordSerializer(lrConfig().RecordCompression)
 	if err != nil {
 		t.Fatal(err)
 	}

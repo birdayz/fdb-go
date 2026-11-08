@@ -81,7 +81,7 @@ func newExporter(ctx context.Context, cfg ExporterConfig, parts relParts) (*Expo
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	serializer, err := recordSerializer(cfg.RecordCompression)
+	serializer, err := RecordSerializer(cfg.RecordCompression)
 	if err != nil {
 		return nil, err
 	}

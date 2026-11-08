@@ -383,7 +383,7 @@ func checkManifest(c Config, m Manifest, ready bool) error {
 }
 
 // FixtureOTLP is a fixture span's single-span ResourceSpans and its
-// deterministic wire bytes, the envelope every backend stores.
+// deterministic wire bytes, the otlp the sql backend's OTEL_V1 rows store.
 func FixtureOTLP(s Span) (*tracepb.ResourceSpans, []byte, error) {
 	tr, err := hex.DecodeString(s.Trace)
 	if err != nil {

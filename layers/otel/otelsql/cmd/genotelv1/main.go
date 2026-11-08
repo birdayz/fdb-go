@@ -2,9 +2,11 @@
 // records descriptor, which writers bind to the catalog's metadata with
 // recordlayer.WithLocalFileDescriptor (otelsql.OpenTenantStore). The
 // descriptor is the one the template's DDL compiles to, so regenerate after
-// every template change:
+// every template change with `just generate-otelv1`, which runs
 //
 //	bazelisk run //layers/otel/otelsql/cmd/genotelv1 -- "$PWD/layers/otel/otelsql/otelv1pb"
+//
+// and formats the output with gofumpt as `just fmt` does.
 //
 // otelv1pb's drift test fails while the generated descriptor and the DDL's
 // differ.

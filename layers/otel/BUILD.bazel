@@ -76,7 +76,6 @@ go_test(
         "clickhouse_test.go",
         "clickhouse_transport_test.go",
         "evidence_test.go",
-        "export_fidelity_regression_test.go",
         "exporter_helpers_test.go",
         "exporter_rel_fdb_test.go",
         "exporter_rel_helpers_test.go",

@@ -22,8 +22,8 @@ import (
 )
 
 const (
-	// Live runs use a fixed synthetic corpus identity so every handle and tenant
-	// of one run agrees on the manifest; the seed keeps it distinct from fixtures.
+	// exporterSeed and exporterCount only satisfy Config.Validate in
+	// backendConfig; exporterTenants bounds an ExporterConfig's tenant.
 	exporterSeed    uint64 = 0x6f746c706c697665
 	exporterCount          = 100000000
 	exporterTenants        = exporterCount / 2
@@ -32,10 +32,10 @@ const (
 	// and so every admitted span; the 500KB actual-size guard runs inside the save.
 	exportSpanBudget = 300000
 
-	// Decoded projection caps; larger values stay unindexed. Encoded covering
-	// values must additionally fit FDB's value limit before any export writes.
-	maxIndexedKeyBytes   = 1024
-	maxIndexedValueBytes = 64000
+	// The projection caps (otelsql): a larger key or value is not indexed,
+	// so a query naming one is refused.
+	maxIndexedKeyBytes   = otelsql.MaxAttributeKeyBytes
+	maxIndexedValueBytes = otelsql.MaxAttributeValueBytes
 )
 
 // ExporterConfig is shared by the SDK exporter and the Collector exporter.

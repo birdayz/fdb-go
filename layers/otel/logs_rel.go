@@ -63,7 +63,8 @@ func relClearCost(key int) int      { return 4*key + 70 }
 // keyCount record keys, each at most rk bytes, and its version.
 func relRecordClearCost(rk, keyCount int) int { return (keyCount+1)*relClearCost(rk) + 2*(2*rk) + 68 }
 
-// relLogIndexes are the LOGS indexes in relLogIndex order.
+// relLogIndexes are the LOGS indexes in the order of the relLogTrace ..
+// relLogEvent constants.
 var relLogIndexes = [...]string{logsTraceIndex, logsTimeIndex, logsStrAttrIndex, logsLongStrIndex, logsIntAttrIndex, logsDoubleAttrIndex, logsBoolAttrIndex, logsEventIndex}
 
 const (
@@ -160,7 +161,8 @@ func packedTupleLen(t tuple.Tuple) int {
 // indexKeys visits the byte length of every index key the Record Layer
 // maintains for row r (OTEL_V1's LOGS indexes, the D11 NULL entries
 // included) and reports the longest. Its arithmetic is the template's
-// column layout; TestRelLogIndexKeyModel pins it to the store's entries.
+// column layout; TestRelLogsRealFDB/index_key_model pins it to the store's
+// entries.
 func (s *relLogStore) indexKeys(r *otelv1pb.LOGS, pk tuple.Tuple, visit func(key int)) (int, error) {
 	longest := 0
 	emit := func(i, columns int) error {

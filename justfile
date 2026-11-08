@@ -34,7 +34,7 @@ ensure-buf:
 # Regenerate protobuf code + gomock mocks + ANTLR parser. All three are
 # committed to git (clean + regenerate, same pattern). CI re-runs
 # `just generate` and fails on any diff, so CI is the source of truth.
-generate: ensure-buf generate-mocks generate-parser generate-fdb generate-cli-example generate-unicode15
+generate: ensure-buf generate-mocks generate-parser generate-fdb generate-cli-example generate-unicode15 generate-otelv1
     rm -rf gen/
     .tools/buf generate
     bazelisk run //:gazelle
@@ -45,6 +45,16 @@ generate: ensure-buf generate-mocks generate-parser generate-fdb generate-cli-ex
 generate-fdb: ensure-buf
     rm -rf cmd/fdb/gen/
     cd cmd/fdb && ../../.tools/buf generate
+
+# Regenerate the compiled OTEL_V1 record types (layers/otel/otelsql/otelv1pb)
+# from otelsql.TemplateBody, formatted as `just fmt` formats it; the drift test
+# fails until this runs after a template change.
+generate-otelv1:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    GOFUMPT=$(bazelisk run --run_under="echo" @cc_mvdan_gofumpt//:gofumpt 2>/dev/null)
+    bazelisk run //layers/otel/otelsql/cmd/genotelv1 -- "$PWD/layers/otel/otelsql/otelv1pb"
+    "$GOFUMPT" -w layers/otel/otelsql/otelv1pb/*.go
 
 # Sync the website's standalone annotated-proto example and source archive.
 generate-cli-example:
