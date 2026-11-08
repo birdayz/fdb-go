@@ -12,7 +12,7 @@ import (
 // token over MaxIndexedTokenBytes is "" and keeps its position.
 func TestMessageTokenizer(t *testing.T) {
 	t.Parallel()
-	if err := MessageTokenizerRegistrationError(); err != nil {
+	if err := messageTokenizerRegistration; err != nil {
 		t.Fatal(err)
 	}
 	tok, err := recordlayer.GetTextTokenizer(MessageTokenizerName)

@@ -199,7 +199,7 @@ func validateRelQueryAttribute(op string, a Attribute, scopes ...string) error {
 			return fail("config", op, "int attribute value must be a canonical base-10 int64")
 		}
 	case "double":
-		f, err := parseCanonicalDouble(a.Value)
+		f, err := parseAttrDouble(a.Value)
 		if err != nil || otelsql.FormatDouble(f) != a.Value {
 			return fail("config", op, "double attribute value must be canonical: shortest round-trip text, NaN, +Inf or -Inf")
 		}

@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"strings"
 
-	"fdb.dev/layers/otel/otelsql/otelddl"
+	"fdb.dev/layers/otel/otelsql/internal/otelddl"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/keyspace"
 )

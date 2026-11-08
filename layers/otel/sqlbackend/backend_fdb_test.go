@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -95,6 +96,10 @@ func TestFDB_SQLBackend(t *testing.T) {
 	t.Run("bench census", func(t *testing.T) {
 		t.Parallel()
 		testBenchCensus(t, open)
+	})
+	t.Run("failed ingest counts committed work", func(t *testing.T) {
+		t.Parallel()
+		testFailedIngestAccounting(t, open)
 	})
 	for _, c := range []struct {
 		name string
@@ -188,6 +193,104 @@ func TestFDB_SQLBackend(t *testing.T) {
 		b, err = Open(ctx, c, cluster, Options{})
 		requireConfig("Brotli records", b, err)
 	})
+}
+
+// A failed ingest reports only the spans and transactions that committed,
+// and their logical bytes: the committed prefix of a SpanWriter Write that
+// fails after committing, nothing of a failed saveBatch. With one worker
+// and one tenant the batches are spans 0-15, 16-31, ... in order. The
+// partially written run's audit, a top-K over budget and a long-string
+// query give their error kinds; a Write that commits fewer spans without an
+// error leaves an incomplete population.
+func testFailedIngestAccounting(t *testing.T, open func(*testing.T, otel.Config, Options) *Backend) {
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
+	injected := errors.New("injected batch failure")
+	logical := func(c otel.Config, n int) int64 {
+		var sum int64
+		for i := range n {
+			wire, err := json.Marshal(otel.Generate(c, i))
+			if err != nil {
+				t.Fatal(err)
+			}
+			sum += int64(len(wire))
+		}
+		return sum
+	}
+	requireStats := func(name string, stats otel.Statistics, rows, batches int64, c otel.Config) {
+		t.Helper()
+		if stats.Rows != rows || stats.Details["committed_batches"] != strconv.FormatInt(batches, 10) || stats.LogicalPayloadBytes != logical(c, int(rows)) {
+			t.Fatalf("%s: rows %d, committed_batches %s, logical %d; want %d, %d, %d",
+				name, stats.Rows, stats.Details["committed_batches"], stats.LogicalPayloadBytes, rows, batches, logical(c, int(rows)))
+		}
+	}
+	runConfig := func(run string) otel.Config {
+		c := testConfig(run)
+		c.Count, c.Tenants, c.Workers, c.SaveMode = 300, 1, 1, "batch"
+		c.K, c.MaxCandidates = 20, 5
+		return c
+	}
+
+	// The SpanWriter commits the second batch's first 5 spans, then fails.
+	c := runConfig("sqlb_failed_writer")
+	b := open(t, c, Options{})
+	writes := 0
+	b.spanWrite = func(w *otel.SpanWriter, ctx context.Context, rss []*tracepb.ResourceSpans) (otel.ExportStats, error) {
+		if writes++; writes != 2 {
+			return w.Write(ctx, rss)
+		}
+		st, err := w.Write(ctx, rss[:5])
+		if err == nil {
+			err = injected
+		}
+		return st, err
+	}
+	stats, err := b.Ingest(ctx)
+	if !errors.Is(err, injected) {
+		t.Fatalf("SpanWriter ingest = %v, want the injected failure", err)
+	}
+	requireStats("SpanWriter", stats, 21, 2, c)
+	var audit *otel.AuditError
+	if got, err := b.Audit(ctx); !errors.As(err, &audit) || got.Rows != 21 {
+		t.Fatalf("audit of the partial run: %d rows, %v; want 21 rows and an audit error", got.Rows, err)
+	}
+	// 21 spans of 11 traces carry this attribute: a top-K of 20 reads 20
+	// rows of 10 traces and passes MaxCandidates 5.
+	var budget *otel.QueryBudgetError
+	if _, err := b.Query(ctx, otel.Attribute{Scope: "span", Key: "gen_ai.operation.name", Type: "string", Value: "chat"}); !errors.As(err, &budget) {
+		t.Fatalf("top-K over budget: %v, want a budget error", err)
+	}
+	var config *otel.ConfigError
+	if _, err := b.Query(ctx, otel.Attribute{Scope: "span", Key: "k", Type: "string", Value: strings.Repeat("x", otelsql.MaxIndexedStringBytes+1)}); !errors.As(err, &config) {
+		t.Fatalf("long-string query: %v, want a config error", err)
+	}
+
+	// saveBatch fails the second batch before it commits.
+	c = runConfig("sqlb_failed_save")
+	b = open(t, c, Options{Rows: RowsDynamic})
+	saves := 0
+	b.save = func(ctx context.Context, ts *otelsql.TenantStore, bt *batch) error {
+		if saves++; saves == 2 {
+			return injected
+		}
+		return b.saveBatch(ctx, ts, bt)
+	}
+	stats, err = b.Ingest(ctx)
+	if !errors.Is(err, injected) {
+		t.Fatalf("saveBatch ingest = %v, want the injected failure", err)
+	}
+	requireStats("saveBatch", stats, 16, 1, c)
+
+	// A Write that commits one span less and reports no error.
+	c = runConfig("sqlb_short_writer")
+	b = open(t, c, Options{})
+	b.spanWrite = func(w *otel.SpanWriter, ctx context.Context, rss []*tracepb.ResourceSpans) (otel.ExportStats, error) {
+		return w.Write(ctx, rss[:len(rss)-1])
+	}
+	var operation *otel.OperationError
+	if _, err := b.Ingest(ctx); !errors.As(err, &operation) || !strings.Contains(err.Error(), "incomplete source population") {
+		t.Fatalf("short writes: %v, want an operation error: incomplete source population", err)
+	}
 }
 
 // An Open that fails after it registered its driver backend (here sql.Open

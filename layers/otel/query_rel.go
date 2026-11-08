@@ -75,7 +75,7 @@ func spanAttrQuery(a Attribute) (attrQuery, bool) {
 		}
 		return attrQuery{index: spansIntAttrIndex, value: n}, true
 	case "double":
-		f, err := parseCanonicalDouble(a.Value)
+		f, err := parseAttrDouble(a.Value)
 		if err != nil {
 			return attrQuery{}, false
 		}
@@ -90,16 +90,11 @@ func spanAttrQuery(a Attribute) (attrQuery, bool) {
 	return attrQuery{}, false
 }
 
-// parseCanonicalDouble reads otelsql.FormatDouble's text and any other text
-// strconv.ParseFloat reads; every NaN is the stored otelsql.CanonicalNaN,
-// which every NaN payload projects to.
-func parseCanonicalDouble(s string) (float64, error) {
-	switch s {
-	case "+Inf":
-		return math.Inf(1), nil
-	case "-Inf":
-		return math.Inf(-1), nil
-	}
+// parseAttrDouble reads a double attribute's text with strconv.ParseFloat,
+// which reads otelsql.FormatDouble's; every NaN is the stored
+// otelsql.CanonicalNaN, which every NaN payload projects to. Whether the
+// text is canonical is the caller's check (validateRelQueryAttribute).
+func parseAttrDouble(s string) (float64, error) {
 	f, err := strconv.ParseFloat(s, 64)
 	if math.IsNaN(f) {
 		f = otelsql.CanonicalNaN

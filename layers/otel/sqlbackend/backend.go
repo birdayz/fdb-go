@@ -117,6 +117,12 @@ type Backend struct {
 	queries  int64
 
 	unregister func() // the driver's backend registration
+
+	// spanWrite and save write one ingest batch (SpanWriter.Write,
+	// saveBatch); tests replace them to fail a batch after or instead of its
+	// commits.
+	spanWrite func(*otel.SpanWriter, context.Context, []*tracepb.ResourceSpans) (otel.ExportStats, error)
+	save      func(context.Context, *otelsql.TenantStore, *batch) error
 }
 
 // Open opens the run's relational database; Ingest creates it.
@@ -185,7 +191,9 @@ func Open(ctx context.Context, c otel.Config, cluster string, opts Options) (*Ba
 		cfg: c, mode: mode, opts: opts, raw: raw, db: recordlayer.NewFDBDatabase(raw),
 		dbPath:   "/" + domain + "/R_" + strings.ToUpper(c.Run),
 		writeSer: writeSer, readSer: readSer,
+		spanWrite: (*otel.SpanWriter).Write,
 	}
+	b.save = b.saveBatch
 	// The SQL driver runs over the same FDB client handle, configured as the
 	// driver configures the database it opens itself, so one set of client
 	// counters covers every request (OTELBENCH_SQL_RPCS). The driver keys
@@ -395,10 +403,10 @@ func (b *Backend) Ingest(ctx context.Context) (otel.Statistics, error) {
 					err = b.insertBatch(workCtx, inserts[bt.tenant], bt)
 				case production:
 					var st otel.ExportStats
-					st, err = writers[bt.tenant].Write(workCtx, bt.rss)
+					st, err = b.spanWrite(writers[bt.tenant], workCtx, bt.rss)
 					done, txns = st.Spans, st.Batches
 				default:
-					err = b.saveBatch(workCtx, stores[bt.tenant], bt)
+					err = b.save(workCtx, stores[bt.tenant], bt)
 				}
 				if err == nil && !production {
 					done, txns = int64(len(bt.spans)), 1

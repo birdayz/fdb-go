@@ -73,8 +73,6 @@ func (c cappedTokens) Next() string {
 	return ""
 }
 
-var messageTokenizerRegistration = recordlayer.GlobalTextTokenizerRegistry().Register(MessageTokenizer{})
-
-// MessageTokenizerRegistrationError is the error registering MessageTokenizer
+// messageTokenizerRegistration is the error registering MessageTokenizer
 // returned: non-nil only when another tokenizer already has its name.
-func MessageTokenizerRegistrationError() error { return messageTokenizerRegistration }
+var messageTokenizerRegistration = recordlayer.GlobalTextTokenizerRegistry().Register(MessageTokenizer{})
