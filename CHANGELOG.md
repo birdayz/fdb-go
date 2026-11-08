@@ -134,8 +134,13 @@ below; neither publication nor readiness is asserted.
   every NaN; the span's or log's OTLP keeps the original bits.
 - **OTel span admission:** the 300 KB estimate counts the whole serialized
   `SPANS` row (OTLP plus every copied column such as name, status message,
-  events and links) plus each index entry, so an admitted span always fits the
-  500 KB guard; a span over it fails the call before any write.
+  events and links) plus each index entry, so a new span always fits the
+  500 KB guard; a span over it fails the call before any write. A batch that
+  replaces stored spans with changed index keys (a re-export with a new start
+  time or attribute values) is split: each transaction holds the spans that
+  fit the estimate with the clears of the spans they replace, read from the
+  save's prefetch. A span whose replacement fits no transaction fails as
+  admission; the call's batches committed before it stay committed.
 - **Exporter read consistency:** reads take their read version from the
   client's GRV cache, at most 100 ms old. A read sees every write committed
   through the same Exporter before it began, but a commit by another Exporter

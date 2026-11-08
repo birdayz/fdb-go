@@ -1,6 +1,7 @@
 package otel
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -15,6 +16,7 @@ import (
 
 	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/layers/otel/otelsql/otelv1pb"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -56,6 +58,8 @@ func TestRelExporterRealFDB(t *testing.T) {
 		"intrinsic_v2":              testRelIntrinsicV2,
 		"nan_payloads":              testRelNaNPayloads,
 		"row_admission":             testRelRowAdmission,
+		"replacement_admission":     testRelReplacementAdmission,
+		"span_index_key_model":      testRelSpanIndexKeyModel,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -1417,4 +1421,196 @@ func testRelRowAdmission(t *testing.T, cluster string) {
 		t.Fatal(err)
 	}
 	requireProtoEqual(t, "140 KB name", got, fits)
+}
+
+// relKiloAttrs are n string attributes of 20-byte keys and 980-byte values,
+// each an SPANS_STR_ATTR entry of about 1 KB.
+func relKiloAttrs(n int) []*commonpb.KeyValue {
+	out := make([]*commonpb.KeyValue, n)
+	for i := range out {
+		v := fmt.Sprintf("%d:", i)
+		out[i] = exKV(fmt.Sprintf("attr.%015d", i), exStr(v+strings.Repeat("v", 980-len(v))))
+	}
+	return out
+}
+
+// relMoved is rs re-exported 1000 ns later, which changes every index key.
+func relMoved(rs *tracepb.ResourceSpans) *tracepb.ResourceSpans {
+	out := proto.Clone(rs).(*tracepb.ResourceSpans)
+	out.ScopeSpans[0].Spans[0].StartTimeUnixNano += 1000
+	return out
+}
+
+// testRelReplacementAdmission: a batch's transaction counts the clears of the
+// stored spans its spans replace and holds only the spans that fit, so none
+// exceeds the transaction guard, with GenAI messages off and on. A span of 80
+// one-kilobyte string attributes fits fresh and replays unchanged, but its
+// re-export at a new start time, which changes every index key, fits no
+// transaction: it fails as admission and stays as stored, after the span
+// before it in its batch committed. Three spans of 20 such attributes share
+// one transaction fresh, and commit one per transaction when they move.
+func testRelReplacementAdmission(t *testing.T, cluster string) {
+	for _, messages := range []bool{false, true} {
+		t.Run(map[bool]string{false: "messages_off", true: "fulltext"}[messages], func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+			defer cancel()
+			e := openRelExporter(t, ctx, cluster, func(c *ExporterConfig) {
+				c.RecordCompression, c.EnableMessageDeltas, c.EnableMessageFullText = "none", messages, messages
+			})
+			span := func(i, attrs int) *tracepb.ResourceSpans {
+				kvs := relKiloAttrs(attrs)
+				if messages {
+					kvs = append(kvs, deltaKV("gen_ai.input.messages", deltaMessages("array", []deltaMsg{{"user", fmt.Sprintf("turn %d", i)}})))
+				}
+				return deltaSpan(i, kvs...)
+			}
+			big := span(1, 80)
+			start := int64(big.ScopeSpans[0].Spans[0].StartTimeUnixNano)
+			for _, name := range []string{"fresh", "unchanged replay"} {
+				if stats, err := e.ExportResourceSpans(ctx, []*tracepb.ResourceSpans{big}); err != nil || stats.Spans != 1 {
+					t.Fatalf("%s 80-attribute span: %+v %v", name, stats, err)
+				}
+			}
+			small := deltaSpan(9)
+			stats, err := e.ExportResourceSpans(ctx, []*tracepb.ResourceSpans{small, relMoved(big)})
+			requireOtelKind(t, err, "admission")
+			if stats.Spans != 1 || stats.Batches != 1 {
+				t.Fatalf("refused replacement: %+v, want the span before it committed", stats)
+			}
+			reSpan(t, ctx, e, ftsSpan(1), SpanMatch{ftsTrace(1), ftsSpan(1), start})
+			reSpan(t, ctx, e, ftsSpan(9), SpanMatch{ftsTrace(9), ftsSpan(9), int64(small.ScopeSpans[0].Spans[0].StartTimeUnixNano)})
+
+			var three []*tracepb.ResourceSpans
+			for i := 2; i <= 4; i++ {
+				three = append(three, span(i, 20))
+			}
+			if stats, err := e.ExportResourceSpans(ctx, three); err != nil || stats.Spans != 3 || stats.Batches != 1 {
+				t.Fatalf("fresh spans: %+v %v, want one batch of 3", stats, err)
+			}
+			var moved []*tracepb.ResourceSpans
+			for _, rs := range three {
+				moved = append(moved, relMoved(rs))
+			}
+			if stats, err := e.ExportResourceSpans(ctx, moved); err != nil || stats.Spans != 3 || stats.Batches != 3 {
+				t.Fatalf("moved spans: %+v %v, want three batches", stats, err)
+			}
+			for i, rs := range moved {
+				reSpan(t, ctx, e, ftsSpan(i+2), SpanMatch{ftsTrace(i + 2), ftsSpan(i + 2), int64(rs.ScopeSpans[0].Spans[0].StartTimeUnixNano)})
+			}
+		})
+	}
+}
+
+// relSaveSize is the approximate size of saving rows in one transaction on
+// e's store, which it then aborts.
+func relSaveSize(t *testing.T, ctx context.Context, e *Exporter, rows ...proto.Message) int64 {
+	t.Helper()
+	var size int64
+	errAbort := errors.New("abort")
+	_, err := e.store.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+		store, err := e.store.ts.Builder(rc).Open()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := store.SaveRecordBatchWithOptions(rows, recordlayer.BatchSaveOptions{CoalesceIndexWriteConflicts: e.writer.opts.BulkIndexConflicts}); err != nil {
+			return nil, err
+		}
+		if size, err = rc.Transaction().GetApproximateSize().Get(); err != nil {
+			return nil, err
+		}
+		return nil, errAbort
+	})
+	if !errors.Is(err, errAbort) {
+		t.Fatal(err)
+	}
+	return size
+}
+
+// testRelSpanIndexKeyModel: spanKeyModel.indexEntries visits exactly the
+// SPANS index entries a saved row adds, by count and bytes, and a
+// replacement's transaction exceeds the same row's fresh save by at most
+// priorCost: by none when nothing changed, by every old entry when the start
+// time moved.
+func testRelSpanIndexKeyModel(t *testing.T, cluster string) {
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
+	e := openRelExporter(t, ctx, cluster, func(c *ExporterConfig) { c.EnableMessageDeltas, c.EnableMessageFullText = true, true })
+	nul := strings.Repeat("\x00", 40)
+	typed := []*commonpb.KeyValue{
+		exKV("k"+nul, exStr(nul)), exKV("long", exStr(strings.Repeat("l", 3000))), exKV("n", exInt(-300)), exKV("big", exInt(1<<62)),
+		exKV("d", exDouble(math.Copysign(0, -1))), exKV("b", exBool(false)), exKV("x", exBytes([]byte{0})), exKV("arr", exArray(exInt(1))),
+		deltaKV("gen_ai.input.messages", deltaMessages("array", []deltaMsg{{"user", "index key model"}})),
+	}
+	for i := range 300 {
+		typed = append(typed, exKV(fmt.Sprintf("i%03d", i), exInt(int64(i*i))))
+	}
+	fixtures := []*tracepb.ResourceSpans{deltaSpan(1, typed...), deltaSpan(2), deltaSpan(3, exKV("blob", exBytes(lgRandom(t, 200_000))))}
+	indexBytes := func() (keys, n int64) {
+		for _, name := range spanIndexes {
+			idx := e.store.ts.MetaData.GetIndex(name)
+			sz, err := lrSize(ctx, e.store.db, e.store.ts.Subspace.Sub(recordlayer.IndexKey, idx.SubspaceTupleKey()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			keys, n = keys+sz.Keys, n+sz.KeyBytes
+		}
+		return keys, n
+	}
+	m := &e.writer.keys
+	for i, rs := range fixtures {
+		sp := rs.ScopeSpans[0].Spans[0]
+		keys0, bytes0 := indexBytes()
+		if _, err := e.ExportResourceSpans(ctx, []*tracepb.ResourceSpans{rs}); err != nil {
+			t.Fatal(err)
+		}
+		keys1, bytes1 := indexBytes()
+		var rec *recordlayer.FDBStoredRecord[proto.Message]
+		if err := e.store.read(ctx, "test", func(store *recordlayer.FDBRecordStore) error {
+			pk, err := tableKey(store, "test", spansRecordType, sp.TraceId, sp.SpanId)
+			if err == nil {
+				rec, err = store.LoadRecord(pk)
+			}
+			return err
+		}); err != nil || rec == nil {
+			t.Fatalf("fixture %d: stored row %v %v", i, rec, err)
+		}
+		row := rec.Record.(*otelv1pb.SPANS)
+		pk := m.primaryKey(row)
+		var wantKeys, wantBytes int64
+		if err := m.indexEntries(row, pk, func(_ int, _ tuple.Tuple, n int) { wantKeys, wantBytes = wantKeys+1, wantBytes+int64(n) }); err != nil {
+			t.Fatal(err)
+		}
+		if keys1-keys0 != wantKeys || bytes1-bytes0 != wantBytes {
+			t.Fatalf("fixture %d: index entries %d of %d bytes, the model %d of %d", i, keys1-keys0, bytes1-bytes0, wantKeys, wantBytes)
+		}
+		if i == 2 && rec.KeyCount < 2 {
+			t.Fatalf("fixture %d is not split: %d record keys", i, rec.KeyCount)
+		}
+		// The same rows at a fresh identity: their save has no clears.
+		freshRow := func(r *otelv1pb.SPANS) *otelv1pb.SPANS {
+			r = proto.Clone(r).(*otelv1pb.SPANS)
+			r.TRACE_ID = bytes.Repeat([]byte{0xee}, 16)
+			return r
+		}
+		movedRow := proto.Clone(row).(*otelv1pb.SPANS)
+		movedRow.START_NS = proto.Int64(row.GetSTART_NS() + 1000)
+		for _, next := range []*otelv1pb.SPANS{row, movedRow} {
+			prior, err := m.priorCost(row, next, pk, rec.KeyCount)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fresh, replaced := relSaveSize(t, ctx, e, freshRow(next)), relSaveSize(t, ctx, e, next)
+			added := replaced - fresh
+			if added > int64(prior) {
+				t.Fatalf("fixture %d (moved %v): replacement adds %d bytes to the fresh save's %d, prior cost %d", i, next == movedRow, added, fresh, prior)
+			}
+			records := relRecordClearCost(m.recordsPrefix+packedTupleLen(pk)+relLogSuffixBytes, rec.KeyCount)
+			if next == row && prior != records {
+				t.Fatalf("fixture %d: an unchanged replacement costs %d, want its record clears %d", i, prior, records)
+			}
+			if next == movedRow && int64(prior) > added*6/5+1024 {
+				t.Fatalf("fixture %d: a moved replacement adds %d bytes, prior cost %d", i, added, prior)
+			}
+		}
+	}
 }

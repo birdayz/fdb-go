@@ -20,7 +20,8 @@ import (
 
 // Span writes on a tenant store (rfcs/relational-exporter-migration.md §1.2,
 // §3.1): every span of a call is admitted before any write, then batches of
-// SPANS rows commit independently, one write slot per transaction.
+// SPANS rows commit independently, one write slot per transaction; a batch
+// that replaces stored spans holds only the spans that fit with their clears.
 
 // maxSpanTxnBytes is the actual-size guard of a span write transaction
 // (GetApproximateSize), under FDB's 10 MB limit by the conservative estimate.
@@ -32,6 +33,7 @@ const maxSpanTxnBytes = 500000
 type SpanWriter struct {
 	store *tenantStore
 	opts  SpanWriterOptions
+	keys  spanKeyModel
 	// maxTxnBytes is maxSpanTxnBytes; tests lower it.
 	maxTxnBytes int64
 }
@@ -54,7 +56,11 @@ type SpanWriterOptions struct {
 // NewSpanWriter writes to ts on db.
 func NewSpanWriter(db *recordlayer.FDBDatabase, ts *otelsql.TenantStore, opts SpanWriterOptions) *SpanWriter {
 	opts.BatchSize, opts.Workers = max(opts.BatchSize, 1), max(opts.Workers, 1)
-	return &SpanWriter{store: &tenantStore{db: db, ts: ts, databasePath: ts.DatabasePath, schema: ts.Schema}, opts: opts, maxTxnBytes: maxSpanTxnBytes}
+	return newSpanWriter(&tenantStore{db: db, ts: ts, databasePath: ts.DatabasePath, schema: ts.Schema}, opts)
+}
+
+func newSpanWriter(store *tenantStore, opts SpanWriterOptions) *SpanWriter {
+	return &SpanWriter{store: store, opts: opts, keys: newSpanKeyModel(store.ts), maxTxnBytes: maxSpanTxnBytes}
 }
 
 // Write admits every span of spans, then commits them in batches. A
@@ -217,13 +223,214 @@ func spanCost(r *otelv1pb.SPANS) int {
 	return cost
 }
 
-// relBatch is one write transaction's rows.
+// spanIndexes are the SPANS indexes in spanKeyModel.index order.
+var spanIndexes = [...]string{spansTimeIndex, spansSpanIDIndex, spansStrAttrIndex, spansLongStrIndex, spansIntAttrIndex, spansDoubleAttrIndex, spansBoolAttrIndex, spansRefChunksIndex}
+
+const (
+	spanIdxTime = iota
+	spanIdxSpanID
+	spanIdxStr
+	spanIdxLongStr
+	spanIdxInt
+	spanIdxDouble
+	spanIdxBool
+	spanIdxRefChunks
+)
+
+// spanKeyModel holds the byte lengths of a store's records subspace and SPANS
+// index subspaces, from which priorCost sizes a stored row's keys; err is
+// set when the store's metadata lacks the table or an index.
+type spanKeyModel struct {
+	rt            *recordlayer.RecordType
+	recordsPrefix int
+	index         [len(spanIndexes)]relIndexSpace
+	err           error
+}
+
+func newSpanKeyModel(ts *otelsql.TenantStore) spanKeyModel {
+	const op = "span store"
+	m := spanKeyModel{recordsPrefix: len(ts.Subspace.Sub(recordlayer.RecordKey).Bytes())}
+	if m.rt = ts.MetaData.GetRecordType(spansRecordType); m.rt == nil {
+		m.err = failf("ownership", op, "%s is not in the store's metadata", spansRecordType)
+		return m
+	}
+	for i, name := range spanIndexes {
+		idx := ts.MetaData.GetIndex(name)
+		if idx == nil {
+			m.err = failf("ownership", op, "index %s is not in the store's metadata", name)
+			return m
+		}
+		m.index[i] = relIndexSpace{idx, len(ts.Subspace.Sub(recordlayer.IndexKey, idx.SubspaceTupleKey()).Bytes())}
+	}
+	return m
+}
+
+func (m *spanKeyModel) primaryKey(r *otelv1pb.SPANS) tuple.Tuple {
+	if m.rt.PrimaryKeyHasRecordTypePrefix() {
+		return tuple.Tuple{m.rt.GetRecordTypeKey(), r.TRACE_ID, r.SPAN_ID}
+	}
+	return tuple.Tuple{r.TRACE_ID, r.SPAN_ID}
+}
+
+// indexEntries visits every index entry the Record Layer maintains for row r,
+// OTEL_V1's SPANS indexes: its spanIndexes position, its key columns before
+// the primary key's remainder, and its key's byte length. Its arithmetic is
+// the template's column layout; TestRelExporterRealFDB/span_index_key_model
+// pins it to the store's entries.
+func (m *spanKeyModel) indexEntries(r *otelv1pb.SPANS, pk tuple.Tuple, visit func(i int, cols tuple.Tuple, key int)) error {
+	var rest [len(spanIndexes)]int
+	for i := range spanIndexes {
+		trimmed, err := m.index[i].idx.TrimPrimaryKey(pk)
+		if err != nil {
+			return err
+		}
+		rest[i] = m.index[i].prefix + packedTupleLen(trimmed)
+	}
+	emit := func(i int, cols tuple.Tuple) { visit(i, cols, rest[i]+packedTupleLen(cols)) }
+	var start tuple.TupleElement
+	if r.START_NS != nil {
+		start = r.GetSTART_NS()
+	}
+	emit(spanIdxTime, tuple.Tuple{start, r.TRACE_ID, r.SPAN_ID})
+	emit(spanIdxSpanID, tuple.Tuple{r.SPAN_ID, start, r.TRACE_ID})
+	attr := func(i int, scope, key *string, value tuple.TupleElement) {
+		emit(i, tuple.Tuple{optString(scope), optString(key), value, start, r.TRACE_ID, r.SPAN_ID})
+	}
+	for _, a := range r.GetSTR_ATTRS().GetValues() {
+		attr(spanIdxStr, a.SCOPE, a.ATTR_KEY, optString(a.STR_VALUE))
+	}
+	for _, a := range r.GetLONG_STR_ATTRS().GetValues() {
+		attr(spanIdxLongStr, a.SCOPE, a.ATTR_KEY, a.GetDIGEST())
+	}
+	for _, a := range r.GetINT_ATTRS().GetValues() {
+		attr(spanIdxInt, a.SCOPE, a.ATTR_KEY, a.GetINT_VALUE())
+	}
+	for _, a := range r.GetDOUBLE_ATTRS().GetValues() {
+		attr(spanIdxDouble, a.SCOPE, a.ATTR_KEY, a.GetDOUBLE_VALUE())
+	}
+	for _, a := range r.GetBOOL_ATTRS().GetValues() {
+		attr(spanIdxBool, a.SCOPE, a.ATTR_KEY, a.GetBOOL_VALUE())
+	}
+	for _, c := range r.GetREF_CHUNKS().GetValues() {
+		emit(spanIdxRefChunks, tuple.Tuple{r.TRACE_ID, start, r.SPAN_ID, c.GetCHUNK(), c.GetREFS()})
+	}
+	return nil
+}
+
+// optString is a nullable string column's value, nil for NULL.
+func optString(s *string) tuple.TupleElement {
+	if s == nil {
+		return nil
+	}
+	return *s
+}
+
+// priorCost is the native cost of replacing the stored row old (keyCount
+// record keys) with next: clearing its record keys and version, and every
+// index entry of old that next does not keep (the Record Layer keeps the
+// entries both rows have).
+func (m *spanKeyModel) priorCost(old, next *otelv1pb.SPANS, pk tuple.Tuple, keyCount int) (int, error) {
+	kept := map[string]struct{}{}
+	key := func(i int, cols tuple.Tuple) string { return string(append([]byte{byte(i)}, cols.Pack()...)) }
+	if err := m.indexEntries(next, pk, func(i int, cols tuple.Tuple, _ int) { kept[key(i, cols)] = struct{}{} }); err != nil {
+		return 0, err
+	}
+	cost := relRecordClearCost(m.recordsPrefix+packedTupleLen(pk)+relLogSuffixBytes, keyCount)
+	err := m.indexEntries(old, pk, func(i int, cols tuple.Tuple, n int) {
+		if _, ok := kept[key(i, cols)]; !ok {
+			cost += relClearCost(n)
+		}
+	})
+	return cost, err
+}
+
+// fitting is how many of spans, from the first, fit the conservative
+// transaction estimate with the clears of the stored spans they replace,
+// whose rows it loads from store (the save's prefetch has read them). A first
+// span that does not fit alone fails as admission.
+func (w *SpanWriter) fitting(store *recordlayer.FDBRecordStore, spans []relSpan) (int, error) {
+	const op = "export batch"
+	if w.keys.err != nil {
+		return 0, w.keys.err
+	}
+	futures := make([]recordlayer.PendingRead[*recordlayer.FDBStoredRecord[proto.Message]], 0, min(loadRecordsBatch, len(spans)))
+	pks := make([]tuple.Tuple, 0, cap(futures))
+	total := 0
+	for lo := 0; lo < len(spans); lo += loadRecordsBatch {
+		futures, pks = futures[:0], pks[:0]
+		for i := lo; i < min(lo+loadRecordsBatch, len(spans)); i++ {
+			pk := w.keys.primaryKey(spans[i].row.(*otelv1pb.SPANS))
+			pks = append(pks, pk)
+			futures = append(futures, store.LoadRecordAsync(pk, nil))
+		}
+		for k, f := range futures {
+			i := lo + k
+			old, err := f.Get()
+			if err != nil {
+				return 0, err
+			}
+			cost := spans[i].cost
+			if old != nil {
+				row, ok := old.Record.(*otelv1pb.SPANS)
+				if !ok {
+					return 0, failf("ownership", op, "%s record is not the compiled row", spansRecordType)
+				}
+				prior, err := w.keys.priorCost(row, spans[i].row.(*otelv1pb.SPANS), pks[k], old.KeyCount)
+				if err != nil {
+					return 0, err
+				}
+				cost += prior
+			}
+			if total+cost > exportSpanBudget {
+				if i == 0 {
+					return 0, fail("admission", op, "single span with the clears of the span it replaces exceeds conservative 300KB transaction estimate")
+				}
+				return i, nil
+			}
+			total += cost
+		}
+	}
+	return len(spans), nil
+}
+
+// relBatch is one write transaction's spans.
 type relBatch struct {
 	first, next int // positions in the prepared spans
-	rows        []proto.Message
+	spans       []relSpan
 	logical     int64
 	references  int64
 	estimate    int
+}
+
+func (b *relBatch) add(it relSpan) {
+	b.spans = append(b.spans, it)
+	b.logical += it.logical
+	b.references += int64(it.references)
+	b.estimate += it.cost
+	b.next++
+}
+
+func (b relBatch) rows() []proto.Message {
+	out := make([]proto.Message, len(b.spans))
+	for i, it := range b.spans {
+		out[i] = it.row
+	}
+	return out
+}
+
+// cut splits b after its first k spans.
+func (b relBatch) cut(k int) (head, tail relBatch) {
+	if k == len(b.spans) {
+		return b, relBatch{first: b.next, next: b.next}
+	}
+	head, tail = relBatch{first: b.first, next: b.first}, relBatch{first: b.first + k, next: b.first + k}
+	for _, it := range b.spans[:k] {
+		head.add(it)
+	}
+	for _, it := range b.spans[k:] {
+		tail.add(it)
+	}
+	return head, tail
 }
 
 // partition cuts items into batches of at most BatchSize spans within the
@@ -232,17 +439,13 @@ func (w *SpanWriter) partition(items []relSpan) []relBatch {
 	var out []relBatch
 	cur := relBatch{}
 	for i, it := range items {
-		if len(cur.rows) > 0 && (len(cur.rows) == w.opts.BatchSize || cur.estimate+it.cost > exportSpanBudget) {
+		if len(cur.spans) > 0 && (len(cur.spans) == w.opts.BatchSize || cur.estimate+it.cost > exportSpanBudget) {
 			out = append(out, cur)
 			cur = relBatch{first: i, next: i}
 		}
-		cur.rows = append(cur.rows, it.row)
-		cur.logical += it.logical
-		cur.references += int64(it.references)
-		cur.estimate += it.cost
-		cur.next = i + 1
+		cur.add(it)
 	}
-	if len(cur.rows) > 0 {
+	if len(cur.spans) > 0 {
 		out = append(out, cur)
 	}
 	return out
@@ -255,11 +458,7 @@ func (w *SpanWriter) commit(ctx context.Context, batches []relBatch, stats *Expo
 		return nil
 	}
 	if len(batches) == 1 {
-		if err := w.save(ctx, batches[0]); err != nil {
-			return err
-		}
-		stats.addBatch(batches[0])
-		return nil
+		return w.save(ctx, batches[0], stats.addBatch)
 	}
 	workCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -276,7 +475,11 @@ func (w *SpanWriter) commit(ctx context.Context, batches []relBatch, stats *Expo
 				if workCtx.Err() != nil {
 					continue
 				}
-				err := w.save(workCtx, batch)
+				err := w.save(workCtx, batch, func(b relBatch) {
+					mu.Lock()
+					stats.addBatch(b)
+					mu.Unlock()
+				})
 				mu.Lock()
 				if err != nil {
 					if firstErr == nil {
@@ -285,7 +488,6 @@ func (w *SpanWriter) commit(ctx context.Context, batches []relBatch, stats *Expo
 					}
 				} else {
 					committed++
-					stats.addBatch(batch)
 				}
 				mu.Unlock()
 			}
@@ -312,41 +514,69 @@ feed:
 
 // addBatch counts a committed batch.
 func (s *ExportStats) addBatch(b relBatch) {
-	s.Spans += int64(len(b.rows))
+	s.Spans += int64(len(b.spans))
 	s.Batches++
 	s.LogicalBytes += b.logical
 	s.Messages.References += b.references
 }
 
-// save commits one batch: the rows' old images are prefetched while the store
-// opens, the batch saves in one call, and the transaction must stay within
-// maxTxnBytes.
-func (w *SpanWriter) save(ctx context.Context, b relBatch) error {
+// save commits batch b, passing each committed transaction's spans to
+// committed. The rows' old images are prefetched while the store opens, and
+// every transaction must stay within maxTxnBytes. Within the estimate only
+// the clears of the stored spans the batch replaces can pass the guard, so a
+// batch that does is saved again in as few transactions as fit: each holds
+// the longest prefix within the estimate with those clears (fitting), and
+// the rest continue in the next.
+func (w *SpanWriter) save(ctx context.Context, b relBatch, committed func(relBatch)) error {
 	const op = "export batch"
-	_, err := runTxnSlot(ctx, w.store.db, op, func(rc *recordlayer.FDBRecordContext) (any, error) {
-		var pending *recordlayer.RecordBatchPrefetch
-		store, err := w.store.openWith(rc, op, func(builder *recordlayer.StoreBuilder) {
-			pending = builder.PrefetchRecordBatch(b.rows)
+	fit := false
+	for len(b.spans) > 0 {
+		var head, tail relBatch
+		over := false
+		_, err := runTxnSlot(ctx, w.store.db, op, func(rc *recordlayer.FDBRecordContext) (any, error) {
+			over = false
+			rows := b.rows()
+			var pending *recordlayer.RecordBatchPrefetch
+			store, err := w.store.openWith(rc, op, func(builder *recordlayer.StoreBuilder) {
+				pending = builder.PrefetchRecordBatch(rows)
+			})
+			if err != nil {
+				return nil, err
+			}
+			if err := pending.Wait(); err != nil {
+				return nil, err
+			}
+			k := len(rows)
+			if fit {
+				if k, err = w.fitting(store, b.spans); err != nil {
+					return nil, err
+				}
+			}
+			head, tail = b.cut(k)
+			if _, err := store.SaveRecordBatchWithOptions(rows[:k], recordlayer.BatchSaveOptions{CoalesceIndexWriteConflicts: w.opts.BulkIndexConflicts}); err != nil {
+				return nil, err
+			}
+			n, err := rc.Transaction().GetApproximateSize().Get()
+			if err != nil {
+				return nil, err
+			}
+			if n > w.maxTxnBytes {
+				over = true
+				return nil, failf("budget", "export transaction", "transaction guard exceeded: bytes=%d", n)
+			}
+			return nil, nil
 		})
 		if err != nil {
-			return nil, err
+			if over && !fit {
+				fit = true
+				continue
+			}
+			return err
 		}
-		if err := pending.Wait(); err != nil {
-			return nil, err
-		}
-		if _, err := store.SaveRecordBatchWithOptions(b.rows, recordlayer.BatchSaveOptions{CoalesceIndexWriteConflicts: w.opts.BulkIndexConflicts}); err != nil {
-			return nil, err
-		}
-		n, err := rc.Transaction().GetApproximateSize().Get()
-		if err != nil {
-			return nil, err
-		}
-		if n > w.maxTxnBytes {
-			return nil, failf("budget", "export transaction", "transaction guard exceeded: bytes=%d", n)
-		}
-		return nil, nil
-	})
-	return err
+		committed(head)
+		b = tail
+	}
+	return nil
 }
 
 // ExportResourceSpans admits every span before writing, so an inadmissible

@@ -41,7 +41,7 @@ func TestRelPartition(t *testing.T) {
 	shapes := func(bs []relBatch) []shape {
 		var out []shape
 		for _, b := range bs {
-			out = append(out, shape{b.first, b.next, len(b.rows), b.logical, b.references, b.estimate})
+			out = append(out, shape{b.first, b.next, len(b.spans), b.logical, b.references, b.estimate})
 		}
 		return out
 	}
