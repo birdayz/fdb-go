@@ -11,3 +11,7 @@ ignore:
   - "docs/benchmarks/*/**"
   # Binary golden fixtures; the golden tests that pin them are reviewed.
   - "**/*.binpb"
+  # npm lockfiles, and the Grafana plugin scaffold that @grafana/create-plugin
+  # generates ("auto-generated ... not intended to be changed").
+  - "**/package-lock.json"
+  - "layers/otel/grafana/.config/**"

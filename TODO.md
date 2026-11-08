@@ -3863,6 +3863,35 @@ boundary in `docs/benchmarks/otel-relational-local-20261107.md`.
   SQL joins on the hot path; add the metrics tables (template v2) with an
   exemplar trace_id fan-out index and a (service, time) index.
 
+## Grafana datasource (`layers/otel/grafana`): deferred
+
+- [ ] Plugin CPU under dashboard load: the R1 check (README "Load (R1)": 20
+  panels, 2 x 20,000 spans) saturates the plugin at a 5 s refresh (about seven
+  cores, 39% of requests cancelled by the next refresh; p95 9.1 s at 30 s)
+  while FDB idles at half a core. Profile the in-process SQL path (planning,
+  hash aggregation of time-bucketed scans) before tuning; consider caching
+  plans per panel SQL and bounding concurrent panel queries per instance.
+- [ ] Raw SQL lists other tenants' names: a T1 connection's SELECT on
+  `INFORMATION_SCHEMA` returns every schema, table and column name of the
+  database (rows are isolated, names are not; RFC R3). The plugin filters only
+  its own tenants and completion routes. The fix belongs in the engine
+  (`INFORMATION_SCHEMA` scoped to the connection's schema, or a DSN option).
+- [ ] Typed SQLSTATE in panels: sqlds flattens driver errors to text; Grafana
+  gets the code only inside the message. Needs our own query loop or an sqlds
+  change that keeps the error chain (health and `sql_failures_total` are typed).
+- [ ] Metric cardinality: `fdb_datasource_*` counters carry a tenant label, so
+  series grow with the tenants queried under an `allowedSchemas` prefix. Cap or
+  make the label optional before deployments with thousands of tenants.
+- [ ] Logs reads are uncounted: `otel.Reader`'s log queries return no read
+  stats, so logs queries add nothing to `otel_read_bytes_total`.
+- [ ] Trace-search summaries read up to 20 whole traces sequentially, each under
+  the full trace budget; give them their own budget or bounded parallelism.
+- [ ] `TraceBudget.MaxBytes` (stored bytes) has no setting; `traceMaxBytes` maps
+  to `MaxDecodedBytes`.
+- [ ] The e2e job (`grafana-plugin.yml`, Playwright on Grafana 13.1.9 and 12.0.0)
+  runs only on `workflow_dispatch`; measure it on the runners and move it to
+  pull requests if it fits.
+
 ## TEXT SQL access paths
 
 - [ ] Recover and diagnose the historical RFC-258 fail-on-scan-limit failure

@@ -102,16 +102,24 @@ func publishStoreMeta(ctx context.Context, s *tenantStore, name string, candidat
 	return out, err
 }
 
+// The STORE_META("layout") values (D10): a store's GenAI message layout,
+// published by its first Exporter and read by a Reader (Reader.Layout).
+const (
+	StoreLayoutNone     = "messages=none"
+	StoreLayoutDeltas   = "messages=deltas"
+	StoreLayoutFullText = "messages=fulltext"
+)
+
 // relStoreLayout is the STORE_META("layout") value of cfg's message storage
 // (D10): the messages flags are the store's identity.
 func relStoreLayout(cfg ExporterConfig) string {
 	switch cfg.messageLayout() {
 	case messagesFullText:
-		return "messages=fulltext"
+		return StoreLayoutFullText
 	case messagesDeltas:
-		return "messages=deltas"
+		return StoreLayoutDeltas
 	}
-	return "messages=none"
+	return StoreLayoutNone
 }
 
 // checkStoreLayout publishes layout on a fresh store and otherwise requires

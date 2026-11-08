@@ -15,7 +15,8 @@ type SameSpanQuery struct {
 }
 
 // SpanQueryPage is one snapshot_page: every row was verified at ReadVersion.
-// A full page always carries a continuation; the following page may be empty.
+// A full page carries a continuation, and the following page may be empty;
+// a Reader's full page has none when the store has no signing key stored.
 type SpanQueryPage struct {
 	Spans        []SpanMatch `json:"spans"`
 	Continuation []byte      `json:"continuation,omitempty"`

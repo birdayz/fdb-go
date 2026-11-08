@@ -86,6 +86,38 @@ below; neither publication nor readiness is asserted.
   `SchemaWitness` with `RecordLayerStoreCatalog.LoadSchemaWitnessed` and
   `SchemaUnchanged`; and keyspace `RelationalKeyspace.ResolvedSchemaSubspace`
   (a schema's store subspace when already resolved, without I/O).
+- `sqldriver.NewConnector(db, dsn)`, a `driver.Connector` over an FDB
+  database the caller opened, for `sql.OpenDB` (no `cluster_file`; nothing is
+  opened, cached or registered), and the Go-only DSN option `read_only=true`:
+  only SELECT and EXPLAIN/DESCRIBE of a SELECT run (anything else, a
+  multi-statement batch included, is `0A000`); every transaction of the
+  connection is cancelled instead of committed, so a read persists nothing,
+  not even a store-header upgrade; `BeginTx` accepts
+  `TxOptions{ReadOnly: true}`, still `0A000` without `read_only`
+  (`docs/operations.md` §1). The engine side is
+  `EmbeddedConnection.SetReadOnly` and `embedded.ReadOnlyRunner`.
+- `otel.Reader`, a read-only view of one OTEL_V1 tenant store for dashboards
+  (`layers/otel/rfcs/grafana-datasource.md`): `OpenReader` with
+  `ReaderConfig`; `Reader.Layout` and the `StoreLayoutNone`,
+  `StoreLayoutDeltas` and `StoreLayoutFullText` values; `TraceOTLP`, one scan
+  of a trace's spans with GenAI messages restored, bounded by `TraceBudget`
+  and reported in `TraceReadStats` with the `TraceReason*` values; the span
+  searches and log queries; and `AttributeKeys`/`AttributeValues`, capped
+  skip scans of the typed span and log attribute indexes
+  (`MaxAttributeKeys`, `MaxAttributeValues`). The open creates and publishes
+  nothing, and every transaction is cancelled, never committed. A store whose
+  header names newer metadata than a Reader loaded fails with
+  `*otel.StaleMetadataError`, the new error kind `stale`: reopen the Reader.
+  `otelsql.OpenTenantStoreCompiledIn` opens a tenant store with its catalog
+  reads in a transaction the caller runs (`layers/otel/README.md`, "Reader").
+- Grafana datasource plugin `birdayz-foundationdb-datasource`
+  (`layers/otel/grafana`, a nested Go module with an npm frontend;
+  `just grafana-build`, `just grafana-test`): a Go backend that talks to FDB
+  directly. SQL tables, time series and logs over any relational schema store
+  through read-only `fdbsql` connections, with integer-nanosecond time macros;
+  OTEL_V1 trace by ID in Grafana's TraceView, typed trace search and logs
+  through `otel.Reader`, with span↔log links. Unsigned; self-hosted Grafana
+  12.0 or later (`allow_loading_unsigned_plugins`).
 
 ### Changed / fixed
 - The relational engine caches deserialized schema templates process-wide (up
@@ -169,6 +201,11 @@ below; neither publication nor readiness is asserted.
   checks; explicit failed commits release their transaction handles.
 
 ### Breaking changes / compatibility
+- **`read_only` and `NewConnector`:** no persisted or wire change; SQL
+  behaviour changes only on a `read_only` connection. The unknown-DSN-parameter
+  error lists `read_only`. `RelationalKeyspace.LookupSchemaSubspace` and
+  `embedded.StoredQueryTemplates` take a `keyspace.Runner` where they took an
+  `*recordlayer.FDBDatabase`, which still satisfies it.
 - **OTel store (persisted format):** the custom store's persisted layout
   (posting indexes, `logs_v1` rows, `Message` records, manifests, the
   `directory_v1` keyspace) is gone, with no migration and no reader: an OTel

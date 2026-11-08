@@ -924,7 +924,7 @@ func (m *relMessageStore) reconstruct(ctx context.Context, store *recordlayer.FD
 	if err != nil || len(p.sites) == 0 {
 		return err
 	}
-	raws, err := loadRelMessages(store, p.refs, p.encodings, work)
+	raws, _, err := loadRelMessages(store, p.refs, p.encodings, work, nil)
 	if err != nil {
 		return err
 	}
@@ -937,8 +937,12 @@ func (m *relMessageStore) reconstruct(ctx context.Context, store *recordlayer.FD
 	return nil
 }
 
-// loadRelMessages returns the raw element bytes of each message.
-func loadRelMessages(store *recordlayer.FDBRecordStore, refs []messageID, encodings map[messageID]string, work *queryWork) (map[messageID][]byte, error) {
+// loadRelMessages returns the raw element bytes of each message, read in two
+// waves: the heads, then the other parts of multipart messages. Without
+// admit each message's parts are requested as its head arrives; with admit
+// the second wave waits for every head and runs only if admit accepts the
+// messages' raw sizes, else ok is false.
+func loadRelMessages(store *recordlayer.FDBRecordStore, refs []messageID, encodings map[messageID]string, work *queryWork, admit func(sizes map[messageID]int64) bool) (raws map[messageID][]byte, ok bool, err error) {
 	const op = "message reconstruct"
 	load := func(id messageID, part int64) (recordlayer.PendingRead[*recordlayer.FDBStoredRecord[proto.Message]], error) {
 		pk, err := tableKey(store, op, messagesRecordType, id.writer, id.seq, part)
@@ -963,25 +967,38 @@ func loadRelMessages(store *recordlayer.FDBRecordStore, refs []messageID, encodi
 	for i, id := range refs {
 		var err error
 		if heads[i], err = load(id, 0); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 	type rest struct {
 		id    messageID
 		size  int64
+		count int64 // parts after the head
 		parts []recordlayer.PendingRead[*recordlayer.FDBStoredRecord[proto.Message]]
 	}
+	request := func(x *rest) error {
+		for p := int64(1); p <= x.count; p++ {
+			f, err := load(x.id, p)
+			if err != nil {
+				return err
+			}
+			x.parts = append(x.parts, f)
+		}
+		return nil
+	}
 	var more []rest
+	sizes := make(map[messageID]int64, len(refs))
 	out := make(map[messageID][]byte, len(refs))
 	for i, id := range refs {
 		h, err := get(heads[i], id, "head")
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		parts, size := h.GetPARTS(), h.GetRAW_BYTES()
 		if h.GetENCODING() != encodings[id] || parts < 1 || size < 0 || size > maxMessageBytes {
-			return nil, failf("corruption", op, "message %d/%d header disagrees with its manifest", id.writer, id.seq)
+			return nil, false, failf("corruption", op, "message %d/%d header disagrees with its manifest", id.writer, id.seq)
 		}
+		sizes[id] = size
 		if raw := h.GetRAW(); int64(len(raw)) == size {
 			out[id] = raw
 			continue
@@ -989,25 +1006,36 @@ func loadRelMessages(store *recordlayer.FDBRecordStore, refs []messageID, encodi
 		x := rest{id: id, size: size}
 		out[id] = append([]byte(nil), h.GetRAW()...)
 		for p := int64(1); p < parts && p*messagePartRawBytes < size; p++ {
-			f, err := load(id, p)
-			if err != nil {
-				return nil, err
+			x.count++
+		}
+		if admit == nil {
+			if err := request(&x); err != nil {
+				return nil, false, err
 			}
-			x.parts = append(x.parts, f)
 		}
 		more = append(more, x)
+	}
+	if admit != nil {
+		if !admit(sizes) {
+			return nil, false, nil
+		}
+		for k := range more {
+			if err := request(&more[k]); err != nil {
+				return nil, false, err
+			}
+		}
 	}
 	for _, x := range more {
 		for _, f := range x.parts {
 			r, err := get(f, x.id, "part")
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			out[x.id] = append(out[x.id], r.GetRAW()...)
 		}
 		if int64(len(out[x.id])) != x.size {
-			return nil, failf("corruption", op, "message %d/%d has %d raw bytes, header says %d", x.id.writer, x.id.seq, len(out[x.id]), x.size)
+			return nil, false, failf("corruption", op, "message %d/%d has %d raw bytes, header says %d", x.id.writer, x.id.seq, len(out[x.id]), x.size)
 		}
 	}
-	return out, nil
+	return out, true, nil
 }

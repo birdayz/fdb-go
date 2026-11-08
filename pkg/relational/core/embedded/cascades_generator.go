@@ -177,6 +177,11 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	if len(all) == 1 {
 		return g.planOne(ctx, all[0])
 	}
+	// A batch may hold only DDL and DML, none of which a read-only connection
+	// runs.
+	if g.c.readOnly {
+		return nil, errReadOnlyStatement()
+	}
 
 	// Multi-statement batch: every child must be an update plan
 	// (DDL/DML only). Refuse a mixed batch containing SELECT/SHOW.
@@ -203,6 +208,9 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 // SHOW, DDL, or transaction.
 func (g *cascadesGenerator) planOne(ctx context.Context, stmt antlrgen.IStatementContext) (query.Plan, error) {
 	c := g.c
+	if c.readOnly && !readOnlyAdmits(stmt) {
+		return nil, errReadOnlyStatement()
+	}
 	if statementOptionsFor(stmt, c.Options()).snapshot && !snapshotAdmits(stmt) {
 		return nil, errSnapshotOnlySelect()
 	}
@@ -1459,7 +1467,7 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		return query.Result{}, api.NewError(api.ErrCodeUnsupportedOperation,
 			"statement continuations are not supported: Go SQL tokens are engine-private and no resume entry point exists")
 	}
-	ss, ssErr := c.sess.Keyspace.SchemaSubspaceIn(ctx, configuredRunner{c.sess.DB, c.Options()}, c.sess.DBPath, c.sess.Schema)
+	ss, ssErr := c.sessionSchemaSubspace(ctx)
 	if ssErr != nil {
 		return query.Result{}, ssErr
 	}
@@ -2880,13 +2888,13 @@ func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *record
 	if !recordlayer.IsRecordTypeExpression(countKey) {
 		return nil
 	}
-	ss, err := c.sess.Keyspace.SchemaSubspaceIn(ctx, configuredRunner{c.sess.DB, c.Options()}, c.sess.DBPath, c.sess.Schema)
+	ss, err := c.sessionSchemaSubspace(ctx)
 	if err != nil {
 		return nil
 	}
 
 	countSubspace := ss.Sub(recordlayer.RecordCountKey)
-	result, runErr := configuredRunner{c.sess.DB, c.Options()}.RunRead(ctx, func(rtx fdb.ReadTransaction) (any, error) {
+	result, runErr := c.runner(c.Options()).RunRead(ctx, func(rtx fdb.ReadTransaction) (any, error) {
 		counts := make(map[string]float64)
 		for name := range md.RecordTypes() {
 			rt := md.GetRecordType(name)
@@ -2968,7 +2976,7 @@ func (g *cascadesGenerator) fetchIndexStateSnapshot(
 	if len(md.GetAllIndexes()) == 0 {
 		return nil, nil
 	}
-	ss, err := c.sess.Keyspace.SchemaSubspaceIn(ctx, configuredRunner{c.sess.DB, c.Options()}, c.sess.DBPath, c.sess.Schema)
+	ss, err := c.sessionSchemaSubspace(ctx)
 	if err != nil {
 		return nil, err
 	}

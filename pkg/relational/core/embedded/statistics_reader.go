@@ -46,7 +46,7 @@ import (
 // methods, and TestIntegration_Stats_FleetCollectIsReadableByTheConnection is
 // what proves the two agree.
 func (c *EmbeddedConnection) statisticsLocation(ctx context.Context) (recordlayer.StatisticsSubspace, subspace.Subspace, error) {
-	storeSubspace, err := c.sess.Keyspace.SchemaSubspaceIn(ctx, configuredRunner{c.sess.DB, c.Options()}, c.sess.DBPath, c.sess.Schema)
+	storeSubspace, err := c.sessionSchemaSubspace(ctx)
 	if err != nil {
 		return recordlayer.StatisticsSubspace{}, nil, err
 	}
@@ -282,7 +282,7 @@ func evaluateCollectedStatistics(
 	// undecodable key or value -- would be reported as "not collected", which is
 	// the one thing it is not. Only NoHeader means absent.
 	stats, readRefusal, readVersion, rErr := recordlayer.ReadStatisticsAtWithRefusal(
-		ctx, configuredRunner{c.sess.DB, c.Options()}, statsSubspace, storeSubspace)
+		ctx, c.runner(c.Options()), statsSubspace, storeSubspace)
 	ok := rErr == nil && readRefusal == recordlayer.StatisticsReadOK
 	in.ReadErr, in.Found, in.Stats, in.ReadRefusal = rErr, ok, stats, readRefusal
 	if rErr == nil && ok {

@@ -90,3 +90,17 @@ func snapshotAdmits(stmt antlrgen.IStatementContext) bool {
 	}
 	return false
 }
+
+// errReadOnlyStatement refuses a statement on a read-only connection
+// (SetReadOnly): only a SELECT, or EXPLAIN/DESCRIBE of one, may run there.
+func errReadOnlyStatement() error {
+	return api.NewError(api.ErrCodeUnsupportedOperation,
+		"read-only connection: only SELECT and EXPLAIN of a SELECT are allowed")
+}
+
+// readOnlyAdmits is the statement classification of a read-only connection:
+// snapshotAdmits without the transaction statements, which a read-only
+// connection refuses (an explicit transaction there is BeginTx's).
+func readOnlyAdmits(stmt antlrgen.IStatementContext) bool {
+	return stmt.TransactionStatement() == nil && snapshotAdmits(stmt)
+}

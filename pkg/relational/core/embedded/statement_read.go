@@ -54,7 +54,8 @@ func (c *EmbeddedConnection) stmtReadAgeBound() time.Duration {
 // transaction (AbstractEmbeddedStatement.java:71-95, RecordLayerResultSet.java:
 // 91-98); DIVERGENCES.md, "Auto-commit SELECT", records the difference.
 // The first page commits it, which persists a store header the open wrote
-// (checkPossiblyRebuild), before the page's rows are published. A retryable
+// (checkPossiblyRebuild), before the page's rows are published; on a
+// read-only connection it cancels it instead (endTransaction). A retryable
 // failure anywhere in it ends it, and the failed work reruns in a fresh,
 // retrying auto-commit transaction exactly as it ran before: every page
 // revalidates the plan's index-state dependency in its own transaction.
@@ -69,7 +70,8 @@ type statementRead struct {
 // statement that succeeded without a page committing it (EXPLAIN) commits it,
 // as each of the transactions it replaces committed: a planning open's
 // store-header upgrade or inline rebuild persists and post-commit hooks run.
-// A failed or panicking statement cancels it; whatever it wrote is made again
+// A read-only connection cancels it instead. A failed or panicking statement
+// cancels it; whatever it wrote is made again
 // by the next transaction to open the store.
 func (c *EmbeddedConnection) beginStatementRead() func(succeeded bool) {
 	if c.activeTx != nil || c.stmtReadArmed {
@@ -83,7 +85,7 @@ func (c *EmbeddedConnection) beginStatementRead() func(succeeded bool) {
 			return
 		}
 		c.stmtRead, c.stmtReadArmed = nil, false
-		if err := sr.rctx.CommitWithHooks(); err != nil {
+		if err := c.endTransaction(sr.rctx); err != nil {
 			sr.rctx.Cancel()
 		}
 	}
@@ -168,7 +170,7 @@ func (c *EmbeddedConnection) runFirstPage(fn func(*recordlayer.FDBRecordContext)
 	result, err = fn(sr.rctx)
 	c.stmtRead = nil
 	if err == nil {
-		if err = sr.rctx.CommitWithHooks(); err == nil {
+		if err = c.endTransaction(sr.rctx); err == nil {
 			return result, nil, true
 		}
 	}

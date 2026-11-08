@@ -47,6 +47,32 @@ variable → FDB's default file. The remote form `fdbsql://host:port/...` is **n
 (returns an unsupported-operation error) — the driver is in-process. Opened clients are cached
 per cluster-file path for the process lifetime.
 
+An application that already has a `*recordlayer.FDBDatabase` passes it to
+`sqldriver.NewConnector(db, dsn)` and hands the connector to `sql.OpenDB`. The DSN takes no
+`cluster_file`; the connector opens and caches no database and changes no process-wide state
+(`RegisterBackend` is the test seam, not this). The domain must still be registered.
+
+`read_only=true` makes every connection of the DSN read-only:
+
+- Only `SELECT` and `EXPLAIN`/`DESCRIBE` of a `SELECT` run. Anything else, `SHOW`, transaction
+  statements and any multi-statement batch included, fails at planning with SQLSTATE `0A000`
+  (`read-only connection: only SELECT and EXPLAIN of a SELECT are allowed`). The Go APIs that write
+  (direct-access insert and delete, statistics collect and clear, `ApplyMetadataOperation`) refuse
+  with `0A000` too.
+- Every transaction the connection makes is cancelled, never committed: the statement's shared
+  transaction, each page, the catalog reads and bootstrap, and an explicit transaction's `Commit`.
+  The header upgrade an open makes on a store an older version wrote stays in memory.
+- `BeginTx` accepts `sql.TxOptions{ReadOnly: true}`, which it refuses (`0A000`) without
+  `read_only`.
+- It is not a tenant boundary. A connection bound to schema `T1` reads only `T1`'s rows (a table
+  qualifier names the schema template and resolves in the connection's schema), but
+  `INFORMATION_SCHEMA` lists every schema of the connection's database with its tables and
+  columns. Other databases are not visible.
+
+`isolation_level_snapshot=true` also refuses everything but `SELECT` and `EXPLAIN` of a `SELECT`
+(transaction statements excepted), but it commits, so a read can still persist a store-header
+upgrade.
+
 ### Record-store API
 
 Pure-Go client (the default). `fdb.OpenDatabase` is always the pure-Go client and needs the API

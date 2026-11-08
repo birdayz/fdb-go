@@ -159,6 +159,10 @@ type EmbeddedConnection struct {
 	// Go-only read-path extension (a non-exact egress ceiling — the
 	// estimate is the cheap encoded length, not exact heap).
 	maxResultBytes int64
+
+	// readOnly makes the connection read-only for its lifetime (SetReadOnly,
+	// read_only.go). It outlives ResetSession and nothing clears it.
+	readOnly bool
 }
 
 // Options returns the connection's api.Options, or api.NoOptions() when
@@ -578,7 +582,9 @@ func (tx *embeddedTx) release() {
 // explicit transaction never retries (there is no OnError loop on this path —
 // the driver does not hold the statements it would have to replay), so a
 // failed commit leaves a dead handle, not a resumable one. A transaction that
-// has already ended is not committed again (25F01).
+// has already ended is not committed again (25F01). On a read-only connection
+// Commit cancels the transaction instead and succeeds: nothing it wrote, such
+// as a store-header upgrade made while opening a store, persists.
 func (tx *embeddedTx) Commit() (err error) {
 	defer func() {
 		tx.terminate()
@@ -593,6 +599,10 @@ func (tx *embeddedTx) Commit() (err error) {
 	if tx.terminated.Load() {
 		tx.retryCancel()
 		return tx.endedError()
+	}
+	if tx.conn.readOnly {
+		tx.rctx.Cancel()
+		return nil
 	}
 	return translateFDBError(tx.rctx.CommitWithHooks())
 }
@@ -653,7 +663,7 @@ func (c *EmbeddedConnection) runInCapturedTx(ctx context.Context, tx *embeddedTx
 	if result, err, ok := c.runStatementRead(ctx, opts, fn); ok {
 		return result, err
 	}
-	return configuredRunner{c.sess.DB, opts}.Run(ctx, fn)
+	return c.runner(opts).Run(ctx, fn)
 }
 
 // transactionConfigurer is Java's RecordLayerTransactionManager building each
@@ -680,13 +690,24 @@ func transactionConfigurer(opts *api.Options) recordlayer.TransactionConfigurer 
 }
 
 // configuredRunner runs auto-commit work for a statement, so its transactions
-// carry the connection's timeout and tags like the statement's own.
+// carry the connection's timeout and tags like the statement's own. A
+// read-only connection's runner cancels each transaction instead of committing
+// it (runCancelled).
 type configuredRunner struct {
-	db   *recordlayer.FDBDatabase
-	opts *api.Options
+	db       *recordlayer.FDBDatabase
+	opts     *api.Options
+	readOnly bool
+}
+
+// runner is the connection's configuredRunner for work under opts.
+func (c *EmbeddedConnection) runner(opts *api.Options) configuredRunner {
+	return configuredRunner{db: c.sess.DB, opts: opts, readOnly: c.readOnly}
 }
 
 func (r configuredRunner) Run(ctx context.Context, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error) {
+	if r.readOnly {
+		return runCancelled(ctx, r.db, configured(r.opts, fn))
+	}
 	return r.db.Run(ctx, configured(r.opts, fn))
 }
 
@@ -1216,8 +1237,9 @@ func (c *EmbeddedConnection) Begin() (driver.Tx, error) {
 
 // BeginTx implements driver.ConnBeginTx. Opens an FDB transaction that spans
 // all subsequent statements until Commit or Rollback is called. Only
-// LevelDefault and LevelSerializable are accepted. ReadOnly is refused
-// (0A000): database/sql forbids ignoring it and nothing enforces it.
+// LevelDefault and LevelSerializable are accepted. ReadOnly is accepted on a
+// read-only connection (SetReadOnly), which enforces it, and refused (0A000)
+// on any other: database/sql forbids ignoring it and nothing enforces it there.
 // ctx bounds the transaction until it ends (bindContext).
 func (c *EmbeddedConnection) BeginTx(ctx context.Context, opts driver.TxOptions) (_ driver.Tx, err error) {
 	defer c.recoverInto(&err)
@@ -1236,7 +1258,7 @@ func (c *EmbeddedConnection) BeginTx(ctx context.Context, opts driver.TxOptions)
 			"isolation level %v is not supported; use LevelDefault or LevelSerializable",
 			sql.IsolationLevel(opts.Isolation))
 	}
-	if opts.ReadOnly {
+	if opts.ReadOnly && !c.readOnly {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "read-only transactions are not supported")
 	}
 	if err := ctx.Err(); err != nil {
@@ -1639,6 +1661,9 @@ func (c *EmbeddedConnection) CollectStatistics(
 	if c.closed.Load() {
 		return nil, driver.ErrBadConn
 	}
+	if c.readOnly {
+		return nil, errReadOnlyOperation("collecting statistics")
+	}
 	if c.sess == nil || c.sess.DB == nil || c.sess.Schema == "" {
 		return nil, api.NewError(api.ErrCodeInvalidParameter,
 			"CollectStatistics requires a connection bound to a schema")
@@ -1736,6 +1761,9 @@ func (c *EmbeddedConnection) ClearStatistics(ctx context.Context) (err error) {
 	defer c.recoverInto(&err)
 	if c.closed.Load() {
 		return driver.ErrBadConn
+	}
+	if c.readOnly {
+		return errReadOnlyOperation("clearing statistics")
 	}
 	if c.sess == nil || c.sess.DB == nil || c.sess.Schema == "" {
 		return api.NewError(api.ErrCodeInvalidParameter,

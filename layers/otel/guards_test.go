@@ -261,7 +261,7 @@ func TestV2GenAIAttributeSlots(t *testing.T) {
 func TestTypedErrorClassification(t *testing.T) {
 	t.Parallel()
 	cause := errors.New("transport cause")
-	for _, kind := range []string{"config", "ownership", "admission", "budget", "corruption", "http", "audit", "oracle", "canceled"} {
+	for _, kind := range []string{"config", "ownership", "admission", "budget", "corruption", "http", "audit", "oracle", "stale", "canceled"} {
 		err := wrap(kind, "operation", cause)
 		var generic *OtelError
 		if !errors.As(err, &generic) || generic.Kind != kind || generic.Op != "operation" || !errors.Is(err, cause) {
@@ -292,6 +292,9 @@ func TestTypedErrorClassification(t *testing.T) {
 			matched = errors.As(err, &v)
 		case "oracle":
 			var v *OracleError
+			matched = errors.As(err, &v)
+		case "stale":
+			var v *StaleMetadataError
 			matched = errors.As(err, &v)
 		default:
 			var v *OperationError

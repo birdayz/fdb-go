@@ -14,6 +14,7 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/catalog"
+	"fdb.dev/pkg/relational/core/keyspace"
 	"fdb.dev/pkg/relational/core/metadata"
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
@@ -35,7 +36,9 @@ type StoredQueryWarmUpCounts struct {
 // the catalog and returns those declaring stored queries, Java's
 // OfflineStoredQueriesProcessor.getSchemaTemplates. A catalog-read failure is
 // logged and yields no templates: a warm-up never fails the engine's start.
-func StoredQueryTemplates(ctx context.Context, db *recordlayer.FDBDatabase, cat *catalog.RecordLayerStoreCatalog) []*metadata.RecordLayerSchemaTemplate {
+// The read runs in a transaction of db's: an *recordlayer.FDBDatabase, or
+// ReadOnlyRunner for an engine whose connections are read-only.
+func StoredQueryTemplates(ctx context.Context, db keyspace.Runner, cat *catalog.RecordLayerStoreCatalog) []*metadata.RecordLayerSchemaTemplate {
 	if db == nil || cat == nil {
 		return nil
 	}

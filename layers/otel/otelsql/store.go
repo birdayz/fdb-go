@@ -1,6 +1,7 @@
 package otelsql
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"fdb.dev/layers/otel/otelsql/otelv1pb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/catalog"
 	"fdb.dev/pkg/relational/core/keyspace"
 )
@@ -85,6 +87,85 @@ func OpenTenantStoreCompiled(ctx context.Context, db *recordlayer.FDBDatabase, d
 	}
 	ts.MetaData = md
 	return ts, nil
+}
+
+// OpenTenantStoreCompiledIn is OpenTenantStoreCompiled for a reader that
+// writes nothing: the catalog and keyspace reads run in one transaction that
+// run supplies and finishes, and a reader's run cancels it (the catalog
+// store's CreateOrOpen may write its header). A schema bound to another
+// template than OTEL_V1 at TemplateVersion is a *TemplateMismatchError.
+func OpenTenantStoreCompiledIn(run func(func(*recordlayer.FDBRecordContext) error) error, databasePath, schema string, serializer *recordlayer.TransformedRecordSerializer) (*TenantStore, error) {
+	databasePath, _, err := tenantPaths(databasePath, schema)
+	if err != nil {
+		return nil, err
+	}
+	schema = strings.ToUpper(schema)
+	cat, err := catalog.NewRecordLayerStoreCatalog(keyspace.New(subspace.Sub()).CatalogSubspace())
+	if err != nil {
+		return nil, fmt.Errorf("otelsql: open catalog: %w", err)
+	}
+	var md *recordlayer.RecordMetaData
+	var ss subspace.Subspace
+	err = run(func(rc *recordlayer.FDBRecordContext) error {
+		s, err := cat.LoadSchema(catalog.NewFDBTransaction(rc), databasePath, schema)
+		if err != nil {
+			return fmt.Errorf("otelsql: load schema %s/%s: %w", databasePath, schema, err)
+		}
+		bound := s.SchemaTemplate()
+		if bound.MetadataName() != TemplateName || bound.Version() != TemplateVersion {
+			return &TemplateMismatchError{
+				DatabasePath: databasePath, Schema: schema,
+				Reason: fmt.Sprintf("bound to template %s version %d, want %s version %d", bound.MetadataName(), bound.Version(), TemplateName, TemplateVersion),
+			}
+		}
+		up, ok := bound.(interface {
+			Underlying() *recordlayer.RecordMetaData
+		})
+		if !ok {
+			return &TemplateMismatchError{DatabasePath: databasePath, Schema: schema, Reason: "its template is not Record Layer metadata"}
+		}
+		md = up.Underlying()
+		if ss, err = lookupSchemaSubspace(rc, databasePath, schema); err != nil {
+			return fmt.Errorf("otelsql: schema store %s/%s: %w", databasePath, schema, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	p, err := md.ToProto()
+	if err != nil {
+		return nil, fmt.Errorf("otelsql: schema %s/%s metadata: %w", databasePath, schema, err)
+	}
+	if md, err = recordlayer.RecordMetaDataFromProto(p, recordlayer.WithLocalFileDescriptor(otelv1pb.File_OTEL_V1)); err != nil {
+		return nil, fmt.Errorf("otelsql: bind schema %s/%s to the compiled OTEL_V1 types: %w", databasePath, schema, err)
+	}
+	return &TenantStore{DatabasePath: databasePath, Schema: schema, MetaData: md, Subspace: ss, Serializer: serializer}, nil
+}
+
+// lookupSchemaSubspace is keyspace.LookupSchemaSubspace in rc: the schema's
+// store subspace from the stored directory and interning entries, never
+// created; a name without an entry is UNDEFINED_SCHEMA.
+func lookupSchemaSubspace(rc *recordlayer.FDBRecordContext, databasePath, schema string) (subspace.Subspace, error) {
+	path, err := keyspace.ToDatabasePath(databasePath)
+	if err != nil {
+		return nil, err
+	}
+	missing := api.NewErrorf(api.ErrCodeUndefinedSchema, "Schema <%s/%s> has no record store", databasePath, schema)
+	domain, ok, err := recordlayer.ReadInTransaction(rc, recordlayer.GlobalDirectoryLayer{}, path.Domain)
+	if err != nil || !ok {
+		return nil, cmp.Or(err, error(missing))
+	}
+	scope := recordlayer.NewScopedInterningLayer(subspace.Sub(domain.Value, keyspace.InterningLayerValue))
+	db, ok, err := recordlayer.ReadInTransaction(rc, scope, path.Database)
+	if err != nil || !ok {
+		return nil, cmp.Or(err, error(missing))
+	}
+	sv, ok, err := recordlayer.ReadInTransaction(rc, scope, schema)
+	if err != nil || !ok {
+		return nil, cmp.Or(err, error(missing))
+	}
+	return subspace.Sub(domain.Value, db.Value, sv.Value), nil
 }
 
 // Builder returns a store builder for rc; callers Open it once per transaction.

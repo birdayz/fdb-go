@@ -28,7 +28,7 @@ func TestConnectionOptions_UnknownParameterIsRefused(t *testing.T) {
 		"max_total_task_count, plan_cache_primary_max_entries, " +
 		"plan_cache_primary_time_to_live_millis, plan_cache_secondary_max_entries, " +
 		"plan_cache_secondary_time_to_live_millis, plan_cache_tertiary_max_entries, " +
-		"plan_cache_tertiary_time_to_live_millis, plan_right_deep, planner_statistics, " +
+		"plan_cache_tertiary_time_to_live_millis, plan_right_deep, planner_statistics, read_only, " +
 		"restrict_ddl_to_session_database, schema, transaction_tags, transaction_timeout"
 	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidParameter || apiErr.Message != want {
 		t.Fatalf("ConnectionOptions = %v; want 22023 %q", err, want)
@@ -42,6 +42,7 @@ func TestConnectionOptions_AcceptedParameters(t *testing.T) {
 	for _, query := range []string{
 		"cluster_file=/f", "schema=S", "dry_run=true", "isolation_level_snapshot=true",
 		"planner_statistics=true", "restrict_ddl_to_session_database=true", "transaction_tags=a",
+		"read_only=true",
 	} {
 		dsn, err := ParseDSN("fdbsql:///FRL/db?" + query)
 		if err != nil {
