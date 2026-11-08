@@ -84,9 +84,12 @@ publishes nothing, builds stores with `SetSkipPossiblyRebuild(true)`, and
 cancels every transaction.
 
 Tenant isolation is Grafana's datasource permissions and nothing else; FDB has
-no per-schema ACL. P1 tests whether a SELECT on a connection bound to `T1` can
-read `T2`'s tables. If it can, `allowedSchemas` is not a boundary and it is one
-datasource per tenant (R3).
+no per-schema ACL. Answered (`TestReadOnly_SelectReadsOnlyItsOwnSchemasRows`):
+a SELECT on a connection bound to `T1` cannot read `T2`'s rows or another
+database's (42703), but `INFORMATION_SCHEMA` lists every schema, table and
+column of the database. So `allowedSchemas` holds for rows as long as the
+plugin, never the SQL, picks the schema, and the plugin filters the tenant and
+completion lists by it. Tenant names are not secret from a datasource's users.
 
 ## 6. SQL
 
@@ -281,8 +284,8 @@ Risks, short:
   Memory and page bounds, process metrics, a 20-panel load check.
 - **R2** Dashboard load on FDB. Tags, throttling, budgets; rollups are a
   metrics-tables problem, not this one.
-- **R3** Cross-schema reads unverified (§5). If they work, one datasource per
-  tenant.
+- **R3** Cross-schema reads (§5): rows are isolated, names are not. Filter the
+  lists; if tenant names must be secret, one datasource per tenant.
 - **R4** sdk and Grafana churn. Pin versions; e2e on two Grafana versions.
   TraceView's and the log frame's field sets are the stable contracts.
 - **R5** Go-only SQL in dashboards (§6). Documented; don't pretend otherwise.
@@ -298,7 +301,7 @@ Risks, short:
 | GD3 | sqlds/v4. Our own `database/sql` loop (~300 lines) would pin connections, but then we own frames, long-to-wide and retries. |
 | GD4 | `read_only` DSN option; `isolation_level_snapshot=true` until it lands. |
 | GD5 | Cluster-file path (default) or cluster string; TLS from settings with libfdb_c-style peer checks; optional PDC. |
-| GD6 | One datasource per database, tenant per query, `allowedSchemas`. One per tenant if R3 fails. |
+| GD6 | One datasource per database, tenant per query, `allowedSchemas`. One per tenant only if tenant names must be secret (R3). |
 | GD7 | `otel.Reader`. Not SQL, not the Exporter (§2). |
 | GD8 | Typed predicates only; no TraceQL in v1. |
 | GD9 | Restore GenAI messages under the 64 MiB trace budget; manifests plus notice past it. |
