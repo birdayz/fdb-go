@@ -129,13 +129,13 @@ func Open(ctx context.Context, c otel.Config, cluster string, opts Options) (*Ba
 		opts.Ingest = IngestDirect
 	}
 	if opts.Ingest != IngestDirect && opts.Ingest != IngestInsert {
-		return nil, fmt.Errorf("sqlbackend: ingest mode must be %s or %s", IngestDirect, IngestInsert)
+		return nil, otel.NewError("config", "sqlbackend open", fmt.Sprintf("ingest mode must be %s or %s", IngestDirect, IngestInsert), nil)
 	}
 	if opts.Query == "" {
 		opts.Query = QuerySQL
 	}
 	if opts.Query != QuerySQL && opts.Query != QueryDirect {
-		return nil, fmt.Errorf("sqlbackend: query mode must be %s or %s", QuerySQL, QueryDirect)
+		return nil, otel.NewError("config", "sqlbackend open", fmt.Sprintf("query mode must be %s or %s", QuerySQL, QueryDirect), nil)
 	}
 	if opts.PageRows == 0 {
 		opts.PageRows = DefaultPageRows
@@ -144,7 +144,7 @@ func Open(ctx context.Context, c otel.Config, cluster string, opts Options) (*Ba
 		opts.Rows = RowsCompiled
 	}
 	if opts.Rows != RowsCompiled && opts.Rows != RowsDynamic {
-		return nil, fmt.Errorf("sqlbackend: rows must be %s or %s", RowsCompiled, RowsDynamic)
+		return nil, otel.NewError("config", "sqlbackend open", fmt.Sprintf("rows must be %s or %s", RowsCompiled, RowsDynamic), nil)
 	}
 	mode := opts.Ingest
 	// Direct saves write --record-compression (Java-readable zlib or none,
@@ -155,19 +155,19 @@ func Open(ctx context.Context, c otel.Config, cluster string, opts Options) (*Ba
 		return nil, err
 	}
 	if mode == IngestInsert && c.RecordCompression != "" && c.RecordCompression != "none" && c.RecordCompression != "zlib-default" {
-		return nil, errors.New("sqlbackend: SQL INSERT writes zlib-default records; --record-compression must be none or zlib-default")
+		return nil, otel.NewError("config", "sqlbackend open", "SQL INSERT writes zlib-default records; --record-compression must be none or zlib-default", nil)
 	}
 	// Only the SpanWriter (compiled direct batch saves) coalesces index
 	// write conflicts.
 	if c.BulkIndexConflicts && (mode != IngestDirect || opts.Rows != RowsCompiled) {
-		return nil, errors.New("sqlbackend: --bulk-index-conflicts requires direct ingest of compiled rows")
+		return nil, otel.NewError("config", "sqlbackend open", "--bulk-index-conflicts requires direct ingest of compiled rows", nil)
 	}
 	readSer, err := otel.RecordSerializer("zlib-default")
 	if err != nil {
 		return nil, err
 	}
 	if cluster == "" {
-		return nil, errors.New("sqlbackend: explicit owned FDB cluster file required")
+		return nil, otel.NewError("config", "sqlbackend open", "explicit owned FDB cluster file required", nil)
 	}
 	if err := fdb.APIVersion(730); err != nil {
 		return nil, err
@@ -306,7 +306,7 @@ func (b *Backend) create(ctx context.Context) error {
 	}
 	if _, err := setup.ExecContext(ctx, `CREATE DATABASE "`+b.dbPath+`"`); err != nil {
 		if errors.As(err, &apiErr) && apiErr.Code == api.ErrCodeDatabaseAlreadyExists {
-			return errors.New("sqlbackend: run already exists; choose a fresh namespace or drop it")
+			return otel.NewError("ownership", "sqlbackend ingest", "run already exists; choose a fresh namespace or drop it", nil)
 		}
 		return err
 	}
@@ -490,7 +490,7 @@ produce:
 		return stats, firstErr
 	}
 	if count != int64(b.cfg.Count) {
-		return stats, errors.New("sqlbackend: incomplete source population")
+		return stats, otel.NewError("operation", "sqlbackend ingest", "incomplete source population", nil)
 	}
 	return stats, ctx.Err()
 }
@@ -606,7 +606,7 @@ func (b *Backend) Query(ctx context.Context, a otel.Attribute) (otel.QueryResult
 	switch a.Type {
 	case "string":
 		if len(a.Value) > otelsql.MaxIndexedStringBytes {
-			return otel.QueryResult{}, errors.New("sqlbackend: long string attributes are not supported by the fixture")
+			return otel.QueryResult{}, otel.NewError("config", "sqlbackend query", "long string attributes are not supported by the fixture", nil)
 		}
 		q, v = fmt.Sprintf(attrQuery, "str_attrs", "str_value"), a.Value
 	case "int":
@@ -662,7 +662,7 @@ func (b *Backend) topTraces(ctx context.Context, base string, args ...any) (otel
 		}
 		if out.Candidates > b.cfg.MaxCandidates {
 			b.lastWork = out
-			return out, fmt.Errorf("sqlbackend: top-K read %d candidates, budget %d", out.Candidates, b.cfg.MaxCandidates)
+			return out, otel.NewError("budget", "sqlbackend query", fmt.Sprintf("top-K read %d candidates, budget %d", out.Candidates, b.cfg.MaxCandidates), nil)
 		}
 		upper = &last
 		limit *= 2
@@ -790,7 +790,7 @@ func (b *Backend) Audit(ctx context.Context) (otel.Statistics, error) {
 		}
 	}
 	if stats.Rows != int64(b.cfg.Count) {
-		return stats, fmt.Errorf("sqlbackend: audit found %d rows, want %d", stats.Rows, b.cfg.Count)
+		return stats, otel.NewError("audit", "sqlbackend audit", fmt.Sprintf("audit found %d rows, want %d", stats.Rows, b.cfg.Count), nil)
 	}
 	stats.Attributes = stats.Rows * int64(b.cfg.Attributes)
 	return stats, nil

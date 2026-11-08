@@ -90,18 +90,21 @@ func spanAttrQuery(a Attribute) (attrQuery, bool) {
 	return attrQuery{}, false
 }
 
-// parseCanonicalDouble reads otelsql.FormatDouble's text; "NaN" is the stored
-// otelsql.CanonicalNaN, which every NaN payload projects to.
+// parseCanonicalDouble reads otelsql.FormatDouble's text and any other text
+// strconv.ParseFloat reads; every NaN is the stored otelsql.CanonicalNaN,
+// which every NaN payload projects to.
 func parseCanonicalDouble(s string) (float64, error) {
 	switch s {
-	case "NaN":
-		return otelsql.CanonicalNaN, nil
 	case "+Inf":
 		return math.Inf(1), nil
 	case "-Inf":
 		return math.Inf(-1), nil
 	}
-	return strconv.ParseFloat(s, 64)
+	f, err := strconv.ParseFloat(s, 64)
+	if math.IsNaN(f) {
+		f = otelsql.CanonicalNaN
+	}
+	return f, err
 }
 
 // Query returns the newest K distinct traces with a span carrying a.

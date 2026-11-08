@@ -1424,6 +1424,17 @@ func testRelNaNPayloads(t *testing.T, cluster string) {
 	if r, err := e.Query(ctx, nan); err != nil || len(r.Hits) != n {
 		t.Fatalf("Query: %d hits, %v", len(r.Hits), err)
 	}
+	// Query takes any text strconv.ParseFloat reads, as for every double;
+	// its NaN spellings all mean the stored NaN. The other reads require the
+	// canonical text.
+	for _, spelling := range []string{"nan", "NAN"} {
+		other := Attribute{"span", "score", "double", spelling}
+		if r, err := e.Query(ctx, other); err != nil || len(r.Hits) != n {
+			t.Fatalf("Query %q: %d hits, %v", spelling, len(r.Hits), err)
+		}
+		_, err := e.QuerySameSpan(ctx, SameSpanQuery{Predicates: []Attribute{other}})
+		requireOtelKind(t, err, "config")
+	}
 	if page, err := e.QuerySameSpan(ctx, SameSpanQuery{Predicates: []Attribute{nan, {"span", "ratio", "double", "0.5"}}}); err != nil || len(page.Spans) != n {
 		t.Fatalf("QuerySameSpan: %d spans, %v", len(page.Spans), err)
 	}

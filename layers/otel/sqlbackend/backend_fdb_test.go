@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -78,6 +80,10 @@ func TestFDB_SQLBackend(t *testing.T) {
 	}
 	tmpl.Close()
 
+	// Not parallel: it reads the driver key the failed Open registered.
+	t.Run("failed open unregisters", func(t *testing.T) {
+		testOpenFailureUnregisters(t, cluster)
+	})
 	t.Run("direct writer rows are SQL rows", func(t *testing.T) {
 		t.Parallel()
 		testDirectWriterRows(t, cluster)
@@ -118,8 +124,9 @@ func TestFDB_SQLBackend(t *testing.T) {
 			if stats.Rows != int64(cfg.Count) {
 				t.Fatalf("ingested %d rows, want %d", stats.Rows, cfg.Count)
 			}
-			if _, err := b.Ingest(ctx); err == nil || !strings.Contains(err.Error(), "already exists") {
-				t.Fatalf("re-ingest into the run = %v, want already exists", err)
+			var owned *otel.OwnershipError
+			if _, err := b.Ingest(ctx); !errors.As(err, &owned) || !strings.Contains(err.Error(), "already exists") {
+				t.Fatalf("re-ingest into the run = %v, want an ownership error: already exists", err)
 			}
 			audit, err := b.Audit(ctx)
 			if err != nil {
@@ -155,30 +162,56 @@ func TestFDB_SQLBackend(t *testing.T) {
 		t.Parallel()
 		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 		defer cancel()
-		for _, opts := range []Options{{Ingest: "bulk"}, {Query: "fast"}, {Rows: "generic"}} {
-			if b, err := Open(ctx, testConfig("sqlb_invalid"), cluster, opts); err == nil {
+		requireConfig := func(what string, b *Backend, err error) {
+			t.Helper()
+			if b != nil {
 				b.Close()
-				t.Errorf("Open(%+v) succeeded", opts)
+			}
+			var config *otel.ConfigError
+			if !errors.As(err, &config) {
+				t.Errorf("%s: Open = %v, want an *otel.ConfigError", what, err)
 			}
 		}
-		if b, err := Open(ctx, testConfig("sqlb_invalid"), "", Options{}); err == nil {
-			b.Close()
-			t.Error("Open without a cluster file succeeded")
+		for _, opts := range []Options{{Ingest: "bulk"}, {Query: "fast"}, {Rows: "generic"}} {
+			b, err := Open(ctx, testConfig("sqlb_invalid"), cluster, opts)
+			requireConfig(fmt.Sprintf("%+v", opts), b, err)
 		}
+		b, err := Open(ctx, testConfig("sqlb_invalid"), "", Options{})
+		requireConfig("no cluster file", b, err)
 		// SQL INSERT writes the engine's zlib-default records, nothing else.
 		c := testConfig("sqlb_invalid")
 		c.RecordCompression = "zlib-1"
-		if b, err := Open(ctx, c, cluster, Options{Ingest: IngestInsert}); err == nil {
-			b.Close()
-			t.Error("SQL INSERT with zlib-1 records accepted")
-		}
+		b, err = Open(ctx, c, cluster, Options{Ingest: IngestInsert})
+		requireConfig("SQL INSERT with zlib-1 records", b, err)
 		// Brotli is Go-only: SQL could not read it.
 		c.RecordCompression = "brotli-1"
-		if b, err := Open(ctx, c, cluster, Options{}); err == nil {
-			b.Close()
-			t.Error("Brotli records accepted for the sql backend")
-		}
+		b, err = Open(ctx, c, cluster, Options{})
+		requireConfig("Brotli records", b, err)
 	})
+}
+
+// An Open that fails after it registered its driver backend (here sql.Open
+// refusing a page size over the driver's int32 option) unregisters it: a DSN
+// naming the backend's driver key no longer reaches its database.
+func testOpenFailureUnregisters(t *testing.T, cluster string) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	b, err := Open(ctx, testConfig("sqlb_unregister"), cluster, Options{PageRows: math.MaxInt32 + 1})
+	if err == nil {
+		b.Close()
+		t.Fatal("Open with a page size over the driver's limit succeeded")
+	}
+	key := "otelbench-backend-" + strconv.FormatInt(backendKeys.Load(), 10)
+	db, err := sql.Open("fdbsql", "fdbsql:///__SYS?cluster_file="+key+"&schema=CATALOG")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// Unregistered, the driver reads the key as a cluster file path, which
+	// does not exist; still registered, it would reach the closed database.
+	if err := db.PingContext(ctx); err == nil || !strings.Contains(err.Error(), "open cluster file") {
+		t.Fatalf("driver key %s still reaches the failed Open's database: %v", key, err)
+	}
 }
 
 func testConfig(run string) otel.Config {

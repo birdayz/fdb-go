@@ -411,6 +411,10 @@ func TestExecuteRejectsArgumentsBeforeOpeningOrCreatingOutput(t *testing.T) {
 		// The sql backend has one time order; --order is ClickHouse's.
 		{"-order=time"},
 		{"-order=trace"},
+		// The --sql-* flags shape the sql backend only.
+		{"-backend=ch-map", "-sql-query=direct"},
+		{"-backend=ch-attrs", "-sql-ingest=insert"},
+		{"-backend=ch-map", "-sql-rows=dynamic", "-sql-pinned-conn", "-sql-page-rows=10"},
 		{"-backend=ch-map", "-ch-query-transport="},
 		{"-backend=ch-map", "-ch-query-transport=other"},
 		{"-backend=ch-map", "-ch-query-transport=native"},

@@ -163,6 +163,9 @@ func TestExecuteCollectorBenchRejections(t *testing.T) {
 		collectorBenchArgs("-posting-value-format=json"),
 		collectorBenchArgs("-record-compression=brotli-4"),
 		collectorBenchArgs("-backend=fdb"),
+		// The --sql-* flags shape the sql backend only.
+		collectorBenchArgs("-sql-query=direct"),
+		collectorBenchArgs("-sql-pinned-conn"),
 		collectorBenchArgs("--conversations=-1"),
 		collectorBenchArgs("--turns=-1"),
 		collectorBenchArgs("--turns=201"),

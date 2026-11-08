@@ -1,7 +1,6 @@
 package otelsql
 
 import (
-	"fmt"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer"
@@ -50,6 +49,16 @@ type Span struct {
 	ExcludeMessageAttributes bool
 }
 
+// InvalidRowError is input a row builder refuses (BuildCompiled, Build,
+// BuildLogCompiled, BuildMessageCompiled, BuildStoreMetaCompiled).
+type InvalidRowError struct {
+	Table, Reason string
+}
+
+func (e *InvalidRowError) Error() string {
+	return "otelsql: invalid " + e.Table + " row: " + e.Reason
+}
+
 // SpanRows builds SPANS records of one template version. Field descriptors
 // are resolved once; Build only fills a dynamic message.
 type SpanRows struct {
@@ -71,7 +80,7 @@ type SpanRows struct {
 func NewSpanRows(md *recordlayer.RecordMetaData) (*SpanRows, error) {
 	rt := md.GetRecordType("SPANS")
 	if rt == nil {
-		return nil, fmt.Errorf("otelsql: metadata has no SPANS table")
+		return nil, &TemplateMismatchError{Reason: "metadata has no SPANS table"}
 	}
 	r := &SpanRows{d: rt.Descriptor}
 	f := fieldsOf(rt.Descriptor)
@@ -159,7 +168,7 @@ func NewSpanRows(md *recordlayer.RecordMetaData) (*SpanRows, error) {
 func (r *SpanRows) Build(s Span) (proto.Message, error) {
 	sp := s.Span
 	if sp == nil {
-		return nil, fmt.Errorf("otelsql: nil span")
+		return nil, &InvalidRowError{Table: "SPANS", Reason: "nil span"}
 	}
 	m := dynamicpb.NewMessage(r.d)
 	setBytes(m, r.traceID, sp.TraceId)
@@ -298,7 +307,7 @@ func newArrayField(f fieldMap, name string) (arrayField, error) {
 	elemField := fd
 	if !fd.IsList() {
 		if fd.Kind() != protoreflect.MessageKind || fd.Message().Fields().Len() != 1 || !fd.Message().Fields().Get(0).IsList() {
-			return a, fmt.Errorf("otelsql: column %s is not an array", name)
+			return a, &TemplateMismatchError{Reason: "column " + name + " is not an array"}
 		}
 		a.values = fd.Message().Fields().Get(0)
 		elemField = a.values
@@ -354,7 +363,7 @@ func (f fieldMap) get(name string) (protoreflect.FieldDescriptor, error) {
 	if fd, ok := f.m[strings.ToUpper(name)]; ok {
 		return fd, nil
 	}
-	return nil, fmt.Errorf("otelsql: missing column %s", name)
+	return nil, &TemplateMismatchError{Reason: "missing column " + name}
 }
 
 func intValue(fd protoreflect.FieldDescriptor, v int64) protoreflect.Value {

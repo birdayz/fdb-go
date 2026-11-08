@@ -77,9 +77,6 @@ func qrLogStore(t *testing.T, r *SpanReader) *relLogStore {
 // subspace, for the write cost model without FDB.
 func lrUnitStore(t *testing.T) *relLogStore {
 	t.Helper()
-	if err := otelsql.MessageTokenizerRegistrationError(); err != nil {
-		t.Fatal(err)
-	}
 	tmpl, err := embedded.BuildSchemaTemplateFromDDL(otelsql.TemplateDDL())
 	if err != nil {
 		t.Fatal(err)

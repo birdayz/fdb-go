@@ -41,10 +41,10 @@ type Log struct {
 func BuildLogCompiled(l Log) (*otelv1pb.LOGS, error) {
 	lr := l.Log
 	if lr == nil {
-		return nil, fmt.Errorf("otelsql: nil log record")
+		return nil, &InvalidRowError{Table: "LOGS", Reason: "nil log record"}
 	}
 	if l.EventID == "" {
-		return nil, fmt.Errorf("otelsql: log without event ID")
+		return nil, &InvalidRowError{Table: "LOGS", Reason: "no event ID"}
 	}
 	r := &otelv1pb.LOGS{
 		EVENT_ID:            proto.String(l.EventID),
@@ -189,7 +189,7 @@ type MessageText struct {
 // IndexableText(p.Text.Content).
 func BuildMessageCompiled(p MessagePart) (*otelv1pb.MESSAGES, error) {
 	if p.Writer <= 0 || p.Seq <= 0 || p.Part < 0 {
-		return nil, fmt.Errorf("otelsql: message %d.%d part %d: writer and seq must be positive, part not negative", p.Writer, p.Seq, p.Part)
+		return nil, &InvalidRowError{Table: "MESSAGES", Reason: fmt.Sprintf("message %d.%d part %d: writer and seq must be positive, part not negative", p.Writer, p.Seq, p.Part)}
 	}
 	r := &otelv1pb.MESSAGES{
 		WRITER: proto.Int64(p.Writer),
@@ -210,7 +210,7 @@ func BuildMessageCompiled(p MessagePart) (*otelv1pb.MESSAGES, error) {
 	}
 	if p.Part != 0 {
 		if p.ContentHash != nil || p.Encoding != "" || p.RawBytes != 0 || p.Parts != 0 || p.UnindexedTokens != 0 || p.Large {
-			return nil, fmt.Errorf("otelsql: message %d.%d part %d sets a part-0 column", p.Writer, p.Seq, p.Part)
+			return nil, &InvalidRowError{Table: "MESSAGES", Reason: fmt.Sprintf("message %d.%d part %d sets a part-0 column", p.Writer, p.Seq, p.Part)}
 		}
 		return r, nil
 	}
@@ -255,7 +255,7 @@ type StoreMeta struct {
 // BuildStoreMetaCompiled returns the STORE_META record of m.
 func BuildStoreMetaCompiled(m StoreMeta) (*otelv1pb.STORE_META, error) {
 	if m.Name == "" {
-		return nil, fmt.Errorf("otelsql: store_meta row without a name")
+		return nil, &InvalidRowError{Table: "STORE_META", Reason: "no name"}
 	}
 	return &otelv1pb.STORE_META{NAME: proto.String(m.Name), INT_VALUE: m.Int, BYTES_VALUE: m.Bytes, STR_VALUE: m.Str}, nil
 }
