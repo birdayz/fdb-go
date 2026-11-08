@@ -313,7 +313,8 @@ direct column measures production code. Same run and suite as round 2,
 - **Cached read version:** the last two columns are an interleaved A/B (three runs
   per arm, ranges shown). A read-only read takes its version from the client's GRV
   cache, at most 100 ms old and refreshed by this client's commits, so the next
-  read still sees a process's own writes (FDB test `span reader`). It makes 0 GRVs
+  read still sees this database handle's (this Exporter's) own writes (FDB test
+  `span reader`). It makes 0 GRVs
   per query instead of 1.
 - **Remaining round trips:** a point query is now two: the store header and index
   states (overlapped), then the index scan.
