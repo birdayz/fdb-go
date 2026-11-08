@@ -375,9 +375,10 @@ func TestStatementRead_LaterPagesRunTheirOwnTransactions(t *testing.T) {
 }
 
 // TestStatementRead_NoPageLeavesNoTransaction: a statement that runs no page
-// in its shared transaction cancels it, whether it returned rows that are no
-// page (EXPLAIN), failed after its catalog read, or panicked inside the
-// shared transaction.
+// in its shared transaction leaves none open, whether it returned rows that
+// are no page (EXPLAIN, which commits it:
+// TestStatementRead_NoPageStatementCommitsItsTransaction), failed after its
+// catalog read, or panicked inside the shared transaction (both cancel it).
 func TestStatementRead_NoPageLeavesNoTransaction(t *testing.T) {
 	t.Parallel()
 	for name, stmt := range map[string]func(t *testing.T, h *srHarness, c *EmbeddedConnection) error{
@@ -428,6 +429,95 @@ func TestStatementRead_NoPageLeavesNoTransaction(t *testing.T) {
 				t.Fatalf("%d transactions left open: the statement did not cancel its shared transaction", n)
 			}
 			srNoStatementRead(t, c, name)
+		})
+	}
+}
+
+// TestStatementRead_NoPageStatementCommitsItsTransaction: a statement that
+// succeeds without taking a page (EXPLAIN) commits its shared transaction,
+// as the transactions it replaces committed. After another connection
+// re-points the schema, the planner's store open rewrites the store header
+// there, and the rewrite persists. TestStatementRead_EndCommitsWithHooks pins
+// that the commit runs the transaction's hooks.
+func TestStatementRead_NoPageStatementCommitsItsTransaction(t *testing.T) {
+	t.Parallel()
+	h := newSRHarness(t, 271)
+	h.bootstrap(t)
+	c, p := h.open(t)
+	srInsertRows(t, c, 3)
+	srMustQuery(t, c, "SELECT PK FROM T WHERE PK = 3")
+	ss, err := h.ks.LookupSchemaSubspace(context.Background(), h.db, srDBPath, srSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := func(what string) *gen.DataStoreInfo {
+		info := &gen.DataStoreInfo{}
+		if err := proto.Unmarshal(h.srKeyValue(t, fdb.Key(ss.Pack(tuple.Tuple{recordlayer.StoreInfoKey}))), info); err != nil {
+			t.Fatalf("%s: store header: %v", what, err)
+		}
+		return info
+	}
+	before := header("before")
+	h.evolve(t)
+	srResetSession(t, c)
+	p.reset()
+	created := h.be.created.Load()
+
+	if got := srMustQuery(t, c, "EXPLAIN SELECT PK FROM T WHERE PK = 3"); got == "[]" {
+		t.Fatal("EXPLAIN returned no rows")
+	}
+	if after := header("after"); after.GetMetaDataversion() <= before.GetMetaDataversion() {
+		t.Fatalf("the store header's metadata version is %d after the EXPLAIN, %d before it: "+
+			"the planner's header rewrite in the shared transaction was not committed",
+			after.GetMetaDataversion(), before.GetMetaDataversion())
+	}
+	if n := h.be.created.Load() - created; n != 1 || p.attempts.Load() != 0 {
+		t.Fatalf("the statement created %d standalone transactions in %d DB.Run attempts, want 1 and 0",
+			n, p.attempts.Load())
+	}
+	if n := h.be.OpenTransactions(); n != 0 {
+		t.Fatalf("%d transactions left open", n)
+	}
+	srNoStatementRead(t, c, "the EXPLAIN")
+}
+
+// TestStatementRead_EndCommitsWithHooks drives beginStatementRead's end func:
+// a statement that succeeded with its shared transaction still open (no page
+// took it) commits it with its hooks, so its writes persist and its
+// post-commit hooks run; a failed one cancels it, with neither.
+func TestStatementRead_EndCommitsWithHooks(t *testing.T) {
+	t.Parallel()
+	for _, succeeded := range []bool{true, false} {
+		t.Run(fmt.Sprintf("succeeded=%t", succeeded), func(t *testing.T) {
+			t.Parallel()
+			h := newSRHarness(t, 277)
+			c, p := h.open(t)
+			end := c.beginStatementRead()
+			key := fdb.Key(subspace.Sub("statement-read-end", t.Name()).Pack(tuple.Tuple{"k"}))
+			var ran atomic.Bool
+			w := &srWork{body: func(_ int, rctx *recordlayer.FDBRecordContext) error {
+				rctx.Transaction().Set(key, []byte("planning"))
+				rctx.AddPostCommit(func() { ran.Store(true) })
+				return nil
+			}}
+			if _, err := c.runInCapturedTx(context.Background(), nil, c.Options(), w.fn); err != nil {
+				t.Fatal(err)
+			}
+			if c.stmtRead == nil || w.in[0] != c.stmtRead.rctx || p.attempts.Load() != 0 {
+				t.Fatal("the planning work did not run in the shared transaction")
+			}
+			end(succeeded)
+			if got := h.srKeyValue(t, key); (string(got) == "planning") != succeeded {
+				t.Fatalf("the shared transaction's write is %q after end(%t)", got, succeeded)
+			}
+			if ran.Load() != succeeded {
+				t.Fatalf("the post-commit hook ran: %t after end(%t): a succeeded statement commits "+
+					"with its hooks, a failed one cancels", ran.Load(), succeeded)
+			}
+			if n := h.be.OpenTransactions(); n != 0 {
+				t.Fatalf("%d transactions left open", n)
+			}
+			srNoStatementRead(t, c, fmt.Sprintf("end(%t)", succeeded))
 		})
 	}
 }
