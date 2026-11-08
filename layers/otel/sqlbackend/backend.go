@@ -93,8 +93,7 @@ const domain = "OTELBENCH"
 
 // Backend implements otel.Backend and otel.IntrinsicBackend over OTEL_V1.
 type Backend struct {
-	cfg     otel.Config
-	cluster string
+	cfg otel.Config
 	// driverKey is the cluster_file key under which the SQL driver runs over
 	// this backend's FDB client handle (sqldriver.RegisterBackend).
 	driverKey string
@@ -178,7 +177,7 @@ func Open(ctx context.Context, c otel.Config, cluster string, opts Options) (*Ba
 		return nil, err
 	}
 	b := &Backend{
-		cfg: c, cluster: cluster, mode: mode, opts: opts, raw: raw, db: recordlayer.NewFDBDatabase(raw),
+		cfg: c, mode: mode, opts: opts, raw: raw, db: recordlayer.NewFDBDatabase(raw),
 		dbPath:   "/" + domain + "/R_" + strings.ToUpper(c.Run),
 		writeSer: writeSer, readSer: readSer,
 	}
@@ -319,13 +318,16 @@ type batch struct {
 	spans   []otel.Span
 	records []proto.Message
 	// rss are the spans' OTLP for the Exporter's write path (otel.SpanWriter).
-	rss      []*tracepb.ResourceSpans
-	logical  int64
+	rss []*tracepb.ResourceSpans
+	// sizes are the spans' logical bytes.
+	sizes    []int64
 	estimate int
 }
 
 // Ingest writes every fixture span into its tenant's store, one transaction
-// per batch of at most Batch spans of one tenant.
+// per batch of at most Batch spans of one tenant (the SpanWriter may commit
+// a batch in several). Rows, logical bytes and committed_batches count
+// committed spans and transactions only, also when ingest fails.
 func (b *Backend) Ingest(ctx context.Context) (otel.Statistics, error) {
 	if err := b.create(ctx); err != nil {
 		return otel.Statistics{}, err
@@ -376,23 +378,36 @@ func (b *Backend) Ingest(ctx context.Context) (otel.Statistics, error) {
 		go func() {
 			defer wg.Done()
 			for bt := range jobs {
+				// done and txns are the batch's committed spans and
+				// transactions. The SpanWriter commits its own partition of
+				// the batch in order on one worker, so a failed Write's
+				// committed spans are a prefix; the other saves commit the
+				// batch in one transaction or not at all.
 				var err error
+				var done, txns int64
 				switch {
 				case b.mode == IngestInsert:
 					err = b.insertBatch(workCtx, inserts[bt.tenant], bt)
 				case production:
-					_, err = writers[bt.tenant].Write(workCtx, bt.rss)
+					var st otel.ExportStats
+					st, err = writers[bt.tenant].Write(workCtx, bt.rss)
+					done, txns = st.Spans, st.Batches
 				default:
 					err = b.saveBatch(workCtx, stores[bt.tenant], bt)
+				}
+				if err == nil && !production {
+					done, txns = int64(len(bt.spans)), 1
 				}
 				mu.Lock()
 				if err != nil && firstErr == nil {
 					firstErr = err
 					cancel()
 				}
-				count += int64(len(bt.spans))
-				batches++
-				logical += bt.logical
+				count += done
+				batches += txns
+				for _, n := range bt.sizes[:done] {
+					logical += n
+				}
 				mu.Unlock()
 			}
 		}()
@@ -430,7 +445,7 @@ produce:
 			break
 		}
 		bt.spans = append(bt.spans, s)
-		bt.logical += int64(len(wire))
+		bt.sizes = append(bt.sizes, int64(len(wire)))
 		bt.estimate += cost
 		if production {
 			rs, _, err := otel.FixtureOTLP(s)

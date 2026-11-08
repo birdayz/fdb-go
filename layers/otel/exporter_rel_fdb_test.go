@@ -3,6 +3,7 @@ package otel
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"fdb.dev/pkg/relational/core/catalog"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/core/keyspace"
+	"fdb.dev/pkg/relational/sqldriver"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/instrumentation"
@@ -30,6 +32,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/encoding/protowire"
@@ -65,6 +68,7 @@ func TestRelExporterRealFDB(t *testing.T) {
 		"replacement_split":         testRelReplacementSplit,
 		"span_index_key_model":      testRelSpanIndexKeyModel,
 		"read_version_cache":        testRelReadVersionCache,
+		"logs_messages_sql":         testRelLogsMessagesSQL,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -1593,6 +1597,116 @@ func testRelReadVersionCache(t *testing.T, cluster string) {
 	t.Logf("%d reads: %d cached read versions, %d fetched", 2*reads, after.GRVCacheHits-before.GRVCacheHits, after.TransactionReadVersionsCompleted-before.TransactionReadVersionsCompleted)
 	if after.GRVCacheHits == before.GRVCacheHits {
 		t.Fatalf("no Exporter read took a cached read version")
+	}
+}
+
+// testRelLogsMessagesSQL: the logs and GenAI messages the Exporter writes are
+// rows SQL reads from its tenant store: LOGS with typed columns, attribute
+// arrays and the otlp the Exporter's own reads decode, and the MESSAGES and
+// MESSAGE_TRACES rows of a span's input message under the ID the Exporter's
+// full-text query reports.
+func testRelLogsMessagesSQL(t *testing.T, cluster string) {
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	e := openRelExporter(t, ctx, cluster, func(c *ExporterConfig) { c.EnableMessageDeltas, c.EnableMessageFullText = true, true })
+	logs := []LogRecord{
+		{
+			EventID: "sql-log-1", Timestamp: ftsBase + 5, TraceID: ftsTrace(1), SpanID: ftsSpan(1), EventName: "gen_ai.evaluation.result",
+			Body: exStr("judged relevant"), Attributes: []*commonpb.KeyValue{exKV("gen_ai.evaluation.name", exStr("relevance")), exKV("score", exInt(4))},
+		},
+		{EventID: "sql-log-2", ObservedTimestamp: ftsBase + 7, Body: exStr("uncorrelated")},
+	}
+	if _, err := e.ExportLogs(ctx, logs); err != nil {
+		t.Fatal(err)
+	}
+	span := deltaSpan(1, deltaKV("gen_ai.input.messages", deltaMessages("array", []deltaMsg{{"user", "zebra quokka read back"}})))
+	if _, err := e.ExportResourceSpans(ctx, []*tracepb.ResourceSpans{span}); err != nil {
+		t.Fatal(err)
+	}
+
+	sqldriver.RegisterDomainIfNotExists(relDomain)
+	path, schema := relTenantPaths(e.Config().Run, e.Config().Tenant)
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", path, cluster, schema))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	stored, err := e.QueryLogsByTrace(ctx, ftsTrace(1), "")
+	if err != nil || len(stored) != 1 {
+		t.Fatalf("QueryLogsByTrace: %v %v", stored, err)
+	}
+	storedOTLP, err := stored[0].OTLP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		id, trace, source, body, event string
+		effective                      int64
+	}{
+		{"sql-log-1", ftsTrace(1), LogTimeEvent, "judged relevant", "gen_ai.evaluation.result", ftsBase + 5},
+		{"sql-log-2", "", LogTimeObserved, "uncorrelated", "", ftsBase + 7},
+	} {
+		var trace, otlp []byte
+		var effective int64
+		var source, body string
+		var event sql.NullString
+		if err := db.QueryRowContext(ctx, "SELECT trace_id, effective_ns, time_source, body_text, event_name, otlp FROM logs WHERE event_id = ?", c.id).
+			Scan(&trace, &effective, &source, &body, &event, &otlp); err != nil {
+			t.Fatalf("log %s: %v", c.id, err)
+		}
+		if hexID(trace) != c.trace || effective != c.effective || source != c.source || body != c.body || event.String != c.event || event.Valid != (c.event != "") {
+			t.Fatalf("log %s row: trace %x effective %d source %q body %q event %v", c.id, trace, effective, source, body, event)
+		}
+		rl := &logspb.ResourceLogs{}
+		if err := proto.Unmarshal(otlp, rl); err != nil || len(rl.ScopeLogs) != 1 || len(rl.ScopeLogs[0].LogRecords) != 1 || rl.ScopeLogs[0].LogRecords[0].GetBody().GetStringValue() != c.body {
+			t.Fatalf("log %s otlp: %v %v", c.id, rl, err)
+		}
+		if c.id == "sql-log-1" {
+			requireProtoEqual(t, "log otlp through SQL and the Exporter", rl, storedOTLP)
+		}
+	}
+	var name string
+	var score int64
+	if err := db.QueryRowContext(ctx, "SELECT a.str_value FROM logs AS l, l.str_attrs AS a WHERE l.event_id = 'sql-log-1' AND a.attr_key = 'gen_ai.evaluation.name'").Scan(&name); err != nil || name != "relevance" {
+		t.Fatalf("log string attribute: %q %v", name, err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT a.int_value FROM logs AS l, l.int_attrs AS a WHERE l.event_id = 'sql-log-1' AND a.attr_key = 'score'").Scan(&score); err != nil || score != 4 {
+		t.Fatalf("log int attribute: %d %v", score, err)
+	}
+
+	type msgRow struct {
+		writer, seq, part int64
+		role, content     string
+	}
+	var msgs []msgRow
+	rows, err := db.QueryContext(ctx, "SELECT writer, seq, part, role, content FROM messages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var m msgRow
+		if err := rows.Scan(&m.writer, &m.seq, &m.part, &m.role, &m.content); err != nil {
+			t.Fatal(err)
+		}
+		msgs = append(msgs, m)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	rows.Close()
+	if len(msgs) != 1 || msgs[0].part != 0 || msgs[0].role != "user" || !strings.Contains(msgs[0].content, "zebra quokka read back") {
+		t.Fatalf("MESSAGES rows %+v, want one part of the input message", msgs)
+	}
+	var writer, seq int64
+	var trace []byte
+	if err := db.QueryRowContext(ctx, "SELECT writer, seq, trace_id FROM message_traces").Scan(&writer, &seq, &trace); err != nil ||
+		writer != msgs[0].writer || seq != msgs[0].seq || hexID(trace) != ftsTrace(1) {
+		t.Fatalf("MESSAGE_TRACES row %d.%d %x: %v, want the message's marker in trace %s", writer, seq, trace, err, ftsTrace(1))
+	}
+	page, err := e.QueryMessageFullText(ctx, MessageFullTextQuery{Query: "quokka"})
+	if err != nil || len(page.Hits) != 1 || page.Hits[0].MessageID != fmt.Sprintf("%d.%d", msgs[0].writer, msgs[0].seq) {
+		t.Fatalf("QueryMessageFullText: %+v %v, want message %d.%d", page, err, msgs[0].writer, msgs[0].seq)
 	}
 }
 

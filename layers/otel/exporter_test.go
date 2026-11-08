@@ -702,14 +702,6 @@ func TestOTLPEnumMappings(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Export preparation (no FDB)
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Real FDB integration
-// ---------------------------------------------------------------------------
-
 // requireRemovedKey checks that err carries a RemovedConfigKeyError exactly
 // when doc names one of the removed keys, and for that key.
 func requireRemovedKey(t *testing.T, err error, doc string) {

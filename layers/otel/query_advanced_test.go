@@ -143,7 +143,3 @@ func TestBuildTraceGraphDeepChainAndLongCycle(t *testing.T) {
 		t.Fatalf("ring: cycles=%d roots=%d depth=%d", len(g.Cycles), len(g.Roots), len(g.Depth))
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Real FDB integration
-// ---------------------------------------------------------------------------
