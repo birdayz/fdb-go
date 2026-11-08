@@ -416,12 +416,15 @@ func queryRows(t *testing.T, ctx context.Context, db *sql.DB, query string) stri
 // match_every=100 corpus written by compiled batch direct ingest: records,
 // SPANS_TIME and SPANS_SPAN_ID N, an int attribute per span plus the int-typed
 // query key of nonmatching traces' every third span, one store header key,
-// and 11N+1 owned keys.
+// and 11N+1 owned keys. With --batch 64 sqlbackend cuts 7 batches by its
+// attribute estimate and the SpanWriter commits each 45-span one in two
+// transactions by its row estimate: committed_batches counts the 13
+// transactions that committed.
 func testBenchCensus(t *testing.T, open func(*testing.T, otel.Config, Options) *Backend) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
 	c := testConfig("sqlb_bench_census")
-	c.Count, c.Tenants, c.MatchEvery, c.SaveMode, c.RecordCompression = 300, 1, 100, "batch", "zlib-1"
+	c.Count, c.Tenants, c.MatchEvery, c.SaveMode, c.RecordCompression, c.Batch = 300, 1, 100, "batch", "zlib-1", 64
 	b := open(t, c, Options{})
 	stats, err := b.Ingest(ctx)
 	if err != nil {
@@ -429,7 +432,7 @@ func testBenchCensus(t *testing.T, open func(*testing.T, otel.Config, Options) *
 	}
 	batches, err := strconv.ParseInt(stats.Details["committed_batches"], 10, 64)
 	if stats.Rows != 300 || stats.Attributes != 8*300 || stats.Details["write_path"] != "otel.SpanWriter" ||
-		err != nil || batches <= 0 || strconv.FormatInt(batches, 10) != stats.Details["committed_batches"] {
+		err != nil || batches != 13 || strconv.FormatInt(batches, 10) != stats.Details["committed_batches"] {
 		t.Fatalf("ingest stats %+v", stats)
 	}
 	audit, err := b.Audit(ctx)

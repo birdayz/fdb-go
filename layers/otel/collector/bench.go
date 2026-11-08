@@ -1173,7 +1173,7 @@ func (r *benchRun) postQueries(ctx context.Context, rep *CollectorBenchReport, e
 
 type benchWorkKey struct{}
 
-// benchWork is the reads one query-only iteration's query charged.
+// benchWork is the reads one sampled post-ingest iteration's query charged.
 type benchWork struct{ candidates, bytes int64 }
 
 // noteBenchWork adds a query's charged reads to the iteration's benchWork.
