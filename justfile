@@ -25,12 +25,11 @@ ensure-buf:
         exit 0
     fi
     mkdir -p .tools
-    # GitHub release downloads can 5xx for minutes; a failed fetch must not replace $BUF.
-    tmp=$(mktemp .tools/buf.XXXXXX)
-    trap 'rm -f "$tmp"' EXIT
-    curl -fsSL --retry 8 --retry-max-time 600 --connect-timeout 15 -o "$tmp" "https://github.com/bufbuild/buf/releases/download/v{{BUF_VERSION}}/buf-$(uname -s)-$(uname -m)"
-    chmod 755 "$tmp"
-    mv -f "$tmp" "$BUF"
+    # Built from the checksum-verified module proxy, not a GitHub release; staged so a failed build keeps $BUF.
+    tmp=$(mktemp -d .tools/buf.XXXXXX)
+    trap 'rm -rf "$tmp"' EXIT
+    GOBIN="$PWD/$tmp" go install "github.com/bufbuild/buf/cmd/buf@v{{BUF_VERSION}}"
+    mv -f "$tmp/buf" "$BUF"
 
 # Regenerate protobuf code + gomock mocks + ANTLR parser. All three are
 # committed to git (clean + regenerate, same pattern). CI re-runs

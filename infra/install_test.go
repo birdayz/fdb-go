@@ -10,8 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -31,7 +31,7 @@ type installerFixture struct {
 	home       string
 	installDir string
 	log        string
-	retryLog   string
+	boundsLog  string
 	script     string
 	asset      string
 	binary     []byte
@@ -46,7 +46,7 @@ func newInstallerFixture(t *testing.T) *installerFixture {
 		home:       filepath.Join(root, "home"),
 		installDir: filepath.Join(root, "install dir"),
 		log:        filepath.Join(root, "requests"),
-		retryLog:   filepath.Join(root, "retries"),
+		boundsLog:  filepath.Join(root, "bounds"),
 		script:     "../website/static/install.sh",
 		asset:      "fdb_" + installerVersion + "_linux_amd64.tar.gz",
 		binary:     []byte("#!/bin/sh\n[ \"$*\" = 'version --short' ] || exit 64\nprintf '%s\\n' '" + installerVersion + "'\n"),
@@ -67,19 +67,18 @@ esac
 `,
 		"curl": `#!/bin/sh
 set -eu
-out= url= retry=none
+out= url= bounds=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -o) out="$2"; shift 2 ;;
-    --retry) retry="$2"; shift 2 ;;
-    --connect-timeout) shift 2 ;;
+    --retry|--connect-timeout|--speed-limit|--speed-time) bounds="$bounds $1 $2"; shift 2 ;;
     -*) shift ;;
     *) url="$1"; shift ;;
   esac
 done
 [ -n "$out" ] && [ -n "$url" ] || exit 91
 printf '%s\n' "$url" >> "$INSTALL_FIXTURE_LOG"
-printf '%s %s\n' "$retry" "$url" >> "$INSTALL_FIXTURE_ROOT/retries"
+printf '%s%s\n' "$url" "$bounds" >> "$INSTALL_FIXTURE_ROOT/bounds"
 case "$url" in
   https://api.example.invalid/project/releases\?per_page=100)
     source="$INSTALL_FIXTURE_ROOT/releases.json" ;;
@@ -91,9 +90,7 @@ cp "$source" "$out" || exit 22
 `,
 	}
 	for name, stub := range stubs {
-		if err := os.WriteFile(filepath.Join(f.bin, name), []byte(stub), 0o700); err != nil {
-			t.Fatal(err)
-		}
+		writeBuildStub(t, filepath.Join(f.bin, name), stub)
 	}
 	var archive bytes.Buffer
 	gz := gzip.NewWriter(&archive)
@@ -113,7 +110,7 @@ cp "$source" "$out" || exit 22
 	f.write(t, f.asset, archive.Bytes())
 	f.write(t, "checksums.txt", []byte(fmt.Sprintf("%x  %s\n", sha256.Sum256(archive.Bytes()), f.asset)))
 	f.write(t, "requests", nil)
-	f.write(t, "retries", nil)
+	f.write(t, "bounds", nil)
 	f.write(t, "releases.json", []byte(`[
   {"tag_name":"cmd/frl/v9.9.9"},
   {"tag_name":"cmd/fdb/v9.9.9"},
@@ -189,15 +186,15 @@ func (f *installerFixture) requests(t *testing.T, want ...string) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("download requests = %q, want %q", got, want)
 	}
-	if err := f.fetchRetries(len(want)); err != nil {
+	if err := f.fetchBounds(len(want)); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// fetchRetries checks that each of the n recorded fetches passed curl a --retry of at
-// least installerMinRetries.
-func (f *installerFixture) fetchRetries(n int) error {
-	data, err := os.ReadFile(f.retryLog)
+// fetchBounds checks that each of the n recorded fetches passed curl at least
+// installerMinRetries retries, a connect timeout and a stall bound.
+func (f *installerFixture) fetchBounds(n int) error {
+	data, err := os.ReadFile(f.boundsLog)
 	if err != nil {
 		return err
 	}
@@ -209,9 +206,9 @@ func (f *installerFixture) fetchRetries(n int) error {
 		return fmt.Errorf("recorded %d fetches, want %d", len(lines), n)
 	}
 	for _, line := range lines {
-		value, url, _ := strings.Cut(line, " ")
-		if retries, err := strconv.Atoi(value); err != nil || retries < installerMinRetries {
-			return fmt.Errorf("fetch of %s passed curl --retry %s, want at least %d", url, value, installerMinRetries)
+		fields := strings.Fields(line)
+		if err := curlBoundsError(fields[1:], installerMinRetries); err != nil {
+			return fmt.Errorf("fetch of %s: %w", fields[0], err)
 		}
 	}
 	return nil
@@ -455,36 +452,53 @@ func TestCLIInstallerUninstallsOnlyFDB(t *testing.T) {
 		"https://downloads.example.invalid/project/releases/download/"+installerVersion+"/checksums.txt")
 }
 
-// TestCLIInstallerFetchRetries is the positive control for the retry check requests()
-// applies to every fetch: installers with a shorter or no --retry still install, and fail it.
-func TestCLIInstallerFetchRetries(t *testing.T) {
+// TestCLIInstallerFetchBounds is the positive control for the check requests() applies to
+// every fetch: weakened installers still install, but fail it.
+func TestCLIInstallerFetchBounds(t *testing.T) {
 	t.Parallel()
 	shipped, err := os.ReadFile("../website/static/install.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	flag := "--retry " + strconv.Itoa(installerMinRetries) + " "
-	if n := strings.Count(string(shipped), flag); n != 1 {
-		t.Fatalf("installer passes curl %q %d times, want once", flag, n)
+	retry := regexp.MustCompile(`--retry [0-9]+ `).FindAllString(string(shipped), -1)
+	if len(retry) != 1 {
+		t.Fatalf("installer passes curl --retry %d times, want once", len(retry))
 	}
-	for _, tc := range []struct{ name, replacement, want string }{
-		{"shipped", flag, ""},
-		{"short", "--retry 3 ", "--retry 3,"},
-		{"missing", "", "--retry none,"},
+	for _, tc := range []struct {
+		name, old, new string
+		n              int
+		want           string
+	}{
+		{"shipped", "", "", 2, ""},
+		{"miscounted", "", "", 1, "recorded 2 fetches, want 1"},
+		{"short-retry", retry[0], "--retry 3 ", 2, "--retry 3, want at least 6"},
+		{"no-retry", retry[0], "", 2, "no --retry"},
+		{"no-connect-timeout", " --connect-timeout 15", "", 2, "no --connect-timeout"},
+		{"no-stall-bound", " --speed-limit 1024 --speed-time 60", "", 2, "no --speed-limit"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			script := string(shipped)
+			if tc.old != "" {
+				if n := strings.Count(script, tc.old); n != 1 {
+					t.Fatalf("installer contains %q %d times, want once", tc.old, n)
+				}
+				script = strings.Replace(script, tc.old, tc.new, 1)
+			}
 			f := newInstallerFixture(t)
 			f.script = filepath.Join(f.root, "install.sh")
-			f.write(t, "install.sh", []byte(strings.Replace(string(shipped), flag, tc.replacement, 1)))
+			f.write(t, "install.sh", []byte(script))
 			if out, err := f.run(t, nil); err != nil {
 				t.Fatalf("install: %v\n%s", err, out)
 			}
 			f.checkInstalled(t, f.installDir)
-			err := f.fetchRetries(2)
+			err := f.fetchBounds(tc.n)
 			if (tc.want == "" && err != nil) || (tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want))) {
-				t.Fatalf("retry check = %v, want %q", err, tc.want)
+				t.Fatalf("bounds check = %v, want %q", err, tc.want)
 			}
 		})
+	}
+	if err := (&installerFixture{boundsLog: filepath.Join(t.TempDir(), "absent")}).fetchBounds(0); !os.IsNotExist(err) {
+		t.Fatalf("missing bounds log: %v, want not-exist", err)
 	}
 }

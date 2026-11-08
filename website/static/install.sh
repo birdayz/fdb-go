@@ -83,7 +83,7 @@ cleanup() { [ -n "$WORK_DIR" ] && rm -rf "$WORK_DIR"; }
 # resolve_version).
 fetch() {
     if have curl; then
-        curl -fsSL --retry 6 --connect-timeout 15 -o "$2" "$1"
+        curl -fsSL --retry 6 --connect-timeout 15 --speed-limit 1024 --speed-time 60 -o "$2" "$1"
     else
         wget -q -O "$2" "$1"
     fi
