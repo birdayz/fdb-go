@@ -3928,8 +3928,13 @@ remain unchanged.
   groups snapshot inputs and keep failed partial moves uncommittable. Pin both PK
   orders, inline/legacy versions, VALUE/TEXT maintenance, callback interference,
   supported store resets and fresh-context retries.
-- [ ] Add bounded sparse partition enumeration and consistency checking with
-  shared budgets, topology-guarded continuations and missing-entry detection.
+- [x] Add bounded sparse partition enumeration and paged checked-work consistency
+  checking with shared budgets, topology-guarded continuations and missing-entry
+  detection. Readers require loaded StoreInfo; dirty-topology tokens remain
+  context-bound after commit. Pin native/RYW body and legacy-version audits,
+  retained empty entries, literal observation ledgers, cancellation/ended-attempt
+  refusal and no-write proofs. Unordered context-only orphan version maps are
+  outside this ordered census; no automatic repair.
 - [ ] Publish typed RANGE/INTERVAL DDL, inherited local indexes and
   INFORMATION_SCHEMA.PARTITIONS only after the routing/read/update prerequisites
   work end to end. Admit index shapes only with the RFC's correctness proofs.

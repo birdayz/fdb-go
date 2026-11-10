@@ -187,8 +187,43 @@ using the exposed native Reset/OnError must create a fresh RecordContext. Reusin
 its session/version/commit-check state is an unsupported escape, not a reset the
 partition guard promises to detect. Native Commit likewise bypasses those guards.
 
-This is not yet the complete SQL feature: budgeted directory cursors, typed DDL,
-partition access paths and safe retirement remain implementation gates.
+`ScanPartitions` enumerates sparse active coordinates, including retained empty
+partitions, by merging bounded active, record-prefix and legacy-version-prefix
+observations. It validates each active/fence pair and refuses occupied prefixes
+without directory state. It does not validate every body or empty live-fence-only
+orphans. `CheckPartitionConsistency` is a paged checked-work cursor: it audits the
+whole table protocol namespace (including unknown keys and inactive tombstones),
+and every native/RYW body and legacy version in the selected coordinate range,
+using the existing split-record decoder. It stops at the first typed corruption
+error and never repairs state. Healthy work items are not a completeness claim
+until source exhaustion. Context-only orphan version mutations in unordered
+in-memory maps are outside this ordered census; ordinary pending versions on
+readable bodies are supported, and failed partition operations cannot pass.
+
+Both readers require already-loaded StoreInfo, normally supplied by
+Open/Create/CreateOrOpen. An unchecked Build handle without it receives a typed
+no-I/O refusal rather than a guessed format or an unbudgeted lazy read. Coordinate
+ranges have explicit inclusivity; source endpoints outside BIGINT are represented
+as unbounded, not wrapped. Canonical, bounded continuation envelopes bind the
+store/table, physical layout, metadata, range/direction, incarnation, topology and
+safe consumed positions. Clean tokens are portable after persistent revalidation;
+tokens minted after target-table topology changes are context-bound permanently,
+even after commit. Per-table local revisions detect repeated activations under one
+persisted epoch and supported resets without invalidating another table's tokens.
+Ended or cancelled contexts cannot return cached values, stops or EOF.
+
+Every native observation attempt and returned key/value byte joins the shared
+scan budget and transaction clock. A directory page may finish one bounded initial
+entry bundle, with every observation charged; record-limit fail mode remains
+strict, while byte/time limits retain their initial allowance. Subsequent attempts
+use records/bytes/time priority without renewing the allowance per probe. Hard
+cancellation is never an allowance. Checker body reassembly retains existing
+record-atomic soft-limit overshoot with all fragments charged; it is not a
+constant-KV bound. Returned-row stops do not speculate to prove EOF. Store-open
+work precedes these APIs and must be accounted by any enclosing SQL root.
+
+This is not yet the complete SQL feature: typed DDL, partition access paths and
+safe retirement remain implementation gates.
 `ClearPartitionData` is only a prevalidated storage cleanup primitive; its
 caller must exclude concurrent writers. It participates in routing
 fences but retains active directory entries, and covers TEXT tokenizer-version and

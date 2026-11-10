@@ -389,6 +389,7 @@ func (d *FDBDatabase) runContexts(ctx context.Context, policy attemptPolicy, rou
 			}
 			recordCtx.SetTimer(d.Timer())
 			lastCtx = recordCtx
+			defer recordCtx.partitionReadEnded.Store(true)
 
 			result, err := fn(recordCtx)
 			if err != nil {
@@ -687,6 +688,9 @@ type FDBRecordContext struct {
 	// closeTransaction(false) on both arms of commitAsync); a later commit is
 	// refused as Java's ensureActive refuses it.
 	deactivated atomic.Bool
+	// Partition readers also reject retained contexts after cancellation or a
+	// managed attempt's body exits, including failures before write sealing.
+	partitionReadEnded atomic.Bool
 
 	// A successful direct commit detaches physical coordination from the
 	// caller's cancellation owner, without changing immutable Context().
@@ -991,6 +995,7 @@ func (rc *FDBRecordContext) CommitWithHooks() error {
 
 // Cancel cancels the transaction
 func (rc *FDBRecordContext) Cancel() {
+	rc.partitionReadEnded.Store(true)
 	rc.tx.Cancel()
 }
 

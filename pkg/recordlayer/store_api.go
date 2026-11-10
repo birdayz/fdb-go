@@ -10,6 +10,7 @@ package recordlayer
 import (
 	"fmt"
 	"maps"
+	"math"
 	"time"
 
 	"fdb.dev/pkg/recordlayer/internal/tuplefast"
@@ -211,6 +212,18 @@ func DeleteStore(ctx *FDBRecordContext, ss subspace.Subspace) error {
 	if err != nil {
 		return fmt.Errorf("delete store: read header: %w", err)
 	}
+	ctx.sessionMu.Lock()
+	partitionState, _ := ctx.session[partitionSessionID(string(ss.Bytes()))].(*partitionContextState)
+	ctx.sessionMu.Unlock()
+	if partitionState != nil {
+		partitionState.mu.Lock()
+		defer partitionState.mu.Unlock()
+		for _, revision := range partitionState.revisions {
+			if revision == math.MaxInt64 {
+				return &PartitionStateError{Reason: "local topology revision exhausted"}
+			}
+		}
+	}
 	if headerBytes != nil {
 		header := &gen.DataStoreInfo{}
 		// Malformed headers must not prevent deletion or leave cached state
@@ -227,13 +240,11 @@ func DeleteStore(ctx *FDBRecordContext, ss subspace.Subspace) error {
 	ctx.PutSession(replacementRetirementMetadataKey(ss), nil)
 	ctx.SetDirtyStoreState(true)
 	begin, end := ss.FDBRangeKeys()
-	// The header read above is authoritative even for an already-opened store.
-	ctx.sessionMu.Lock()
-	partitionState, _ := ctx.session[partitionSessionID(string(ss.Bytes()))].(*partitionContextState)
-	ctx.sessionMu.Unlock()
+	// Preserve local history across store recreation, including clean read tokens.
 	if partitionState != nil {
-		partitionState.mu.Lock()
-		defer partitionState.mu.Unlock()
+		for key := range partitionState.revisions {
+			partitionState.revisions[key]++
+		}
 		partitionState.epochChanged = nil
 	}
 	ctx.clearRange(fdb.KeyRange{Begin: begin, End: end}, false)

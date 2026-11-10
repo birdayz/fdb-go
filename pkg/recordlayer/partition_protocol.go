@@ -49,6 +49,10 @@ type partitionContextState struct {
 	mu           sync.Mutex
 	failed       error
 	epochChanged map[string]bool
+	revisions    map[string]int64
+	nonce        [16]byte
+	nonceReady   bool
+	nonceErr     error
 }
 
 type partitionMutation struct {
@@ -61,6 +65,7 @@ type partitionMutation struct {
 	epochs   map[string]bool
 	headers  map[string][]byte
 	preview  bool
+	topology map[string]bool
 }
 
 type partitionProtocolWrite struct{ key, value []byte }
@@ -103,6 +108,13 @@ func (store *FDBRecordStore) partitionContextState() *partitionContextState {
 		rc.session[id] = state
 	}
 	rc.sessionMu.Unlock()
+	return state
+}
+
+func (store *FDBRecordStore) partitionMutationState() *partitionContextState {
+	state := store.partitionContextState()
+	rc := store.context
+	id := partitionSessionID(string(store.subspace.Bytes()))
 	rc.GetOrCreateCommitCheck("partition-mutation:"+string(id), func(string) CommitCheckFunc {
 		return func() error {
 			state.mu.Lock()
@@ -133,7 +145,7 @@ func (store *FDBRecordStore) beginPartitionMutation() (*partitionMutation, error
 	if !store.hasPartitionedTypes() {
 		return nil, nil
 	}
-	state := store.partitionContextState()
+	state := store.partitionMutationState()
 	state.mu.Lock()
 	if state.failed != nil {
 		state.mu.Unlock()
@@ -179,6 +191,9 @@ func (op *partitionMutation) apply() {
 		return
 	}
 	op.effects = true
+	for key := range op.topology {
+		op.state.revisions[key]++
+	}
 	for _, write := range op.writes {
 		op.store.context.Transaction().Set(fdb.Key(write.key), write.value)
 	}
@@ -197,6 +212,7 @@ func (op *partitionMutation) releasePreflight() {
 	op.writes = nil
 	op.headers = nil
 	op.epochs = nil
+	op.topology = nil
 	op.locked = false
 	op.state.mu.Unlock()
 }
@@ -378,6 +394,9 @@ func partitionStateError(rt *RecordType, coordinate int64, reason string, cause 
 }
 
 func partitionCounter(rt *RecordType, coordinate int64, raw []byte) (int64, error) {
+	if len(raw) > 9 {
+		return 0, partitionStateError(rt, coordinate, "malformed counter", nil)
+	}
 	parts, err := tuple.Unpack(raw)
 	if err != nil || len(parts) != 1 {
 		return 0, partitionStateError(rt, coordinate, "malformed counter", err)
@@ -440,6 +459,58 @@ func partitionHeader(rt *RecordType, spec *PartitionSpec, incarnation []byte) tu
 	return tuple.Tuple{int64(1), int64(field.Number()), int64(field.Kind()), spec.IntervalWidth(), incarnation}
 }
 
+func decodePartitionHeader(rt *RecordType, spec *PartitionSpec, raw []byte) error {
+	if len(raw) > 128 {
+		return partitionStateError(rt, 0, "malformed layout header", nil)
+	}
+	parts, err := tuple.Unpack(raw)
+	if err != nil || len(parts) != 5 {
+		return partitionStateError(rt, 0, "malformed layout header", err)
+	}
+	version, ok := parts[0].(int64)
+	if !ok || version != 1 {
+		return partitionStateError(rt, 0, "unsupported routing header version", nil)
+	}
+	incarnation, ok := parts[4].([]byte)
+	if !ok || len(incarnation) != 16 || !bytes.Equal(raw, partitionHeader(rt, spec, incarnation).Pack()) {
+		return partitionStateError(rt, 0, "layout identity or incarnation mismatch", nil)
+	}
+	return nil
+}
+
+func decodePartitionFence(rt *RecordType, coordinate int64, raw []byte) (int64, bool, error) {
+	if len(raw) > 10 {
+		return 0, false, partitionStateError(rt, coordinate, "malformed fence", nil)
+	}
+	parts, err := tuple.Unpack(raw)
+	if err != nil || len(parts) != 2 {
+		return 0, false, partitionStateError(rt, coordinate, "malformed fence", err)
+	}
+	generation, ok := parts[0].(int64)
+	live, liveOK := parts[1].(bool)
+	if !ok || generation <= 0 || !liveOK || !bytes.Equal(raw, (tuple.Tuple{generation, live}).Pack()) {
+		return 0, false, partitionStateError(rt, coordinate, "invalid fence generation or state", nil)
+	}
+	return generation, live, nil
+}
+
+// The state lock spans preflight and apply. A revision is reserved before any
+// effect, independently of the once-per-transaction persisted epoch write.
+func (op *partitionMutation) prepareTopology(rt *RecordType) error {
+	key := string(partitionSubspace(op.store.subspace, rt).Bytes())
+	if op.state.revisions[key] == math.MaxInt64 {
+		return partitionStateError(rt, 0, "local topology revision exhausted", nil)
+	}
+	if op.state.revisions == nil {
+		op.state.revisions = make(map[string]int64)
+	}
+	if op.topology == nil {
+		op.topology = make(map[string]bool)
+	}
+	op.topology[key] = true
+	return nil
+}
+
 func (op *partitionMutation) readPartitionHeader(rt *RecordType, spec *PartitionSpec) ([]byte, error) {
 	ss := partitionSubspace(op.store.subspace, rt)
 	raw, err := op.read(ss.Pack(tuple.Tuple{"header"}))
@@ -452,17 +523,8 @@ func (op *partitionMutation) readPartitionHeader(rt *RecordType, spec *Partition
 		}
 		return nil, nil
 	}
-	parts, err := tuple.Unpack(raw)
-	if err != nil || len(parts) != 5 {
-		return nil, partitionStateError(rt, 0, "malformed layout header", err)
-	}
-	version, ok := parts[0].(int64)
-	if !ok || version != 1 {
-		return nil, partitionStateError(rt, 0, "unsupported routing header version", nil)
-	}
-	incarnation, ok := parts[4].([]byte)
-	if !ok || len(incarnation) != 16 || !bytes.Equal(raw, partitionHeader(rt, spec, incarnation).Pack()) {
-		return nil, partitionStateError(rt, 0, "layout identity or incarnation mismatch", nil)
+	if err := decodePartitionHeader(rt, spec, raw); err != nil {
+		return nil, err
 	}
 	key := string(ss.Pack(tuple.Tuple{"header"}))
 	if expected, seen := op.headers[key]; seen && !bytes.Equal(expected, raw) {
@@ -499,6 +561,9 @@ func (op *partitionMutation) prepareHeader(rt *RecordType, spec *PartitionSpec, 
 	}
 	if !empty || !allowCreate {
 		return partitionStateError(rt, 0, "missing routing header", nil)
+	}
+	if err := op.prepareTopology(rt); err != nil {
+		return err
 	}
 	incarnation := make([]byte, 16)
 	if !op.preview {
@@ -567,15 +632,10 @@ func (op *partitionMutation) prepareRoute(rt *RecordType, primaryKey tuple.Tuple
 	}
 	var generation int64
 	if fence != nil {
-		parts, err := tuple.Unpack(fence)
-		if err != nil || len(parts) != 2 {
-			return partitionStateError(rt, coordinate, "malformed fence", err)
-		}
-		var ok bool
-		generation, ok = parts[0].(int64)
-		live, liveOK := parts[1].(bool)
-		if !ok || generation <= 0 || !liveOK || !bytes.Equal(fence, (tuple.Tuple{generation, live}).Pack()) {
-			return partitionStateError(rt, coordinate, "invalid fence generation or state", nil)
+		var live bool
+		generation, live, err = decodePartitionFence(rt, coordinate, fence)
+		if err != nil {
+			return err
 		}
 		if live {
 			n, err := partitionCounter(rt, coordinate, active)
@@ -625,6 +685,9 @@ func (op *partitionMutation) prepareRoute(rt *RecordType, primaryKey tuple.Tuple
 		}
 		op.stage(epochKey, tuple.Tuple{epoch})
 		op.epochs[string(epochKey)] = true
+	}
+	if err := op.prepareTopology(rt); err != nil {
+		return err
 	}
 	op.stage(activeKey, tuple.Tuple{generation})
 	op.stage(fenceKey, tuple.Tuple{generation, true})
@@ -820,6 +883,9 @@ func (op *partitionMutation) prepareReset() error {
 			continue
 		}
 		if err := op.prepareTableExclusion(rt); err != nil {
+			return err
+		}
+		if err := op.prepareTopology(rt); err != nil {
 			return err
 		}
 		incarnation := make([]byte, 16)

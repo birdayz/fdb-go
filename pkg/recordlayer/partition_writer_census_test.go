@@ -18,8 +18,8 @@ import (
 // Keep source inputs explicit: this is a reviewable inventory of the store,
 // supported maintainer, and backfill boundaries, not a runtime filesystem probe.
 //
-//go:embed store.go store_api.go store_batch.go store_typed.go store_builder.go store_delete_where.go store_partition.go store_version.go partition_protocol.go partition_format.go partition_update.go partition_update_index.go online_indexer.go indexing_mutual.go indexing_pending_write_queue.go index_maintainer.go standard_index_maintainer_api.go text_index_maintainer.go index_state.go record_count.go
-//go:embed partition_writers_test.go partition_backfill_test.go partition_protocol_test.go partition_preflight_test.go partition_format_test.go partition_annotation_test.go partition_group_test.go partition_update_test.go index_maintainer_queue_test.go index_state_test.go record_count_test.go store_api_test.go store_state_cache_test.go
+//go:embed store.go store_api.go store_batch.go store_typed.go store_builder.go store_delete_where.go store_partition.go store_version.go partition_protocol.go partition_format.go partition_cursor.go partition_continuation.go partition_consistency.go partition_update.go partition_update_index.go online_indexer.go indexing_mutual.go indexing_pending_write_queue.go index_maintainer.go standard_index_maintainer_api.go text_index_maintainer.go index_state.go record_count.go
+//go:embed partition_writers_test.go partition_backfill_test.go partition_protocol_test.go partition_preflight_test.go partition_format_test.go partition_annotation_test.go partition_group_test.go partition_update_test.go partition_cursor_test.go partition_consistency_test.go partition_directory_integration_test.go index_maintainer_queue_test.go index_state_test.go record_count_test.go store_api_test.go store_state_cache_test.go
 var partitionCensusSources embed.FS
 
 type partitionWriterClassification struct {
@@ -32,6 +32,9 @@ type partitionWriterClassification struct {
 // state/build bookkeeping and StoreInfo are not record routes. Safe DROP must
 // separately exclude active builds, WRITE_ONLY state, and pending queues.
 var partitionWriterInventory = map[string]partitionWriterClassification{
+	// The name-only census also sees big.Int.Set/Add; these are pure endpoint
+	// arithmetic, not transaction mutations. Keep the exception explicit.
+	"partitionSourceInterval":                                  {"internal", "Mul", "directory"},
 	"FDBRecordStore.PreparePartitionRecordUpdates":             {"preview", "saveTargetFor", "move"},
 	"PreparedPartitionRecordUpdates.Apply":                     {"delegated", "applyPartitionRecordUpdate", "move"},
 	"FDBRecordStore.applyPartitionRecordUpdate":                {"guarded", "beginPartitionMutation", "move"},
@@ -144,6 +147,7 @@ var partitionWriterInventory = map[string]partitionWriterClassification{
 }
 
 var partitionCensusProofs = map[string]struct{ file, anchor string }{
+	"directory":       {"partition_cursor_test.go", "TestPartitionDirectoryLiteralLedger"},
 	"move":            {"partition_update_test.go", "Atomic partition record updates"},
 	"save":            {"partition_writers_test.go", "routes every save surface and cleans pending/committed versions"},
 	"group":           {"partition_group_test.go", "rejects a reset between completed group rows through"},
