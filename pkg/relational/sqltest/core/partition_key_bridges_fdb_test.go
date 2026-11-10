@@ -359,29 +359,34 @@ func partitionBridgeCatalog(t *testing.T, ctx context.Context, h *testkit.FleetH
 			if projection == nil || view.Underlying() != projection.PhysicalIndex() {
 				t.Fatalf("missing physical index projection: %s", view.MetadataName())
 			}
-			var want []int
+			var want, wantSourceFirst []int
 			var columns []string
 			var logical recordlayer.KeyExpression
 			switch view.MetadataName() {
 			case "DOCS_VALUE":
 				want = []int{2, 0, 3, 4}
+				// Neither declared field overlaps: both are appended in PK order.
+				wantSourceFirst = []int{2, 0, 3, 4}
 				columns = []string{"BODY"}
 				logical = recordlayer.Field("BODY")
 			case "DOCS_COVER":
 				want = []int{2, 0, 1, 3}
+				wantSourceFirst = []int{2, 0, 3, 1}
 				columns = []string{"ID"}
 				logical = recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("ID"), recordlayer.Field("BODY")), 1)
 			case "DOCS_TEXT":
 				want = []int{3, 0, 1, 4}
+				wantSourceFirst = []int{3, 0, 4, 1}
 				columns = []string{"ID", "BODY"}
 				logical = recordlayer.GroupBy(recordlayer.Field("BODY"), recordlayer.Field("ID"))
 			case "DOCS_UNIQUE":
 				want = []int{3, 0, 2, 1}
+				wantSourceFirst = []int{3, 0, 1, 2}
 				columns = []string{"SOURCE", "ID"}
 				logical = recordlayer.Concat(recordlayer.Field("SOURCE"), recordlayer.Field("ID"))
 			}
 			if fixture.sourceFirst {
-				want[2], want[3] = want[3], want[2]
+				want = wantSourceFirst
 			}
 			if !reflect.DeepEqual(projection.PrimaryKeyEntryOrdinals(), want) {
 				t.Fatalf("%s physical entry positions=%v want %v", view.MetadataName(), projection.PrimaryKeyEntryOrdinals(), want)
