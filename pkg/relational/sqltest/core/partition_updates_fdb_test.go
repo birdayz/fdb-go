@@ -142,9 +142,10 @@ func TestFDB_PartitionAtomicUpdates(t *testing.T) {
 			if n, _ := result.RowsAffected(); n != 1 {
 				t.Fatalf("prepared move count=%d", n)
 			}
-			// Self-reference selects two OLD rows with repeated ID. The inner
-			// result contains that ID twice; each row must still move once.
-			wantRows(`UPDATE DOCS SET SOURCE=SOURCE+1000,V=V+1 WHERE ID IN (SELECT ID FROM DOCS WHERE ID=1) RETURNING "old".SOURCE,"new".SOURCE,"old".V,"new".V`, []string{"-12|988|11|12", "10|1010|21|22"})
+			// Both self-table witnesses match each selected OLD row. EXISTS is
+			// supported; an IN-subquery is intentionally not a supported shape.
+			wantRows("SELECT ID,SOURCE FROM DOCS D WHERE D.ID=1", []string{"1|-12", "1|10"})
+			wantRows(`UPDATE DOCS SET SOURCE=SOURCE+1000,V=V+1 WHERE EXISTS (SELECT 1 FROM DOCS D WHERE D.ID=DOCS.ID AND D.ID=1) RETURNING "old".SOURCE,"new".SOURCE,"old".V,"new".V`, []string{"-12|988|11|12", "10|1010|21|22"})
 			wantRows("SELECT ID,SOURCE,V FROM DOCS", []string{"1|988|12", "1|1010|22", "2|-1|31", "3|0|41", "4|21|51", "5|100|61"})
 			// Independently name actual physical NEW keys and committed versions.
 			ss, err := h.Ks.LookupSchemaSubspace(ctx, h.DB, dbPath, "S")
@@ -230,7 +231,14 @@ func TestFDB_PartitionAtomicUpdates(t *testing.T) {
 					code := api.ErrCodeUniqueConstraintViolation
 					switch tc.name {
 					case "NULL":
-						code = api.ErrCodeInternalError
+						// Descriptor scalars are OPTIONAL: NULL reaches partition
+						// routing, whose typed error has no SQLSTATE mapping.
+						var routing *recordlayer.PartitionRoutingError
+						if !errors.As(executionErr, &routing) || routing.Value != nil || routing.Width != 10 || routing.Reason != "source must be a non-NULL BIGINT" {
+							tx.Rollback()
+							t.Fatalf("want NULL partition source routing refusal, got %T: %v", executionErr, executionErr)
+						}
+						code = ""
 					case "transform":
 						code = api.ErrCodeDivisionByZero
 					default:
