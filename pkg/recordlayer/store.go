@@ -555,7 +555,7 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 
 // deleteRecord is Java's deleteTypedRecord: typed, when not nil, is the typed
 // store's serializer, through which the existing record is read.
-func (store *FDBRecordStore) deleteRecord(primaryKey tuple.Tuple, typed *typedRecordSerializer) (bool, error) {
+func (store *FDBRecordStore) deleteRecord(primaryKey tuple.Tuple, typed *typedRecordSerializer) (_ bool, resultErr error) {
 	finishWrite, err := store.context.beginRecordWrite()
 	if err != nil {
 		return false, err
@@ -613,10 +613,19 @@ func (store *FDBRecordStore) deleteRecord(primaryKey tuple.Tuple, typed *typedRe
 		return false, err
 	}
 
+	partitionOp, err := store.beginRecordPartitionMutation(oldRecordType, primaryKey)
+	if err != nil {
+		return false, err
+	}
+	defer func() { partitionOp.finish(resultErr) }()
+	if err := partitionOp.prepareRoute(oldRecordType, primaryKey, oldMsg, false); err != nil {
+		return false, err
+	}
 	physicalPresent, finishPhysical, err := load.beginPhysicalMutation(true, &oldsizeInfo)
 	if err != nil {
 		return false, err
 	}
+	partitionOp.apply()
 	err = func() error {
 		defer finishPhysical()
 		if physicalPresent {
@@ -662,6 +671,7 @@ func (store *FDBRecordStore) deleteRecord(primaryKey tuple.Tuple, typed *typedRe
 		return true, err
 	}
 
+	partitionOp.succeed()
 	return true, nil
 }
 
@@ -719,6 +729,9 @@ func (store *FDBRecordStore) SaveRecordsPipelined(
 		return nil, err
 	}
 	defer finishWrite()
+	if store.partitionedSaveGroup(records) {
+		return store.savePartitionedGroup(records, existenceCheck, nil, store.GetPipelineSize(PipelineOperationInsert))
+	}
 	saved := make([]*FDBStoredRecord[proto.Message], 0, len(records))
 	tx := store.context.Transaction()
 	depth := max(1, store.GetPipelineSize(PipelineOperationInsert))
@@ -749,10 +762,11 @@ type saveTarget struct {
 // existingRecordLoad is a save's read of the record already stored under its
 // key, sent ahead of the save; without sent, the save reads for itself.
 type existingRecordLoad struct {
-	target  saveTarget
-	err     error
-	pending pendingStoreRecordLoad
-	sent    bool
+	target          saveTarget
+	err             error
+	pending         pendingStoreRecordLoad
+	sent            bool
+	partitionParent *partitionMutation
 }
 
 // startExistingRecordLoads sends the existing-record read of every record in
@@ -854,7 +868,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 	load *existingRecordLoad,
 	typed *typedRecordSerializer,
 	written indexWriteSet,
-) (*FDBStoredRecord[proto.Message], error) {
+) (_ *FDBStoredRecord[proto.Message], resultErr error) {
 	finishWrite, writeErr := store.context.beginRecordWrite()
 	if writeErr != nil {
 		return nil, writeErr
@@ -989,9 +1003,35 @@ func (store *FDBRecordStore) saveRecordInternal(
 		return nil, err
 	}
 
+	guardType := recordType
+	if cachedOldRT != nil && len(partitionFunctions(cachedOldRT.PrimaryKey)) != 0 {
+		guardType = cachedOldRT
+	}
+	partitionOp, err := store.beginRecordPartitionMutation(guardType, primaryKey)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { partitionOp.finish(resultErr) }()
+	if err := partitionOp.prepareRoute(recordType, primaryKey, record, !oldRecordExists); err != nil {
+		return nil, err
+	}
+	if cachedOldRT != nil {
+		if err := partitionOp.prepareRoute(cachedOldRT, primaryKey, cachedOldMsg, false); err != nil {
+			return nil, err
+		}
+	}
+	if load != nil && load.partitionParent != nil {
+		if err := load.partitionParent.collectHeaders(partitionOp); err != nil {
+			return nil, err
+		}
+	}
 	physicalPresent, finishPhysical, err := pending.beginPhysicalMutation(oldRecordExists, &oldsizeInfo)
 	if err != nil {
 		return nil, err
+	}
+	partitionOp.apply()
+	if load != nil && load.partitionParent != nil {
+		load.partitionParent.effects = true
 	}
 	var newsizeInfo sizeInfo
 	err = func() error {
@@ -1063,6 +1103,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 		return newStoredRecord, err
 	}
 
+	partitionOp.succeed()
 	return newStoredRecord, nil
 }
 
@@ -1166,17 +1207,24 @@ func (store *FDBRecordStore) GetIndexMaintainer(index *Index) (IndexMaintainer, 
 	if index == nil {
 		return nil, nil
 	}
+	if store.indexIsPartitioned(index) {
+		return nil, &PartitionStateError{IndexName: index.Name, Reason: "raw index maintainer access is unsupported for partitioned indexes"}
+	}
 	return store.getIndexMaintainer(index)
 }
 
 // DeleteIndexEntries clears all entries for the given index.
 // Matches Java's StandardIndexMaintainer.deleteWhere() with no predicate.
-func (store *FDBRecordStore) DeleteIndexEntries(index *Index) {
+func (store *FDBRecordStore) DeleteIndexEntries(index *Index) error {
 	if index == nil {
-		return
+		return nil
+	}
+	if store.indexIsPartitioned(index) {
+		return &PartitionStateError{IndexName: index.Name, Reason: "raw index clears are unsupported for partitioned indexes"}
 	}
 	indexSub := store.indexSubspace(index)
 	store.context.Transaction().ClearRange(indexSub)
+	return nil
 }
 
 // DeleteIndexEntriesInRange clears index entries matching the given tuple prefix.
@@ -1185,6 +1233,9 @@ func (store *FDBRecordStore) DeleteIndexEntries(index *Index) {
 func (store *FDBRecordStore) DeleteIndexEntriesInRange(index *Index, prefix tuple.Tuple) error {
 	if index == nil {
 		return fmt.Errorf("index must not be nil")
+	}
+	if store.indexIsPartitioned(index) {
+		return &PartitionStateError{IndexName: index.Name, Reason: "raw index clears are unsupported for partitioned indexes"}
 	}
 	// [pack, pack+ff) is the prefix's tuple range plus the key at pack itself
 	// (a grouped aggregate); strinc(pack) would also clear "alice\x00…".
@@ -1197,7 +1248,7 @@ func (store *FDBRecordStore) DeleteIndexEntriesInRange(index *Index, prefix tupl
 // Clears all data subspaces except StoreInfoKey (0) and IndexStateSpaceKey (5).
 // Matches Java's FDBRecordStore.deleteAllRecords() which clears everything
 // from records through index state begin, then from index state end through store end.
-func (store *FDBRecordStore) DeleteAllRecords() error {
+func (store *FDBRecordStore) DeleteAllRecords() (resultErr error) {
 	finishWrite, err := store.context.beginRecordWrite()
 	if err != nil {
 		return err
@@ -1207,6 +1258,14 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 		return err
 	}
 
+	partitionOp, err := store.beginPartitionMutation()
+	if err != nil {
+		return err
+	}
+	defer func() { partitionOp.finish(resultErr) }()
+	if err := partitionOp.prepareReset(); err != nil {
+		return err
+	}
 	resetCount := store.metaData.GetRecordCountKey() != nil && !store.isRecordCountDisabled()
 	flatSubspace := subspace.FromBytes(store.subspace.Bytes())
 	finishPhysical, err := store.beginPhysicalBulk()
@@ -1215,6 +1274,16 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 	}
 	defer finishPhysical()
 	tx := store.context.Transaction()
+	if partitionOp != nil {
+		r, err := fdb.PrefixRange(store.subspace.Sub(partitionNamespace, int64(1)).Bytes())
+		if err != nil {
+			return err
+		}
+		partitionOp.effects = true
+		tx.ClearRange(r)
+		store.removeVersionDataInRange(r)
+		partitionOp.apply()
+	}
 
 	// Clear all subspaces except StoreInfoKey (0) and IndexStateSpaceKey (5).
 	// Java does two range clears: [records, indexState) and (indexState, storeEnd).
@@ -1282,6 +1351,7 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 		tx.Set(fdbKey, encodeRecordCount(0))
 	}
 
+	partitionOp.succeed()
 	return nil
 }
 
@@ -1671,8 +1741,17 @@ func (store *FDBRecordStore) newRegisteredIndexMaintainer(factory IndexMaintaine
 		index, m, store.indexSlidingWindowSubspace(index), tx, store, store.context.Timer())
 }
 
+// Maintainers call this while holding state/maintenance read locks. Their
+// parent operation already owns the partition fence; never reacquire it here.
 func (store *FDBRecordStore) addUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple, existingKey tuple.Tuple) error {
-	return store.AddUniquenessViolationWithExisting(index, indexKey, primaryKey, existingKey)
+	violationSubspace := store.subspace.Sub(IndexUniquenessViolationsKey, index.SubspaceTupleKey())
+	key := violationSubspace.Sub(indexKey...).Pack(primaryKey)
+	var value []byte
+	if existingKey != nil {
+		value = existingKey.Pack()
+	}
+	store.context.Transaction().Set(key, value)
+	return nil
 }
 
 func (store *FDBRecordStore) removeUniquenessViolations(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) error {
@@ -2460,8 +2539,10 @@ func (store *FDBRecordStore) ResolveUniquenessViolation(index *Index, indexKey t
 		return fmt.Errorf("index must not be nil")
 	}
 	violationSubspace := store.subspace.Sub(IndexUniquenessViolationsKey, index.SubspaceTupleKey())
-	store.context.Transaction().Clear(violationSubspace.Sub(indexKey...).Pack(primaryKey))
-	return nil
+	return store.partitionIndexMutation(index, indexKey, primaryKey, func() error {
+		store.context.Transaction().Clear(violationSubspace.Sub(indexKey...).Pack(primaryKey))
+		return nil
+	})
 }
 
 // AddUniquenessViolation records a uniqueness violation for the given index.
@@ -2483,16 +2564,12 @@ func (store *FDBRecordStore) AddUniquenessViolationWithExisting(index *Index, in
 	if index == nil {
 		return fmt.Errorf("index must not be nil")
 	}
-	violationSubspace := store.subspace.Sub(IndexUniquenessViolationsKey, index.SubspaceTupleKey())
-	// Unlike ordinary index entries, Java's uniquenessViolationKey appends the
-	// full primary key, including components already present in the value key.
-	key := violationSubspace.Sub(indexKey...).Pack(primaryKey)
-	var value []byte
-	if existingKey != nil {
-		value = existingKey.Pack()
+	if store.indexIsPartitioned(index) && existingKey != nil && (len(existingKey) < 3 || len(primaryKey) < 3 || !recordTypeKeyEquals(existingKey[0], primaryKey[0]) || !recordTypeKeyEquals(existingKey[1], primaryKey[1])) {
+		return &PartitionStateError{IndexName: index.Name, Reason: "uniqueness violation crosses partition routes"}
 	}
-	store.context.Transaction().Set(key, value)
-	return nil
+	return store.partitionIndexMutation(index, indexKey, primaryKey, func() error {
+		return store.addUniquenessViolation(index, indexKey, primaryKey, existingKey)
+	})
 }
 
 // serializeUnionOver marshals a record into the UnionDescriptor wire format

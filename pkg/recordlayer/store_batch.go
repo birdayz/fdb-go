@@ -56,7 +56,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 	records []proto.Message,
 	options BatchSaveOptions,
-) ([]*FDBStoredRecord[proto.Message], error) {
+) (_ []*FDBStoredRecord[proto.Message], resultErr error) {
 	finishWrite, err := store.context.beginRecordWrite()
 	if err != nil {
 		return nil, err
@@ -92,6 +92,9 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 	if store.omitUnsplitRecordSuffix() {
 		if err := store.checkLegacyBatchCollation(records); err != nil {
 			return nil, err
+		}
+		if store.partitionedSaveGroup(records) {
+			return store.savePartitionedGroup(records, RecordExistenceCheckNone, options.indexWriteSet(), 1)
 		}
 		results := make([]*FDBStoredRecord[proto.Message], len(records))
 		written := options.indexWriteSet()
@@ -227,16 +230,24 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 	if err := store.ensureStoreStateLoadedErr(); err != nil {
 		return nil, fmt.Errorf("load store state: %w", err)
 	}
-	// Hold stateMu.RLock for the entire batch to avoid per-record lock/unlock.
+	var partitionOp *partitionMutation
+	defer func() { partitionOp.finish(resultErr) }()
+	// Plain batches retain these locks; partitioned rows reacquire them after
+	// routing preparation so callbacks never run under the partition-state lock.
 	// The update lock is the same for every record, so it is validated once, in
 	// the first record's turn, after that record's existing value is decoded:
 	// each record saves as SaveRecord saves it (Java's saveTypedRecord loads the
 	// old record, then validates the lock), so a batch whose first record the
 	// store cannot read fails that decode, not the lock.
 	store.stateMu.RLock()
-	defer store.stateMu.RUnlock()
 	store.indexStateView.maintenance.RLock()
-	defer store.indexStateView.maintenance.RUnlock()
+	batchStateLocked := true
+	defer func() {
+		if batchStateLocked {
+			store.indexStateView.maintenance.RUnlock()
+			store.stateMu.RUnlock()
+		}
+	}()
 	lockChecked := false
 	written := options.indexWriteSet()
 
@@ -291,10 +302,38 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 		p.oldType, p.oldRecord, p.oldWire = oldRT, oldMsg, oldWire
 	}
 
+	partitionedBatch := false
+	if store.hasPartitionedTypes() {
+		for i := range pending {
+			p := &pending[i]
+			if len(partitionFunctions(p.recordType.PrimaryKey)) != 0 || (p.oldType != nil && len(partitionFunctions(p.oldType.PrimaryKey)) != 0) {
+				partitionedBatch = true
+				break
+			}
+		}
+	}
+	if partitionedBatch {
+		store.indexStateView.maintenance.RUnlock()
+		store.stateMu.RUnlock()
+		batchStateLocked = false
+		partitionOp, err = store.beginPartitionMutation()
+		if err != nil {
+			return nil, err
+		}
+	}
+	// Retain identities across rows without moving route validation ahead of each
+	// row's serializer. Later failures remain rollback-only after an earlier write.
+	if partitionOp != nil {
+		partitionOp.releasePreflight()
+		if err := partitionOp.captureIncarnations(); err != nil {
+			return nil, err
+		}
+	}
+
 	// Prefetch TEXT bunch reads into the transaction cache before applying any record
 	// (store_batch_text_prefetch.go).
 	var tokens textTokenCache // this batch's alone: other saves on the store run beside it
-	if !options.skipTextPrefetch {
+	if !options.skipTextPrefetch && batchStateLocked {
 		tokens = make(textTokenCache, len(pending))
 		news := make([]*FDBStoredRecord[proto.Message], len(pending))
 		olds := make([]*FDBStoredRecord[proto.Message], len(pending))
@@ -308,7 +347,8 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 		store.prefetchBatchTextBunches(news, olds, tokens)
 	}
 
-	// No record mutation precedes the whole batch's collation preflight.
+	// Input keys and collation were checked for the whole batch. Each row's
+	// serializer precedes its route check; the parent guard covers later failures.
 	for i := range pending {
 		p := &pending[i]
 		oldRecordExists, oldsizeInfo := p.oldExists, p.oldSize
@@ -334,9 +374,25 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 			return nil, fmt.Errorf("record %d: %w", i, err)
 		}
 
+		if partitionOp != nil {
+			if err := partitionOp.resumePreparation(); err != nil {
+				return nil, err
+			}
+			if err := partitionOp.prepareRoute(p.recordType, p.primaryKey, p.record, !oldRecordExists); err != nil {
+				return nil, err
+			}
+			if oldRT != nil {
+				if err := partitionOp.prepareRoute(oldRT, p.primaryKey, oldMsg, false); err != nil {
+					return nil, err
+				}
+			}
+		}
 		physicalPresent, finishPhysical, err := p.load.beginPhysicalMutation(oldRecordExists, &oldsizeInfo)
 		if err != nil {
 			return nil, fmt.Errorf("record %d: %w", i, err)
+		}
+		if partitionOp != nil {
+			partitionOp.apply()
 		}
 		var newsizeInfo sizeInfo
 		savedVersion := p.version
@@ -408,8 +464,14 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 				Version:    oldVersion,
 			}
 		}
-		if err := store.updateSecondaryIndexesLocked(oldRecord, stored, written, tokens); err != nil {
-			return nil, fmt.Errorf("record %d: index update: %w", i, err)
+		var indexErr error
+		if batchStateLocked {
+			indexErr = store.updateSecondaryIndexesLocked(oldRecord, stored, written, tokens)
+		} else {
+			indexErr = store.updateSecondaryIndexes(oldRecord, stored, written)
+		}
+		if indexErr != nil {
+			return nil, fmt.Errorf("record %d: index update: %w", i, indexErr)
 		}
 
 		results[i] = stored
@@ -425,6 +487,7 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 	if err := store.addBatchIndexWriteConflicts(written); err != nil {
 		return nil, err
 	}
+	partitionOp.succeed()
 	return results, nil
 }
 

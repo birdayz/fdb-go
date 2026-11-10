@@ -2158,6 +2158,9 @@ func (oi *OnlineIndexer) buildRangeInTransaction(ctx context.Context, rtx *FDBRe
 // indexScannedRecord maintains the targets covering rec, reporting whether any did. As in Java's
 // handleCursorResult, the record-type filter precedes the read conflict.
 func (oi *OnlineIndexer) indexScannedRecord(store *FDBRecordStore, rec *FDBStoredRecord[proto.Message]) (bool, error) {
+	if err := store.checkPartitionBackfillRecordType(rec); err != nil {
+		return false, err
+	}
 	var applicable []*Index
 	for _, idx := range oi.targetIndexes {
 		if oi.shouldIndexRecordForIndex(rec, idx) {
@@ -2177,7 +2180,7 @@ func (oi *OnlineIndexer) indexScannedRecord(store *FDBRecordStore, rec *FDBStore
 		if err != nil {
 			return false, fmt.Errorf("index %q get maintainer: %w", idx.Name, err)
 		}
-		if err := maintainer.Update(nil, rec); err != nil {
+		if err := store.updatePartitionedBackfill(maintainer, rec); err != nil {
 			return false, fmt.Errorf("index %q record pk=%v: %w", idx.Name, rec.PrimaryKey, err)
 		}
 	}
@@ -2361,6 +2364,9 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 			// Matches Java's IndexingBase.handleCursorResult().
 			recordsProcessed++
 
+			if err := store.checkPartitionBackfillRecordType(rec); err != nil {
+				return nil, err
+			}
 			if !oi.shouldIndexRecordForIndex(rec, oi.primaryIndex()) {
 				continue
 			}
@@ -2370,7 +2376,7 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 					return nil, err
 				}
 			}
-			if err := maintainer.Update(nil, rec); err != nil {
+			if err := store.updatePartitionedBackfill(maintainer, rec); err != nil {
 				return nil, fmt.Errorf("index record pk=%v: %w", rec.PrimaryKey, err)
 			}
 			if reachedLimits, err = oi.transactionReachedLimits(rtx, started); err != nil {

@@ -48,6 +48,9 @@ func (store *FDBRecordStore) replayPendingIndexWrite(index *Index, entry *Pendin
 	if payload == nil || payload.Operation == nil {
 		return &RecordCoreStorageError{Message: "pending index write has no operation"}
 	}
+	if store.indexIsPartitioned(index) {
+		return &PartitionStateError{IndexName: index.Name, Reason: "queued maintenance is unsupported for partitioned indexes"}
+	}
 	maintainer, err := store.getIndexMaintainer(index)
 	if err != nil {
 		return err
@@ -106,6 +109,9 @@ func (store *FDBRecordStore) enqueuePendingIndexWrite(index *Index, entry *gen.P
 	if err := store.requireFormatVersion("pending index writes", formatVersionPendingWrites); err != nil {
 		return err
 	}
+	if store.indexIsPartitioned(index) {
+		return &PartitionStateError{IndexName: index.Name, Reason: "queued maintenance is unsupported for partitioned indexes"}
+	}
 	incarnation := store.storeHeader.GetIncarnation()
 	options := store.context.PendingWriteQueueOptions()
 	err := store.indexingPendingWriteQueue(index, options.MaximumSize).Enqueue(store.context, entry, incarnation)
@@ -133,6 +139,9 @@ func (store *FDBRecordStore) enqueuePendingIndexWrite(index *Index, entry *gen.P
 func (store *FDBRecordStore) validatePendingQueueIndex(index *Index) error {
 	if err := store.requireFormatVersion("pending index writes", formatVersionPendingWrites); err != nil {
 		return err
+	}
+	if store.indexIsPartitioned(index) {
+		return &PartitionStateError{IndexName: index.Name, Reason: "queued maintenance is unsupported for partitioned indexes"}
 	}
 	maintainer, err := store.getIndexMaintainer(index)
 	if err != nil {

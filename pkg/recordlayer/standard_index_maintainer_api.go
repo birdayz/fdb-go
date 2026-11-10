@@ -20,7 +20,9 @@ func NewStandardIndexMaintainer(state IndexMaintainerState) *StandardIndexMainta
 	if state.Store != nil {
 		store = state.Store
 	}
-	return newStandardIndexMaintainer(state.Index, state.IndexSubspace, state.Transaction, store)
+	maintainer := newStandardIndexMaintainer(state.Index, state.IndexSubspace, state.Transaction, store)
+	maintainer.rawPartitioned = state.Index != nil && len(partitionFunctions(state.Index.RootExpression)) != 0
+	return maintainer
 }
 
 // Index is the maintained index (Java's state.index).

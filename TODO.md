@@ -3898,13 +3898,30 @@ Design: [RFC-284](rfcs/284-interval-partitioned-tables.md), accepted; implementa
 in progress. Opt-in for new tables; existing tables, indexes and OTEL_V1 stores
 remain unchanged.
 
-- [ ] Prove the required singleton partition key function, metadata round-trip,
+- [x] Prove the required singleton partition key function, metadata round-trip,
   VALUE/TEXT PK reconstruction and complete auxiliary-state cleanup; pin
-  whole-schema Java/old-Go refusal with unpartitioned controls.
-- [ ] Implement the RANGE/INTERVAL DDL, shared write routing and partition
-  directory/fences, then Cascades pruning/enumeration, ordered execution and
-  continuations. No caller-supplied bucket; no time predicate means all active
-  partitions. Admit index types only with the RFC's correctness proofs.
+  whole-schema Java/old-Go refusal with unpartitioned controls. Foundation and
+  corrections in `f4375c68c` / `11a650118`: fast and full lanes pass, both live
+  refusal probes pass, and milestone review is ACK. SQL/lifecycle gates below
+  remain open.
+- [x] Add the versioned partition directory/fences to every Record Layer writer
+  and backfill path, including batch fast paths, dry runs, legacy-version
+  conversion and bulk deletion, with a maintained API census. Activation and row
+  writes must be atomic; failed partial operations must not commit. Ordinary
+  active-partition writes must not update a shared table key; delete-all reset
+  must be bounded by table count.
+- [ ] Preserve logical SQL keys over physical partition prefixes in metadata and
+  direct access, and implement atomic source-key UPDATE moves with collision and
+  rollback proofs. Keep conservative reads correct before local planning lands.
+- [ ] Add bounded sparse partition enumeration and consistency checking with
+  shared budgets, topology-guarded continuations and missing-entry detection.
+- [ ] Publish typed RANGE/INTERVAL DDL, inherited local indexes and
+  INFORMATION_SCHEMA.PARTITIONS only after the routing/read/update prerequisites
+  work end to end. Admit index shapes only with the RFC's correctness proofs.
+- [ ] Add Cascades pruning/enumeration, local access paths, global ordering and
+  resumable execution. No caller-supplied bucket; no time predicate means all
+  active partitions. Finish directory-driven direct-index access as well; give
+  the executor a safe scan seam without exposing unfenced raw maintainers.
 - [ ] Implement atomic partition DROP with write/build/queued-maintenance
   exclusion and regression coverage. Measure FTS ingest/query/retention costs
   separately before OTel adoption; settle V2's explicit-event-ID replay policy

@@ -207,9 +207,20 @@ below; neither publication nor readiness is asserted.
   its plain tables; rolling back to an older binary cannot reopen it. Existing
   unpartitioned schemas are unchanged. There is no automatic conversion or
   in-place repartitioning: migration requires a separately created table/store
-  and explicit copying. This is the layout/cleanup foundation, not complete SQL
-  partition routing, planning or safe DROP. See the
+  and explicit copying. Record Layer routing now uses a versioned directory and
+  writer/backfill fences, but SQL partition DDL, planning and safe DROP remain
+  incomplete. Existing partitioned records without valid routing state are
+  rejected, not silently adopted. See the
   [compatibility boundary](DIVERGENCES.md#interval-partitioned-tables-go-only-rfc-284).
+- **Raw index mutation APIs:** `FDBRecordStore.DeleteIndexEntries` now returns
+  `error`; callers using its old method-value or interface signature must adapt.
+  Statement calls remain valid, and nil/plain-index behavior is unchanged.
+  It, `DeleteIndexEntriesInRange` and `GetIndexMaintainer` refuse partitioned
+  indexes before mutation rather than expose an unfenced writer. Public standard
+  maintainers refuse partitioned mutation too. Supported record saves/deletes
+  and index builds use the partition routing protocol. A partitioned store's
+  `SetFormatVersion` refuses version changes; reopen through the builder for
+  validated conversion of committed legacy versions.
 - **`read_only` and `NewConnector`:** no persisted or wire change; SQL
   behaviour changes only on a `read_only` connection. The unknown-DSN-parameter
   error lists `read_only`. `RelationalKeyspace.LookupSchemaSubspace` and

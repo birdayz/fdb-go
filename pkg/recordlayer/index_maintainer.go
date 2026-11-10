@@ -214,10 +214,11 @@ type IndexStoreContext interface {
 // Evaluates the index key expression against records, then sets/clears entries
 // in the index subspace. Matches Java's standardIndexMaintainer.
 type StandardIndexMaintainer struct {
-	index         *Index
-	indexSubspace subspace.Subspace
-	tx            fdb.WritableTransaction
-	store         IndexStoreContext
+	index          *Index
+	indexSubspace  subspace.Subspace
+	tx             fdb.WritableTransaction
+	store          IndexStoreContext
+	rawPartitioned bool
 }
 
 // ReadTransaction resolves the transaction a SCAN's reads go through, from the
@@ -256,6 +257,9 @@ func (m *StandardIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDB
 // Update handles insert (old=nil), delete (new=nil), or update (both non-nil).
 // Matches Java's standardIndexMaintainer.update().
 func (m *StandardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+	if m.rawPartitioned {
+		return &PartitionStateError{IndexName: m.index.Name, Reason: "raw index maintenance is unsupported for partitioned indexes"}
+	}
 	// Fast path: insert-only — skip evaluateIndex wrapper,
 	// common-entry filtering, and old-entries loop.
 	if oldRecord == nil && newRecord != nil {
@@ -515,6 +519,9 @@ func deleteWhereRange(tx fdb.WritableTransaction, indexSubspace subspace.Subspac
 // DeleteWhere clears all index entries whose key starts with the given prefix.
 // Matches Java's standardIndexMaintainer.deleteWhere().
 func (m *StandardIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+	if m.rawPartitioned {
+		return &PartitionStateError{IndexName: m.index.Name, Reason: "raw index maintenance is unsupported for partitioned indexes"}
+	}
 	// Backstop for direct callers; DeleteRecordsWhere asks CanDeleteWhere BEFORE
 	// it clears anything. Method dispatch here is static, so a maintainer that
 	// embeds this and overrides CanDeleteWhere with a NARROWER bound must — and

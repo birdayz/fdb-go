@@ -29,7 +29,7 @@ import (
 // the prefix.
 //
 // Matches Java's FDBRecordStore.deleteRecordsWhereAsync().
-func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
+func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) (resultErr error) {
 	finishWrite, err := store.context.beginRecordWrite()
 	if err != nil {
 		return err
@@ -42,6 +42,19 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 		return err
 	}
 
+	matchingTypeNames := store.findMatchingRecordTypes(prefix)
+	var partitionOp *partitionMutation
+	for _, name := range matchingTypeNames {
+		if len(partitionFunctions(store.metaData.GetRecordType(name).PrimaryKey)) != 0 {
+			partitionOp, err = store.beginPartitionMutation()
+			if err != nil {
+				return err
+			}
+			break
+		}
+	}
+	defer func() { partitionOp.finish(resultErr) }()
+
 	// Hold read lock for entire operation — matches Java's beginRead()/endRead()
 	// wrapping RecordsWhereDeleter.run().
 	store.stateMu.RLock()
@@ -53,9 +66,14 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 
 	// Determine which record types match this prefix.
 	// A record type matches if the prefix length <= its PK column count.
-	matchingTypeNames := store.findMatchingRecordTypes(prefix)
 	if len(matchingTypeNames) == 0 {
 		return fmt.Errorf("deleteRecordsWhere: prefix length %d exceeds all record type PK sizes", len(prefix))
+	}
+
+	for _, name := range matchingTypeNames {
+		if err := partitionOp.prepareTableFence(store.metaData.GetRecordType(name)); err != nil {
+			return err
+		}
 	}
 
 	// Validate all active indexes and compute their delete prefixes.
@@ -99,6 +117,9 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 			}
 		}
 
+		if state.IsWriteOnlyWithQueue() && store.indexIsPartitioned(idx) {
+			return &PartitionStateError{IndexName: idx.Name, Reason: "queued maintenance is unsupported for partitioned indexes"}
+		}
 		var (
 			idxPrefix tuple.Tuple
 			// pkOffset is how many leading primary-key columns idxPrefix skips.
@@ -241,6 +262,7 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 	if err != nil {
 		return err
 	}
+	partitionOp.apply()
 	func() {
 		defer finishPhysical()
 		tx.ClearRange(recordRange)
@@ -316,6 +338,7 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 		store.removeVersionDataInRange(idxRange)
 	}
 
+	partitionOp.succeed()
 	return nil
 }
 

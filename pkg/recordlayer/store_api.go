@@ -97,6 +97,9 @@ func (store *FDBRecordStore) SetFormatVersion(version int32) error {
 	if store.storeHeader == nil {
 		return &RecordStoreStateNotLoadedError{}
 	}
+	if store.hasPartitionedTypes() && version != store.storeHeader.GetFormatVersion() {
+		return &PartitionStateError{Reason: "direct format changes are unsupported for partitioned stores; reopen with a builder"}
+	}
 	store.storeHeader.FormatVersion = &version
 	return store.writeStoreHeader(store.storeHeader)
 }
@@ -225,6 +228,14 @@ func DeleteStore(ctx *FDBRecordContext, ss subspace.Subspace) error {
 	ctx.SetDirtyStoreState(true)
 	begin, end := ss.FDBRangeKeys()
 	// The header read above is authoritative even for an already-opened store.
+	ctx.sessionMu.Lock()
+	partitionState, _ := ctx.session[partitionSessionID(string(ss.Bytes()))].(*partitionContextState)
+	ctx.sessionMu.Unlock()
+	if partitionState != nil {
+		partitionState.mu.Lock()
+		defer partitionState.mu.Unlock()
+		partitionState.epochChanged = nil
+	}
 	ctx.clearRange(fdb.KeyRange{Begin: begin, End: end}, false)
 	return nil
 }
@@ -441,6 +452,10 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 		return nil, err
 	}
 
+	if err := store.previewPartitionRoute(recordType, primaryKey, record, oldRT, oldMsg); err != nil {
+		return nil, err
+	}
+
 	// Java's dryRunSetSizeInfo: the stored bytes' keys and values, chunk by
 	// chunk, as the save would write them.
 	sizes := dryRunSaveWithSplitSizeInfo(recordsSubspace, primaryKey, stored, splitEnabled, store.omitUnsplitRecordSuffix())
@@ -485,16 +500,30 @@ func (store *FDBRecordStore) DryRunDeleteRecord(primaryKey tuple.Tuple) (bool, e
 		return false, fmt.Errorf("dry run delete record: %w", err)
 	}
 	if value == nil {
+		if len(primaryKey) >= 3 {
+			for _, rt := range store.metaData.RecordTypes() {
+				if len(partitionFunctions(rt.PrimaryKey)) != 0 && recordTypeKeyEquals(primaryKey[0], rt.GetRecordTypeKey()) {
+					if err := store.previewPartitionRoute(rt, primaryKey, nil, nil, nil); err != nil {
+						return false, err
+					}
+					break
+				}
+			}
+		}
 		return false, nil
 	}
 	// Java's dry run loads the record through the serializer
 	// (deleteTypedRecord's loadTypedRecord), so one the store cannot read
 	// fails the preview as it fails the delete.
-	if _, _, _, err := store.deserializeAndDiscover(value); err != nil {
+	rt, record, _, err := store.deserializeAndDiscover(value)
+	if err != nil {
 		return false, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: err}
 	}
 	if _, err := load.finishVersion(version); err != nil {
 		return false, fmt.Errorf("load old record version for dry-run delete: %w", err)
+	}
+	if err := store.previewPartitionRoute(rt, primaryKey, record, rt, record); err != nil {
+		return false, err
 	}
 	return true, nil
 }
@@ -548,19 +577,55 @@ func (store *FDBRecordStore) ResolveUniquenessViolationByDeletion(
 	index *Index,
 	valueKey tuple.Tuple,
 	remainPrimaryKey tuple.Tuple,
-) error {
+) (resultErr error) {
+	var partitionOp *partitionMutation
+	if index != nil && store.indexIsPartitioned(index) {
+		finishWrite, err := store.context.beginRecordWrite()
+		if err != nil {
+			return err
+		}
+		defer finishWrite()
+		partitionOp, err = store.beginPartitionMutation()
+		if err != nil {
+			return err
+		}
+		defer func() { partitionOp.finish(resultErr) }()
+	}
 	violations, err := store.ScanUniquenessViolationsForValue(index, valueKey)
 	if err != nil {
 		return fmt.Errorf("resolve uniqueness violation: %w", err)
+	}
+	if partitionOp != nil {
+		types := store.metaData.RecordTypesForIndex(index)
+		for _, v := range violations {
+			if remainPrimaryKey != nil && tuplesEqual(v.PrimaryKey, remainPrimaryKey) {
+				continue
+			}
+			if len(types) != 1 || len(valueKey) == 0 || len(v.PrimaryKey) < 3 || !recordTypeKeyEquals(valueKey[0], v.PrimaryKey[1]) {
+				return &PartitionStateError{IndexName: index.Name, Reason: "uniqueness resolution crosses partition routes"}
+			}
+			if err := partitionOp.prepareRoute(types[0], v.PrimaryKey, nil, false); err != nil {
+				return err
+			}
+		}
+		partitionOp.releasePreflight()
+		if err := partitionOp.captureIncarnations(); err != nil {
+			return err
+		}
 	}
 	for _, v := range violations {
 		if remainPrimaryKey != nil && tuplesEqual(v.PrimaryKey, remainPrimaryKey) {
 			continue
 		}
-		if _, err := store.DeleteRecord(v.PrimaryKey); err != nil {
+		found, err := store.DeleteRecord(v.PrimaryKey)
+		if err != nil {
 			return fmt.Errorf("resolve uniqueness violation: delete pk=%v: %w", v.PrimaryKey, err)
 		}
+		if partitionOp != nil && found {
+			partitionOp.effects = true
+		}
 	}
+	partitionOp.succeed()
 	return nil
 }
 

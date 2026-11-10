@@ -20,7 +20,7 @@ func (e *PartitionCleanupError) Error() string {
 
 // ClearPartitionData clears physical interval data, not partition existence or lifecycle state.
 // Callers must exclude concurrent writers; this primitive is not DROP PARTITION.
-func (store *FDBRecordStore) ClearPartitionData(recordTypeName string, coordinate int64) error {
+func (store *FDBRecordStore) ClearPartitionData(recordTypeName string, coordinate int64) (resultErr error) {
 	finishWrite, err := store.context.beginRecordWrite()
 	if err != nil {
 		return err
@@ -29,6 +29,11 @@ func (store *FDBRecordStore) ClearPartitionData(recordTypeName string, coordinat
 	if err := store.validateRecordUpdateAllowed(); err != nil {
 		return err
 	}
+	partitionOp, err := store.beginPartitionMutation()
+	if err != nil {
+		return err
+	}
+	defer func() { partitionOp.finish(resultErr) }()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	store.indexStateView.maintenance.RLock()
@@ -44,6 +49,9 @@ func (store *FDBRecordStore) ClearPartitionData(recordTypeName string, coordinat
 	}
 	if spec == nil {
 		return &PartitionCleanupError{RecordType: recordTypeName, Reason: "record type is not partitioned"}
+	}
+	if err := partitionOp.prepareRoute(rt, tuple.Tuple{rt.GetRecordTypeKey(), coordinate, nil}, nil, false); err != nil {
+		return err
 	}
 	for _, other := range store.metaData.RecordTypes() {
 		if err := validatePartitionTypeIsolation(other.Name, other.PrimaryKey); err != nil {
@@ -120,9 +128,11 @@ func (store *FDBRecordStore) ClearPartitionData(recordTypeName string, coordinat
 		return err
 	}
 	defer finishPhysical()
+	partitionOp.apply()
 	for _, r := range ranges {
 		tx.ClearRange(r)
 		store.removeVersionDataInRange(r)
 	}
+	partitionOp.succeed()
 	return nil
 }

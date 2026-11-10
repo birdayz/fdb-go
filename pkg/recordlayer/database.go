@@ -657,8 +657,9 @@ type versionMutation struct {
 // commitCheckRegistration keeps a canceled check distinguishable from a new
 // registration with the same name, including during a pre-commit snapshot.
 type commitCheckRegistration struct {
-	check  CommitCheckFunc
-	active bool // protected by FDBRecordContext.commitMu
+	check   CommitCheckFunc
+	active  bool // protected by FDBRecordContext.commitMu
+	started bool // protected by FDBRecordContext.commitMu
 }
 
 // nextTransactionID generates unique IDs for FDBRecordContext instances.
@@ -1185,6 +1186,17 @@ func (rc *FDBRecordContext) GetOrCreateCommitCheck(name string, ifNotExists func
 	return entry.check
 }
 
+// rearmCommitCheck schedules the same named guard again if the commit drain
+// already started it while an admitted writer was still running.
+func (rc *FDBRecordContext) rearmCommitCheck(name string) {
+	rc.commitMu.Lock()
+	defer rc.commitMu.Unlock()
+	if entry := rc.namedCommitChecks[name]; entry != nil && entry.active && entry.started {
+		entry.started = false
+		rc.commitChecks = append(rc.commitChecks, entry)
+	}
+}
+
 // getCommitCheck returns a previously registered named check, or nil.
 // Matches Java's FDBRecordContext.getCommitCheck().
 func (rc *FDBRecordContext) getCommitCheck(name string) CommitCheckFunc {
@@ -1243,6 +1255,7 @@ func (rc *FDBRecordContext) runPendingCommitChecks(checked *int) error {
 		entry := rc.commitChecks[*checked]
 		*checked++
 		active := entry.active
+		entry.started = true
 		rc.commitMu.Unlock()
 		if active {
 			if err := entry.check(); err != nil {

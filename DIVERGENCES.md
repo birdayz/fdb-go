@@ -100,7 +100,7 @@ and migration work is tracked in TODO.md. See [full-text boundaries](docs/compat
 
 ## Interval-partitioned tables (Go-only, RFC-284)
 
-**Unreleased; implementation in progress.** The Record Layer foundation for
+**Unreleased; implementation in progress.** The Record Layer extension for
 [RFC-284](rfcs/284-interval-partitioned-tables.md) uses a required
 `fdb_partition_v1(source, width)` Function key expression. It computes signed
 BIGINT floor division with a positive interval; existing `div` and generic
@@ -130,11 +130,39 @@ audit of all user keys after every refused attempt. The pinned Go source is
 `50365a91093b4f410f5589de4e597be2d3e0d936`, built separately rather than simulated
 by unregistering a function in the new binary.
 
-This foundation is not yet the complete SQL feature: DDL, directory/fences,
-partition access paths and concurrent retirement remain implementation gates.
-`ClearPartitionData` is only a prevalidated storage cleanup primitive; its
-caller must exclude concurrent writers. It covers TEXT tokenizer-version and
-UNIQUE violation auxiliary keys without changing ordinary `DeleteRecordsWhere`.
+Routing state lives under the Go-owned tuple namespace
+`("fdb_go.interval_partitions", int64(1), recordTypeKey, ...)`, not a Java numeric
+store-key allocation. A fixed layout/incarnation header is separate from the
+topology epoch; ordinary active-partition writes read only the header and their
+active/fence pair. First activation and row/index writes share a transaction.
+A failed operation after effects makes that partitioned transaction uncommittable,
+including when Commit began before the writer finished. Routing-state validation
+returns `PartitionStateError`; an incomplete mutation fails Commit with
+`PartitionMutationError`, preserving its cause. Pure preflight failures remain
+committable. Save/batch/pipeline, deletion and backfill participate;
+backfill never activates a missing route. Built-in VALUE/TEXT maintainers do not
+admit queued maintenance; unexpected partitioned queue replay is refused before
+mutation rather than enabled through a different maintainer. Existing records or
+legacy versions without valid routing state fail closed rather than bootstrap a
+directory.
+Delete-all clears the extension state and changes incarnation before reinsertion.
+
+Raw `GetIndexMaintainer`, `DeleteIndexEntries` and `DeleteIndexEntriesInRange`
+refuse partitioned indexes; a public `NewStandardIndexMaintainer` also refuses
+partitioned updates and prefix deletion. `DeleteIndexEntries` now returns
+`error`, changing method-value/interface signatures even for callers using only
+plain tables; plain-index and nil-index behavior is otherwise unchanged.
+Read-only executor scanning needs a safe seam before local partition access paths
+are enabled. On partitioned stores, `SetFormatVersion` refuses a changed version;
+reopen through the store builder for validated conversion instead. Legacy-to-inline
+conversion requires committed legacy versions, not same-context pending versions.
+
+This is not yet the complete SQL feature: logical key bridges, source-key moves,
+budgeted directory cursors, DDL, partition access paths and safe retirement remain
+implementation gates. `ClearPartitionData` is only a prevalidated storage cleanup
+primitive; its caller must exclude concurrent writers. It participates in routing
+fences but retains active directory entries, and covers TEXT tokenizer-version and
+UNIQUE violation auxiliary keys without changing plain-table prefix deletion.
 No existing table is repartitioned automatically; there is no in-place conversion
 or OTEL_V1 migration.
 
