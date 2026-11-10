@@ -296,10 +296,13 @@ func newCascadesPlanner(
 	popts plannerOptions,
 	planningRules []cascades.ExpressionRule,
 	stats properties.StatisticsProvider,
-) *cascades.Planner {
+) (*cascades.Planner, error) {
+	planCtx, err := buildCascadesPlanContext(md, popts.config)
+	if err != nil {
+		return nil, err
+	}
 	rules := cascades.DefaultExpressionRules()
 	rules = append(rules, cascades.RewritingRules()...)
-	planCtx := buildCascadesPlanContext(md, popts.config)
 	planner := cascades.NewPlanner(rules, planCtx).
 		WithImplementationRules(cascades.DefaultImplementationRules()).
 		WithPlanningExpressionRules(planningRules).
@@ -309,7 +312,7 @@ func newCascadesPlanner(
 	planner.MaxNumMatchesPerRuleCall = popts.maxNumMatchesPerRuleCall
 	planner.DisabledRules = popts.disabledRules
 	planner.WithTrace(popts.trace)
-	return planner
+	return planner, nil
 }
 
 // optBool reads an option as a bool, returning fallback when the option is

@@ -208,7 +208,10 @@ below; neither publication nor readiness is asserted.
   unpartitioned schemas are unchanged. There is no automatic conversion or
   in-place repartitioning: migration requires a separately created table/store
   and explicit copying. Record Layer routing now uses a versioned directory and
-  writer/backfill fences, but SQL partition DDL, planning and safe DROP remain
+  writer/backfill fences. Logical SQL metadata, complete logical direct keys and
+  conservative scan/residual/sort plans are supported for programmatic metadata;
+  partial direct prefixes and unbound local-index access explicitly refuse.
+  Source-key moves, SQL partition DDL, local planning and safe DROP remain
   incomplete. Existing partitioned records without valid routing state are
   rejected, not silently adopted. See the
   [compatibility boundary](DIVERGENCES.md#interval-partitioned-tables-go-only-rfc-284).

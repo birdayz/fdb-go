@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"fdb.dev/internal/unicode15"
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -249,12 +250,9 @@ func (m *CatalogDatabaseMetaData) Tables(_ context.Context, catalog, schemaPatte
 	return newStringResultSet(tablesColumns(), rows), nil
 }
 
-// PrimaryKeys returns the primary-key columns of a single table. Each
-// row is one PK column (key_seq 1..N). Today we surface the
-// recordlayer-level primary key tuple as a single "compound key" row —
-// the Java side splits into individual column rows when the PK is a
-// composite expression, which we'll match once our key-expression
-// introspection grows.
+// PrimaryKeys exposes a partitioned table's declared columns (key_seq 1..N),
+// never its inherited storage coordinates. Ordinary tables retain the existing
+// single compound-key placeholder.
 func (m *CatalogDatabaseMetaData) PrimaryKeys(_ context.Context, catalog, schema, table string) (api.ResultSet, error) {
 	tx := m.newTransactionFunc()
 	defer tx.Close()
@@ -284,6 +282,18 @@ func (m *CatalogDatabaseMetaData) PrimaryKeys(_ context.Context, catalog, schema
 	pkName := "PK_" + table
 	rows := [][]any{
 		{catalog, schema, table, "PRIMARY_KEY", int64(1), pkName},
+	}
+	if view, ok := target.(interface {
+		PartitionKeyLayout() *recordlayer.PartitionKeyLayout
+	}); ok && view.PartitionKeyLayout() != nil {
+		rows = nil
+		for i, component := range recordlayer.NormalizeKeyForPositions(view.PartitionKeyLayout().LogicalPrimaryKey()) {
+			field, ok := component.(*recordlayer.FieldKeyExpression)
+			if !ok || field.FanType() != recordlayer.FanTypeNone {
+				return nil, &recordlayer.PartitionMetadataError{RecordType: table, Message: "catalog primary key requires scalar declared fields"}
+			}
+			rows = append(rows, []any{catalog, schema, table, recordlayer.ToUserIdentifier(field.FieldName()), int64(i + 1), pkName})
+		}
 	}
 	return newStringResultSet([]string{
 		"TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME",

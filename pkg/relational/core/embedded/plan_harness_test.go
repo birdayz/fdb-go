@@ -2636,7 +2636,10 @@ func TestPlanHarness_UnionWithFixedUnindexedFactor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	planner := newCascadesPlanner(tmpl.Underlying(), plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), properties.MapStatistics{PerType: map[string]float64{"T": 1_000_000}})
+	planner, plannerErr := newCascadesPlanner(tmpl.Underlying(), plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), properties.MapStatistics{PerType: map[string]float64{"T": 1_000_000}})
+	if plannerErr != nil {
+		t.Fatal(plannerErr)
+	}
 	implemented := make(map[expressions.RelationalExpression]bool)
 	consumedAfterImplementation := 0
 	planner.WithTaskObserver(func(task cascades.Task) {
@@ -2781,7 +2784,10 @@ func assertIndexAccessRealizedOnce(t *testing.T, indexes, predicate string, acce
 	if err != nil {
 		t.Fatal(err)
 	}
-	planner := newCascadesPlanner(tmpl.Underlying(), plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), nil)
+	planner, plannerErr := newCascadesPlanner(tmpl.Underlying(), plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), nil)
+	if plannerErr != nil {
+		t.Fatal(plannerErr)
+	}
 	best, _, err := planner.PlanWithContext(context.Background(), ref)
 	if err != nil {
 		t.Fatal(err)
@@ -2985,7 +2991,10 @@ func assertFixedFactorUnionConvergesWithBudget(t *testing.T, schema, sql string,
 	if err != nil {
 		t.Fatal(err)
 	}
-	planner := newCascadesPlanner(tmpl.Underlying(), plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), nil)
+	planner, plannerErr := newCascadesPlanner(tmpl.Underlying(), plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), nil)
+	if plannerErr != nil {
+		t.Fatal(plannerErr)
+	}
 	if taskBudget > 0 {
 		planner.WithMaxTasks(taskBudget)
 	}

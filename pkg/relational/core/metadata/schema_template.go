@@ -89,10 +89,21 @@ func NewRecordLayerSchemaTemplateWithVersion(name string, md *recordlayer.Record
 	tmpl.tables = make([]api.Table, 0, len(typeNames))
 	for _, n := range typeNames {
 		rt := md.GetRecordType(n)
+		layout, err := recordlayer.DescribePartitionKey(rt)
+		if err != nil {
+			return nil, err
+		}
 		typeIdx := md.GetIndexesForRecordType(n)
 		apiIdxs := make([]api.Index, 0, len(typeIdx))
 		for _, idx := range typeIdx {
-			apiIdxs = append(apiIdxs, newIndex(idx, n))
+			view := newIndex(idx, n)
+			if layout != nil {
+				view.partition, err = layout.ProjectIndex(idx)
+				if err != nil {
+					return nil, err
+				}
+			}
+			apiIdxs = append(apiIdxs, view)
 		}
 		tbl, err := newTable(rt, apiIdxs)
 		if err != nil {

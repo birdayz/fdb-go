@@ -169,8 +169,8 @@ func literalProofMetaData(t *testing.T) *recordlayer.RecordMetaData {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !requiresLiteralIndexProof(md) {
-		t.Fatal("an index keyed by a literal does not require a literal proof")
+	if required, err := requiresLiteralIndexProof(md); err != nil || !required {
+		t.Fatalf("an index keyed by a literal must require a literal proof: %v", err)
 	}
 	return md
 }

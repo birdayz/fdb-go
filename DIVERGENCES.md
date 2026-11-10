@@ -157,10 +157,21 @@ are enabled. On partitioned stores, `SetFormatVersion` refuses a changed version
 reopen through the store builder for validated conversion instead. Legacy-to-inline
 conversion requires committed legacy versions, not same-context pending versions.
 
-This is not yet the complete SQL feature: logical key bridges, source-key moves,
-budgeted directory cursors, DDL, partition access paths and safe retirement remain
-implementation gates. `ClearPartitionData` is only a prevalidated storage cleanup
-primitive; its caller must exclude concurrent writers. It participates in routing
+For programmatically constructed partitioned metadata, SQL metadata views expose
+the declared primary key and logical index expressions, while storage and typed
+planner identities retain the physical partition coordinate. Complete logical
+direct Get/Delete/Scan/DeleteRange keys compute that coordinate internally.
+Partial direct prefixes and unbound local-index hints explicitly fail as unsupported
+until budgeted enumeration can preserve declared-key ordering before pagination.
+SQL queries use conservative full-record scans with the original predicates and
+required global sorts; a local index's order is not advertised as a global order.
+The inherited width is metadata identity for plan caching, not a SQL literal proof;
+actual literal keys and index predicates retain their binding-proof requirements.
+
+This is not yet the complete SQL feature: source-key moves, budgeted directory
+cursors, typed DDL, partition access paths and safe retirement remain implementation
+gates. `ClearPartitionData` is only a prevalidated storage cleanup primitive; its
+caller must exclude concurrent writers. It participates in routing
 fences but retains active directory entries, and covers TEXT tokenizer-version and
 UNIQUE violation auxiliary keys without changing plain-table prefix deletion.
 No existing table is repartitioned automatically; there is no in-place conversion

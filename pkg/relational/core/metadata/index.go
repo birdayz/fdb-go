@@ -21,6 +21,7 @@ import (
 type RecordLayerIndex struct {
 	underlying *recordlayer.Index
 	tableName  string
+	partition  *recordlayer.PartitionIndexLayout
 }
 
 // newIndex constructs a RecordLayerIndex. tableName is the owning
@@ -60,13 +61,39 @@ func (i *RecordLayerIndex) Underlying() *recordlayer.Index { return i.underlying
 // IndexName returns the index name. Satisfies cascades.IndexDef.
 func (i *RecordLayerIndex) IndexName() string { return i.underlying.Name }
 
-// IndexColumnNames returns the field names from the index's root key
+// LogicalExpression preserves the original wrappers, removing only the
+// validated inherited partition prefix. Underlying() always remains physical.
+func (i *RecordLayerIndex) LogicalExpression() recordlayer.KeyExpression {
+	if i.partition != nil {
+		return i.partition.LogicalExpression()
+	}
+	return i.underlying.RootExpression
+}
+
+// PartitionIndexLayout is nil for ordinary indexes.
+func (i *RecordLayerIndex) PartitionIndexLayout() *recordlayer.PartitionIndexLayout {
+	return i.partition
+}
+
+// IndexColumnNames returns the field names from the index's logical key
 // expression. Satisfies cascades.IndexDef.
 func (i *RecordLayerIndex) IndexColumnNames() []string {
-	if i.underlying.RootExpression == nil {
+	logical := i.LogicalExpression()
+	if logical == nil {
 		return nil
 	}
-	return i.underlying.RootExpression.FieldNames()
+	// Preserve ordinary FieldNames presentation; partitioned covering indexes
+	// report only the canonical logical key side, not included values.
+	if i.partition != nil {
+		if covering, ok := logical.(*recordlayer.KeyWithValueExpression); ok {
+			var names []string
+			for _, component := range recordlayer.NormalizeKeyForPositions(covering.InnerKey())[:covering.SplitPoint()] {
+				names = append(names, component.FieldNames()...)
+			}
+			return names
+		}
+	}
+	return logical.FieldNames()
 }
 
 // IndexRecordTypes returns the owning record type. Satisfies

@@ -55,7 +55,10 @@ func planWithOptionsDeadline(t testing.TB, planTimeout time.Duration, sql, schem
 		t.Fatalf("translate: %v", translateErr)
 	}
 
-	planner := newCascadesPlanner(md, plannerOptionsFrom(opts), cascades.BatchAExpressionRules(), nil)
+	planner, plannerErr := newCascadesPlanner(md, plannerOptionsFrom(opts), cascades.BatchAExpressionRules(), nil)
+	if plannerErr != nil {
+		return nil, 0, plannerErr
+	}
 	ctx := context.Background()
 	if planTimeout > 0 {
 		var cancel context.CancelFunc

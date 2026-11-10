@@ -233,7 +233,10 @@ func TestMetadataPlanContextMatchCandidateIdentityIsStable(t *testing.T) {
 		t.Fatalf("build schema: %v", err)
 	}
 
-	ctx := buildCascadesPlanContext(tmpl.Underlying(), cascades.DefaultPlannerConfiguration())
+	ctx, err := buildCascadesPlanContext(tmpl.Underlying(), cascades.DefaultPlannerConfiguration())
+	if err != nil {
+		t.Fatal(err)
+	}
 	first := ctx.GetMatchCandidates()
 	second := ctx.GetMatchCandidates()
 	if len(first) == 0 || len(first) != len(second) {

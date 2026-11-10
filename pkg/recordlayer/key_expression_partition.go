@@ -39,6 +39,11 @@ func PartitionExpr(source KeyExpression, width int64) *PartitionFunctionKeyExpre
 	return p
 }
 
+// Specification returns the validated immutable arguments, not query bindings.
+func (p *PartitionFunctionKeyExpression) Specification() (*PartitionSpec, error) {
+	return partitionArguments(p.arguments)
+}
+
 // Evaluate refuses invalid routing before any record or index mutation is staged.
 func (p *PartitionFunctionKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error) {
 	if _, err := partitionArguments(p.arguments); err != nil {

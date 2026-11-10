@@ -1,4 +1,5 @@
 """Offline execution of the shell gates; all writable paths are fixture-owned."""
+import errno
 import hashlib
 import json
 import os
@@ -10,8 +11,64 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
+
+
+def process_stopped(stat):
+    try:
+        contents = stat.read_text()
+    except (FileNotFoundError, ProcessLookupError):
+        # procfs can lose the process at open or while reading an already open stat.
+        return True
+    return contents.split(') ', 1)[1].startswith('Z ')
+
+
+class ProcessStoppedTests(unittest.TestCase):
+    def test_live_process(self):
+        for state in ('R', 'S', 'T'):
+            with self.subTest(state=state):
+                stat = mock.Mock(spec=Path)
+                stat.read_text.return_value = f"123 (fixture-worker) {state} 1 2\n"
+                self.assertFalse(process_stopped(stat))
+                stat.read_text.assert_called_once_with()
+
+    def test_zombie_process(self):
+        stat = mock.Mock(spec=Path)
+        stat.read_text.return_value = "123 (fixture-worker) Z 1 2\n"
+        self.assertTrue(process_stopped(stat))
+        stat.read_text.assert_called_once_with()
+
+    def test_gone_before_read(self):
+        stat = mock.Mock(spec=Path)
+        stat.read_text.side_effect = FileNotFoundError(errno.ENOENT, "fixture process gone")
+        self.assertTrue(process_stopped(stat))
+        stat.read_text.assert_called_once_with()
+
+    def test_process_lookup_error_during_read(self):
+        stat = mock.Mock(spec=Path)
+        stat.read_text.side_effect = ProcessLookupError(errno.ESRCH, "fixture process gone")
+        self.assertTrue(process_stopped(stat))
+        stat.read_text.assert_called_once_with()
+
+    def test_other_read_errors_propagate(self):
+        for error in (PermissionError(errno.EACCES, "fixture permission denied"),
+                      OSError(errno.EIO, "fixture I/O failure")):
+            with self.subTest(error=error):
+                stat = mock.Mock(spec=Path)
+                stat.read_text.side_effect = error
+                with self.assertRaises(type(error)) as raised:
+                    process_stopped(stat)
+                self.assertIs(raised.exception, error)
+                stat.read_text.assert_called_once_with()
+
+    def test_malformed_observation_propagates(self):
+        stat = mock.Mock(spec=Path)
+        stat.read_text.return_value = "malformed stat"
+        with self.assertRaises(IndexError):
+            process_stopped(stat)
+        stat.read_text.assert_called_once_with()
 
 
 class ShellTests(unittest.TestCase):
@@ -537,15 +594,10 @@ while True:
         # A zombie has stopped executing; never signal arbitrary or unowned PIDs.
         for pid in pids:
             stat = Path(f"/proc/{pid}/stat")
-            def stopped():
-                try:
-                    return stat.read_text().split(') ', 1)[1].startswith('Z ')
-                except FileNotFoundError:
-                    return True
             until = time.monotonic() + 60
-            while not stopped() and time.monotonic() < until:
+            while not process_stopped(stat) and time.monotonic() < until:
                 time.sleep(0.01)
-            self.assertTrue(stopped(), pid)
+            self.assertTrue(process_stopped(stat), pid)
 
 
 if __name__ == "__main__":

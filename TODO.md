@@ -3910,9 +3910,20 @@ remain unchanged.
   writes must be atomic; failed partial operations must not commit. Ordinary
   active-partition writes must not update a shared table key; delete-all reset
   must be bounded by table count.
-- [ ] Preserve logical SQL keys over physical partition prefixes in metadata and
-  direct access, and implement atomic source-key UPDATE moves with collision and
-  rollback proofs. Keep conservative reads correct before local planning lands.
+- [x] Preserve logical SQL keys over physical partition prefixes in metadata and
+  complete-key direct access. Keep conservative scan/residual/sort plans correct
+  before local planning lands, including both declared primary-key orders.
+- [ ] Attribute the first SQL-bridge fast-lane timeout in
+  `TestRelExporterTxnPolicyRealFDB/exporter_calls_absorb_retryable`: message
+  persistence failed while opening the store with `transaction_timed_out (1031)`.
+  The original 25-turn fixture, 12 injected retries, 10-second timeout and
+  parallelism are unchanged. Later diagnostic runs passed but do not explain
+  that failure. The native lifetime regression proves the retained-deadline
+  mechanism, not historical attribution; opt-in callback diagnostics and runtime
+  tracing preserve evidence for a failing capture. Do not call this fixed or
+  reduce the workload merely because subsequent runs pass.
+- [ ] Implement atomic source-key UPDATE moves with collision, budget, RETURNING
+  and rollback proofs, including changes within the same interval.
 - [ ] Add bounded sparse partition enumeration and consistency checking with
   shared budgets, topology-guarded continuations and missing-entry detection.
 - [ ] Publish typed RANGE/INTERVAL DDL, inherited local indexes and
@@ -3920,8 +3931,10 @@ remain unchanged.
   work end to end. Admit index shapes only with the RFC's correctness proofs.
 - [ ] Add Cascades pruning/enumeration, local access paths, global ordering and
   resumable execution. No caller-supplied bucket; no time predicate means all
-  active partitions. Finish directory-driven direct-index access as well; give
-  the executor a safe scan seam without exposing unfenced raw maintainers.
+  active partitions. Finish directory-driven direct-index access and logical
+  prefix Scan/DeleteRange as well; preserve declared-key order before pagination
+  with shared budgets, never an invented partition or per-page sorting. Give the
+  executor a safe scan seam without exposing unfenced raw maintainers.
 - [ ] Implement atomic partition DROP with write/build/queued-maintenance
   exclusion and regression coverage. Measure FTS ingest/query/retention costs
   separately before OTel adoption; settle V2's explicit-event-ID replay policy

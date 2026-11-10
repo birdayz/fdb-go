@@ -17,6 +17,7 @@ go_test(
         "fleet_fanout_fdb_test.go",
         "main_test.go",
         "named_call_fdb_test.go",
+        "partition_key_bridges_fdb_test.go",
         "plan_cache_bindings_fdb_test.go",
         "plan_cache_engine_fdb_test.go",
         "plan_logging_fdb_test.go",
@@ -33,6 +34,7 @@ go_test(
         "test-full",
     ],
     deps = [
+        "//gen",
         "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
@@ -49,6 +51,7 @@ go_test(
         "//pkg/relational/core/ddl",
         "//pkg/relational/core/embedded",
         "//pkg/relational/core/fleet",
+        "//pkg/relational/core/metadata",
         "//pkg/relational/core/rowstruct",
         "//pkg/relational/internal/connknob",
         "//pkg/relational/sqldriver",

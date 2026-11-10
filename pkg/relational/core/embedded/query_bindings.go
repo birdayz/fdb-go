@@ -200,7 +200,11 @@ func compileBindingProgram(tree antlr.ParseTree, runtimeTop bool) (*bindingProgr
 // normalizeQueryBindings with the statement's compiled walks: programs, when
 // not nil, keeps tree's program (statementPrograms bounds it).
 func normalizeQueryBindingsWith(tree antlr.ParseTree, md *recordlayer.RecordMetaData, programs *statementPrograms) (queryBindings, func(), error) {
-	runtimeTop := !requiresLiteralIndexProof(md)
+	literalProof, err := requiresLiteralIndexProof(md)
+	if err != nil {
+		return queryBindings{}, func() {}, err
+	}
+	runtimeTop := !literalProof
 	program := programs.get(tree, runtimeTop)
 	if program == nil {
 		var err error
@@ -291,31 +295,56 @@ func normalizeQueryBindingsWith(tree antlr.ParseTree, md *recordlayer.RecordMeta
 
 // These index proofs consume concrete literals. Their plans use exact binding
 // constraints rather than allowing an unproven replacement on a cache hit.
-func requiresLiteralIndexProof(md *recordlayer.RecordMetaData) bool {
+func requiresLiteralIndexProof(md *recordlayer.RecordMetaData) (bool, error) {
+	properties, err := metadataQueryProperties(md)
+	return properties.literalProof, err
+}
+
+type queryMetadataProperties struct {
+	literalProof       bool
+	partitionComponent string
+}
+
+// Reuse the immutable-metadata memo for both binding proofs and cache identity;
+// an ordinary cache hit must not start walking all physical key expressions.
+func metadataQueryProperties(md *recordlayer.RecordMetaData) (queryMetadataProperties, error) {
 	if md == nil {
-		return false
+		return queryMetadataProperties{}, nil
 	}
 	key := weak.Make(md)
 	if known, ok := literalIndexProofs.Load(key); ok {
-		return known.(bool)
+		return known.(queryMetadataProperties), nil
 	}
-	result := scanLiteralIndexProof(md)
+	proof, err := scanLiteralIndexProof(md)
+	if err != nil {
+		return queryMetadataProperties{}, err
+	}
+	component, err := scanPartitionCacheComponent(md)
+	if err != nil {
+		return queryMetadataProperties{}, err
+	}
+	result := queryMetadataProperties{literalProof: proof, partitionComponent: component}
 	if _, loaded := literalIndexProofs.LoadOrStore(key, result); !loaded {
 		runtime.AddCleanup(md, func(k weak.Pointer[recordlayer.RecordMetaData]) { literalIndexProofs.Delete(k) }, key)
 	}
-	return result
+	return result, nil
 }
 
-// Metadata is immutable per version, so its index scan is memoized per object.
-var literalIndexProofs sync.Map // weak.Pointer[recordlayer.RecordMetaData] -> bool
+// Metadata is immutable per version, so its key properties are memoized per object.
+var literalIndexProofs sync.Map // weak.Pointer[recordlayer.RecordMetaData] -> queryMetadataProperties
 
-func scanLiteralIndexProof(md *recordlayer.RecordMetaData) bool {
+func scanLiteralIndexProof(md *recordlayer.RecordMetaData) (bool, error) {
+	result := false
 	for _, index := range md.GetAllIndexes() {
-		if index.HasFilteringPredicate() || keyHasLiteral(index.RootExpression) {
-			return true
+		logical, err := logicalIndexExpression(md, index)
+		if err != nil {
+			return false, err
+		}
+		if index.HasFilteringPredicate() || keyHasLiteral(logical) {
+			result = true
 		}
 	}
-	return false
+	return result, nil
 }
 
 func keyHasLiteral(key recordlayer.KeyExpression) bool {

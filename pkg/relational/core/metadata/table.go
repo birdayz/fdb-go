@@ -22,6 +22,7 @@ type RecordLayerTable struct {
 	columns    []api.Column
 	structType *api.StructType
 	indexes    []api.Index
+	partition  *recordlayer.PartitionKeyLayout
 }
 
 // newTable constructs a RecordLayerTable. indexes is the list of
@@ -29,6 +30,10 @@ type RecordLayerTable struct {
 // filtered the schema template's global index map via
 // RecordMetaData.GetIndexesForRecordType / GetUniversalIndexes.
 func newTable(rt *recordlayer.RecordType, indexes []api.Index) (*RecordLayerTable, error) {
+	layout, err := recordlayer.DescribePartitionKey(rt)
+	if err != nil {
+		return nil, err
+	}
 	fields := rt.Descriptor.Fields()
 	cols := make([]api.Column, 0, fields.Len())
 	structFields := make([]api.StructField, 0, fields.Len())
@@ -52,6 +57,7 @@ func newTable(rt *recordlayer.RecordType, indexes []api.Index) (*RecordLayerTabl
 		columns:    cols,
 		structType: st,
 		indexes:    indexes,
+		partition:  layout,
 	}, nil
 }
 
@@ -75,3 +81,14 @@ func (t *RecordLayerTable) Accept(v api.Visitor) { api.VisitTableTree(t, v) }
 // RecordType exposes the underlying record-layer type for callers that
 // need its proto descriptor, primary key, etc.
 func (t *RecordLayerTable) RecordType() *recordlayer.RecordType { return t.underlying }
+
+// PartitionKeyLayout is nil for ordinary tables. Storage metadata remains physical.
+func (t *RecordLayerTable) PartitionKeyLayout() *recordlayer.PartitionKeyLayout { return t.partition }
+
+// LogicalPrimaryKey omits only the validated inherited partition components.
+func (t *RecordLayerTable) LogicalPrimaryKey() recordlayer.KeyExpression {
+	if t.partition != nil {
+		return t.partition.LogicalPrimaryKey()
+	}
+	return t.underlying.PrimaryKey
+}
