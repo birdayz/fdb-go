@@ -209,7 +209,7 @@ func TestFDB_PartitionAtomicUpdates(t *testing.T) {
 				{"duplicate-final", "UPDATE DOCS SET SOURCE=20 WHERE ID=1", false},
 				{"unselected-occupied", "UPDATE DOCS SET ID=2,SOURCE=10 WHERE ID=1 AND SOURCE=-11", false},
 				{"NULL", "UPDATE DOCS SET SOURCE=NULL WHERE ID=1", false},
-				{"transform", "UPDATE DOCS SET SOURCE=SOURCE/0 WHERE ID=1", false},
+				{"transform", "UPDATE DOCS SET SOURCE=SOURCE / 0 WHERE ID=1", false},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					seed()
