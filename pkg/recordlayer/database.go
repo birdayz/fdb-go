@@ -669,7 +669,9 @@ var nextTransactionID atomic.Int64
 // It wraps an FDB transaction and provides additional record layer functionality.
 // Goroutine-safe: all mutable fields are protected by atomics, mutexes, or the
 // lockRegistry. Multiple goroutines may safely operate on the same context
-// within a single FDB transaction (matching Java's CompletableFuture model).
+// within a single FDB transaction attempt (matching Java's CompletableFuture model).
+// Native Reset or OnError requires a fresh record context; retained session,
+// version and commit-check state cannot be reused across native attempts.
 // Matches Java's FDBRecordContext.
 type FDBRecordContext struct {
 	tx            fdb.WritableTransaction
@@ -875,7 +877,9 @@ func (rc *FDBRecordContext) GetDatabase() *FDBDatabase {
 	return rc.database
 }
 
-// Transaction returns the underlying FDB transaction
+// Transaction returns the underlying FDB transaction. Native lifecycle calls
+// bypass this context: use Commit for its checks, and a fresh record context
+// after Reset or OnError rather than reusing transaction-scoped state.
 func (rc *FDBRecordContext) Transaction() fdb.WritableTransaction {
 	return rc.tx
 }

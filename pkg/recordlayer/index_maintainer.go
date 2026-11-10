@@ -347,6 +347,13 @@ func (m *StandardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 		}
 	}
 
+	return m.applyEvaluatedEntries(oldEntries, newEntries)
+}
+
+// applyEvaluatedEntries applies entries whose predicates, functions and
+// maintenance filters have already run. Partition moves retain these entries
+// across their mutation-free uniqueness preflight and raw two-key relocation.
+func (m *StandardIndexMaintainer) applyEvaluatedEntries(oldEntries, newEntries []EvaluatedIndexEntry) error {
 	// Remove old entries first so uniqueness checks see clean state
 	state, err := m.currentIndexState()
 	if err != nil {
@@ -628,6 +635,28 @@ func (m *StandardIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Me
 // commit check via addIndexUniquenessCommitCheck().
 // Matches Java's standardIndexMaintainer.checkUniqueness().
 func (m *StandardIndexMaintainer) checkUniqueness(entry EvaluatedIndexEntry) error {
+	existingPK, err := m.uniquenessConflict(entry, nil)
+	if err != nil || existingPK == nil {
+		return err
+	}
+	state, err := m.currentIndexState()
+	if err != nil {
+		return err
+	}
+	// WRITE_ONLY records paired violations only during application, never
+	// during the mutation-free conflict discovery used by partition moves.
+	if m.store != nil && state.IsWriteOnly() {
+		if err := m.store.addUniquenessViolation(m.index, entry.key, entry.primaryKey, existingPK); err != nil {
+			return err
+		}
+		return m.store.addUniquenessViolation(m.index, entry.key, existingPK, entry.primaryKey)
+	}
+	return &RecordIndexUniquenessViolationError{IndexName: m.index.Name, IndexKey: entry.key, PrimaryKey: entry.primaryKey, ExistingKey: existingPK}
+}
+
+// uniquenessConflict is strictly read-only. A permitted removal is an EXACT
+// value-key/physical-PK pair, not every row selected by the statement.
+func (m *StandardIndexMaintainer) uniquenessConflict(entry EvaluatedIndexEntry, removals []EvaluatedIndexEntry) (tuple.Tuple, error) {
 	// Java's indexSubspace.range(valueKey), [pack+00, pack+ff): a byte prefix
 	// range would also cover values whose packing extends this one ("a" and "a\x00b").
 	r := m.indexSubspace.Sub(entry.key...)
@@ -637,13 +666,13 @@ func (m *StandardIndexMaintainer) checkUniqueness(entry EvaluatedIndexEntry) err
 	// key found, allowing concurrent inserts at higher keys to go undetected.
 	kvs, err := m.tx.GetRange(r, fdb.RangeOptions{}).GetSliceWithError()
 	if err != nil {
-		return fmt.Errorf("uniqueness scan for index %q: %w", m.index.Name, err)
+		return nil, fmt.Errorf("uniqueness scan for index %q: %w", m.index.Name, err)
 	}
 
 	for _, kv := range kvs {
 		existingTuple, err := tuplefast.SubspaceUnpack(kv.Key, len(m.indexSubspace.Bytes()))
 		if err != nil {
-			return fmt.Errorf("unpack existing index entry: %w", err)
+			return nil, fmt.Errorf("unpack existing index entry: %w", err)
 		}
 
 		// Reconstruct full PK from the FDB entry key using getEntryPrimaryKey.
@@ -656,31 +685,19 @@ func (m *StandardIndexMaintainer) checkUniqueness(entry EvaluatedIndexEntry) err
 			continue // Our own record — not a violation
 		}
 
-		// WRITE_ONLY indexes: write violation entries instead of throwing.
-		// Matches Java's standardIndexMaintainer.checkUniqueness() which
-		// calls addUniquenessViolation() for both conflicting PKs.
-		state, err := m.currentIndexState()
-		if err != nil {
-			return err
-		}
-		if m.store != nil && state.IsWriteOnly() {
-			if err := m.store.addUniquenessViolation(m.index, entry.key, entry.primaryKey, existingPK); err != nil {
-				return err
+		removed := false
+		for _, removal := range removals {
+			if tuplesEqual(removal.key, entry.key) && tuplesEqual(removal.primaryKey, existingPK) {
+				removed = true
+				break
 			}
-			if err := m.store.addUniquenessViolation(m.index, entry.key, existingPK, entry.primaryKey); err != nil {
-				return err
-			}
-			return nil
 		}
-		return &RecordIndexUniquenessViolationError{
-			IndexName:   m.index.Name,
-			IndexKey:    entry.key,
-			PrimaryKey:  entry.primaryKey,
-			ExistingKey: existingPK,
+		if !removed {
+			return existingPK, nil
 		}
 	}
 
-	return nil
+	return nil, nil
 }
 
 // currentIndexState uses the context's shared state view, not a store object's

@@ -18,8 +18,8 @@ import (
 // Keep source inputs explicit: this is a reviewable inventory of the store,
 // supported maintainer, and backfill boundaries, not a runtime filesystem probe.
 //
-//go:embed store.go store_api.go store_batch.go store_typed.go store_builder.go store_delete_where.go store_partition.go store_version.go partition_protocol.go partition_format.go online_indexer.go indexing_mutual.go indexing_pending_write_queue.go index_maintainer.go standard_index_maintainer_api.go text_index_maintainer.go index_state.go record_count.go
-//go:embed partition_writers_test.go partition_backfill_test.go partition_protocol_test.go partition_preflight_test.go partition_format_test.go partition_annotation_test.go partition_group_test.go index_maintainer_queue_test.go index_state_test.go record_count_test.go store_api_test.go store_state_cache_test.go
+//go:embed store.go store_api.go store_batch.go store_typed.go store_builder.go store_delete_where.go store_partition.go store_version.go partition_protocol.go partition_format.go partition_update.go partition_update_index.go online_indexer.go indexing_mutual.go indexing_pending_write_queue.go index_maintainer.go standard_index_maintainer_api.go text_index_maintainer.go index_state.go record_count.go
+//go:embed partition_writers_test.go partition_backfill_test.go partition_protocol_test.go partition_preflight_test.go partition_format_test.go partition_annotation_test.go partition_group_test.go partition_update_test.go index_maintainer_queue_test.go index_state_test.go record_count_test.go store_api_test.go store_state_cache_test.go
 var partitionCensusSources embed.FS
 
 type partitionWriterClassification struct {
@@ -32,6 +32,11 @@ type partitionWriterClassification struct {
 // state/build bookkeeping and StoreInfo are not record routes. Safe DROP must
 // separately exclude active builds, WRITE_ONLY state, and pending queues.
 var partitionWriterInventory = map[string]partitionWriterClassification{
+	"FDBRecordStore.PreparePartitionRecordUpdates":             {"preview", "saveTargetFor", "move"},
+	"PreparedPartitionRecordUpdates.Apply":                     {"delegated", "applyPartitionRecordUpdate", "move"},
+	"FDBRecordStore.applyPartitionRecordUpdate":                {"guarded", "beginPartitionMutation", "move"},
+	"StandardIndexMaintainer.applyEvaluatedEntries":            {"internal", "checkKeyValueSizes", "move"},
+	"textIndexMaintainer.applyPartitionUpdate":                 {"internal", "applyPreparedOneKey", "move"},
 	"FDBRecordStore.SaveRecord":                                {"delegated", "SaveRecordWithOptions", "save"},
 	"FDBRecordStore.SaveRecordWithOptions":                     {"delegated", "saveRecordInternal", "save"},
 	"FDBRecordStore.SaveRecordWithVersion":                     {"delegated", "saveRecordInternal", "save"},
@@ -57,7 +62,7 @@ var partitionWriterInventory = map[string]partitionWriterClassification{
 	"FDBRecordStore.DeleteIndexEntriesInRange":                 {"refused", "indexIsPartitioned", "raw"},
 	"NewStandardIndexMaintainer":                               {"refused", "partitionFunctions", "raw"},
 	"StandardIndexMaintainer.UpdateWhileWriteOnly":             {"delegated", "Update", "raw"},
-	"StandardIndexMaintainer.Update":                           {"internal", "checkKeyValueSizes", "raw"},
+	"StandardIndexMaintainer.Update":                           {"delegated", "applyEvaluatedEntries", "raw"},
 	"StandardIndexMaintainer.DeleteWhere":                      {"refused", "deleteWhereRange", "raw"},
 	"StandardIndexMaintainer.insertInt64Entry":                 {"internal", "Set", "save"},
 	"StandardIndexMaintainer.insertScalarEntry":                {"internal", "Set", "save"},
@@ -139,6 +144,7 @@ var partitionWriterInventory = map[string]partitionWriterClassification{
 }
 
 var partitionCensusProofs = map[string]struct{ file, anchor string }{
+	"move":            {"partition_update_test.go", "Atomic partition record updates"},
 	"save":            {"partition_writers_test.go", "routes every save surface and cleans pending/committed versions"},
 	"group":           {"partition_group_test.go", "rejects a reset between completed group rows through"},
 	"batch":           {"partition_annotation_test.go", "keeps plain batch writes free of partition sessions and guards"},
@@ -265,7 +271,7 @@ func partitionCensusMutatingAPI(name string) bool {
 			return true
 		}
 	}
-	return name == "GetIndexMaintainer"
+	return name == "GetIndexMaintainer" || name == "PreparePartitionRecordUpdates" || name == "Apply"
 }
 
 func partitionCensusCoverage(population map[string]bool, inventory map[string]partitionWriterClassification) error {
@@ -303,6 +309,7 @@ func TestPartitionWriterCensus(t *testing.T) {
 	}{
 		{"FDBRecordStore", reflect.TypeFor[*FDBRecordStore]()},
 		{"TypedFDBRecordStore", reflect.TypeFor[*TypedFDBRecordStore[*demopb.Order]]()},
+		{"PreparedPartitionRecordUpdates", reflect.TypeFor[*PreparedPartitionRecordUpdates]()},
 	} {
 		for i := 0; i < store.typ.NumMethod(); i++ {
 			name := store.typ.Method(i).Name
@@ -312,7 +319,12 @@ func TestPartitionWriterCensus(t *testing.T) {
 			}
 		}
 	}
-	if nativeCount < 30 || publicCount < 50 {
+	for _, name := range []string{"FDBRecordStore.PreparePartitionRecordUpdates", "PreparedPartitionRecordUpdates.Apply", "StandardIndexMaintainer.applyEvaluatedEntries"} {
+		if !population[name] {
+			t.Fatalf("move writer disappeared from census population: %s", name)
+		}
+	}
+	if nativeCount < 30 || publicCount < 52 {
 		t.Fatalf("vacuous writers: %d native, %d public", nativeCount, publicCount)
 	}
 	if err := partitionCensusCoverage(population, partitionWriterInventory); err != nil {

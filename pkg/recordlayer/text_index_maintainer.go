@@ -230,38 +230,11 @@ func (m *textIndexMaintainer) updateStandard(oldRecord, newRecord *FDBStoredReco
 	// filteredIndexEntries: the index's predicate and the store's maintenance
 	// filter decide which are maintained, while the tokenizer version is
 	// written and cleared by Update whatever they decide.
-	evalEntries := func(record *FDBStoredRecord[proto.Message]) ([]EvaluatedIndexEntry, [][]any, error) {
-		if record == nil {
-			return nil, nil, nil
-		}
-		maintained := indexValuesFor(m.store, m.index, record)
-		if maintained == IndexValuesNone {
-			return nil, nil, nil
-		}
-		tuples, err := m.index.RootExpression.Evaluate(record, record.Record)
-		if err != nil {
-			return nil, nil, err
-		}
-		entries := make([]EvaluatedIndexEntry, len(tuples))
-		for i, values := range tuples {
-			key := make(tuple.Tuple, len(values))
-			for j, v := range values {
-				key[j] = v
-			}
-			entries[i] = EvaluatedIndexEntry{key: key, primaryKey: record.PrimaryKey}
-		}
-		if maintained == IndexValuesSome {
-			entries = keepMaintainedEntries(m.store, m.index, record, maintained, entries)
-			return entries, indexEntriesToRaw(entries), nil
-		}
-		return entries, tuples, nil
-	}
-
-	oldIdxEntries, oldRaw, err := evalEntries(oldRecord)
+	oldIdxEntries, oldRaw, err := m.filteredIndexEntries(oldRecord)
 	if err != nil {
 		return err
 	}
-	newIdxEntries, newRaw, err := evalEntries(newRecord)
+	newIdxEntries, newRaw, err := m.filteredIndexEntries(newRecord)
 	if err != nil {
 		return err
 	}
@@ -293,6 +266,33 @@ func (m *textIndexMaintainer) updateStandard(oldRecord, newRecord *FDBStoredReco
 		}
 	}
 	return nil
+}
+
+func (m *textIndexMaintainer) filteredIndexEntries(record *FDBStoredRecord[proto.Message]) ([]EvaluatedIndexEntry, [][]any, error) {
+	if record == nil {
+		return nil, nil, nil
+	}
+	maintained := indexValuesFor(m.store, m.index, record)
+	if maintained == IndexValuesNone {
+		return nil, nil, nil
+	}
+	tuples, err := m.index.RootExpression.Evaluate(record, record.Record)
+	if err != nil {
+		return nil, nil, err
+	}
+	entries := make([]EvaluatedIndexEntry, len(tuples))
+	for i, values := range tuples {
+		key := make(tuple.Tuple, len(values))
+		for j, v := range values {
+			key[j] = v
+		}
+		entries[i] = EvaluatedIndexEntry{key: key, primaryKey: record.PrimaryKey}
+	}
+	if maintained == IndexValuesSome {
+		entries = keepMaintainedEntries(m.store, m.index, record, maintained, entries)
+		return entries, indexEntriesToRaw(entries), nil
+	}
+	return entries, tuples, nil
 }
 
 // indexEntriesToRaw converts []indexEntry back to [][]any for updateIndexKeys.
@@ -330,6 +330,19 @@ func (m *textIndexMaintainer) updateIndexKeys(record *FDBStoredRecord[proto.Mess
 // updateOneKey processes a single index entry — tokenizes text and updates BunchedMap.
 // Matches Java's TextIndexMaintainer.updateOneKeyAsync().
 func (m *textIndexMaintainer) updateOneKey(record *FDBStoredRecord[proto.Message], remove bool, entry []any, textPosition int, recordTokenizerVersion int, tokens textTokenCache) error {
+	key, err := m.prepareOneKey(record, entry, textPosition, recordTokenizerVersion, tokens)
+	if err != nil || len(key.positions) == 0 {
+		return err
+	}
+	return m.applyPreparedOneKey(remove, &key)
+}
+
+type preparedTextIndexKey struct {
+	grouping, grouped tuple.Tuple
+	positions         map[string][]int
+}
+
+func (m *textIndexMaintainer) prepareOneKey(record *FDBStoredRecord[proto.Message], entry []any, textPosition int, recordTokenizerVersion int, tokens textTokenCache) (preparedTextIndexKey, error) {
 	// Build the full index entry key (with PK trimming).
 	entryTuple := make(tuple.Tuple, len(entry))
 	for i, v := range entry {
@@ -337,24 +350,24 @@ func (m *textIndexMaintainer) updateOneKey(record *FDBStoredRecord[proto.Message
 	}
 	indexEntryKey, err := indexEntryKey(m.index, entryTuple, record.PrimaryKey)
 	if err != nil {
-		return err
+		return preparedTextIndexKey{}, err
 	}
 
 	// Java's indexEntryKey.getString(textPosition): out of range and non-string
 	// throw; null and "" mean there is nothing to tokenize.
 	if textPosition >= len(indexEntryKey) {
-		return &IndexOutOfBoundsError{Message: fmt.Sprintf("text index %q: text position %d is past the key's %d columns", m.index.Name, textPosition, len(indexEntryKey))}
+		return preparedTextIndexKey{}, &IndexOutOfBoundsError{Message: fmt.Sprintf("text index %q: text position %d is past the key's %d columns", m.index.Name, textPosition, len(indexEntryKey))}
 	}
 	textVal := indexEntryKey[textPosition]
 	if textVal == nil {
-		return nil
+		return preparedTextIndexKey{}, nil
 	}
 	text, ok := textVal.(string)
 	if !ok {
-		return &ClassCastError{Message: fmt.Sprintf("class %s cannot be cast to class java.lang.String", javaTupleValueClassName(textVal))}
+		return preparedTextIndexKey{}, &ClassCastError{Message: fmt.Sprintf("class %s cannot be cast to class java.lang.String", javaTupleValueClassName(textVal))}
 	}
 	if text == "" {
-		return nil
+		return preparedTextIndexKey{}, nil
 	}
 
 	// Split into grouping key, text, and grouped key.
@@ -367,12 +380,16 @@ func (m *textIndexMaintainer) updateOneKey(record *FDBStoredRecord[proto.Message
 	// Tokenize the text, or reuse the batch's tokenization of it.
 	positionMap, err := tokens.tokenize(m.tokenizer, recordTokenizerVersion, text)
 	if err != nil {
-		return fmt.Errorf("text index tokenize: %w", err)
+		return preparedTextIndexKey{}, fmt.Errorf("text index tokenize: %w", err)
 	}
 	if len(positionMap) == 0 {
-		return nil
+		return preparedTextIndexKey{}, nil
 	}
+	return preparedTextIndexKey{grouping: groupingKey, grouped: groupedKey, positions: positionMap}, nil
+}
 
+func (m *textIndexMaintainer) applyPreparedOneKey(remove bool, key *preparedTextIndexKey) error {
+	groupingKey, groupedKey, positionMap := key.grouping, key.grouped, key.positions
 	var groupingPrefix []byte
 	if groupingKey == nil {
 		groupingPrefix = m.indexSubspace.Bytes()

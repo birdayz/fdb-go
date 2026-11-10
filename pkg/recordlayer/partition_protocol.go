@@ -148,17 +148,7 @@ func (op *partitionMutation) finish(causes ...error) {
 	}
 	var invalidated error
 	if op.effects {
-		for key, expected := range op.headers {
-			actual, err := op.store.context.Transaction().Get(fdb.Key(key)).Get()
-			if err != nil {
-				invalidated = &PartitionStateError{Reason: "cannot revalidate partition incarnation", Cause: err}
-				break
-			}
-			if !bytes.Equal(actual, expected) {
-				invalidated = &PartitionStateError{Reason: "table incarnation changed during partition mutation"}
-				break
-			}
-		}
+		_, invalidated = op.validateIncarnations()
 	}
 	if !op.locked {
 		op.state.mu.Lock()
@@ -229,6 +219,21 @@ func (op *partitionMutation) captureIncarnations() error {
 		op.headers[string(key)] = raw
 	}
 	return nil
+}
+
+// Reuse persisted identities for completion checks and the sticky commit
+// guard. The bool distinguishes actual identity loss from a read failure.
+func (op *partitionMutation) validateIncarnations() (bool, error) {
+	for key, expected := range op.headers {
+		actual, err := op.store.context.Transaction().Get(fdb.Key(key)).Get()
+		if err != nil {
+			return false, &PartitionStateError{Reason: "cannot revalidate partition incarnation", Cause: err}
+		}
+		if !bytes.Equal(actual, expected) {
+			return true, &PartitionStateError{Reason: "table incarnation changed during partition mutation"}
+		}
+	}
+	return false, nil
 }
 
 func (op *partitionMutation) collectHeaders(child *partitionMutation) error {

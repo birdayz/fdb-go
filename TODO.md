@@ -3922,8 +3922,12 @@ remain unchanged.
   mechanism, not historical attribution; opt-in callback diagnostics and runtime
   tracing preserve evidence for a failing capture. Do not call this fixed or
   reduce the workload merely because subsequent runs pass.
-- [ ] Implement atomic source-key UPDATE moves with collision, budget, RETURNING
-  and rollback proofs, including changes within the same interval.
+- [x] Implement atomic source-key UPDATE moves with collision, budget, RETURNING
+  and rollback proofs, including changes within the same interval. Immediate
+  destination constraints reject selected-to-vacate keys/swaps/cycles; prepared
+  groups snapshot inputs and keep failed partial moves uncommittable. Pin both PK
+  orders, inline/legacy versions, VALUE/TEXT maintenance, callback interference,
+  supported store resets and fresh-context retries.
 - [ ] Add bounded sparse partition enumeration and consistency checking with
   shared budgets, topology-guarded continuations and missing-entry detection.
 - [ ] Publish typed RANGE/INTERVAL DDL, inherited local indexes and

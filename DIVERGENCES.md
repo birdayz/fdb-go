@@ -168,9 +168,28 @@ required global sorts; a local index's order is not advertised as a global order
 The inherited width is metadata identity for plan caching, not a SQL literal proof;
 actual literal keys and index predicates retain their binding-proof requirements.
 
-This is not yet the complete SQL feature: source-key moves, budgeted directory
-cursors, typed DDL, partition access paths and safe retirement remain implementation
-gates. `ClearPartitionData` is only a prevalidated storage cleanup primitive; its
+Partitioned SQL UPDATE relocates the entire physical key atomically, including
+source changes within one interval. It evaluates all RHS expressions against OLD
+rows before applying the group and returns the actual NEW key/record. Immediate
+destination constraints reject duplicate final keys, occupied unselected keys,
+and another selected row's original key even if that row would move away; swaps
+and cycles are therefore rejected independently of execution order. An unchanged
+self-key remains legal. Plain-table primary-key UPDATE behavior is unchanged.
+VALUE preflight is mutation-free, while TEXT moves delete OLD postings/tokenizer
+metadata and insert NEW state. Failed partial groups cannot commit; dry previews
+claim no versions and retain ordinary lock bypass/secondary-UNIQUE omission.
+The prepared Record Layer bridge snapshots its inputs, is single-use and bound to
+its original store/context, and refuses any version-dependent PK subtree.
+
+Supported DeleteAllRecords/DeleteStore resets invalidate a prepared move's table
+incarnation. A RecordContext belongs to one native transaction attempt: callers
+using the exposed native Reset/OnError must create a fresh RecordContext. Reusing
+its session/version/commit-check state is an unsupported escape, not a reset the
+partition guard promises to detect. Native Commit likewise bypasses those guards.
+
+This is not yet the complete SQL feature: budgeted directory cursors, typed DDL,
+partition access paths and safe retirement remain implementation gates.
+`ClearPartitionData` is only a prevalidated storage cleanup primitive; its
 caller must exclude concurrent writers. It participates in routing
 fences but retains active directory entries, and covers TEXT tokenizer-version and
 UNIQUE violation auxiliary keys without changing plain-table prefix deletion.

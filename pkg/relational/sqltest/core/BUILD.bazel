@@ -18,6 +18,7 @@ go_test(
         "main_test.go",
         "named_call_fdb_test.go",
         "partition_key_bridges_fdb_test.go",
+        "partition_updates_fdb_test.go",
         "plan_cache_bindings_fdb_test.go",
         "plan_cache_engine_fdb_test.go",
         "plan_logging_fdb_test.go",
