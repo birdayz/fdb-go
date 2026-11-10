@@ -234,6 +234,11 @@ var valueNullabilityCensus = map[string]nullabilityCensusEntry{
 		censusGoOnly, "nullable",
 		"no Java class: an unbound `?` placeholder whose value is not known", nil,
 	},
+	"PartitionValue": {
+		censusGoOnly, "NOT NULL LONG (NULL source and invalid routing return an error)",
+		"no Java class: Go-only fdb_partition_v1 interval coordinate",
+		func() Value { return &PartitionValue{} },
+	},
 	"PatternForLikeValue": {
 		censusSame, "NOT NULL record of two nullable strings",
 		"PatternForLikeValue.TYPE: Record.fromFields(false, two nullable STRINGs)",

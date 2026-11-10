@@ -246,6 +246,15 @@ http_file(
 # Version tracks the C client pin (bazel_dep foundationdb + .bazelrc FDB_VERSION).
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
+# A real pre-partitioning CLI for RFC-284's refusal probe, built as a separate
+# binary so its function registry and metadata validator cannot see new Go code.
+http_archive(
+    name = "fdb_go_before_partitioning",
+    sha256 = "0999e4fa2ff0adc067c71502f2dc68f823ce814a41142e41264d91b6b40101ad",
+    strip_prefix = "fdb-go-50365a91093b4f410f5589de4e597be2d3e0d936",
+    urls = ["https://github.com/birdayz/fdb-go/archive/50365a91093b4f410f5589de4e597be2d3e0d936.tar.gz"],
+)
+
 # The runtime jar also contains the matching well-known .proto sources. Only
 # Java's proto graph uses these; native codegen keeps the protobuf module pin.
 http_archive(

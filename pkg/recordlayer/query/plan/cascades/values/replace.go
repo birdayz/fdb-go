@@ -213,6 +213,9 @@ func withChildrenChecked(v Value, newChildren []Value) (Value, error) {
 		}
 		return rebuildFieldValueOnChangedChild(field, newChildren[0])
 	}
+	if coordinate, ok := v.(*PartitionValue); ok {
+		return coordinate.rebuild(newChildren)
+	}
 	if array, ok := v.(*ArrayConstructorValue); ok {
 		rebuilt, err := array.withChildrenChecked(newChildren)
 		if err != nil {
@@ -364,6 +367,12 @@ func withChildrenUnchecked(v Value, newChildren []Value) Value {
 			return v
 		}
 		return &EvaluatesToValue{Child: newChildren[0], Eval: vt.Eval}
+	case *PartitionValue:
+		rebuilt, err := vt.rebuild(newChildren)
+		if err != nil {
+			return nil
+		}
+		return rebuilt
 	case *CardinalityValue:
 		if len(newChildren) != 1 {
 			return v

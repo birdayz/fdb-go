@@ -4228,13 +4228,23 @@ func executeUpdate(
 	// the source row) accounts a growing UPDATE (small row → large value) for its true
 	// bytes; doing all of it before phase 2's saves means a
 	// budget breach — or any build/transform error — returns with zero SaveRecord calls
-	// (no partial mutation). The built messages ARE the echo content, so no extra
-	// residency. proto.Size is gated on HasMemLimit (zero-overhead when off).
+	// (no partial mutation). Ordinary UPDATE echoes these same messages; partitioned
+	// UPDATE separately reserves its private canonical snapshots and actual keys
+	// below. proto.Size is gated on HasMemLimit for the ordinary path.
 	type pendingUpdate struct {
 		old QueryResult
 		msg proto.Message
 	}
 	built := make([]pendingUpdate, 0, len(targets))
+	var partitioned bool
+	if rt := store.GetRecordMetaData().GetRecordType(p.GetTargetRecordType()); rt != nil {
+		layout, err := recordlayer.DescribePartitionKey(rt)
+		if err != nil {
+			return nil, err
+		}
+		partitioned = layout != nil
+	}
+	var chargedMessages int64
 	for _, qr := range targets {
 		if qr.Record == nil || qr.Record.Record == nil {
 			continue
@@ -4288,8 +4298,15 @@ func executeUpdate(
 		if props.State.HasMemLimit() {
 			// Match the stored-row estimator (estimateQueryResultBytes): proto wire size
 			// PLUS the packed PK tuple, which the echo's FDBStoredRecord holds separately.
-			// An UPDATE does not change the PK, so the target's PK is the echo's PK.
-			if err := props.State.ChargeMemory(int64(proto.Size(msg)) + int64(len(qr.Record.PrimaryKey.Pack()))); err != nil {
+			// Ordinary UPDATE retains Java's unchanged-PK save semantics. A
+			// partitioned update reserves its actual NEW key and retained
+			// collision/OLD-key state through the validated group below.
+			charge := int64(proto.Size(msg))
+			chargedMessages += charge
+			if !partitioned {
+				charge += int64(len(qr.Record.PrimaryKey.Pack()))
+			}
+			if err := props.State.ChargeMemory(charge); err != nil {
 				return nil, err
 			}
 		}
@@ -4302,11 +4319,36 @@ func executeUpdate(
 	if !ok || resultType == nil || len(resultType.Fields) != 2 {
 		return nil, layoutBindingError(values.LayoutTypeMismatch, "update result is not exact {old,new}")
 	}
+	var partitionResults []*recordlayer.FDBStoredRecord[proto.Message]
+	if partitioned && len(built) != 0 {
+		updates := make([]recordlayer.PartitionRecordUpdate, len(built))
+		for i, pending := range built {
+			updates[i] = recordlayer.PartitionRecordUpdate{OldPrimaryKey: pending.old.Record.PrimaryKey, Record: pending.msg}
+		}
+		group, err := store.PreparePartitionRecordUpdates(updates)
+		if err != nil {
+			return nil, err
+		}
+		if props.State.HasMemLimit() {
+			if err := props.State.ChargeMemory(group.RetainedMemoryBytes() - chargedMessages); err != nil {
+				return nil, err
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		partitionResults, err = group.Apply(ctx, props.DryRun)
+		if err != nil {
+			return nil, fmt.Errorf("executor: updating partitioned records: %w", err)
+		}
+	}
 	results := make([]QueryResult, 0, len(built))
-	for _, pending := range built {
+	for i, pending := range built {
 		var stored *recordlayer.FDBStoredRecord[proto.Message]
 		var err error
-		if props.DryRun {
+		if partitioned {
+			stored = partitionResults[i]
+		} else if props.DryRun {
 			// DRY RUN: validate + preview the update without staging a write; echo
 			// from the returned would-be-stored record (Java RecordQueryUpdatePlan
 			// + dryRunSaveRecordAsync), not a real save.

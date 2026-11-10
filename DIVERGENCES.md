@@ -98,6 +98,139 @@ and its `TISCAN` plan fail with `RecordCoreStorageException`; Java does not
 provide a supported reconstruction being deferred here. Optional compatibility
 and migration work is tracked in TODO.md. See [full-text boundaries](docs/compatibility.md#full-text-queries).
 
+## Interval-partitioned tables (Go-only, RFC-284)
+
+**Unreleased; implementation in progress.** The Record Layer extension for
+[RFC-284](rfcs/284-interval-partitioned-tables.md) uses a required
+`fdb_partition_v1(source, width)` Function key expression. It computes signed
+BIGINT floor division with a positive interval; existing `div` and generic
+function fan-out semantics are unchanged. Canonical keys are
+`(RecordTypeKey, partition, logical primary key...)`; supported single-table
+VALUE indexes lead with the same partition and TEXT indexes group by it. The
+source must also occur as an ordinary column in the logical primary key and
+every unique index. Plain tables acquire no prefix. The v1 allowlist rejects
+covering layouts whose primary-key overlap occurs only in included values, and
+TEXT layouts that trim a primary-key component from the tokenized body. Those
+existing maintainer/overlap limitations could otherwise merge distinct records'
+index entries; safe covering and grouped TEXT layouts remain supported.
+
+This metadata is **not Java-compatible**. Java 4.14.2.0 resolves every record
+type's required primary-key function while loading metadata and refuses the
+unknown function before opening any table. Go before this extension loads an
+unknown function as potentially duplicate-producing and refuses it in a primary
+key. The boundary is therefore the whole schema, including plain tables in a
+mixed schema. It protects normal metadata/store opens, not raw FDB access or
+clients deliberately substituting metadata or function implementations.
+
+`PartitionRefusalJavaProbe` in
+`conformance/partition_refusal_java_probe_test.go` exercises Java Record Layer,
+Java Relational, and a required source-pinned pre-feature Go CLI. Both no-index
+and local VALUE/TEXT layouts include plain-schema read/write controls and an
+audit of all user keys after every refused attempt. The pinned Go source is
+`50365a91093b4f410f5589de4e597be2d3e0d936`, built separately rather than simulated
+by unregistering a function in the new binary.
+
+Routing state lives under the Go-owned tuple namespace
+`("fdb_go.interval_partitions", int64(1), recordTypeKey, ...)`, not a Java numeric
+store-key allocation. A fixed layout/incarnation header is separate from the
+topology epoch; ordinary active-partition writes read only the header and their
+active/fence pair. First activation and row/index writes share a transaction.
+A failed operation after effects makes that partitioned transaction uncommittable,
+including when Commit began before the writer finished. Routing-state validation
+returns `PartitionStateError`; an incomplete mutation fails Commit with
+`PartitionMutationError`, preserving its cause. Pure preflight failures remain
+committable. Save/batch/pipeline, deletion and backfill participate;
+backfill never activates a missing route. Built-in VALUE/TEXT maintainers do not
+admit queued maintenance; unexpected partitioned queue replay is refused before
+mutation rather than enabled through a different maintainer. Existing records or
+legacy versions without valid routing state fail closed rather than bootstrap a
+directory.
+Delete-all clears the extension state and changes incarnation before reinsertion.
+
+Raw `GetIndexMaintainer`, `DeleteIndexEntries` and `DeleteIndexEntriesInRange`
+refuse partitioned indexes; a public `NewStandardIndexMaintainer` also refuses
+partitioned updates and prefix deletion. `DeleteIndexEntries` now returns
+`error`, changing method-value/interface signatures even for callers using only
+plain tables; plain-index and nil-index behavior is otherwise unchanged.
+Read-only executor scanning needs a safe seam before local partition access paths
+are enabled. On partitioned stores, `SetFormatVersion` refuses a changed version;
+reopen through the store builder for validated conversion instead. Legacy-to-inline
+conversion requires committed legacy versions, not same-context pending versions.
+
+For programmatically constructed partitioned metadata, SQL metadata views expose
+the declared primary key and logical index expressions, while storage and typed
+planner identities retain the physical partition coordinate. Complete logical
+direct Get/Delete/Scan/DeleteRange keys compute that coordinate internally.
+Partial direct prefixes and unbound local-index hints explicitly fail as unsupported
+until budgeted enumeration can preserve declared-key ordering before pagination.
+SQL queries use conservative full-record scans with the original predicates and
+required global sorts; a local index's order is not advertised as a global order.
+The inherited width is metadata identity for plan caching, not a SQL literal proof;
+actual literal keys and index predicates retain their binding-proof requirements.
+
+Partitioned SQL UPDATE relocates the entire physical key atomically, including
+source changes within one interval. It evaluates all RHS expressions against OLD
+rows before applying the group and returns the actual NEW key/record. Immediate
+destination constraints reject duplicate final keys, occupied unselected keys,
+and another selected row's original key even if that row would move away; swaps
+and cycles are therefore rejected independently of execution order. An unchanged
+self-key remains legal. Plain-table primary-key UPDATE behavior is unchanged.
+VALUE preflight is mutation-free, while TEXT moves delete OLD postings/tokenizer
+metadata and insert NEW state. Failed partial groups cannot commit; dry previews
+claim no versions and retain ordinary lock bypass/secondary-UNIQUE omission.
+The prepared Record Layer bridge snapshots its inputs, is single-use and bound to
+its original store/context, and refuses any version-dependent PK subtree.
+
+Supported DeleteAllRecords/DeleteStore resets invalidate a prepared move's table
+incarnation. A RecordContext belongs to one native transaction attempt: callers
+using the exposed native Reset/OnError must create a fresh RecordContext. Reusing
+its session/version/commit-check state is an unsupported escape, not a reset the
+partition guard promises to detect. Native Commit likewise bypasses those guards.
+
+`ScanPartitions` enumerates sparse active coordinates, including retained empty
+partitions, by merging bounded active, record-prefix and legacy-version-prefix
+observations. It validates each active/fence pair and refuses occupied prefixes
+without directory state. It does not validate every body or empty live-fence-only
+orphans. `CheckPartitionConsistency` is a paged checked-work cursor: it audits the
+whole table protocol namespace (including unknown keys and inactive tombstones),
+and every native/RYW body and legacy version in the selected coordinate range,
+using the existing split-record decoder. It stops at the first typed corruption
+error and never repairs state. Healthy work items are not a completeness claim
+until source exhaustion. Context-only orphan version mutations in unordered
+in-memory maps are outside this ordered census; ordinary pending versions on
+readable bodies are supported, and failed partition operations cannot pass.
+
+Both readers require already-loaded StoreInfo, normally supplied by
+Open/Create/CreateOrOpen. An unchecked Build handle without it receives a typed
+no-I/O refusal rather than a guessed format or an unbudgeted lazy read. Coordinate
+ranges have explicit inclusivity; source endpoints outside BIGINT are represented
+as unbounded, not wrapped. Canonical, bounded continuation envelopes bind the
+store/table, physical layout, metadata, range/direction, incarnation, topology and
+safe consumed positions. Clean tokens are portable after persistent revalidation;
+tokens minted after target-table topology changes are context-bound permanently,
+even after commit. Per-table local revisions detect repeated activations under one
+persisted epoch and supported resets without invalidating another table's tokens.
+Ended or cancelled contexts cannot return cached values, stops or EOF.
+
+Every native observation attempt and returned key/value byte joins the shared
+scan budget and transaction clock. A directory page may finish one bounded initial
+entry bundle, with every observation charged; record-limit fail mode remains
+strict, while byte/time limits retain their initial allowance. Subsequent attempts
+use records/bytes/time priority without renewing the allowance per probe. Hard
+cancellation is never an allowance. Checker body reassembly retains existing
+record-atomic soft-limit overshoot with all fragments charged; it is not a
+constant-KV bound. Returned-row stops do not speculate to prove EOF. Store-open
+work precedes these APIs and must be accounted by any enclosing SQL root.
+
+This is not yet the complete SQL feature: typed DDL, partition access paths and
+safe retirement remain implementation gates.
+`ClearPartitionData` is only a prevalidated storage cleanup primitive; its
+caller must exclude concurrent writers. It participates in routing
+fences but retains active directory entries, and covers TEXT tokenizer-version and
+UNIQUE violation auxiliary keys without changing plain-table prefix deletion.
+No existing table is repartitioned automatically; there is no in-place conversion
+or OTEL_V1 migration.
+
 ## Record-load strategy
 
 Go implements Java 4.14.2.0's default `SplitHelper.loadWithSplit` range read,
@@ -4091,11 +4224,23 @@ The restore refuses an inverted template history, where a lower template version
 
 Java admits the second, because it has no guard, and refuses the first.
 
-### Function names in stored key expressions are loaded whether or not Go registers them (RFC-257 WS-J)
+### Ordinary function names in stored key expressions are loaded whether or not Go registers them (RFC-257 WS-J)
 
 The target creates a `FunctionKeyExpression` at load through its classpath's registry. It refuses a name that no module registers with "Function not defined" (FunctionKeyExpression.java:118-122). Its Lucene and Geophile spatial modules, and applications, add names.
 
-Go's registry is its own. Go loads any function name (`functionFromProto`, `pkg/recordlayer/key_expression_proto.go:425-446`). It fails only when it maintains or evaluates an index whose function it does not know ("unknown function key expression", `FunctionKeyExpression.Evaluate`, `pkg/recordlayer/key_expression.go:1725-1736`). Refusing at load would lock Go out of every Java store with such an index.
+Go's registry is its own. Ordinary unknown function names can be decoded by
+`functionFromProto` and loaded in index metadata. They fail when Go maintains or
+evaluates that index ("unknown function key expression",
+`FunctionKeyExpression.Evaluate`). Refusing all unknown names at load would lock
+Go out of every Java store with such an index. This does not admit generic
+potentially duplicate-producing functions as primary keys.
+
+**RFC-284 exception:** the `fdb_partition_*` namespace is reserved. Decoding an
+unknown version's key expression does not imply successful metadata loading:
+`Build`/`RecordMetaDataFromProto` reject unsupported versions, malformed partition
+layouts and partition functions on plain-table indexes before any index is used.
+The supported v1 function is admitted only in its validated partition layout.
+See the [whole-schema boundary](#interval-partitioned-tables-go-only-rfc-284).
 
 The column size of an unregistered name is 1 in Go (`key_expression.go:1746-1751`); in the target it is the function's own. A function that Go does register is checked at load against the target's bounds, with the target's refusal. Go's `Build` refuses an in-code `FunctionExpr` of a name Go does not register, as the target's `create` refuses it (`FunctionExpr`, `key_expression.go:1715-1721`; `functionConstructionFault`, `:1685-1694`). Conformance: "RFC-257 key functions: the registry and create's refusals as Java's" (`conformance/function_registry_conformance_test.go:37`).
 

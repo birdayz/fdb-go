@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime/trace"
 	"strings"
 	"testing"
 	"time"
@@ -171,6 +172,54 @@ func testRelCallsAbsorb(t *testing.T, cluster string) {
 	const k = 12
 	inject := &retryInjector{Database: e.raw, code: 1009, k: k}
 	e.store.db = recordlayer.NewFDBDatabaseWithTransactor(inject, e.raw)
+	traceEnabled := os.Getenv("OTEL_TEST_RETRY_TRACE") == "1"
+	if os.Getenv("OTEL_TEST_RETRY_DIAGNOSTICS") == "1" || traceEnabled {
+		diagnostics := &retryDiagnostics{started: time.Now(), traceRegions: traceEnabled}
+		inject.diagnostics = diagnostics
+		e.store.db.SetAttemptObserver(func(call recordlayer.AttemptCall, err error) {
+			diagnostics.attempt(time.Now(), call, err)
+		})
+		defer func() {
+			inject.mu.Lock()
+			transactions, minimum, bodies := inject.transactions, inject.minimum, inject.bodies
+			inject.mu.Unlock()
+			t.Logf("retry diagnostics fixture turns=%d k=%d configured_timeout=%v failed=%t successful_transactions=%d minimum_executions=%d successful_bodies=%d",
+				deltaTurns, k, e.cfg.TransactionTimeout, t.Failed(), transactions, minimum, bodies)
+			diagnostics.log(t.Logf)
+		}()
+		if traceEnabled {
+			out := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
+			if out == "" {
+				t.Fatal("OTEL_TEST_RETRY_TRACE=1 requires TEST_UNDECLARED_OUTPUTS_DIR")
+			}
+			output, err := os.CreateTemp(out, "otel-retry-*.trace")
+			if err != nil {
+				t.Fatalf("create retry trace artifact in %s: %v", out, err)
+			}
+			if err := trace.Start(output); err != nil {
+				t.Fatalf("start retry trace artifact=%s: %v (close error: %v)", output.Name(), err, output.Close())
+			}
+			defer func() {
+				trace.Stop()
+				info, statErr := output.Stat()
+				closeErr := output.Close()
+				size := int64(-1)
+				if statErr != nil {
+					t.Errorf("stat retry trace artifact=%s: %v", output.Name(), statErr)
+				} else {
+					size = info.Size()
+					if size == 0 {
+						t.Errorf("empty retry trace artifact=%s", output.Name())
+					}
+				}
+				if closeErr != nil {
+					t.Errorf("close retry trace artifact=%s: %v", output.Name(), closeErr)
+				}
+				t.Logf("retry trace finished artifact=%s bytes=%d failed=%t", output.Name(), size, t.Failed())
+			}()
+			t.Logf("retry trace started artifact=%s (process-wide; original turns=%d k=%d configured_timeout=%v)", output.Name(), deltaTurns, k, e.cfg.TransactionTimeout)
+		}
+	}
 	stats, err := e.ExportResourceSpans(ctx, relTurns())
 	if err != nil {
 		t.Fatal(err)

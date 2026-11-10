@@ -264,6 +264,7 @@ func (r *FDBDatabaseRunner) runOnce(ctx context.Context, fn func(rtx *FDBRecordC
 	}
 	// RunWithRetry, not its callback, owns the attempt's commit.
 	recordCtx.routeOwned = true
+	defer recordCtx.partitionReadEnded.Store(true)
 	tx := recordCtx.tx
 
 	result, err := fn(recordCtx)

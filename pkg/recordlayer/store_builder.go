@@ -38,7 +38,7 @@ import (
 //
 // Matches Java's FDBRecordStore.rebuildIndex() which delegates to
 // IndexingBase.rebuildIndexAsync() for the in-transaction path.
-func (store *FDBRecordStore) RebuildIndex(index *Index) error {
+func (store *FDBRecordStore) RebuildIndex(index *Index) (resultErr error) {
 	if index == nil {
 		return fmt.Errorf("index must not be nil")
 	}
@@ -47,6 +47,26 @@ func (store *FDBRecordStore) RebuildIndex(index *Index) error {
 	}
 	startTime := time.Now()
 	defer func() { store.context.Timer().RecordSince(EventRebuildIndex, startTime) }()
+
+	var partitionOp *partitionMutation
+	if store.indexIsPartitioned(index) {
+		finishWrite, err := store.context.beginRecordWrite()
+		if err != nil {
+			return err
+		}
+		defer finishWrite()
+		partitionOp, err = store.beginPartitionMutation()
+		if err != nil {
+			return err
+		}
+		defer func() { partitionOp.finish(resultErr) }()
+		for _, rt := range store.metaData.RecordTypesForIndex(index) {
+			if err := partitionOp.prepareBackfillTable(rt); err != nil {
+				return err
+			}
+		}
+		partitionOp.apply()
+	}
 
 	// Step 1: Clear index data and mark WRITE_ONLY.
 	// Matches Java: clearAndMarkIndexWriteOnly(index)
@@ -86,11 +106,14 @@ func (store *FDBRecordStore) RebuildIndex(index *Index) error {
 			return fmt.Errorf("rebuild index %q: scan records: %w", index.Name, err)
 		}
 
+		if err := store.checkPartitionBackfillRecordType(rec); err != nil {
+			return err
+		}
 		if !store.shouldIndexRecordForIndex(rec, index) {
 			continue
 		}
 
-		if err := maintainer.Update(nil, rec); err != nil {
+		if err := store.updatePartitionedBackfill(maintainer, rec); err != nil {
 			return fmt.Errorf("rebuild index %q: index record pk=%v: %w", index.Name, rec.PrimaryKey, err)
 		}
 	}
@@ -139,6 +162,7 @@ func (store *FDBRecordStore) RebuildIndex(index *Index) error {
 			"error", err)
 	}
 
+	partitionOp.succeed()
 	return nil
 }
 
@@ -227,7 +251,7 @@ func (store *FDBRecordStore) effectiveFormatVersion() int32 {
 //
 // storeHeader is the same pointer as store.storeHeader, so mutating it immediately
 // updates what useOldVersionFormat() derives.
-func (store *FDBRecordStore) maybeUpgradeFormatVersion(storeHeader *gen.DataStoreInfo) (bool, error) {
+func (store *FDBRecordStore) maybeUpgradeFormatVersion(storeHeader *gen.DataStoreInfo, partitionOp *partitionMutation) (bool, error) {
 	oldFormat := storeHeader.GetFormatVersion()
 	// The target is the version this store was OPENED at, which is the newest the
 	// binary knows only when the caller did not pin one. Java takes the same value
@@ -243,6 +267,7 @@ func (store *FDBRecordStore) maybeUpgradeFormatVersion(storeHeader *gen.DataStor
 		return false, nil
 	}
 
+	oldFormatField, oldOmitField := storeHeader.FormatVersion, storeHeader.OmitUnsplitRecordSuffix
 	newFormat := target
 	storeHeader.FormatVersion = &newFormat
 
@@ -257,7 +282,10 @@ func (store *FDBRecordStore) maybeUpgradeFormatVersion(storeHeader *gen.DataStor
 		oldFormat < formatVersionSaveVersionWithRecord &&
 		store.metaData.IsStoreRecordVersions() &&
 		!store.useOldVersionFormat() {
-		if err := store.convertRecordVersionsToInline(); err != nil {
+		if err := store.convertRecordVersionsToInline(partitionOp); err != nil {
+			if partitionOp != nil {
+				storeHeader.FormatVersion, storeHeader.OmitUnsplitRecordSuffix = oldFormatField, oldOmitField
+			}
 			return false, fmt.Errorf("convert record versions to inline format: %w", err)
 		}
 	}
@@ -275,7 +303,10 @@ func (store *FDBRecordStore) maybeUpgradeFormatVersion(storeHeader *gen.DataStor
 //
 // Precondition: store.useOldVersionFormat() is already false (the caller bumped the
 // format version), so store.versionKey(pk) returns the inline key.
-func (store *FDBRecordStore) convertRecordVersionsToInline() error {
+func (store *FDBRecordStore) convertRecordVersionsToInline(partitionOp *partitionMutation) error {
+	if store.hasPartitionedTypes() {
+		return store.convertPartitionRecordVersionsToInline(partitionOp)
+	}
 	legacy := store.subspace.Sub(RecordVersionKey)
 	begin, end := legacy.FDBRangeKeys()
 	tx := store.context.Transaction()
@@ -314,7 +345,7 @@ func (store *FDBRecordStore) convertRecordVersionsToInline() error {
 // since the old version are rebuilt or marked according to the IndexRebuildPolicy.
 // Matches Java's FDBRecordStore.checkPossiblyRebuild() / checkRebuild() /
 // getStatesForRebuildIndexes().
-func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo) error {
+func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo) (resultErr error) {
 	oldMetaDataVersion := int(storeHeader.GetMetaDataversion())
 	newMetaDataVersion := store.metaData.Version()
 
@@ -335,11 +366,30 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 	// brand-new store — Java's `newStore = oldFormatVersion == 0`.
 	oldFormatVersion := storeHeader.GetFormatVersion()
 
+	var conversionOp *partitionMutation
+	if store.hasPartitionedTypes() && oldFormatVersion >= formatVersionMinimum && oldFormatVersion < formatVersionSaveVersionWithRecord && store.effectiveFormatVersion() >= formatVersionSaveVersionWithRecord && store.metaData.IsStoreRecordVersions() && !storeHeader.GetOmitUnsplitRecordSuffix() && (oldFormatVersion >= formatVersionSaveUnsplitWithSuffix || store.metaData.IsSplitLongRecords()) {
+		// loadStoreState has released state/registry locks before reconciliation.
+		finishWrite, err := store.context.beginRecordWrite()
+		if err != nil {
+			return err
+		}
+		defer finishWrite()
+		conversionOp, err = store.beginPartitionMutation()
+		if err != nil {
+			return err
+		}
+		defer func() { conversionOp.finish(resultErr) }()
+		conversionOp.releasePreflight()
+		if err := conversionOp.captureIncarnations(); err != nil {
+			return err
+		}
+	}
+
 	// Upgrade the persisted format version (and migrate the on-disk layout if needed)
 	// BEFORE reading/rebuilding anything, matching Java's checkRebuild() which sets the
 	// format version and converts record versions at the very start. This runs whether
 	// or not the metadata version changed.
-	formatUpgraded, err := store.maybeUpgradeFormatVersion(storeHeader)
+	formatUpgraded, err := store.maybeUpgradeFormatVersion(storeHeader, conversionOp)
 	if err != nil {
 		return err
 	}
@@ -368,6 +418,7 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 	// change arrives here with metaDataVersionChanged already true.
 	metaDataVersionChanged := newMetaDataVersion != oldMetaDataVersion
 	if !formatUpgraded && !metaDataVersionChanged {
+		conversionOp.succeed()
 		return nil
 	}
 
@@ -386,6 +437,7 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 				return fmt.Errorf("update store header after record count rebuild: %w", err)
 			}
 		}
+		conversionOp.succeed()
 		return nil
 	}
 
@@ -484,7 +536,11 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 		return fmt.Errorf("update store header after rebuild: %w", err)
 	}
 
-	return store.removeReplacedIndexes()
+	if err := store.removeReplacedIndexes(); err != nil {
+		return err
+	}
+	conversionOp.succeed()
+	return nil
 }
 
 // areAllRecordTypesSince returns true if every record type associated with

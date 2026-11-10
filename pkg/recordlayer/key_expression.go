@@ -1176,6 +1176,8 @@ func createsDuplicatesRec(expr KeyExpression, unrecognized bool) bool {
 		return createsDuplicatesRec(e.innerKey, unrecognized)
 	case *VersionKeyExpression:
 		return false
+	case *PartitionFunctionKeyExpression:
+		return false
 	case *CardinalityFunctionKeyExpression:
 		// Matches Java's CardinalityFunctionKeyExpression.createsDuplicates(),
 		// which overrides FunctionKeyExpression's default to false — a count is
@@ -1375,6 +1377,8 @@ func keyExpressionEquals(a, b KeyExpression) bool {
 		return functionKeyExpressionsEqual(av, b)
 	case *CardinalityFunctionKeyExpression:
 		return functionKeyExpressionsEqual(&av.FunctionKeyExpression, b)
+	case *PartitionFunctionKeyExpression:
+		return functionKeyExpressionsEqual(&av.FunctionKeyExpression, b)
 	case *DimensionsKeyExpression:
 		bv, ok := b.(*DimensionsKeyExpression)
 		return ok && av.PrefixSize == bv.PrefixSize && av.DimensionsSize == bv.DimensionsSize &&
@@ -1410,6 +1414,8 @@ func functionKeyExpressionsEqual(a *FunctionKeyExpression, b KeyExpression) bool
 	case *FunctionKeyExpression:
 		bf = bv
 	case *CardinalityFunctionKeyExpression:
+		bf = &bv.FunctionKeyExpression
+	case *PartitionFunctionKeyExpression:
 		bf = &bv.FunctionKeyExpression
 	default:
 		return false

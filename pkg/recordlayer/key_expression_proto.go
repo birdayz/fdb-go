@@ -445,6 +445,12 @@ func functionFromProto(fn *gen.Function, depth int) (KeyExpression, error) {
 		}
 	}
 	f := FunctionKeyExpression{name: name, arguments: args}
+	if name == FunctionNamePartitionV1 {
+		if _, err := partitionArguments(args); err != nil {
+			return nil, &KeyExpressionDeserializationError{Message: err.Error(), Cause: err}
+		}
+		return &PartitionFunctionKeyExpression{FunctionKeyExpression: f}, nil
+	}
 	if name == FunctionNameCardinality {
 		return &CardinalityFunctionKeyExpression{FunctionKeyExpression: f}, nil
 	}

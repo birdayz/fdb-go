@@ -129,6 +129,7 @@ class SqlPlanSteps {
 
             RelationalKeyspaceProvider keyspaceProvider = RelationalKeyspaceProvider.instance();
             keyspaceProvider.registerDomainIfNotExists("TEST");
+            keyspaceProvider.registerDomainIfNotExists("FRL");
             KeySpace keySpace = keyspaceProvider.getKeySpace();
 
             FDBDatabase database = FDBDatabaseFactory.instance().getDatabase(clusterFilePath);

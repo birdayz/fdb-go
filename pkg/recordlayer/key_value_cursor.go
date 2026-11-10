@@ -148,6 +148,10 @@ type keyValueCursor struct {
 	parts          [][]byte
 	sizes          sizeInfo
 	versionKey     []byte
+
+	// The partition checker reuses this unsplitter with its charged native
+	// iterator and explicitly accounted legacy-version read, not a second codec.
+	partitionLegacyVersion func(tuple.Tuple) (*FDBRecordVersion, error)
 }
 
 // OnNext returns the next record or indicates why iteration stopped.
@@ -528,7 +532,11 @@ func (c *keyValueCursor) storedRecord(prefix, value []byte, version *FDBRecordVe
 		return nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: err}
 	}
 	if c.useOldVersionFormat {
-		version, err = c.store.LoadRecordVersion(primaryKey, c.scanProperties.ExecuteProperties.IsolationLevel.IsSnapshot())
+		if c.partitionLegacyVersion != nil {
+			version, err = c.partitionLegacyVersion(primaryKey)
+		} else {
+			version, err = c.store.LoadRecordVersion(primaryKey, c.scanProperties.ExecuteProperties.IsolationLevel.IsSnapshot())
+		}
 		if err != nil {
 			return nil, err
 		}

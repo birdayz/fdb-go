@@ -69,6 +69,12 @@ func MapFieldValues(v Value, transform func(*fieldValue) Value) Value {
 	switch cv := v.(type) {
 	case *ArithmeticValue:
 		return cv.WithOperands(newChildren[0], newChildren[1])
+	case *PartitionValue:
+		rebuilt, err := cv.rebuild(newChildren)
+		if err != nil {
+			return nil
+		}
+		return rebuilt
 	case *StrictRankLimitValue:
 		// Same rebuild-switch coverage the ArithmeticValue it replaced had: a
 		// transform on the K child must not fall to the default (which discards
@@ -402,6 +408,9 @@ func EqualsWithoutChildren(a, b Value) bool {
 	case *ArithmeticValue:
 		bv, ok := b.(*ArithmeticValue)
 		return ok && av.Op == bv.Op
+	case *PartitionValue:
+		bv, ok := b.(*PartitionValue)
+		return ok && av.Width == bv.Width
 	case *CastValue:
 		bv, ok := b.(*CastValue)
 		return ok && typesEqual(av.Target, bv.Target)

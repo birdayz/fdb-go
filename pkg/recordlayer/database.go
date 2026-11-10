@@ -389,6 +389,7 @@ func (d *FDBDatabase) runContexts(ctx context.Context, policy attemptPolicy, rou
 			}
 			recordCtx.SetTimer(d.Timer())
 			lastCtx = recordCtx
+			defer recordCtx.partitionReadEnded.Store(true)
 
 			result, err := fn(recordCtx)
 			if err != nil {
@@ -657,8 +658,9 @@ type versionMutation struct {
 // commitCheckRegistration keeps a canceled check distinguishable from a new
 // registration with the same name, including during a pre-commit snapshot.
 type commitCheckRegistration struct {
-	check  CommitCheckFunc
-	active bool // protected by FDBRecordContext.commitMu
+	check   CommitCheckFunc
+	active  bool // protected by FDBRecordContext.commitMu
+	started bool // protected by FDBRecordContext.commitMu
 }
 
 // nextTransactionID generates unique IDs for FDBRecordContext instances.
@@ -668,7 +670,9 @@ var nextTransactionID atomic.Int64
 // It wraps an FDB transaction and provides additional record layer functionality.
 // Goroutine-safe: all mutable fields are protected by atomics, mutexes, or the
 // lockRegistry. Multiple goroutines may safely operate on the same context
-// within a single FDB transaction (matching Java's CompletableFuture model).
+// within a single FDB transaction attempt (matching Java's CompletableFuture model).
+// Native Reset or OnError requires a fresh record context; retained session,
+// version and commit-check state cannot be reused across native attempts.
 // Matches Java's FDBRecordContext.
 type FDBRecordContext struct {
 	tx            fdb.WritableTransaction
@@ -684,6 +688,9 @@ type FDBRecordContext struct {
 	// closeTransaction(false) on both arms of commitAsync); a later commit is
 	// refused as Java's ensureActive refuses it.
 	deactivated atomic.Bool
+	// Partition readers also reject retained contexts after cancellation or a
+	// managed attempt's body exits, including failures before write sealing.
+	partitionReadEnded atomic.Bool
 
 	// A successful direct commit detaches physical coordination from the
 	// caller's cancellation owner, without changing immutable Context().
@@ -874,7 +881,9 @@ func (rc *FDBRecordContext) GetDatabase() *FDBDatabase {
 	return rc.database
 }
 
-// Transaction returns the underlying FDB transaction
+// Transaction returns the underlying FDB transaction. Native lifecycle calls
+// bypass this context: use Commit for its checks, and a fresh record context
+// after Reset or OnError rather than reusing transaction-scoped state.
 func (rc *FDBRecordContext) Transaction() fdb.WritableTransaction {
 	return rc.tx
 }
@@ -986,6 +995,7 @@ func (rc *FDBRecordContext) CommitWithHooks() error {
 
 // Cancel cancels the transaction
 func (rc *FDBRecordContext) Cancel() {
+	rc.partitionReadEnded.Store(true)
 	rc.tx.Cancel()
 }
 
@@ -1185,6 +1195,17 @@ func (rc *FDBRecordContext) GetOrCreateCommitCheck(name string, ifNotExists func
 	return entry.check
 }
 
+// rearmCommitCheck schedules the same named guard again if the commit drain
+// already started it while an admitted writer was still running.
+func (rc *FDBRecordContext) rearmCommitCheck(name string) {
+	rc.commitMu.Lock()
+	defer rc.commitMu.Unlock()
+	if entry := rc.namedCommitChecks[name]; entry != nil && entry.active && entry.started {
+		entry.started = false
+		rc.commitChecks = append(rc.commitChecks, entry)
+	}
+}
+
 // getCommitCheck returns a previously registered named check, or nil.
 // Matches Java's FDBRecordContext.getCommitCheck().
 func (rc *FDBRecordContext) getCommitCheck(name string) CommitCheckFunc {
@@ -1243,6 +1264,7 @@ func (rc *FDBRecordContext) runPendingCommitChecks(checked *int) error {
 		entry := rc.commitChecks[*checked]
 		*checked++
 		active := entry.active
+		entry.started = true
 		rc.commitMu.Unlock()
 		if active {
 			if err := entry.check(); err != nil {

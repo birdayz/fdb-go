@@ -24,7 +24,7 @@ import (
 // the by-name M5 was reverted for). The structural translation makes them
 // unequal under values.ValuesStructurallyEqual.
 //
-// Returns nil if any component is not translatable (fan-out, version, function,
+// Returns nil if any component is not translatable (fan-out, version, unknown function,
 // or any unrecognized key), or if flowedType cannot resolve the complete path —
 // fail-safe: the property then abstains, disabling the dedup optimization rather
 // than risking a wrong one. Field names are request metadata only; every
@@ -86,6 +86,17 @@ func translateKeyComponent(ke recordlayer.KeyExpression, base values.Value, norm
 			return nil
 		}
 		return resolved
+	case *recordlayer.PartitionFunctionKeyExpression:
+		spec, err := e.Specification()
+		if err != nil {
+			return nil
+		}
+		source := translateKeyComponent(recordlayer.Field(spec.SourceColumn()), base, normalizeName)
+		coordinate, err := values.NewPartitionValue(source, spec.IntervalWidth())
+		if err != nil {
+			return nil
+		}
+		return coordinate
 	case *recordlayer.RecordTypeKeyExpression:
 		return values.NewRecordTypeValue(base)
 	case *recordlayer.NestingKeyExpression:

@@ -569,6 +569,7 @@ func unknownRecordTypeError(name string) *MetaDataError {
 // (ThenKeyExpression.java:84).
 type KeyExpressionDeserializationError struct {
 	Message string
+	Cause   error
 }
 
 func (e *KeyExpressionDeserializationError) Error() string {
@@ -580,7 +581,7 @@ func (*KeyExpressionDeserializationError) JavaRecordCoreException() {}
 // Unwrap reports it as the RecordCoreError Java's exception is, so a caller
 // matching RecordCoreError catches it as `catch (RecordCoreException)` does.
 func (e *KeyExpressionDeserializationError) Unwrap() error {
-	return &RecordCoreError{Message: e.Message}
+	return &RecordCoreError{Message: e.Message, Cause: e.Cause}
 }
 
 // MetaDataProtoDeserializationError is Java's

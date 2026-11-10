@@ -1132,6 +1132,10 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		return nil, err
 	}
 
+	if err := b.validatePartitionMetadata(); err != nil {
+		return nil, err
+	}
+
 	// Compute primaryKeyComponentPositions ON THE BUILDER'S OBJECTS, and before
 	// the containers are copied below.
 	//
@@ -2338,6 +2342,9 @@ func keyConstructionFault(expr KeyExpression) (uint64, error) {
 		consider(e.faultSeq, e.fault)
 		consider(keyConstructionFault(e.arguments))
 	case *CardinalityFunctionKeyExpression:
+		consider(e.faultSeq, e.fault)
+		consider(keyConstructionFault(e.arguments))
+	case *PartitionFunctionKeyExpression:
 		consider(e.faultSeq, e.fault)
 		consider(keyConstructionFault(e.arguments))
 	case *DimensionsKeyExpression:

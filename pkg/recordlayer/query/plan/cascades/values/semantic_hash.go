@@ -115,6 +115,8 @@ func writeSemanticHash(h io.Writer, v Value) {
 	// hash-quality). All alias-free.
 	case *ArithmeticValue:
 		_, _ = fmt.Fprintf(h, "arith:%v", t.Op)
+	case *PartitionValue:
+		_, _ = fmt.Fprintf(h, "fdb_partition_v1:%d", t.Width)
 	case *AggregateValue:
 		_, _ = fmt.Fprintf(h, "agg:%v:%v:%d", t.Op, t.IgnoreNulls, t.Limit)
 	case *AndOrValue:

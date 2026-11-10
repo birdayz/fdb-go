@@ -61,6 +61,14 @@ func TestAccessorPathCensus_ClassifiesEveryArm(t *testing.T) {
 			"no name and no resolution is no identity at all",
 		},
 		{
+			"partition coordinate is not its source column",
+			func() values.Value {
+				return &values.PartitionValue{Source: values.BakedFieldValueForTest("AID", 0, root), Width: 10}
+			},
+			values.AccessorPathDeclineNotAColumn,
+			"an interval coordinate must not be identified as the ordinary source accessor",
+		},
+		{
 			"not a column reference",
 			func() values.Value { return root },
 			values.AccessorPathDeclineNotAColumn,

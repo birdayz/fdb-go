@@ -441,7 +441,10 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		return nil, bindErr
 	}
 	defer releaseBindings()
-	planKey, cacheable := g.planCacheKey(md, popts, bindings.text)
+	planKey, cacheable, keyErr := g.planCacheKey(md, popts, bindings.text)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 	cacheTemplate := g.sessionTemplate()
 	cache := g.cache
 	if so.noCache || !cacheable {
@@ -580,7 +583,10 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		// metadata that can declare synthetic types.
 		stats = g.fetchTableStatistics(ctx, md)
 	}
-	planner := newCascadesPlanner(md, popts, cascades.BatchAExpressionRules(), stats)
+	planner, plannerErr := newCascadesPlanner(md, popts, cascades.BatchAExpressionRules(), stats)
+	if plannerErr != nil {
+		return nil, plannerErr
+	}
 
 	bestExpr, _, planErr := planner.PlanWithContext(ctx, ref)
 	if planErr != nil {
@@ -1229,7 +1235,10 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// The plan cache, keyed as a SELECT's is. The statement's checks above
 	// ran, and its RETURNING labels and explain come from the logical plan,
 	// so a hit supplies only the physical plan and its scalar subqueries.
-	planKey, cacheable := g.planCacheKey(md, popts, bindings.text)
+	planKey, cacheable, keyErr := g.planCacheKey(md, popts, bindings.text)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 	var cache queryPlanCache
 	if dml.InsertStatement() == nil && !so.noCache && cacheable {
 		cache = g.cache
@@ -1269,7 +1278,10 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		// guard at the one call site somebody happened to look at.
 		dmlStats = g.fetchTableStatistics(ctx, md)
 	}
-	planner := newCascadesPlanner(md, popts, planningRules, dmlStats)
+	planner, plannerErr := newCascadesPlanner(md, popts, planningRules, dmlStats)
+	if plannerErr != nil {
+		return nil, plannerErr
+	}
 
 	bestExpr, _, planErr := planner.PlanWithContext(ctx, ref)
 	if planErr != nil {
@@ -3097,13 +3109,42 @@ func readableIndexesFrom(
 func buildCascadesPlanContext(
 	md *recordlayer.RecordMetaData,
 	cfg cascades.PlannerConfiguration,
-) cascades.PlanContext {
-	return &metadataPlanContext{md: md, cfg: cfg}
+) (cascades.PlanContext, error) {
+	pc := &metadataPlanContext{md: md, cfg: cfg}
+	if md == nil {
+		return pc, nil
+	}
+	names := make([]string, 0, len(md.RecordTypes()))
+	for name := range md.RecordTypes() {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		rt := md.GetRecordType(name)
+		layout, err := recordlayer.DescribePartitionKey(rt)
+		if err != nil {
+			return nil, err
+		}
+		if layout == nil {
+			continue
+		}
+		for _, index := range rt.GetAllIndexes() {
+			if _, err := layout.ProjectIndex(index); err != nil {
+				return nil, err
+			}
+			if pc.partitionedIndexes == nil {
+				pc.partitionedIndexes = make(map[string]bool)
+			}
+			pc.partitionedIndexes[index.Name] = true
+		}
+	}
+	return pc, nil
 }
 
 type metadataPlanContext struct {
-	md  *recordlayer.RecordMetaData
-	cfg cascades.PlannerConfiguration
+	md                 *recordlayer.RecordMetaData
+	cfg                cascades.PlannerConfiguration
+	partitionedIndexes map[string]bool
 	// The readable-index view lives on cfg (cascades.PlannerConfiguration).
 	// Its zero value is UNRESTRICTED, which is what offline and unit planning
 	// get; live SQL planning resolves it from the store's index states before
@@ -3218,6 +3259,12 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 	for _, name := range indexNames {
 		idx := allIndexes[name]
 		if idx.RootExpression == nil {
+			continue
+		}
+		// Ownership was validated through the canonical layout, not inferred
+		// from flattened names or one expression implementation's subtype.
+		// No family may expand a local index before binding/enumerating p.
+		if c.partitionedIndexes[idx.Name] {
 			continue
 		}
 		// An index the store cannot READ must not become a match candidate.
@@ -4901,7 +4948,11 @@ const defaultEmbeddedTemplate = "S"
 // collected statistics (PLANNER_STATISTICS) is the exception and stays keyed
 // to its database and schema. cacheable is false when the temporary functions
 // cannot be keyed.
-func (g *cascadesGenerator) planCacheKey(md *recordlayer.RecordMetaData, popts plannerOptions, text string) (cacheKey, bool) {
+func (g *cascadesGenerator) planCacheKey(md *recordlayer.RecordMetaData, popts plannerOptions, text string) (cacheKey, bool, error) {
+	partition, err := partitionCacheComponent(md)
+	if err != nil {
+		return cacheKey{}, false, err
+	}
 	temp, cacheable := g.c.activeTx.planCacheComponent()
 	dbPath, schema := "", ""
 	if popts.useCollectedStatistics {
@@ -4910,7 +4961,11 @@ func (g *cascadesGenerator) planCacheKey(md *recordlayer.RecordMetaData, popts p
 	var scope strings.Builder
 	scope.WriteString(planCacheScope(dbPath, schema, md.Version(), popts.cacheKeyPart()))
 	writeLengthPrefixed(&scope, temp)
-	return cacheKey{scope: scope.String(), sql: text}, cacheable
+	if partition != "" {
+		writeLengthPrefixed(&scope, "interval-partition-v1")
+		writeLengthPrefixed(&scope, partition)
+	}
+	return cacheKey{scope: scope.String(), sql: text}, cacheable, nil
 }
 
 // sessionTemplate returns the name a table's qualifier must carry: the name of

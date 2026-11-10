@@ -71,7 +71,10 @@ func planScalarSubqueryPlans(
 		// gate), and the same connection options govern the subquery as govern
 		// the main statement — Java plans a scalar subquery under the statement's
 		// PlannerConfiguration too.
-		subPlanner := newCascadesPlanner(md, popts, cascades.BatchAExpressionRules(), stats)
+		subPlanner, plannerErr := newCascadesPlanner(md, popts, cascades.BatchAExpressionRules(), stats)
+		if plannerErr != nil {
+			return nil, plannerErr
+		}
 		subBest, _, subErr := subPlanner.PlanWithContext(ctx, subRef)
 		if subErr != nil {
 			return nil, translatePlannerError(subErr, unableToPlanScalarSubqueryMessage)

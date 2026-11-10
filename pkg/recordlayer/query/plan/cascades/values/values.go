@@ -2216,6 +2216,8 @@ func explainValueOrdinalsWithAliases(v Value, withOrdinals bool, aliases map[Cor
 	case *SubscriptValue:
 		return explainValueOrdinalsWithAliases(cv.Source, withOrdinals, aliases) + "[" +
 			explainValueOrdinalsWithAliases(cv.Index, withOrdinals, aliases) + "]"
+	case *PartitionValue:
+		return "fdb_partition_v1(" + explainValueOrdinalsWithAliases(cv.Source, withOrdinals, aliases) + ", " + fmt.Sprint(cv.Width) + ")"
 	case *CardinalityValue:
 		// Java: ExplainTokens.addFunctionCall(FunctionNames.CARDINALITY, ...).
 		// Renders `cardinality(<child>)`, e.g. `cardinality(_.int_arr)`.

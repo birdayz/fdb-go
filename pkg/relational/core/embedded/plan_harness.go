@@ -460,7 +460,10 @@ func planReferenceToPhysical(
 	// entry point takes options. It still goes through
 	// newCascadesPlanner so the harness and the production paths cannot diverge
 	// in how a planner is built.
-	planner := newCascadesPlanner(md, harnessPlannerOptions(popts), planningRules, stats)
+	planner, plannerErr := newCascadesPlanner(md, harnessPlannerOptions(popts), planningRules, stats)
+	if plannerErr != nil {
+		return nil, nil, plannerErr
+	}
 
 	// RFC-224: every Reference the extractor selects must resolve to a
 	// physical member, and property-retained multi-final groups must be
@@ -740,7 +743,10 @@ func PlanQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats pro
 
 	// No connection here, so no api.Options: plan under the Java-default
 	// planner options via the shared construction site.
-	planner := newCascadesPlanner(md, harnessPlannerOptions(plannerOptionsFrom(nil)), cascades.BatchAExpressionRules(), stats)
+	planner, plannerErr := newCascadesPlanner(md, harnessPlannerOptions(plannerOptionsFrom(nil)), cascades.BatchAExpressionRules(), stats)
+	if plannerErr != nil {
+		return "", plannerErr
+	}
 
 	bestExpr, _, planErr := planner.PlanWithContext(context.Background(), ref)
 	if planErr != nil {
@@ -904,7 +910,10 @@ func planRecordQueryAndSubqueriesWithOptions(
 		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, "Cascades translation failed")
 	}
 
-	planner := newCascadesPlanner(md, popts, cascades.BatchAExpressionRules(), stats)
+	planner, plannerErr := newCascadesPlanner(md, popts, cascades.BatchAExpressionRules(), stats)
+	if plannerErr != nil {
+		return nil, nil, plannerErr
+	}
 
 	bestExpr, _, planErr := planner.PlanWithContext(context.Background(), ref)
 	if planErr != nil {

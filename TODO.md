@@ -3892,6 +3892,72 @@ boundary in `docs/benchmarks/otel-relational-local-20261107.md`.
   runs only on `workflow_dispatch`; measure it on the runners and move it to
   pull requests if it fits.
 
+## Interval-partitioned SQL tables (RFC-284)
+
+Design: [RFC-284](rfcs/284-interval-partitioned-tables.md), accepted; implementation
+in progress. Opt-in for new tables; existing tables, indexes and OTEL_V1 stores
+remain unchanged.
+
+- [x] Prove the required singleton partition key function, metadata round-trip,
+  VALUE/TEXT PK reconstruction and complete auxiliary-state cleanup; pin
+  whole-schema Java/old-Go refusal with unpartitioned controls. Foundation and
+  corrections in `f4375c68c` / `11a650118`: fast and full lanes pass, both live
+  refusal probes pass, and milestone review is ACK. SQL/lifecycle gates below
+  remain open.
+- [x] Add the versioned partition directory/fences to every Record Layer writer
+  and backfill path, including batch fast paths, dry runs, legacy-version
+  conversion and bulk deletion, with a maintained API census. Activation and row
+  writes must be atomic; failed partial operations must not commit. Ordinary
+  active-partition writes must not update a shared table key; delete-all reset
+  must be bounded by table count.
+- [x] Preserve logical SQL keys over physical partition prefixes in metadata and
+  complete-key direct access. Keep conservative scan/residual/sort plans correct
+  before local planning lands, including both declared primary-key orders.
+- [ ] Attribute the first SQL-bridge fast-lane timeout in
+  `TestRelExporterTxnPolicyRealFDB/exporter_calls_absorb_retryable`: message
+  persistence failed while opening the store with `transaction_timed_out (1031)`.
+  The original 25-turn fixture, 12 injected retries, 10-second timeout and
+  parallelism are unchanged. Later diagnostic runs passed but do not explain
+  that failure. The native lifetime regression proves the retained-deadline
+  mechanism, not historical attribution; opt-in callback diagnostics and runtime
+  tracing preserve evidence for a failing capture. Do not call this fixed or
+  reduce the workload merely because subsequent runs pass.
+- [x] Implement atomic source-key UPDATE moves with collision, budget, RETURNING
+  and rollback proofs, including changes within the same interval. Immediate
+  destination constraints reject selected-to-vacate keys/swaps/cycles; prepared
+  groups snapshot inputs and keep failed partial moves uncommittable. Pin both PK
+  orders, inline/legacy versions, VALUE/TEXT maintenance, callback interference,
+  supported store resets and fresh-context retries.
+- [x] Add bounded sparse partition enumeration and paged checked-work consistency
+  checking with shared budgets, topology-guarded continuations and missing-entry
+  detection. Readers require loaded StoreInfo; dirty-topology tokens remain
+  context-bound after commit. Pin native/RYW body and legacy-version audits,
+  retained empty entries, literal observation ledgers, cancellation/ended-attempt
+  refusal and no-write proofs. Unordered context-only orphan version maps are
+  outside this ordered census; no automatic repair.
+- [ ] Publish typed RANGE/INTERVAL DDL, inherited local indexes and
+  INFORMATION_SCHEMA.PARTITIONS only after the routing/read/update prerequisites
+  work end to end. Admit index shapes only with the RFC's correctness proofs.
+- [ ] Add Cascades pruning/enumeration, local access paths, global ordering and
+  resumable execution. No caller-supplied bucket; no time predicate means all
+  active partitions. Finish directory-driven direct-index access and logical
+  prefix Scan/DeleteRange as well; preserve declared-key order before pagination
+  with shared budgets, never an invented partition or per-page sorting. Give the
+  executor a safe scan seam without exposing unfenced raw maintainers.
+- [ ] Implement atomic partition DROP with write/build/queued-maintenance
+  exclusion and regression coverage. Measure FTS ingest/query/retention costs
+  separately before OTel adoption; settle V2's explicit-event-ID replay policy
+  and any global trace/identity locator. No automatic V1 migration.
+- [ ] Extend the validated local-index allowlist only after proving PK identity:
+  covering indexes with value-only PK overlaps and TEXT indexes whose tokenized
+  body overlaps the PK are rejected in v1. Supporting them requires preserving
+  every original PK component through maintenance and fetch, with shared-key/token
+  collision regressions; do not change plain-store layouts as a side effect.
+- [ ] Later, separately scoped: temporal/calendar keys, nonuniform RANGE bounds,
+  HASH/LIST, additional index maintainers, global uniqueness, online
+  repartitioning, TTL/late-data rejection and concurrent drop/backfill. None is
+  supplied merely by adding the partition prefix.
+
 ## TEXT SQL access paths
 
 - [ ] Recover and diagnose the historical RFC-258 fail-on-scan-limit failure

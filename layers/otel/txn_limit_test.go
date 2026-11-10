@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/trace"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -110,6 +112,7 @@ type retryInjector struct {
 	fdb.Database
 	code, k         int
 	waitForDeadline bool
+	diagnostics     *retryDiagnostics
 
 	mu           sync.Mutex
 	transactions int
@@ -122,10 +125,27 @@ func (r *retryInjector) Transact(fn func(fdb.WritableTransaction) (any, error)) 
 }
 
 func (r *retryInjector) TransactCtx(ctx context.Context, fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	var diagnostic *retryDiagnosticTransaction
+	if r.diagnostics != nil {
+		diagnostic = r.diagnostics.begin(time.Now(), ctx, r.Database.Metrics())
+		if r.diagnostics.traceRegions {
+			defer trace.StartRegion(ctx, fmt.Sprintf("otel-retry transaction=%d", diagnostic.id)).End()
+		}
+	}
 	executions := 0
 	result, err := r.Database.TransactCtx(ctx, func(tx fdb.WritableTransaction) (any, error) {
 		executions++
+		var started, finished time.Time
+		if diagnostic != nil {
+			started = time.Now()
+			if r.diagnostics.traceRegions {
+				defer trace.StartRegion(ctx, fmt.Sprintf("otel-retry transaction=%d callback=%d", diagnostic.id, executions)).End()
+			}
+		}
 		result, err := fn(tx)
+		if diagnostic != nil {
+			finished = time.Now()
+		}
 		if err == nil {
 			r.mu.Lock()
 			r.bodies++
@@ -135,7 +155,13 @@ func (r *retryInjector) TransactCtx(ctx context.Context, fn func(fdb.WritableTra
 			if r.waitForDeadline {
 				<-ctx.Done()
 			}
+			if diagnostic != nil {
+				diagnostic.callback(executions, started, finished, time.Now(), err, fdb.Error{Code: r.code}, true)
+			}
 			return nil, fdb.Error{Code: r.code}
+		}
+		if diagnostic != nil {
+			diagnostic.callback(executions, started, finished, time.Now(), err, err, false)
 		}
 		return result, err
 	})
@@ -147,7 +173,234 @@ func (r *retryInjector) TransactCtx(ctx context.Context, fn func(fdb.WritableTra
 		r.transactions++
 		r.mu.Unlock()
 	}
+	if diagnostic != nil {
+		diagnostic.finish(time.Now(), result, err, r.Database.Metrics())
+	}
 	return result, err
+}
+
+// retryDiagnostics records only when explicitly enabled by the policy test.
+// Transaction IDs identify TransactCtx calls, not private native handles or RL CallIDs.
+type retryDiagnostics struct {
+	mu           sync.Mutex
+	started      time.Time
+	nextID       int
+	events       []retryDiagnosticEvent
+	traceRegions bool
+}
+
+type retryDiagnosticEvent struct {
+	kind                        string
+	elapsed, transactionElapsed time.Duration
+	transaction, execution      int
+	completed, injected         int
+	callbackStart, bodyDuration time.Duration
+	callbackDuration            time.Duration
+	bodyErr, err                error
+	result, native              any
+	exporter                    bool
+	requestedTimeout            time.Duration
+	requestedRetryLimit         int
+	attempt                     recordlayer.AttemptCall
+}
+
+type retryDiagnosticTransaction struct {
+	diagnostics         *retryDiagnostics
+	id                  int
+	started             time.Time
+	completed, injected int
+}
+
+func (d *retryDiagnostics) begin(at time.Time, ctx context.Context, native any) *retryDiagnosticTransaction {
+	retryLimit := benchTxnRetryLimit
+	if isExporterTxn(ctx) {
+		retryLimit = noRetryLimit
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.nextID++
+	d.events = append(d.events, retryDiagnosticEvent{
+		kind: "begin", elapsed: at.Sub(d.started), transaction: d.nextID,
+		exporter: isExporterTxn(ctx), requestedTimeout: txnTimeout(ctx), requestedRetryLimit: retryLimit,
+		native: native,
+	})
+	return &retryDiagnosticTransaction{diagnostics: d, id: d.nextID, started: at}
+}
+
+func (d *retryDiagnostics) record(at time.Time, event retryDiagnosticEvent) {
+	event.elapsed = at.Sub(d.started)
+	d.mu.Lock()
+	d.events = append(d.events, event)
+	d.mu.Unlock()
+}
+
+func (d *retryDiagnosticTransaction) callback(execution int, started, finished, returned time.Time, bodyErr, returnedErr error, injected bool) {
+	if bodyErr == nil {
+		d.completed++
+	}
+	if injected {
+		d.injected++
+	}
+	d.diagnostics.record(returned, retryDiagnosticEvent{
+		kind: "callback", transaction: d.id, transactionElapsed: returned.Sub(d.started), execution: execution,
+		completed: d.completed, injected: d.injected,
+		callbackStart: started.Sub(d.started), bodyDuration: finished.Sub(started), callbackDuration: returned.Sub(started),
+		bodyErr: bodyErr, err: returnedErr,
+	})
+}
+
+func (d *retryDiagnosticTransaction) finish(at time.Time, result any, err error, native any) {
+	d.diagnostics.record(at, retryDiagnosticEvent{
+		kind: "final", transaction: d.id, transactionElapsed: at.Sub(d.started),
+		completed: d.completed, injected: d.injected, result: result, err: err, native: native,
+	})
+}
+
+func (d *retryDiagnostics) attempt(at time.Time, call recordlayer.AttemptCall, err error) {
+	d.record(at, retryDiagnosticEvent{kind: "attempt", attempt: call, err: err})
+}
+
+func retryDiagnosticError(err error) string {
+	code, ok := fdbErrorCode(err)
+	return fmt.Sprintf("type=%T fdb_code=%d has_fdb_code=%t cause=%q", err, code, ok, fmt.Sprint(err))
+}
+
+func (d *retryDiagnostics) log(logf func(string, ...any)) {
+	d.mu.Lock()
+	events := append([]retryDiagnosticEvent(nil), d.events...)
+	d.mu.Unlock()
+	var transactions, callbacks, finals, attempts int
+	for _, event := range events {
+		switch event.kind {
+		case "begin":
+			transactions++
+		case "callback":
+			callbacks++
+		case "final":
+			finals++
+		case "attempt":
+			attempts++
+		}
+	}
+	logf("retry diagnostics events=%d transactions=%d callbacks=%d finals=%d attempts=%d nonvacuous=%t; options_observed=unavailable (no getters; requested policy only); native snapshots are per-handle and overlap concurrent transactions; RL CallIDs are not mapped to local transaction IDs",
+		len(events), transactions, callbacks, finals, attempts, transactions > 0 && callbacks > 0 && finals == transactions && attempts > 0)
+	for sequence, event := range events {
+		switch event.kind {
+		case "begin":
+			logf("retry diagnostic seq=%d at=%v kind=begin transaction=%d exporter=%t requested_timeout=%v requested_retry_limit=%d native=%+v",
+				sequence, event.elapsed, event.transaction, event.exporter, event.requestedTimeout, event.requestedRetryLimit, event.native)
+		case "callback":
+			logf("retry diagnostic seq=%d at=%v kind=callback transaction=%d execution=%d transact_elapsed=%v callback_start=%v body_duration=%v callback_duration=%v completed=%d injected=%d body_error={%s} returned_error={%s}",
+				sequence, event.elapsed, event.transaction, event.execution, event.transactionElapsed, event.callbackStart, event.bodyDuration, event.callbackDuration,
+				event.completed, event.injected, retryDiagnosticError(event.bodyErr), retryDiagnosticError(event.err))
+		case "final":
+			logf("retry diagnostic seq=%d at=%v kind=final transaction=%d transact_elapsed=%v completed=%d injected=%d result=%#v error={%s} native=%+v",
+				sequence, event.elapsed, event.transaction, event.transactionElapsed, event.completed, event.injected, event.result, retryDiagnosticError(event.err), event.native)
+		case "attempt":
+			logf("retry diagnostic seq=%d at=%v kind=attempt rl_call_id=%d route=%d owner=%q execution=%d counted_attempt=%d error={%s}",
+				sequence, event.elapsed, event.attempt.CallID, event.attempt.Route, event.attempt.Owner, event.attempt.Execution, event.attempt.Attempt, retryDiagnosticError(event.err))
+		}
+	}
+}
+
+func TestRetryDiagnosticsRecorder(t *testing.T) {
+	t.Parallel()
+	origin := time.Unix(0, 0)
+	d := &retryDiagnostics{started: origin}
+	before, after := struct{ Retries int }{2}, struct{ Retries int }{3}
+	first := d.begin(origin.Add(time.Second), withExporterTxns(t.Context(), 10*time.Second), before)
+	first.callback(1, origin.Add(2*time.Second), origin.Add(2250*time.Millisecond), origin.Add(2300*time.Millisecond), nil, fdb.Error{Code: 1009}, true)
+	first.callback(2, origin.Add(3*time.Second), origin.Add(3500*time.Millisecond), origin.Add(3600*time.Millisecond), nil, nil, false)
+	first.finish(origin.Add(4*time.Second), "stored", nil, after)
+	call := recordlayer.AttemptCall{Route: recordlayer.RouteAttempt, Owner: "run", CallID: 41}
+	d.attempt(origin.Add(4100*time.Millisecond), call, nil)
+
+	second := d.begin(origin.Add(5*time.Second), t.Context(), after)
+	bodyErr := fmt.Errorf("failed to read store info: %w", fdb.Error{Code: 1031})
+	second.callback(1, origin.Add(6*time.Second), origin.Add(6250*time.Millisecond), origin.Add(6300*time.Millisecond), bodyErr, bodyErr, false)
+	second.finish(origin.Add(7*time.Second), nil, bodyErr, after)
+	failedCall := recordlayer.AttemptCall{Route: recordlayer.RouteAttempt, Owner: "run", Execution: 1, Attempt: 1, CallID: 42}
+	d.attempt(origin.Add(7100*time.Millisecond), failedCall, bodyErr)
+
+	if first.id != 1 || second.id != 2 || len(d.events) != 9 {
+		t.Fatalf("IDs %d, %d; events=%d, want 1, 2 and 9", first.id, second.id, len(d.events))
+	}
+	if event := d.events[0]; event.transaction != 1 || !event.exporter || event.requestedTimeout != 10*time.Second || event.requestedRetryLimit != -1 || event.native != before || event.elapsed != time.Second {
+		t.Fatalf("exporter begin %+v", event)
+	}
+	if event := d.events[1]; event.transaction != 1 || event.execution != 1 || event.completed != 1 || event.injected != 1 || event.callbackStart != time.Second || event.bodyDuration != 250*time.Millisecond || event.callbackDuration != 300*time.Millisecond || event.transactionElapsed != 1300*time.Millisecond || event.elapsed != 2300*time.Millisecond || event.bodyErr != nil {
+		t.Fatalf("injected callback %+v", event)
+	}
+	if code, ok := fdbErrorCode(d.events[1].err); !ok || code != 1009 {
+		t.Fatalf("injected error %v", d.events[1].err)
+	}
+	if event := d.events[2]; event.execution != 2 || event.completed != 2 || event.injected != 1 || event.bodyErr != nil || event.err != nil {
+		t.Fatalf("successful callback %+v", event)
+	}
+	if event := d.events[3]; event.transaction != 1 || event.transactionElapsed != 3*time.Second || event.completed != 2 || event.injected != 1 || event.result != "stored" || event.err != nil || event.native != after {
+		t.Fatalf("successful final %+v", event)
+	}
+	if event := d.events[4]; event.attempt != call || event.err != nil {
+		t.Fatalf("successful attempt %+v", event)
+	}
+	if event := d.events[5]; event.transaction != 2 || event.exporter || event.requestedTimeout != 1500*time.Millisecond || event.requestedRetryLimit != 10 {
+		t.Fatalf("plain begin %+v", event)
+	}
+	if event := d.events[6]; event.transaction != 2 || event.execution != 1 || event.completed != 0 || event.injected != 0 || event.bodyErr != bodyErr || event.err != bodyErr {
+		t.Fatalf("failed callback %+v", event)
+	}
+	if event := d.events[7]; event.transaction != 2 || event.completed != 0 || event.injected != 0 || event.result != nil || event.err != bodyErr || event.native != after {
+		t.Fatalf("failed final %+v", event)
+	}
+	if event := d.events[8]; event.attempt != failedCall || event.err != bodyErr {
+		t.Fatalf("failed attempt %+v", event)
+	}
+
+	var lines []string
+	d.log(func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) })
+	if len(lines) != 10 || !strings.Contains(lines[0], "events=9 transactions=2 callbacks=3 finals=2 attempts=2 nonvacuous=true") {
+		t.Fatalf("diagnostic population %v", lines)
+	}
+	output := strings.Join(lines, "\n")
+	for _, want := range []string{
+		"options_observed=unavailable", "requested_timeout=10s requested_retry_limit=-1",
+		"kind=callback transaction=1 execution=1", "body_duration=250ms callback_duration=300ms completed=1 injected=1",
+		"fdb_code=1009 has_fdb_code=true", "fdb_code=1031 has_fdb_code=true",
+		"fdb_code=0 has_fdb_code=false", "failed to read store info: transaction_timed_out (1031)",
+		`result="stored"`, "result=<nil>", "native={Retries:2}", "native={Retries:3}",
+		`rl_call_id=42 route=0 owner="run" execution=1 counted_attempt=1`,
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("diagnostic output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestRetryDiagnosticsNonvacuity(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		kinds []string
+		want  bool
+	}{
+		{"empty", nil, false},
+		{"no callback", []string{"begin", "final", "attempt"}, false},
+		{"missing final", []string{"begin", "callback", "attempt"}, false},
+		{"no attempt", []string{"begin", "callback", "final"}, false},
+		{"complete", []string{"begin", "callback", "final", "attempt"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &retryDiagnostics{}
+			for _, kind := range tc.kinds {
+				d.events = append(d.events, retryDiagnosticEvent{kind: kind})
+			}
+			var lines []string
+			d.log(func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) })
+			if len(lines) != len(tc.kinds)+1 || !strings.Contains(lines[0], fmt.Sprintf("nonvacuous=%t", tc.want)) {
+				t.Fatalf("kinds=%v diagnostic population %v", tc.kinds, lines)
+			}
+		})
+	}
 }
 
 // runTxnSlot and the transaction policies on a plain FDBDatabase: write-slot

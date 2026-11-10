@@ -196,7 +196,7 @@ func (s *directAccessStatement) ExecuteGet(ctx context.Context, tableName string
 		if index != nil {
 			return getDirectFromIndex(ctx, t, index, keySetMap(key))
 		}
-		pk, err := buildDirectKey(t.rt, t.rt.PrimaryKey, "primary key of <"+t.name+">", keySetMap(key), true)
+		pk, err := buildDirectPrimaryKey(t.rt, "primary key of <"+t.name+">", keySetMap(key), true)
 		if err != nil {
 			return nil, err
 		}
@@ -242,7 +242,7 @@ func (s *directAccessStatement) ExecuteScan(ctx context.Context, tableName strin
 		if index != nil {
 			return scanDirectIndexPage(ctx, t, index, keySetMap(keyPrefix), cont, directRowLimit(o))
 		}
-		prefix, err := buildDirectKey(t.rt, t.rt.PrimaryKey, "primary key of <"+t.name+">", keySetMap(keyPrefix), false)
+		prefix, err := buildDirectPrimaryKey(t.rt, "primary key of <"+t.name+">", keySetMap(keyPrefix), false)
 		if err != nil {
 			return nil, err
 		}
@@ -277,7 +277,7 @@ func (s *directAccessStatement) ExecuteDelete(ctx context.Context, tableName str
 		return 0, errReadOnlyOperation("a direct-access delete")
 	}
 	n, err := s.run(ctx, tableName, opts, func(t directTable, _ *api.Options) (any, error) {
-		pk, err := buildDirectKey(t.rt, t.rt.PrimaryKey, "primary key of <"+t.name+">", keySetMap(key), true)
+		pk, err := buildDirectPrimaryKey(t.rt, "primary key of <"+t.name+">", keySetMap(key), true)
 		if err != nil {
 			return nil, err
 		}
@@ -305,7 +305,7 @@ func (s *directAccessStatement) ExecuteDeleteRange(ctx context.Context, tableNam
 	}
 	n, err := s.run(ctx, tableName, opts, func(t directTable, _ *api.Options) (any, error) {
 		columns := keySetMap(keyPrefix)
-		prefix, err := buildDirectKey(t.rt, t.rt.PrimaryKey, "primary key of <"+t.name+">", columns, false)
+		prefix, err := buildDirectPrimaryKey(t.rt, "primary key of <"+t.name+">", columns, false)
 		if err != nil {
 			return nil, err
 		}
@@ -364,6 +364,13 @@ func directSourceIndex(t directTable, o *api.Options) (*recordlayer.Index, error
 	}
 	for _, index := range t.rt.GetIndexes() {
 		if index.Name == hint {
+			layout, err := recordlayer.DescribePartitionKey(t.rt)
+			if err != nil {
+				return nil, err
+			}
+			if layout != nil {
+				return nil, api.NewError(api.ErrCodeUnsupportedOperation, "unbound partition-local direct index access requires partition enumeration")
+			}
 			return index, nil
 		}
 	}
@@ -615,6 +622,27 @@ func directRecordKey(t directTable, msg proto.Message) (tuple.Tuple, error) {
 		pk[i] = e
 	}
 	return pk, nil
+}
+
+// buildDirectPrimaryKey accepts declared columns, routing only a complete key.
+// A logical prefix may cross partitions in a different order from storage;
+// enabling it requires a budgeted, logically ordered partition cursor.
+func buildDirectPrimaryKey(rt *recordlayer.RecordType, scannable string, columns map[string]any, complete bool) (tuple.Tuple, error) {
+	layout, err := recordlayer.DescribePartitionKey(rt)
+	if err != nil {
+		return nil, err
+	}
+	if layout == nil {
+		return buildDirectKey(rt, rt.PrimaryKey, scannable, columns, complete)
+	}
+	logical, err := buildDirectKey(rt, layout.LogicalPrimaryKey(), scannable, columns, complete)
+	if err != nil {
+		return nil, err
+	}
+	if len(logical) != layout.LogicalPrimaryKey().ColumnSize() {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "partial partitioned direct keys require a logically ordered partition cursor")
+	}
+	return layout.PhysicalKey(logical)
 }
 
 // buildDirectKey is Java's KeyBuilder.buildKey(Map, failOnIncompleteKey)

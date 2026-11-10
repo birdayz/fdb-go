@@ -14,6 +14,111 @@ import (
 	"fdb.dev/pkg/fdbgo/wire"
 )
 
+func TestOnErrorReappliedTimeoutKeepsOverallLifetime(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"within-budget", "expired-before-first-read", "user-reset-fresh-budget"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				// The queue and its timers must belong to this fake-clock bubble.
+				db := &Database{db: &database{timeouts: newTimeoutQueue()}}
+				// An established version floor keeps explicit-version validation local.
+				db.db.minAcceptableReadVersion.Store(&minAcceptableStamp{epoch: db.db.grvCache.epochNow(), version: 1})
+				tx := db.CreateTransaction()
+				defer tx.Cancel()
+				originalCreation := tx.creationTime
+				originalDeadline := originalCreation.Add(10 * time.Second)
+				expectedCreation, expectedDeadline := originalCreation, originalDeadline.UnixNano()
+				entries, readCalls, completed, injected := 0, 0, 0, 0
+				checkLifetime := func() {
+					t.Helper()
+					if !tx.creationTime.Equal(expectedCreation) || tx.deadlineNs.Load() != expectedDeadline {
+						t.Fatalf("entry %d creation=%v deadline=%d, want %v / %d", entries, tx.creationTime, tx.deadlineNs.Load(), expectedCreation, expectedDeadline)
+					}
+				}
+				configureEntry := func() {
+					t.Helper()
+					entries++
+					tx.SetRetryLimit(0)
+					if !tx.hasRetryLimit || tx.retryLimit != 0 {
+						t.Fatal("entry did not first apply the RL zero retry limit")
+					}
+					tx.SetTimeout(10000)
+					tx.SetRetryLimit(-1)
+					if tx.hasRetryLimit || tx.timeoutDur() != 10*time.Second {
+						t.Fatalf("entry policy retry-limit=%t timeout=%v", tx.hasRetryLimit, tx.timeoutDur())
+					}
+					checkLifetime()
+				}
+				read := func() (int64, error) {
+					readCalls++
+					// A supplied version exercises the real read entry without a wire peer.
+					tx.SetReadVersion(123)
+					return tx.GetReadVersion(context.Background())
+				}
+				for range 12 {
+					configureEntry()
+					if version, err := read(); err != nil || version != 123 {
+						t.Fatalf("entry %d read=%d, %v, want 123 / nil", entries, version, err)
+					}
+					completed++
+					injected++
+					if err := tx.OnError(context.Background(), &wire.FDBError{Code: 1009}); err != nil {
+						t.Fatalf("entry %d native OnError(1009)=%v", entries, err)
+					}
+					checkLifetime()
+				}
+				if entries != 12 || readCalls != 12 || completed != 12 || injected != 12 || tx.retryCount != 12 || time.Since(originalCreation) != 120*time.Millisecond {
+					t.Fatalf("retry prefix entries=%d reads=%d completed=%d injected=%d native-retries=%d elapsed=%v", entries, readCalls, completed, injected, tx.retryCount, time.Since(originalCreation))
+				}
+				switch mode {
+				case "expired-before-first-read":
+					// Retry 12 has admitted entry 13, but its first read has not begun.
+					time.Sleep(10 * time.Second)
+					synctest.Wait()
+				case "user-reset-fresh-budget":
+					time.Sleep(9 * time.Second)
+					tx.Reset()
+					expectedCreation = tx.creationTime
+					expectedDeadline = expectedCreation.Add(10 * time.Second).UnixNano()
+					if !expectedCreation.After(originalCreation) || !expectedCreation.Equal(time.Now()) || tx.retryCount != 0 {
+						t.Fatalf("user Reset did not establish a fresh creation time / retry count: %v / %d", expectedCreation, tx.retryCount)
+					}
+				}
+				configureEntry()
+				if mode == "user-reset-fresh-budget" {
+					time.Sleep(2 * time.Second)
+					synctest.Wait()
+					if !time.Now().After(originalDeadline) || !time.Now().Before(time.Unix(0, expectedDeadline)) {
+						t.Fatal("Reset control did not cross the old deadline inside its fresh budget")
+					}
+				}
+				version, err := read()
+				if mode == "expired-before-first-read" {
+					var timedOut *wire.FDBError
+					if !errors.As(err, &timedOut) || timedOut.Code != 1031 || version != 0 {
+						t.Fatalf("first read after admitted retry and elapsed lifetime=%d, %v, want literal 1031", version, err)
+					}
+				} else {
+					if err != nil || version != 123 {
+						t.Fatalf("entry 13 control read=%d, %v, want 123 / nil", version, err)
+					}
+					completed++
+				}
+				checkLifetime()
+				wantCompleted := 13
+				if mode == "expired-before-first-read" {
+					wantCompleted = 12
+				}
+				metrics := db.Metrics()
+				if entries != 13 || readCalls != 13 || completed != wantCompleted || injected != 12 || metrics.TransactionRetries != 12 || metrics.TransactionsFutureVersions != 12 {
+					t.Fatalf("population entries=%d reads=%d completed=%d injected=%d native-retries=%d native-1009=%d", entries, readCalls, completed, injected, metrics.TransactionRetries, metrics.TransactionsFutureVersions)
+				}
+				t.Logf("lifetime proof mode=%s entries=%d reads=%d completed=%d injected=%d native-1009=%d virtual-elapsed=%v final-error=%v", mode, entries, readCalls, completed, injected, metrics.TransactionsFutureVersions, time.Since(originalCreation), err)
+			})
+		})
+	}
+}
+
 // The ownership guard makes the retained-outer-token mutation fail without
 // entering its impossible wait cycle. The passing implementation must execute
 // the actual same-stack public reentry and preserve the successor afterward.

@@ -50,14 +50,14 @@ func (r *PrimaryScanRule) OnMatch(call *ExpressionRuleCall) {
 	}
 
 	if call.Context != nil && len(scan.GetRecordTypes()) == 1 {
+		plan = plan.WithCommonPrimaryKey(commonPrimaryKeyOf(call.Context, scan.GetRecordTypes()))
 		pkCols := call.Context.GetPrimaryKeyColumns(scan.GetRecordTypes()[0])
 		if len(pkCols) > 0 {
 			if pkVals := resolvedColumnsInRow(scan.GetFlowedType(), pkCols); len(pkVals) == len(pkCols) {
 				plan = plan.WithPrimaryKey(pkVals).
 					WithKeyComponentTypes(physicalTypesFromFlatRow(
 						scan.GetFlowedType(), pkCols, nil,
-					)).
-					WithCommonPrimaryKey(commonPrimaryKeyOf(call.Context, scan.GetRecordTypes()))
+					))
 			}
 		}
 	}

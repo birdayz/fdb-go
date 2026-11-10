@@ -399,7 +399,10 @@ CREATE TABLE q (qid BIGINT, PRIMARY KEY (qid))`
 	if err != nil {
 		t.Fatal(err)
 	}
-	planner := newCascadesPlanner(tmpl.Underlying(), plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), nil)
+	planner, plannerErr := newCascadesPlanner(tmpl.Underlying(), plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), nil)
+	if plannerErr != nil {
+		t.Fatal(plannerErr)
+	}
 	previous := "translation"
 	mergeTasks := 0
 	planner.WithTaskObserver(func(task cascades.Task) {
@@ -461,7 +464,10 @@ AND EXISTS (SELECT 1 FROM t_rd AS r WHERE r.c<t_rd.c) ORDER BY c DESC NULLS FIRS
 	if err != nil {
 		t.Fatal(err)
 	}
-	planner := newCascadesPlanner(tmpl.Underlying(), plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), nil)
+	planner, plannerErr := newCascadesPlanner(tmpl.Underlying(), plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), nil)
+	if plannerErr != nil {
+		t.Fatal(plannerErr)
+	}
 	previous := "translation"
 	explodeTasks := 0
 	assertBound := func() {

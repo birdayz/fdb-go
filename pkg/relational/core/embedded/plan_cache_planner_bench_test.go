@@ -158,7 +158,10 @@ func planParsedForBench(b *testing.B, q antlrgen.IQueryContext, md *recordlayer.
 		b.Fatal("Cascades translation failed")
 	}
 
-	planner := newCascadesPlanner(md, plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), nil)
+	planner, plannerErr := newCascadesPlanner(md, plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), nil)
+	if plannerErr != nil {
+		b.Fatal(plannerErr)
+	}
 
 	bestExpr, _, err := planner.PlanWithContext(context.Background(), ref)
 	if err != nil {

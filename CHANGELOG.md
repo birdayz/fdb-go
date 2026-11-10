@@ -201,6 +201,29 @@ below; neither publication nor readiness is asserted.
   checks; explicit failed commits release their transaction handles.
 
 ### Breaking changes / compatibility
+- **Interval-partition metadata (RFC-284; implementation in progress):** opting
+  in through the Record Layer writes the required `fdb_partition_v1` key
+  function. Java 4.14.2.0 and pre-feature Go refuse the entire schema, including
+  its plain tables; rolling back to an older binary cannot reopen it. Existing
+  unpartitioned schemas are unchanged. There is no automatic conversion or
+  in-place repartitioning: migration requires a separately created table/store
+  and explicit copying. Record Layer routing now uses a versioned directory and
+  writer/backfill fences. Logical SQL metadata, complete logical direct keys and
+  conservative scan/residual/sort plans are supported for programmatic metadata;
+  partial direct prefixes and unbound local-index access explicitly refuse.
+  Source-key moves, SQL partition DDL, local planning and safe DROP remain
+  incomplete. Existing partitioned records without valid routing state are
+  rejected, not silently adopted. See the
+  [compatibility boundary](DIVERGENCES.md#interval-partitioned-tables-go-only-rfc-284).
+- **Raw index mutation APIs:** `FDBRecordStore.DeleteIndexEntries` now returns
+  `error`; callers using its old method-value or interface signature must adapt.
+  Statement calls remain valid, and nil/plain-index behavior is unchanged.
+  It, `DeleteIndexEntriesInRange` and `GetIndexMaintainer` refuse partitioned
+  indexes before mutation rather than expose an unfenced writer. Public standard
+  maintainers refuse partitioned mutation too. Supported record saves/deletes
+  and index builds use the partition routing protocol. A partitioned store's
+  `SetFormatVersion` refuses version changes; reopen through the builder for
+  validated conversion of committed legacy versions.
 - **`read_only` and `NewConnector`:** no persisted or wire change; SQL
   behaviour changes only on a `read_only` connection. The unknown-DSN-parameter
   error lists `read_only`. `RelationalKeyspace.LookupSchemaSubspace` and
