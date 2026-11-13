@@ -97,26 +97,28 @@ func TestBitmapKVCursor_SurfacesIteratorError(t *testing.T) {
 	})
 }
 
-func TestRecordKeyCursor_SurfacesIteratorErrorAtBoundary(t *testing.T) {
+func TestRecordKeyCursor_RowLimitDoesNotReadAhead(t *testing.T) {
 	t.Parallel()
-	injErr := errors.New("injected transaction_too_old (1007)")
-	// Row-limit boundary site (hasMore()'s Advance() false → Get() error surfaces).
+	iterator := &fakeRangeIterator{getErr: errors.New("unread transaction_too_old (1007)")}
 	c := &recordKeyCursor{
-		iterator:       &fakeRangeIterator{getErr: injErr},
-		keysReturned:   1,
+		iterator: iterator, keysReturned: 1, continuation: []byte{0x15, 0x01},
 		scanProperties: ScanProperties{ExecuteProperties: ExecuteProperties{ReturnedRowLimit: 1}},
 	}
-	_, err := c.OnNext(context.Background())
-	if !errors.Is(err, injErr) {
-		t.Fatalf("record-key scan must surface the error at the row-limit boundary, got %v", err)
+	for range 2 {
+		result, err := c.OnNext(context.Background())
+		if err != nil || result.HasNext() || result.GetNoNextReason() != ReturnLimitReached || result.GetContinuation().IsEnd() {
+			t.Fatalf("row boundary must retain its non-end token without reading: result=%v err=%v", result, err)
+		}
+	}
+	if iterator.advances != 0 {
+		t.Fatalf("row boundary advanced the physical iterator %d times", iterator.advances)
 	}
 }
 
 func TestRecordKeyCursor_SurfacesIteratorErrorInScanLoop(t *testing.T) {
 	t.Parallel()
 	injErr := errors.New("injected transaction_too_old (1007)")
-	// Scan-loop site (no limits → past the boundary into the loop). This path derefs
-	// c.store.subspace, so a minimal store is supplied.
+	// An actual physical pull must still surface the stored iterator error.
 	c := &recordKeyCursor{
 		iterator: &fakeRangeIterator{getErr: injErr},
 		store:    &FDBRecordStore{subspace: subspace.Sub("t")},
@@ -124,6 +126,16 @@ func TestRecordKeyCursor_SurfacesIteratorErrorInScanLoop(t *testing.T) {
 	_, err := c.OnNext(context.Background())
 	if !errors.Is(err, injErr) {
 		t.Fatalf("record-key scan loop must surface the iterator error, got %v", err)
+	}
+}
+
+func TestRecordKeyCursor_SurfacesGetError(t *testing.T) {
+	t.Parallel()
+	injErr := errors.New("injected transaction_too_old (1007)")
+	c := &recordKeyCursor{iterator: &fakeRangeIterator{advancesLeft: 1, getErr: injErr}}
+	_, err := c.OnNext(context.Background())
+	if !errors.Is(err, injErr) {
+		t.Fatalf("record-key scan must surface Get errors after a successful Advance, got %v", err)
 	}
 }
 

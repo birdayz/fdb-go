@@ -426,6 +426,7 @@ go_test(
         "record_count_streaming_test.go",
         "record_count_test.go",
         "record_fetch_probe_test.go",
+        "record_key_continuation_test.go",
         "record_lifecycle_regression_test.go",
         "record_load_charge_layout_test.go",
         "record_load_charge_test.go",

@@ -272,6 +272,30 @@ committed between planning and a separate first page fails the statement with
 `TRANSACTION_TIMEOUT` budget for its three steps. See [the
 boundary](../DIVERGENCES.md#auto-commit-select-one-transaction-up-to-the-first-page-not-the-whole-result).
 
+### Record-key continuations — Unreleased (post-v0.2.0)
+
+`ScanRecordKeys` uses a physical KV cursor mapped to primary keys, wrapped in
+adjacent deduplication and then the returned-row limit, for every suffixed
+layout. Its continuation is Java's `DedupContinuation` containing the leaf
+physical position and last primary key. This includes legacy split-capable
+stores, even when their format predates inline versions. Only
+`!splitLongRecords && omitUnsplitRecordSuffix` uses a leaf-only token.
+
+**Restart scans carrying old Go leaf-only tokens for any suffixed layout.**
+There is no heuristic old-token migration. Persisted records do not change.
+An exact returned-row limit produces a non-end token without lookahead; resume
+it to discover EOF, even if the last row was the last record. Scan/byte/time
+limits apply to physical keys, so a page can advance past only duplicate chunks
+or inline versions, return no rows, and still have a non-end continuation. Keep
+resuming until `IsEnd`, not until the first empty page. Skip is physical and is
+reapplied on each resume; it does not skip logical deduplicated primary keys.
+
+Go/FDB regressions pin literal continuation bytes and physical progress.
+`conformance/record_key_continuation_conformance_test.go` adds both directions
+of live Java interchange; that heavyweight CI gate must pass before claiming
+runtime interoperability. This change does not establish support for store
+formats below 3 (Java rejects `scanRecordKeys` there).
+
 ### Index scan Skip
 
 Index cursors (VALUE, VERSION, RANK, leaderboard, PERMUTED_MIN/MAX, COUNT/SUM,

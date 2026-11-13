@@ -56,7 +56,7 @@ func Dedup[T any](
 		unpack:       unpack,
 	}
 
-	if len(continuation) > 0 {
+	if continuation != nil {
 		var cont gen.DedupContinuation
 		if err := UnmarshalVTAsJava(&cont, continuation); err != nil {
 			// Java: throw new RecordCoreException("Error parsing continuation", ex)

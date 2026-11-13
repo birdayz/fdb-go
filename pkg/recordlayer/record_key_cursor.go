@@ -16,239 +16,134 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
-// recordKeyCursor scans the records subspace and returns only primary keys,
-// without deserializing record data. Split records (multiple KV pairs per
-// primary key) are deduplicated so each PK is returned exactly once.
-//
-// Matches Java's FDBRecordStore.scanRecordKeys() which uses a
-// DedupCursor over a KeyValueCursor mapped to primary keys.
+// recordKeyCursor maps each physical record key to its PK without loading data.
+// ScanRecordKeys wraps suffixed layouts in Dedup and an outer returned-row limit.
 type recordKeyCursor struct {
-	store          *FDBRecordStore
-	continuation   []byte
-	scanProperties ScanProperties
-
-	// omitUnsplitRecordSuffix is true for legacy stores whose records are stored at
-	// the bare primary key with no suffix. When set, each KV's full key (after the
-	// records-subspace prefix) IS the primary key, with no suffix to strip and no
-	// duplicate PKs to dedup. Matches Java's scanRecordKeys omit branch.
+	store                   *FDBRecordStore
+	continuation            []byte
+	scanProperties          ScanProperties
 	omitUnsplitRecordSuffix bool
-
-	// Internal state
-	iterator      rangeIterator
-	closed        bool
-	keysReturned  int
-	keysScanned   int // also this cursor's own free-initial-pass gate (Java's usedInitialPass)
-	prefixLength  int
-	lastPK        tuple.Tuple // for dedup of adjacent duplicate PKs
-	peekedHasMore *bool       // non-nil when hasMore() has been called but result not consumed
-
-	// scanState is the (possibly shared) scanned-records/scanned-bytes/time
-	// counter set — see ScanLimiterState's doc comment. Never nil.
-	scanState *ScanLimiterState
+	iterator                rangeIterator
+	closed                  bool
+	keysReturned            int
+	prefixLength            int
+	initialPass             bool
+	scanState               *ScanLimiterState
+	clock                   *ScanLimiterState
+	terminal                *RecordCursorResult[tuple.Tuple]
 }
 
 func (c *recordKeyCursor) OnNext(ctx context.Context) (RecordCursorResult[tuple.Tuple], error) {
+	if c.terminal != nil {
+		return *c.terminal, nil
+	}
 	if c.closed {
 		return RecordCursorResult[tuple.Tuple]{}, fmt.Errorf("cursor is closed")
 	}
-
+	if err := ctx.Err(); err != nil {
+		return RecordCursorResult[tuple.Tuple]{}, err
+	}
 	if c.iterator == nil {
 		if err := c.initIterator(); err != nil {
 			return RecordCursorResult[tuple.Tuple]{}, err
 		}
 	}
-
-	ep := c.scanProperties.GetExecuteProperties()
-
-	// Row limit check
-	if ep.ReturnedRowLimit > 0 && c.keysReturned >= ep.ReturnedRowLimit {
-		if c.hasMore() {
-			return NewResultNoNext[tuple.Tuple](ReturnLimitReached, &BytesContinuation{bytes: c.continuation}), nil
+	if c.scanState == nil {
+		c.scanState = resolveScanLimiterState(c.scanProperties.ExecuteProperties)
+	}
+	if c.clock == nil {
+		c.clock = c.scanState
+	}
+	props := c.scanProperties.ExecuteProperties
+	allowed, reason := tryScanLimits(c.scanState, c.clock, props, &c.initialPass)
+	if !allowed {
+		if props.FailOnScanLimitReached {
+			return RecordCursorResult[tuple.Tuple]{}, &ScanLimitReachedError{Reason: reason}
 		}
-		// hasMore()'s Advance() returns false on exhaustion OR error — check Get()
-		// for the stored error so a transient transaction_too_old (1007) / timeout at
-		// the row-limit boundary surfaces instead of being read as end-of-data (which
-		// would silently drop the remaining keys).
+		return c.stop(reason), nil
+	}
+	// A finite physical scan, like Java's KV iterator, stops without a lookahead.
+	if props.ReturnedRowLimit > 0 && c.keysReturned >= props.ReturnedRowLimit {
+		return c.stop(ReturnLimitReached), nil
+	}
+	if !c.iterator.Advance() {
 		if _, err := c.iterator.Get(); err != nil {
-			return RecordCursorResult[tuple.Tuple]{}, fmt.Errorf("record key cursor: advance at row-limit boundary: %w", err)
+			return RecordCursorResult[tuple.Tuple]{}, fmt.Errorf("record key cursor: advance: %w", err)
 		}
-		return NewResultNoNext[tuple.Tuple](SourceExhausted, &EndContinuation{}), nil
+		return c.stop(SourceExhausted), nil
 	}
-
-	// Time limit — measured against the shared scanState's anchor, matching Java's
-	// TimeScanLimiter anchored to FDBRecordContext.getTransactionCreateTime() rather than this
-	// cursor's own construction time (see ScanLimiterState's doc comment). Free pass
-	// (c.keysScanned>0) is unconditional — Java's time branch never suppresses it, even in fail
-	// mode (CursorLimitManager.java:138 has no `|| failOnScanLimitReached`) — but a halt here still
-	// throws under fail mode, matching Java's shared post-halt tail (:141-144: ANY halted* reason
-	// throws under failOnScanLimitReached, not just the scanned-records one).
-	if ep.TimeLimit > 0 && c.keysScanned > 0 && c.scanState.Elapsed() >= ep.TimeLimit {
-		if ep.FailOnScanLimitReached {
-			return RecordCursorResult[tuple.Tuple]{}, &ScanLimitReachedError{Reason: TimeLimitReached}
-		}
-		return c.noNextWithCont(TimeLimitReached), nil
+	kv, err := c.iterator.Get()
+	if err != nil {
+		return RecordCursorResult[tuple.Tuple]{}, fmt.Errorf("record key cursor: get: %w", err)
 	}
-
-	// Scan limit — threshold is the (possibly shared) scanState so every leg of an
-	// IN-join/IN-union charges the same aggregate budget instead of resetting per leg. The free
-	// pass (c.keysScanned>0) is bypassed under FailOnScanLimitReached: Java's record-scan branch is
-	// `!recordScanLimiter.tryRecordScan() && (usedInitialPass || failOnScanLimitReached)`
-	// (CursorLimitManager.java:135-136) — fail mode does not grant a free pass, so a fresh cursor's
-	// very first key still throws if the shared budget is already spent.
-	if ep.ScannedRecordsLimit > 0 &&
-		(c.keysScanned > 0 || ep.FailOnScanLimitReached) &&
-		c.scanState.RecordsScanned() >= ep.ScannedRecordsLimit {
-		if ep.FailOnScanLimitReached {
-			return RecordCursorResult[tuple.Tuple]{}, &ScanLimitReachedError{Reason: ScanLimitReached}
-		}
-		return c.noNextWithCont(ScanLimitReached), nil
-	}
-
-	// Byte limit. Use >= to match the other leaf cursors (index_scan,
-	// key_value_cursor): stop AT the limit, not one key past it (RFC-106a).
-	if ep.ScannedBytesLimit > 0 && c.keysScanned > 0 && c.scanState.BytesScanned() >= ep.ScannedBytesLimit {
-		if ep.FailOnScanLimitReached {
-			return RecordCursorResult[tuple.Tuple]{}, &ScanLimitReachedError{Reason: ByteLimitReached}
-		}
-		return c.noNextWithCont(ByteLimitReached), nil
-	}
-
-	recordsSubspace := c.store.subspace.Sub(RecordKey)
-
-	for {
-		if err := ctx.Err(); err != nil {
-			return RecordCursorResult[tuple.Tuple]{}, err
-		}
-		hasNext := false
-		if c.peekedHasMore != nil {
-			hasNext = *c.peekedHasMore
-			c.peekedHasMore = nil
-		} else {
-			hasNext = c.iterator.Advance()
-		}
-		if !hasNext {
-			// Advance() returns false on exhaustion OR error (also via a peeked
-			// hasMore()); Get() returns the stored error in the error case. Surface it
-			// rather than reporting SourceExhausted, which would silently lose keys.
-			if _, err := c.iterator.Get(); err != nil {
-				return RecordCursorResult[tuple.Tuple]{}, fmt.Errorf("record key cursor: advance: %w", err)
-			}
-			return NewResultNoNext[tuple.Tuple](SourceExhausted, &EndContinuation{}), nil
-		}
-
-		kv, err := c.iterator.Get()
-		if err != nil {
-			return RecordCursorResult[tuple.Tuple]{}, fmt.Errorf("record key cursor: get: %w", err)
-		}
-
-		c.scanState.AddBytesScanned(int64(len(kv.Key) + len(kv.Value)))
-
-		// Unpack the key relative to the records subspace.
-		// Modern layout: (pk..., suffix); legacy omit layout: (pk...) with no suffix.
-		keyTuple, err := tuplefast.SubspaceUnpack(kv.Key, len(recordsSubspace.Bytes()))
-		if err != nil {
-			continue // skip unparseable keys
-		}
-
-		var pk tuple.Tuple
+	c.scanState.AddBytesScanned(int64(len(kv.Key) + len(kv.Value)))
+	key, err := tuplefast.SubspaceUnpack(kv.Key, c.prefixLength)
+	if err != nil {
+		cause := &IllegalArgumentError{Message: err.Error()}
 		if c.omitUnsplitRecordSuffix {
-			// Bare-key layout: the whole tuple is the PK; each PK appears exactly once,
-			// so there is nothing to strip and no dedup needed.
-			if len(keyTuple) < 1 {
-				continue
-			}
-			pk = tuple.Tuple(keyTuple)
-		} else {
-			if len(keyTuple) < 2 {
-				continue // need at least (pk, suffix)
-			}
-			// Extract PK by stripping the suffix (last element)
-			pk = tuple.Tuple(keyTuple[:len(keyTuple)-1])
-
-			// Dedup: skip if same PK as last returned
-			if c.lastPK != nil && tuplesEqual(pk, c.lastPK) {
-				continue
+			return RecordCursorResult[tuple.Tuple]{}, &RecordCoreArgumentError{
+				Message: "unable to unpack key", Cause: cause,
+				Key: append([]byte(nil), kv.Key...), Subspace: append([]byte(nil), kv.Key[:c.prefixLength]...),
 			}
 		}
-
-		c.keysScanned++
-		c.scanState.AddRecordScanned()
-		c.lastPK = pk
-
-		// Update continuation: proto-wrap the key suffix (TO_NEW format) to match
-		// Java's KeyValueCursorBase, which defaults SerializationMode to TO_NEW.
-		// (initIterator's dual-reader accepts both this and legacy raw tokens.)
-		if len(kv.Key) > c.prefixLength {
-			cont, werr := wrapContinuation(kv.Key[c.prefixLength:])
-			if werr != nil {
-				return RecordCursorResult[tuple.Tuple]{}, fmt.Errorf("wrap record-key continuation: %w", werr)
-			}
-			c.continuation = cont
+		return RecordCursorResult[tuple.Tuple]{}, cause
+	}
+	pk := tuple.Tuple(key)
+	if !c.omitUnsplitRecordSuffix {
+		if len(key) == 0 {
+			return RecordCursorResult[tuple.Tuple]{}, &RecordCoreStorageError{Message: "Missing record split number"}
 		}
-
-		c.keysReturned++
-
-		return NewResultWithValue(pk, &BytesContinuation{bytes: c.continuation}), nil
+		// Tuple.getLong accepts every Number carrier, not just canonical integer suffixes.
+		suffix, ok := javaNumberLongValue(key[len(key)-1])
+		if !ok || suffix < recordVersionSuffix {
+			return RecordCursorResult[tuple.Tuple]{}, &RecordCoreStorageError{Message: "Invalid record split number", KeyTuple: pk}
+		}
+		pk = pk[:len(pk)-1]
 	}
+	cont, err := wrapContinuation(kv.Key[c.prefixLength:])
+	if err != nil {
+		return RecordCursorResult[tuple.Tuple]{}, fmt.Errorf("wrap record-key continuation: %w", err)
+	}
+	c.continuation = cont
+	c.keysReturned++
+	return NewResultWithValue(pk, &BytesContinuation{bytes: cont}), nil
 }
 
-func (c *recordKeyCursor) noNextWithCont(reason NoNextReason) RecordCursorResult[tuple.Tuple] {
-	if c.continuation != nil {
-		return NewResultNoNext[tuple.Tuple](reason, &BytesContinuation{bytes: c.continuation})
+func (c *recordKeyCursor) stop(reason NoNextReason) RecordCursorResult[tuple.Tuple] {
+	var cont RecordCursorContinuation = &StartContinuation{}
+	if reason == SourceExhausted {
+		cont = &EndContinuation{}
+	} else if c.continuation != nil {
+		cont = &BytesContinuation{bytes: c.continuation}
 	}
-	return NewResultNoNext[tuple.Tuple](reason, &StartContinuation{})
-}
-
-func (c *recordKeyCursor) hasMore() bool {
-	if c.iterator == nil {
-		return false
-	}
-	result := c.iterator.Advance()
-	c.peekedHasMore = &result
+	result := NewResultNoNext[tuple.Tuple](reason, cont)
+	c.terminal = &result
 	return result
 }
 
 func (c *recordKeyCursor) initIterator() error {
 	recordsSubspace := c.store.subspace.Sub(RecordKey)
 	c.prefixLength = len(recordsSubspace.FDBKey())
-
 	beginKey, endKey := recordsSubspace.FDBRangeKeys()
-	begin := beginKey.FDBKey()
-	end := endKey.FDBKey()
-
+	begin, end := beginKey.FDBKey(), endKey.FDBKey()
 	if c.continuation != nil {
-		innerCont := unwrapContinuation(c.continuation)
-		fullKey := append(recordsSubspace.FDBKey(), innerCont...)
+		fullKey := append(append([]byte(nil), recordsSubspace.FDBKey()...), unwrapContinuation(c.continuation)...)
 		if c.scanProperties.IsReverse() {
-			// Reverse: continuation caps the high end (exclude already-returned keys)
 			end = fullKey
 		} else {
-			// Forward: continuation raises the low end (skip already-returned keys)
 			begin = append(fullKey, 0x00)
 		}
-
-		// Initialize lastPK from continuation for split record dedup.
-		// Continuation is tuple-packed (pk..., suffix) — strip the last element.
-		if contTuple, err := tuplefast.Unpack(fdb.Key(innerCont)); err == nil && len(contTuple) >= 2 {
-			c.lastPK = tuple.Tuple(contTuple[:len(contTuple)-1])
-		}
 	}
-
-	rng := fdb.KeyRange{Begin: begin, End: end}
-	options := fdb.RangeOptions{
-		Mode:    c.scanProperties.CursorStreamingMode.ToFDB(),
-		Reverse: c.scanProperties.IsReverse(),
-	}
-
+	rng := indexSkipRange(fdb.KeyRange{Begin: begin, End: end}, c.scanProperties.ExecuteProperties.Skip, c.scanProperties.IsReverse())
+	options := kvRangeOptions(c.scanProperties)
 	tx := c.store.context.Transaction()
-	var rangeResult fdb.RangeResult
+	var result fdb.RangeResult
 	if c.scanProperties.ExecuteProperties.IsolationLevel == SnapshotIsolation {
-		rangeResult = tx.Snapshot().GetRange(rng, options)
+		result = tx.Snapshot().GetRange(rng, options)
 	} else {
-		rangeResult = tx.GetRange(rng, options)
+		result = tx.GetRange(rng, options)
 	}
-
-	c.iterator = rangeResult.Iterator()
+	c.iterator = result.Iterator()
 	return nil
 }
 

@@ -3892,6 +3892,20 @@ boundary in `docs/benchmarks/otel-relational-local-20261107.md`.
   runs only on `workflow_dispatch`; measure it on the runners and move it to
   pull requests if it fits.
 
+## Record-key continuation publication (post-v0.2.0)
+
+- [ ] Obtain full CI and live Java 4.14.2.0 acceptance for the new record-key
+  continuation fixture before merge. The source uses physical-map → dedup →
+  outer-row-limit composition, with committed Go/FDB regressions for exact
+  tokens, duplicate-only progress, limits, physical Skip, corruption and legacy
+  bare-key controls. Fast-lane success is not Java interchange evidence. Every
+  suffixed layout, including legacy split-capable stores, requires restarting
+  old Go leaf-only continuations; no persisted-record migration is needed.
+- [ ] Match Java's `ScanRecordKeys` refusal for store formats below 3 with a
+  typed `UnsupportedFormatVersionException` counterpart and an end-to-end
+  regression. The pre-existing Go entry point lacks this guard; the continuation
+  repair does not establish support or parity for those formats.
+
 ## TEXT SQL access paths
 
 - [ ] Recover and diagnose the historical RFC-258 fail-on-scan-limit failure
