@@ -17,7 +17,7 @@ package sqldriver
 // hands it the TRANSACTION-scoped *ScanLimiterState, which preflightTxBudget has
 // just re-anchored on the client's read-version instant. Every leaf cursor then
 // re-checks that anchor BEFORE EACH RECORD — key_value_cursor.go:195,
-// index_scan.go:567, record_key_cursor.go:77, text_cursor.go:102,
+// index_scan.go:567, recordKeyCursor.OnNext via tryScanLimits, text_cursor.go:102,
 // count_index_maintainer.go:222, bitmap_value_index_maintainer.go:574,
 // multidimensional_index_maintainer.go:659 — so the budget binds at RECORD
 // granularity inside the page, and the preflight only converts the resulting

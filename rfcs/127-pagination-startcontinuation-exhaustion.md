@@ -4,9 +4,9 @@
 **Item:** prod-readiness-audit-2026-06-19.md **P0** — SQL pagination can silently drop results.
 
 > **Severity correction (post-implementation, from the `/code-review` reachability trace).** The audit
-> rated this release-blocking, but the data-loss path is **latent, not live** in the current code. Every
-> Go leaf cursor reports an out-of-band stop only after `scanned>0` (`key_value_cursor.go:164/174/181`,
-> `record_key_cursor.go:64/69/78`), so its continuation is set → a `BytesContinuation` (which the OLD code
+> rated this release-blocking, but the data-loss path was **latent, not live** in the code reviewed for
+> this RFC. Its leaf cursors reported an out-of-band stop only after `scanned>0` (the then-current
+> `keyValueCursor` and `recordKeyCursor.OnNext` guards), so their continuation was set → a `BytesContinuation` (which the OLD code
 > resumed correctly); composite cursors carry a serialized `BytesContinuation` (merge/intersection) or
 > error-first with 54F01 (`mergeSort`, RFC-106a). So **no current cursor emits a no-next
 > out-of-band+StartContinuation**, and the only reachable nil-bytes+non-end case is `LIMIT 0`
@@ -17,6 +17,12 @@
 > latent landmine the moment any future Go cursor emits the out-of-band+START state Java's
 > Union/Intersection/MapWhile cursors legitimately produce. It is a correctness/invariant hardening + makes
 > the `LIMIT 0` handling explicit, not an emergency data-loss patch.
+
+The reachability account above is historical. `recordKeyCursor.OnNext` now uses
+`tryScanLimits` and can stop before its first read with an already-spent shared
+budget. Bare scans then retain START; suffixed `ScanRecordKeys` wraps that state
+in a non-end Dedup envelope. See `pageContinuationState` for the current handling,
+including the separate replay-cursor case. The exhaustion invariant is unchanged.
 
 > **Reviews.** Graefe **ACK** (verified vs Java 4.11.1.0): exhaustion off `IsEnd()`/`SOURCE_EXHAUSTED`,
 > never bytes, is correct (`RecordLayerIterator.java:91`; the `withoutNextValue` invariant makes reason ⇔

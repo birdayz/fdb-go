@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"testing"
@@ -758,6 +759,120 @@ var _ = Describe("Record-key public factory limit and corruption contracts", fun
 	}
 })
 
+var _ = Describe("Record-key scan argument boundaries", func() {
+	for _, layout := range []struct {
+		name            string
+		split, versions bool
+		format          int32
+	}{
+		{"modern unsplit", false, false, 14},
+		{"modern split", true, false, 14},
+		{"modern inline unsplit", false, true, 14},
+		{"modern inline split", true, true, 14},
+		{"legacy split-capable", true, false, 4},
+		{"legacy bare", false, false, 4},
+	} {
+		It("treats nonpositive row limits as unlimited for "+layout.name, func() {
+			ss := specSubspace()
+			md := recordKeyTestMetadata(layout.split, layout.versions)
+			_, err := sharedDB.Run(context.Background(), func(rc *FDBRecordContext) (any, error) {
+				store := recordKeyTestOpen(rc, ss, md, layout.format)
+				for _, id := range []int64{1, 2, 3} {
+					_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id)})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			for _, reverse := range []bool{false, true} {
+				want := []tuple.Tuple{{int64(1)}, {int64(2)}, {int64(3)}}
+				if reverse {
+					want = []tuple.Tuple{{int64(3)}, {int64(2)}, {int64(1)}}
+				}
+				for _, limit := range []int{-100, -1, 0} {
+					props := NewScanProperties(DefaultExecuteProperties().WithReturnedRowLimit(limit)).WithReverse(reverse)
+					page := recordKeyTestRead(ss, md, layout.format, props, nil)
+					Expect(page.keys).To(Equal(want), "reverse=%t limit=%d", reverse, limit)
+					Expect(page.reason).To(Equal(SourceExhausted))
+					Expect(page.end).To(BeTrue())
+				}
+			}
+		})
+	}
+
+	for _, tc := range []struct{ name, pk, token string }{
+		{"top-level", "33ffffffffffffffffffff0000", "0a00120d33ffffffffffffffffffff0000"},
+		{"nested", "0533ffffffffffffffffffff000000", "0a00120f0533ffffffffffffffffffff000000"},
+		{"multiple nested", "0533ffffffffffffffffffff000033ffffffffffffffffffff000000", "0a00121c0533ffffffffffffffffffff000033ffffffffffffffffffff000000"},
+	} {
+		It("rejects "+tc.name+" incomplete-versionstamp continuation state before reading a healthy store", func() {
+			ss := specSubspace()
+			md := recordKeyTestMetadata(false, false)
+			recordKeySeedRaw(ss, md, [][]byte{{0x15, 1, 0x14}})
+			token, err := hex.DecodeString(tc.token)
+			Expect(err).NotTo(HaveOccurred())
+			for _, reverse := range []bool{false, true} {
+				store, pulls := recordKeyObservedOpen(ss, md, nil)
+				cursor := store.ScanRecordKeys(token, ForwardScan().WithReverse(reverse))
+				DeferCleanup(func() { Expect(cursor.Close()).To(Succeed()) })
+				_, err := cursor.OnNext(context.Background())
+				var incomplete *IncompleteVersionstampError
+				Expect(errors.As(err, &incomplete)).To(BeTrue(), "token=%x err=%v", token, err)
+				Expect(incomplete.Context).To(Equal("record-key continuation lastValue"))
+				_, repeated := cursor.OnNext(context.Background())
+				Expect(repeated).To(BeIdenticalTo(err))
+				Expect(pulls.advances).To(BeZero())
+				Expect(pulls.gets).To(BeZero())
+			}
+		})
+
+		It("rejects "+tc.name+" incomplete versionstamps in physical primary keys", func() {
+			ss := specSubspace()
+			md := recordKeyTestMetadata(false, false)
+			pk, err := hex.DecodeString(tc.pk)
+			Expect(err).NotTo(HaveOccurred())
+			recordKeySeedRaw(ss, md, [][]byte{append(pk, 0x14)})
+			for _, reverse := range []bool{false, true} {
+				store, pulls := recordKeyObservedOpen(ss, md, nil)
+				cursor := store.ScanRecordKeys(nil, ForwardScan().WithReverse(reverse))
+				DeferCleanup(func() { Expect(cursor.Close()).To(Succeed()) })
+				_, err := cursor.OnNext(context.Background())
+				var incomplete *IncompleteVersionstampError
+				Expect(errors.As(err, &incomplete)).To(BeTrue(), "pk=%x err=%v", pk, err)
+				Expect(incomplete.Context).To(Equal("record primary key"))
+				Expect(pulls.advances).To(Equal(1))
+				Expect(pulls.gets).To(Equal(1))
+			}
+		})
+	}
+
+	It("preserves complete versionstamps in physical keys and resumed Dedup state", func() {
+		for _, pkHex := range []string{"33000000000000000000000000", "053300000000000000000000000000"} {
+			ss := specSubspace()
+			md := recordKeyTestMetadata(false, false)
+			pk, err := hex.DecodeString(pkHex)
+			Expect(err).NotTo(HaveOccurred())
+			recordKeySeedRaw(ss, md, [][]byte{append(append([]byte(nil), pk...), 0x14)})
+			want, err := tuple.Unpack(pk)
+			Expect(err).NotTo(HaveOccurred())
+			for _, reverse := range []bool{false, true} {
+				props := NewScanProperties(DefaultExecuteProperties().WithReturnedRowLimit(1)).WithReverse(reverse)
+				page := recordKeyTestRead(ss, md, 14, props, nil)
+				Expect(page.keys).To(Equal([]tuple.Tuple{want}))
+				Expect(page.reason).To(Equal(ReturnLimitReached))
+				Expect(page.end).To(BeFalse())
+				var state gen.DedupContinuation
+				Expect(state.UnmarshalVT(page.token)).To(Succeed())
+				Expect(state.LastValue).To(Equal(pk))
+				resumed := recordKeyTestRead(ss, md, 14, props, page.token)
+				Expect(resumed.keys).To(BeEmpty())
+				Expect(resumed.reason).To(Equal(SourceExhausted))
+				Expect(resumed.end).To(BeTrue())
+			}
+		}
+	})
+})
+
 func TestRecordKeyContinuationInvalid(t *testing.T) {
 	t.Parallel()
 	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
@@ -789,6 +904,10 @@ func TestRecordKeyContinuationInvalid(t *testing.T) {
 			var parse *ContinuationParseError
 			if tc.parse && !errors.As(err, &parse) {
 				t.Fatalf("want ContinuationParseError, got %T: %v", err, err)
+			}
+			var argument *IllegalArgumentError
+			if !tc.parse && !errors.As(err, &argument) {
+				t.Fatalf("want IllegalArgumentError, got %T: %v", err, err)
 			}
 			_, repeated := cursor.OnNext(context.Background())
 			if repeated != err {

@@ -99,6 +99,10 @@ func (c *recordKeyCursor) OnNext(ctx context.Context) (RecordCursorResult[tuple.
 			return RecordCursorResult[tuple.Tuple]{}, &RecordCoreStorageError{Message: "Invalid record split number", KeyTuple: pk}
 		}
 		pk = pk[:len(pk)-1]
+		// Dedup compares and saves PKs with vanilla Pack, including nested tuples.
+		if incomplete, _ := pk.HasIncompleteVersionstamp(); incomplete {
+			return RecordCursorResult[tuple.Tuple]{}, &IncompleteVersionstampError{Context: "record primary key"}
+		}
 	}
 	cont, err := wrapContinuation(kv.Key[c.prefixLength:])
 	if err != nil {

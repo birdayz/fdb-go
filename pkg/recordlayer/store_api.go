@@ -653,11 +653,21 @@ func (store *FDBRecordStore) ScanRecordKeys(
 	// Java limits physical scans before dedup, but returned rows after dedup.
 	innerProps := scanProperties
 	innerProps.ExecuteProperties.ReturnedRowLimit = 0
+	var unpackErr error
 	cursor := Dedup(func(cont []byte) RecordCursor[tuple.Tuple] {
 		return physical(cont, innerProps)
 	}, tuplesEqual, func(pk tuple.Tuple) []byte { return pk.Pack() }, func(raw []byte) (tuple.Tuple, bool) {
 		pk, err := tuple.Unpack(raw)
-		return pk, err == nil
+		if err != nil {
+			unpackErr = &IllegalArgumentError{Message: err.Error()}
+		} else if incomplete, _ := pk.HasIncompleteVersionstamp(); incomplete {
+			unpackErr = &IncompleteVersionstampError{Context: "record-key continuation lastValue"}
+		}
+		return pk, unpackErr == nil
 	}, continuation)
-	return LimitRowsCursor(cursor, scanProperties.ExecuteProperties.ReturnedRowLimit)
+	// Dedup's bool decoder cannot carry the tuple decoder's typed error.
+	if unpackErr != nil {
+		return &errorCursor[tuple.Tuple]{err: unpackErr}
+	}
+	return LimitRowsCursor(cursor, max(0, scanProperties.ExecuteProperties.ReturnedRowLimit))
 }
