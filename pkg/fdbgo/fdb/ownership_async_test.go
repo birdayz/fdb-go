@@ -23,10 +23,11 @@ import (
 const heldGRVReplyFileID = 2<<24 | 15709388
 
 type grvHoldDialer struct {
-	mu     sync.Mutex
-	armed  bool
-	held   []grvHeldFrame
-	heldCh chan struct{}
+	replyFileID uint32
+	mu          sync.Mutex
+	armed       bool
+	held        []grvHeldFrame
+	heldCh      chan struct{}
 }
 
 type grvHeldFrame struct {
@@ -116,8 +117,15 @@ func (c *grvHoldConn) readLoop() {
 			c.pw.CloseWithError(err)
 			return
 		}
-		if len(body) >= 8 && binary.LittleEndian.Uint32(body[4:8]) == heldGRVReplyFileID && c.d.withhold(c, token, body) {
-			continue
+		replyFileID := c.d.replyFileID
+		if replyFileID == 0 {
+			replyFileID = heldGRVReplyFileID
+		}
+		if len(body) >= 8 {
+			id := binary.LittleEndian.Uint32(body[4:8])
+			if (id == replyFileID || id == 2<<24|replyFileID) && c.d.withhold(c, token, body) {
+				continue
+			}
 		}
 		if c.forward(token, body) != nil {
 			return

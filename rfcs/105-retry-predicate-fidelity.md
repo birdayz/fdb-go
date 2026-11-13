@@ -37,7 +37,7 @@ found **no current divergence** — the lists happen to be correct today — but
 - **`fdb.IsRetryable` ≠ `OnError`'s set, correctly** (they are different C++ predicates), so a naive
   "unify them into one" — P3.3's literal suggestion — would be **wrong**. `fdb_error_predicate`
   (12 codes) excludes `blob_granule_request_failed` (1079) and the Go extensions; `onError`
-  (16 codes) includes them. This RFC does NOT unify the two semantics.
+  (historically 16 codes) includes them. This RFC does NOT unify the two semantics.
 - The three lists are **hand-duplicated** → the real risk is future drift, and **none is pinned to
   the C++ source with a regression test**, so drift would land silently.
 - Two consistency questions the duplication hides (below) need an explicit, tested answer.
@@ -145,7 +145,7 @@ called `wire.FDBError.Retryable()` (dead code; no caller's behavior changes). Q1
 ## Test plan
 
 - The two pinning tables (§4): `fdb.IsRetryable` == the 12 `fdb_error_predicate` codes; and
-  `onErrorRetryable` == the 16-code Go-onError set — each with non-retryable negatives. Fail if any
+  `onErrorRetryable` == the 13-code Go-onError set — each with non-retryable negatives. Fail if any
   predicate drifts from its C++ analog.
 - `client.isRetryable == onErrorRetryable` is now guaranteed by construction (`client.isRetryable`
   *is* `onErrorRetryable`), so no cross-check test is needed — but a behavior test exercises a real

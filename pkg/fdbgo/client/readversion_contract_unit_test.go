@@ -44,6 +44,30 @@ func TestSetReadVersionDefersNativeValidation(t *testing.T) {
 	}
 }
 
+func TestSetReadVersionDeferredErrorLeavesCachedFieldsUntouched(t *testing.T) {
+	t.Parallel()
+	tx := &Transaction{}
+	tx.SetReadVersion(0)
+	if tx.readVersion != 0 || tx.hasReadVersion || tx.userSetReadVersion {
+		t.Fatalf("invalid pin changed cached fields: version=%d has=%v userSet=%v", tx.readVersion, tx.hasReadVersion, tx.userSetReadVersion)
+	}
+	tx.SetReadVersion(123)
+	if tx.readVersion != 0 || tx.hasReadVersion || tx.userSetReadVersion {
+		t.Fatalf("deferred error allowed cached fields to change: version=%d has=%v userSet=%v", tx.readVersion, tx.hasReadVersion, tx.userSetReadVersion)
+	}
+	requireReadVersionCode(t, tx, 2011)
+
+	tx.Reset()
+	tx.SetReadVersion(123)
+	if tx.readVersion != 123 || !tx.hasReadVersion || !tx.userSetReadVersion {
+		t.Fatalf("valid pin after Reset did not populate cached fields: version=%d has=%v userSet=%v", tx.readVersion, tx.hasReadVersion, tx.userSetReadVersion)
+	}
+	got, err := tx.GetReadVersion(context.Background())
+	if err != nil || got != 123 {
+		t.Fatalf("valid version after Reset=%d,%v", got, err)
+	}
+}
+
 func TestSetReadVersionRejectsPendingGRV(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{}

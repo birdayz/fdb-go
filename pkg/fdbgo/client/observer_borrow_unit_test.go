@@ -25,6 +25,8 @@ func TestOnErrorBorrowedAdmissionIsReadOnly(t *testing.T) {
 		wantCode int
 	}{
 		{name: "retry", input: &wire.FDBError{Code: 1020}, wantCode: 2000},
+		{name: "code-zero", input: &wire.FDBError{Code: 0}, wantCode: 2000},
+		{name: "code-zero-retry-limit-before-caller", input: &wire.FDBError{Code: 0}, setup: func(tx *Transaction, _ *readOperation) { tx.hasRetryLimit = true; tx.retryLimit = 0 }, cancel: true, wantCode: 4100},
 		{name: "app", input: appErr, want: appErr},
 		{name: "deferred-is-not-onerror-gate", input: &wire.FDBError{Code: 1020}, setup: func(tx *Transaction, _ *readOperation) { tx.deferredErr.Store(&wire.FDBError{Code: 2006}) }, wantCode: 2000},
 		{name: "cancelled-inc-before-app", input: appErr, setup: func(tx *Transaction, op *readOperation) {

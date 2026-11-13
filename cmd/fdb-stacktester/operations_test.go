@@ -254,8 +254,30 @@ func TestThreadsShareTransactionRegistryOnly(t *testing.T) {
 	// Exercise START_THREAD itself without NEW_TRANSACTION in the child.
 	prefix := []byte("thread-instructions")
 	out := []byte("thread-result")
-	instructions := []tuple.Tuple{{"PUSH", []byte("child value")}, {"PUSH", out}, {"SET"}, {"COMMIT"}}
-	_, err := db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+	parentDirectory, err := parent.dirList[0].dir.CreateOrOpen(parent.fdbDB(ctx), []string{"parent-only"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent.dirList[1] = dirEntry{dir: parentDirectory, dsb: parentDirectory, ss: parentDirectory}
+	parent.dirIndex, parent.dirErrorIndex = 1, 1
+	logPrefixes := [][]byte{[]byte("thread-directory/initial/"), []byte("thread-directory/list/"), []byte("thread-directory/error/")}
+	instructions := []tuple.Tuple{
+		{"PUSH", []byte("child value")},
+		{"PUSH", out},
+		{"SET"},
+		{"PUSH", logPrefixes[0]},
+		{"DIRECTORY_LOG_DIRECTORY"},
+		{"PUSH", int64(1)},
+		{"DIRECTORY_CHANGE"},
+		{"PUSH", logPrefixes[1]},
+		{"DIRECTORY_LOG_DIRECTORY"},
+		{"PUSH", int64(99)},
+		{"DIRECTORY_CHANGE"},
+		{"PUSH", logPrefixes[2]},
+		{"DIRECTORY_LOG_DIRECTORY"},
+		{"COMMIT"},
+	}
+	_, err = db.Transact(ctx, func(tx *client.Transaction) (any, error) {
 		for i, inst := range instructions {
 			tx.Set(tuple.Tuple{prefix, int64(i)}.Pack(), inst.Pack())
 		}
@@ -281,5 +303,26 @@ func TestThreadsShareTransactionRegistryOnly(t *testing.T) {
 	}
 	if !bytes.Equal(value.([]byte), []byte("child value")) {
 		t.Fatalf("child output=%q", value)
+	}
+	for _, logPrefix := range logPrefixes {
+		rows, _, err := db.CreateTransaction().GetRange(ctx, logPrefix, append(bytes.Clone(logPrefix), 0xff), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 4 {
+			t.Fatalf("child directory state at %q: got %d log fields, want 4 from fresh root state", logPrefix, len(rows))
+		}
+		for _, row := range rows {
+			fields, err := tuple.Unpack(row.Key[len(logPrefix):])
+			if err != nil || len(fields) != 2 || fields[0] != int64(0) {
+				t.Fatalf("child directory state at %q: key=%x fields=%v err=%v, want root index0", logPrefix, row.Key, fields, err)
+			}
+			if fields[1] == "path" && len(row.Value) != 0 {
+				t.Fatalf("child directory state at %q: inherited parent path %x", logPrefix, row.Value)
+			}
+			if fields[1] == "exists" && !bytes.Equal(row.Value, tuple.Tuple{int64(1)}.Pack()) {
+				t.Fatalf("child directory root at %q does not exist: %x", logPrefix, row.Value)
+			}
+		}
 	}
 }

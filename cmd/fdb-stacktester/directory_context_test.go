@@ -125,7 +125,21 @@ func TestDirectoryChildrenJoinAfterContextCancellation(t *testing.T) {
 	gate := &directoryReplyGate{}
 	db, ctx := stacktesterDatabase(t, client.WithDialFunc(gate.dial))
 	t.Cleanup(gate.release)
-	for _, op := range []string{"DIRECTORY_CREATE_OR_OPEN_DATABASE", "DIRECTORY_EXISTS_DATABASE", "DIRECTORY_EXISTS", "DIRECTORY_EXISTS_SNAPSHOT"} {
+	var ops []string
+	for _, base := range []string{"CREATE_OR_OPEN", "CREATE", "MOVE", "MOVE_TO", "REMOVE", "REMOVE_IF_EXISTS"} {
+		ops = append(ops, "DIRECTORY_"+base, "DIRECTORY_"+base+"_DATABASE")
+	}
+	for _, base := range []string{"OPEN", "LIST", "EXISTS", "LOG_DIRECTORY"} {
+		ops = append(ops, "DIRECTORY_"+base, "DIRECTORY_"+base+"_DATABASE", "DIRECTORY_"+base+"_SNAPSHOT")
+	}
+	instruction := func(op string, args ...any) []tuple.Tuple {
+		var program []tuple.Tuple
+		for i := len(args) - 1; i >= 0; i-- {
+			program = append(program, tuple.Tuple{"PUSH", args[i]})
+		}
+		return append(program, tuple.Tuple{op})
+	}
+	for _, op := range ops {
 		for _, joinTimeout := range []bool{false, true} {
 			name := op + "/caller"
 			if joinTimeout {
@@ -134,22 +148,50 @@ func TestDirectoryChildrenJoinAfterContextCancellation(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				root, child := name+"/root", name+"/child"
 				barrier := []byte(name + "/parent-barrier")
-				program := []tuple.Tuple{{"PUSH", "uncreated-directory"}, {"PUSH", int64(1)}, {op}}
-				if op == "DIRECTORY_CREATE_OR_OPEN_DATABASE" {
-					program = append([]tuple.Tuple{{"PUSH", []byte{}}}, program...)
-				} else {
-					// EXISTS pops the optional-path flag before the path's tuple count.
-					program = append(program[:len(program)-1], tuple.Tuple{"PUSH", int64(1)}, tuple.Tuple{op})
+				ready := []byte(name + "/child-setup-barrier")
+				startOp := []byte(name + "/child-operation-barrier")
+				sm := NewStackMachine(db, []byte(root))
+				if _, err := sm.dirList[0].dir.CreateOrOpen(sm.fdbDB(ctx), []string{name, "scope", "source"}, nil); err != nil {
+					t.Fatal(err)
+				}
+				base := strings.TrimSuffix(strings.TrimSuffix(op, "_DATABASE"), "_SNAPSHOT")
+				var args []any
+				switch base {
+				case "DIRECTORY_CREATE_OR_OPEN":
+					args = []any{int64(1), "new", []byte{}}
+				case "DIRECTORY_CREATE":
+					args = []any{int64(1), "new", []byte{}, nil}
+				case "DIRECTORY_OPEN":
+					args = []any{int64(1), "source", []byte{}}
+				case "DIRECTORY_MOVE":
+					args = []any{int64(1), "source", int64(1), "destination"}
+				case "DIRECTORY_MOVE_TO":
+					args = []any{int64(2), name, "moved-scope"}
+				case "DIRECTORY_REMOVE", "DIRECTORY_REMOVE_IF_EXISTS", "DIRECTORY_LIST", "DIRECTORY_EXISTS":
+					args = []any{int64(1), int64(1), "source"}
+				case "DIRECTORY_LOG_DIRECTORY":
+					args = []any{[]byte(name + "/directory-log/")}
+				default:
+					t.Fatalf("missing directory cancellation arguments for %s", op)
+				}
+				program := instruction("DIRECTORY_OPEN_DATABASE", int64(2), name, "scope", []byte{})
+				program = append(program, tuple.Tuple{"PUSH", int64(1)}, tuple.Tuple{"DIRECTORY_CHANGE"},
+					tuple.Tuple{"PUSH", ready}, tuple.Tuple{"CLEAR"}, tuple.Tuple{"COMMIT"}, tuple.Tuple{"NEW_TRANSACTION"},
+					tuple.Tuple{"PUSH", startOp}, tuple.Tuple{"WAIT_EMPTY"})
+				program = append(program, instruction(op, args...)...)
+				if _, err := db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+					tx.Set(ready, []byte("held"))
+					tx.Set(startOp, []byte("held"))
+					return nil, nil
+				}); err != nil {
+					t.Fatal(err)
 				}
 				writeThreadInstructions(t, ctx, db, map[string][]tuple.Tuple{
 					root:  {{"PUSH", []byte(child)}, {"START_THREAD"}, {"PUSH", barrier}, {"WAIT_EMPTY"}},
 					child: program,
 				}, barrier)
-				gate.arm()
-				defer gate.release()
 				runCtx, cancel := context.WithCancel(ctx)
 				defer cancel()
-				sm := NewStackMachine(db, []byte(root))
 				// The parent cannot start its join timer until the test releases
 				// the barrier after observing the child's held directory read.
 				sm.childJoinTimeout = 30 * time.Second
@@ -158,6 +200,19 @@ func TestDirectoryChildrenJoinAfterContextCancellation(t *testing.T) {
 				}
 				errs := make(chan error, 1)
 				go func() { errs <- sm.Run(runCtx) }()
+				readyCtx, readyCancel := context.WithTimeout(ctx, 10*time.Second)
+				defer readyCancel()
+				if err := sm.waitEmpty(readyCtx, ready); err != nil {
+					t.Fatalf("child directory setup did not finish: %v", err)
+				}
+				gate.arm()
+				defer gate.release()
+				if _, err := db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+					tx.Clear(startOp)
+					return nil, nil
+				}); err != nil {
+					t.Fatal(err)
+				}
 				select {
 				case <-gate.reached:
 				case err := <-errs:

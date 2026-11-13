@@ -11,6 +11,47 @@ import (
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 )
 
+func TestDirectoryCreatorPanicRecoveryAllOperations(t *testing.T) {
+	t.Parallel()
+	db, ctx := stacktesterDatabase(t)
+	for _, op := range []string{
+		"DIRECTORY_CREATE_SUBSPACE",
+		"DIRECTORY_CREATE_LAYER",
+		"DIRECTORY_CREATE_OR_OPEN",
+		"DIRECTORY_CREATE",
+		"DIRECTORY_OPEN",
+		"DIRECTORY_MOVE",
+		"DIRECTORY_MOVE_TO",
+		"DIRECTORY_OPEN_SUBSPACE",
+	} {
+		t.Run(op, func(t *testing.T) {
+			sm := NewStackMachine(db, []byte(op))
+			// Every creator first pops an integer; a string forces panic recovery.
+			executeDirectoryArguments(t, ctx, sm, op, "not-an-integer")
+			requireDirectoryStack(t, sm, true)
+			if len(sm.dirList) != 2 || !sm.dirList[1].isNull() {
+				t.Fatalf("panicking creator left %d slots, want2 with null slot1", len(sm.dirList))
+			}
+			executeDirectoryArguments(t, ctx, sm, "DIRECTORY_CHANGE", int64(1))
+			if sm.dirIndex != 0 {
+				t.Fatalf("null slot selected index%d instead of error index0", sm.dirIndex)
+			}
+			// Python assigns the next creator index2, independent of observed length.
+			prefix := []byte("after-panic/")
+			executeDirectoryArguments(t, ctx, sm, "DIRECTORY_CREATE_SUBSPACE", int64(0), prefix)
+			requireDirectoryStack(t, sm, false)
+			if len(sm.dirList) != 3 || sm.dirList[2].ss == nil {
+				t.Fatal("following creator did not occupy slot2")
+			}
+			executeDirectoryArguments(t, ctx, sm, "DIRECTORY_CHANGE", int64(2))
+			requireDirectoryStack(t, sm, false)
+			if sm.dirIndex != 2 || !bytes.Equal(sm.currentDir().ss.Bytes(), prefix) {
+				t.Fatal("following subspace could not be selected at index2")
+			}
+		})
+	}
+}
+
 // Seed 1989826954 instruction 1419 opens a subspace on a partition root: DIRECTORY_ERROR.
 // Omitting Python's reserved null slot shifts every subsequent directory index.
 func TestDirectoryCreatorPanicReservesSlotAndPreservesLaterIndexes(t *testing.T) {
