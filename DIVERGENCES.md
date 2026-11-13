@@ -11,6 +11,31 @@ live 4.14.2.0 in `just test-full` and PR CI's `conformance-java` job with a stal
 and the suite is green). Entries below that cite 4.12.11 record the previous pin;
 not every one has been re-measured on 4.14.2.0.
 
+## Experimental Rust OTel span writer
+
+`layers/otel/rust` is an experimental span-only, in-process alternative to Go's
+`SpanWriter`, not the production `otel.Exporter`, an upstream Collector
+component or an OTLP receiver. Its SPANS projection, eight VALUE index shapes,
+prior-image replacement and raw/version-1 zlib split records target the existing
+OTEL_V1 layout. It uses an explicitly selected, SHA256-checked native C client
+7.3.77 at API 730, whereas the production Go path uses the pure-Go client. An
+immutable manifest pins an exclusively owned tenant's descriptor, prefixes,
+header, catalog values and empty state ranges; the Rust writer refuses drift
+and cannot resolve, create, upgrade or adopt relational catalogs. Concurrent
+schema/catalog evolution is unsupported.
+
+The Rust source fixtures and fake transaction/queue tests do not establish live
+native-ABI, FoundationDB durability or Go/Java cross-read conformance. The live
+control adapter, independent physical record/index census and complete query
+oracle still require integration validation. Logs, GenAI message decomposition,
+deduplication/restoration, message TEXT indexes, joined queries, metrics and
+transport are not part of this milestone. No full GenAI Collector parity or
+performance/economics advantage is claimed. A native-Rust versus native-Go run
+would be a matched-client comparison; native-Rust versus production pure-Go is
+a whole-implementation comparison, not causal evidence about language or GC.
+See `docs/compatibility.md` and `layers/otel/rust/README.md` for the writer and
+measurement boundaries.
+
 ## Full-text SQL and query execution
 
 Go exposes `CREATE FULLTEXT INDEX ... ON table(text_column) [PARTITION BY (...)]`

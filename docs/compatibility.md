@@ -488,6 +488,25 @@ run-level Drop removes); a production tenant's shared signal store must never
 be cleared by that operation. Java-readable stores must use
 an interoperable serializer, not Go-only Brotli.
 
+**Experimental Rust span writer.** `layers/otel/rust` is a separate, in-process,
+span-only alternative to the Go `SpanWriter`; it does not replace the production
+`otel.Exporter` contract above. Its source projects SPANS and all eight span
+VALUE indexes, stores the original single-span OTLP, and implements prior-image
+replacement, split records and version-1 raw/zlib serialization. It dynamically
+loads only an explicit SHA256-matched native C client 7.3.77 (API 730), not the
+production pure-Go client. An immutable, exclusively owned tenant manifest must
+seal the exact descriptor, prefixes, header, catalog values and empty state
+ranges; Rust checks those guards but cannot create, resolve, upgrade or adopt a
+catalog. Concurrent schema evolution is unsupported. The queued collector is
+in-process only, and its admission is not a durable ACK. Source fixtures and
+fake transaction/queue tests are not live native-ABI, FDB durability or Go/Java
+cross-read conformance. Those integrations, the independent record/index census
+and the complete query oracle remain unverified. Logs, GenAI message
+decomposition/deduplication/restoration, message TEXT indexes, metrics and OTLP
+receivers are outside this milestone. See `layers/otel/rust/README.md` for the
+validation and comparison boundaries; no Rust performance/economics advantage
+or full Collector parity is established.
+
 SQL keyset pages use an expanded scalar predicate over `(time, trace, span)`;
 row-value comparison is unsupported in both engines. Go's LIMIT is not Java
 SQL syntax (Java uses maxRows/continuations). Snapshot and budget semantics

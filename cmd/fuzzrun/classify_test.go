@@ -31,8 +31,9 @@ FAIL	fdb.dev/cmd/fdb-diff-oracle	120.093s
 // is how 124 of the 142 nightly (target, func) pairs run. Bazel frames the captured
 // test log with its own lines and exits 3, not 1.
 //
-// The `=== RUN` / `=== NAME` framing is load-bearing, not decoration: .bazelrc:23
-// sets `test --test_arg="-test.v"` globally, so every bazel-run target emits the
+// The `=== RUN` / `=== NAME` framing is load-bearing, not decoration: .bazelrc
+// sets `test --test_env=GO_TEST_WRAP_TESTV=1` globally, so rules_go's test wrapper
+// runs Go tests with -test.v=test2json and they emit the
 // VERBOSE shape. A non-verbose fixture here would claim to pin this path while
 // pinning output it never produces.
 const bazelDeadlineRace = `==================== Test output for //pkg/fdbgo/client:client_test:

@@ -29,7 +29,9 @@ replacement. There are no measured performance or economics results yet.
   libfdb_c 7.3.77 file**, pinned in `MODULE.bazel`. It uses API 730, a one-shot
   owned network thread, native serializable reads/OnError, retry limit -1 and a
   10-second timeout on the same transaction across retries. Caller cancellation
-  cancels the native transaction; failure/uncertain commit is not an ACK.
+  cancels the transaction and releases the current future/token without waiting
+  for an uninitialized multiversion client to deliver readiness. Failure or an
+  uncertain/canceled commit is not an ACK.
   It installs nothing globally and starts no FDB server. Executable client code
   stays pinned until process exit (the C runtime is process-global/one-shot).
   Irreversible network-loop failure returns an operation error rather than
@@ -40,6 +42,11 @@ replacement. There are no measured performance or economics results yet.
   with overflow rejection/blocking, bounded batch sizes, timeout flushing,
   exponential retry, permanent-error request isolation, Flush sequence barriers,
   draining shutdown and cancellation. Admission is **not** a durable ACK.
+  `stored_spans` counts acknowledged span-write operations across every completed
+  sink attempt, including retry/isolation replays; it is not a unique durable-row
+  count. `exported_spans`/`failed_spans` count logical queue completion outcomes;
+  export attempts, committed batches and native retries are separate counters.
+  Only an independent post-drain census establishes unique stored identities.
 - The binary is a closed-loop, finite-corpus **writer driver**, not the queued
   Collector benchmark. It requires an explicit JSON job with absolute client,
   cluster, layout, framed corpus and new output paths; corpus/binary SHA256,
@@ -59,14 +66,24 @@ Concurrent schema/catalog evolution is not supported by this experiment.
 
 ## Validation and limitations
 
+The required repository gate is **`just test`**, not a standalone Cargo command.
+`BUILD.bazel` declares the library, driver and six ordinary Rust test actions;
+`driver_test` also makes the binary a dependency of the build-tests-only fast
+lane. MODULE.bazel pins rules_rust 0.69.0, the six Rust 1.99.1 Linux x86_64
+archives and crate-universe host tools by SHA256. Cargo.lock seals crate versions
+and checksums; Cargo.Bazel.lock seals Bazel's generated crate rendering. The C
+linker/sysroot remains the repository C toolchain, not a new hermetic C claim.
+
+Optional developer diagnostics (source-stage evidence, **not** either required
+repository lane):
+
 ```sh
-# Standalone Rust checks, not verification of any Go change.
-CARGO_BUILD_JOBS=4 cargo test --locked --manifest-path layers/otel/rust/Cargo.toml
-CARGO_BUILD_JOBS=4 cargo build --locked --release --manifest-path layers/otel/rust/Cargo.toml
+CARGO_BUILD_JOBS=4 cargo test --locked --offline --manifest-path layers/otel/rust/Cargo.toml
+CARGO_BUILD_JOBS=4 cargo build --locked --offline --release --manifest-path layers/otel/rust/Cargo.toml
 ```
 
-`rust-toolchain.toml` declares Rust 1.99.1; Cargo.lock seals dependencies. Default
-Cargo tests start no database, network listener, Docker container or service.
+`rust-toolchain.toml` also declares Rust 1.99.1. Default Rust tests start no
+database, network listener, Docker container or service.
 `tests/compatibility.rs` compares nine nonempty vectors against Go
 `BuildCompiled` rows and the **metadata expressions'** complete index/primary
 keys, not a second handwritten Go index model. `fixture_test.go` checks the

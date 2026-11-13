@@ -4,7 +4,7 @@ use fdb_otel_rust::{
     Error, ErrorKind, Result,
     native::NativeDatabase,
     storage::RecordCompression,
-    writer::{Context, Layout, Writer},
+    writer::{Context, Database, Layout, Writer},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -18,7 +18,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Job {
     client_library: PathBuf,
@@ -118,6 +118,9 @@ fn next(input: &mut Input, batch_size: usize, limit: u64) -> Result<Vec<Vec<u8>>
     Ok(out)
 }
 fn run(job: Job) -> Result<()> {
+    run_with(job, NativeDatabase::open)
+}
+fn run_with<D: Database>(job: Job, open: impl FnOnce(&Path, &Path) -> Result<D>) -> Result<()> {
     if job.expected_frames == 0
         || job.expected_frames > job.row_budget
         || job.row_budget > 10_000_000
@@ -152,20 +155,35 @@ fn run(job: Job) -> Result<()> {
             "corpus or executable SHA256 mismatch",
         ));
     }
+    let paths = [
+        &job.client_library,
+        &job.cluster_file,
+        &job.layout_file,
+        &job.corpus_file,
+        &job.output,
+    ];
+    if paths
+        .iter()
+        .enumerate()
+        .any(|(i, path)| paths[i + 1..].contains(path))
+    {
+        return Err(failure(ErrorKind::Config, "job paths must be distinct"));
+    }
     let layout: Layout = serde_json::from_reader(
         File::open(&job.layout_file)
             .map_err(|_| failure(ErrorKind::Config, "cannot open layout manifest"))?,
     )
     .map_err(|_| failure(ErrorKind::Config, "invalid layout manifest"))?;
-    // Exclusive-create output before connecting or writing; failed runs leave an
-    // no prior result can be silently overwritten. Setup errors are on stderr.
+    layout.validate()?;
+    // Reserve output before connecting or writing; no prior result can be
+    // overwritten. Setup failures leave the reserved file and report on stderr.
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .open(&job.output)
         .map_err(|_| failure(ErrorKind::Config, "output must be a new writable file"))?;
-    let db = NativeDatabase::open(&job.client_library, &job.cluster_file)?;
+    let db = open(&job.client_library, &job.cluster_file)?;
     let writer = Arc::new(Writer::new(
         db,
         &layout,
@@ -290,6 +308,10 @@ fn run(job: Job) -> Result<()> {
         Ok(())
     }
 }
+#[cfg(test)]
+#[path = "driver_tests.rs"]
+mod tests;
+
 fn main() {
     let result = (|| {
         let args = std::env::args_os().skip(1).collect::<Vec<_>>();

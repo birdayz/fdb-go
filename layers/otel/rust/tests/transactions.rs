@@ -3,9 +3,12 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use fdb_otel_rust::{
     Error, ErrorKind, Result,
     row::Schema,
-    storage::RecordCompression,
+    storage::{self, RecordCompression},
+    tuple::{self, Element},
     writer::{Context, Database, ExpectedValue, KeyValues, Layout, Transaction, Writer},
 };
+use prost::Message;
+use prost_reflect::{DescriptorPool, DynamicMessage, Value};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -21,6 +24,10 @@ struct State {
     retries: usize,
     transactions: usize,
     force_large: bool,
+    max_records_per_transaction: Option<usize>,
+    size_override: Option<i64>,
+    after_retry: Option<(Vec<u8>, Option<Vec<u8>>)>,
+    committed_records: Vec<usize>,
 }
 #[derive(Clone, Default)]
 struct Fake(Arc<Mutex<State>>);
@@ -63,14 +70,24 @@ impl Transaction for Tx {
         self.changes.insert(key.to_vec(), None);
     }
     fn approximate_size(&mut self, _: &Context) -> Result<i64> {
-        Ok(if self.db.0.lock().unwrap().force_large {
-            500_001
-        } else {
-            self.changes
-                .iter()
-                .map(|(k, v)| k.len() + v.as_ref().map_or(0, Vec::len))
-                .sum::<usize>() as i64
-        })
+        let state = self.db.0.lock().unwrap();
+        let records = self.changes.keys().filter(|key| key[0] == 1).count();
+        Ok(
+            if state.force_large
+                || state
+                    .max_records_per_transaction
+                    .is_some_and(|max| records > max)
+            {
+                500_001
+            } else if let Some(size) = state.size_override {
+                size
+            } else {
+                self.changes
+                    .iter()
+                    .map(|(k, v)| k.len() + v.as_ref().map_or(0, Vec::len))
+                    .sum::<usize>() as i64
+            },
+        )
     }
     fn commit(&mut self, ctx: &Context) -> Result<()> {
         ctx.check()?;
@@ -83,6 +100,9 @@ impl Transaction for Tx {
                 fdb_code: Some(code),
             });
         }
+        state
+            .committed_records
+            .push(self.changes.keys().filter(|key| key[0] == 1).count());
         for (k, v) in std::mem::take(&mut self.changes) {
             if let Some(v) = v {
                 state.data.insert(k, v);
@@ -102,7 +122,15 @@ impl Transaction for Tx {
                 fdb_code: Some(code),
             });
         }
-        self.db.0.lock().unwrap().retries += 1;
+        let mut state = self.db.0.lock().unwrap();
+        state.retries += 1;
+        if let Some((key, value)) = state.after_retry.take() {
+            if let Some(value) = value {
+                state.data.insert(key, value);
+            } else {
+                state.data.remove(&key);
+            }
+        }
         Ok(())
     }
 }
@@ -130,20 +158,83 @@ fn layout() -> Layout {
 struct Vector {
     name: String,
     otlp: String,
+    row: String,
+    pk: String,
+    keys: BTreeMap<String, Vec<String>>,
+}
+fn vectors() -> Vec<Vector> {
+    serde_json::from_slice(include_bytes!("../testdata/vectors.json")).unwrap()
 }
 fn inputs() -> Vec<Vec<u8>> {
-    let vectors: Vec<Vector> =
-        serde_json::from_slice(include_bytes!("../testdata/vectors.json")).unwrap();
-    vectors
+    vectors()
         .into_iter()
         .filter(|v| v.name.starts_with("v2_"))
         .map(|v| STANDARD.decode(v.otlp).unwrap())
         .collect()
 }
+fn expected_physical(layout: &Layout, fixtures: &[&Vector]) -> BTreeMap<Vec<u8>, Vec<u8>> {
+    let mut data = BTreeMap::from([(vec![0], vec![1, 2])]);
+    for fixture in fixtures {
+        let mut key = hex::decode(&layout.record_prefix).unwrap();
+        key.extend(hex::decode(&fixture.pk).unwrap());
+        key.push(0x14); // FDB tuple integer zero: unsplit suffix.
+        let row = STANDARD.decode(&fixture.row).unwrap();
+        let mut value = vec![0x0a]; // RecordTypeUnion.SPANS_0, length-delimited.
+        prost::encoding::encode_varint(row.len() as u64, &mut value);
+        value.extend(row);
+        assert!(
+            value.len() <= 100_000,
+            "this independent map expects unsplit fixtures"
+        );
+        assert!(
+            data.insert(key, value).is_none(),
+            "duplicate source identity"
+        );
+        for (name, entries) in &fixture.keys {
+            for entry in entries {
+                let mut key = hex::decode(&layout.index_prefixes[name]).unwrap();
+                key.extend(hex::decode(entry).unwrap());
+                data.insert(key, vec![]);
+            }
+        }
+    }
+    data
+}
 fn database() -> Fake {
     let db = Fake::default();
     db.0.lock().unwrap().data.insert(vec![0], vec![1, 2]);
     db
+}
+
+fn minimal_span(id: u8, start: u64, name_bytes: usize, padding: usize) -> Vec<u8> {
+    let pool =
+        DescriptorPool::decode(include_bytes!("../testdata/descriptors.pb").as_slice()).unwrap();
+    let mut span = DynamicMessage::new(
+        pool.get_message_by_name("opentelemetry.proto.trace.v1.Span")
+            .unwrap(),
+    );
+    span.set_field_by_name("trace_id", Value::Bytes(vec![0x11; 16].into()));
+    span.set_field_by_name("span_id", Value::Bytes(vec![id; 8].into()));
+    span.set_field_by_name("start_time_unix_nano", Value::U64(start));
+    span.set_field_by_name("name", Value::String("x".repeat(name_bytes)));
+    let mut scope = DynamicMessage::new(
+        pool.get_message_by_name("opentelemetry.proto.trace.v1.ScopeSpans")
+            .unwrap(),
+    );
+    scope.set_field_by_name("spans", Value::List(vec![Value::Message(span)]));
+    let mut resource = DynamicMessage::new(
+        pool.get_message_by_name("opentelemetry.proto.trace.v1.ResourceSpans")
+            .unwrap(),
+    );
+    resource.set_field_by_name("scope_spans", Value::List(vec![Value::Message(scope)]));
+    let mut wire = resource.encode_to_vec();
+    if padding != 0 {
+        // Unknown wrapper payload changes only the embedded OTLP byte count.
+        prost::encoding::encode_key(999, prost::encoding::WireType::LengthDelimited, &mut wire);
+        prost::encoding::encode_varint(padding as u64, &mut wire);
+        wire.extend(std::iter::repeat_n(0xab, padding));
+    }
+    wire
 }
 
 #[test]
@@ -157,6 +248,13 @@ fn exact_census_replay_replacement_and_clears() {
     assert_eq!(stats.committed_spans, 8);
     assert_eq!(stats.committed_batches, 1);
     let first = db.0.lock().unwrap().data.clone();
+    let fixtures = vectors();
+    let original = fixtures
+        .iter()
+        .filter(|v| v.name.starts_with("v2_"))
+        .collect::<Vec<_>>();
+    assert_eq!(original.len(), 8);
+    assert_eq!(first, expected_physical(&layout, &original));
     assert_eq!(
         first.len(),
         89,
@@ -168,45 +266,25 @@ fn exact_census_replay_replacement_and_clears() {
         first,
         "replay must be idempotent"
     );
-    // Same identity, changed timestamp/name/string terms. Projected old entries
-    // must disappear, not merely have a new set appended.
-    let pool = prost_reflect::DescriptorPool::decode(
-        include_bytes!("../testdata/descriptors.pb").as_slice(),
-    )
-    .unwrap();
-    let desc = pool
-        .get_message_by_name("opentelemetry.proto.trace.v1.ResourceSpans")
-        .unwrap();
-    use prost::Message;
-    use prost_reflect::Value;
-    let mut rs = prost_reflect::DynamicMessage::decode(desc, source[0].as_slice()).unwrap();
-    let mut ss = rs
-        .get_field_by_name("scope_spans")
-        .unwrap()
-        .as_list()
-        .unwrap()[0]
-        .as_message()
-        .unwrap()
-        .clone();
-    let mut sp = ss.get_field_by_name("spans").unwrap().as_list().unwrap()[0]
-        .as_message()
-        .unwrap()
-        .clone();
-    sp.set_field_by_name("start_time_unix_nano", Value::U64(99));
-    sp.set_field_by_name("attributes", Value::List(vec![]));
-    ss.set_field_by_name("spans", Value::List(vec![Value::Message(sp)]));
-    rs.set_field_by_name("scope_spans", Value::List(vec![Value::Message(ss)]));
-    let changed = rs.encode_to_vec();
-    writer
-        .write(&Context::default(), std::slice::from_ref(&changed))
-        .1
-        .unwrap();
-    let keys = Schema::pinned().unwrap().prepare(&[changed]).unwrap()[0]
-        .indexes
-        .clone();
-    let expected_indexes = 7 * 10 + keys.values().map(Vec::len).sum::<usize>();
-    assert_eq!(db.0.lock().unwrap().data.len(), 1 + 8 + expected_indexes);
-    assert_ne!(db.0.lock().unwrap().data, first);
+    // Fidelity is an independently Go-built replacement of v2_0's identity.
+    let replacement = fixtures.iter().find(|v| v.name == "fidelity").unwrap();
+    assert_eq!(replacement.pk, original[0].pk);
+    let changed = STANDARD.decode(&replacement.otlp).unwrap();
+    let (stats, result) = writer.write(&Context::default(), &[changed]);
+    result.unwrap();
+    assert_eq!(stats.committed_spans, 1);
+    let mut replaced = original.clone();
+    replaced[0] = replacement;
+    let expected = expected_physical(&layout, &replaced);
+    assert_ne!(
+        expected, first,
+        "replacement control must change rows and keys"
+    );
+    assert!(
+        first.keys().any(|key| !expected.contains_key(key)),
+        "control must retract old keys"
+    );
+    assert_eq!(db.0.lock().unwrap().data, expected);
 }
 
 #[test]
@@ -283,4 +361,426 @@ fn transient_retry_terminal_error_and_partial_progress() {
     assert_eq!(state.retries, 1);
     assert_eq!(state.transactions, 2);
     assert_eq!(state.data.len(), 12);
+}
+
+#[test]
+fn constructor_rejects_each_manifest_arm_and_batch_bounds() {
+    let valid = layout();
+    let mut cases = Vec::new();
+    macro_rules! invalid {
+        ($name:literal, $change:expr) => {{
+            let mut layout = valid.clone();
+            ($change)(&mut layout);
+            cases.push(($name, layout));
+        }};
+    }
+    invalid!("version", |l: &mut Layout| l.version = 2);
+    invalid!("descriptor", |l: &mut Layout| l.descriptor_sha256 =
+        "0".repeat(64));
+    invalid!("messages", |l: &mut Layout| l.messages = "decompose".into());
+    invalid!("vacuous checks", |l: &mut Layout| l.checks.clear());
+    invalid!("vacuous ranges", |l: &mut Layout| l.empty_ranges.clear());
+    invalid!("missing index", |l: &mut Layout| {
+        l.index_prefixes.remove("SPANS_TIME");
+    });
+    invalid!("wrong same-count indexes", |l: &mut Layout| {
+        let prefix = l.index_prefixes.remove("SPANS_TIME").unwrap();
+        l.index_prefixes.insert("unexpected".into(), prefix);
+    });
+    invalid!("extra index", |l: &mut Layout| {
+        l.index_prefixes.insert("unexpected".into(), "02ff".into());
+    });
+    invalid!("empty record prefix", |l: &mut Layout| l
+        .record_prefix
+        .clear());
+    invalid!("invalid record hex", |l: &mut Layout| l.record_prefix =
+        "gg".into());
+    invalid!("empty index prefix", |l: &mut Layout| {
+        l.index_prefixes.insert("SPANS_TIME".into(), "".into());
+    });
+    invalid!("invalid index hex", |l: &mut Layout| {
+        l.index_prefixes.insert("SPANS_TIME".into(), "gg".into());
+    });
+    invalid!("empty check key", |l: &mut Layout| l.checks[0].key.clear());
+    invalid!("invalid check key hex", |l: &mut Layout| l.checks[0].key =
+        "gg".into());
+    invalid!("invalid expected hex", |l: &mut Layout| l.checks[0].value =
+        Some("gg".into()));
+    invalid!("empty range begin", |l: &mut Layout| l.empty_ranges[0]
+        .0
+        .clear());
+    invalid!("invalid range hex", |l: &mut Layout| l.empty_ranges[0].1 =
+        "gg".into());
+    invalid!("equal range", |l: &mut Layout| l.empty_ranges[0] =
+        ("03".into(), "03".into()));
+    invalid!("reversed range", |l: &mut Layout| l.empty_ranges[0] =
+        ("04".into(), "03".into()));
+    assert_eq!(cases.len(), 19);
+    for (name, layout) in cases {
+        let db = database();
+        let before = db.0.lock().unwrap().data.clone();
+        let result = Writer::new(db.clone(), &layout, 64, RecordCompression::None);
+        assert_eq!(result.err().unwrap().kind, ErrorKind::Config, "{name}");
+        assert_eq!(db.0.lock().unwrap().transactions, 0, "{name}");
+        assert_eq!(db.0.lock().unwrap().data, before, "{name}");
+    }
+    for batch in [0, 65, usize::MAX] {
+        assert_eq!(
+            Writer::new(database(), &valid, batch, RecordCompression::None)
+                .err()
+                .unwrap()
+                .kind,
+            ErrorKind::Config
+        );
+    }
+    for batch in [1, 64] {
+        assert!(Writer::new(database(), &valid, batch, RecordCompression::None).is_ok());
+    }
+}
+
+#[test]
+fn expected_absence_and_half_open_state_range_are_enforced() {
+    let source = inputs();
+    let mut layout = layout();
+    layout.checks.push(ExpectedValue {
+        key: "05".into(),
+        value: None,
+    });
+    for (key, reject) in [
+        (vec![3], true),
+        (vec![3, 0], true),
+        (vec![4], false),
+        (vec![5], true),
+    ] {
+        let db = database();
+        db.0.lock().unwrap().data.insert(key.clone(), vec![]);
+        let before = db.0.lock().unwrap().data.clone();
+        let writer = Writer::new(db.clone(), &layout, 64, RecordCompression::None).unwrap();
+        let (stats, result) = writer.write(&Context::default(), &source[..1]);
+        if reject {
+            assert_eq!(result.unwrap_err().kind, ErrorKind::Ownership, "{key:?}");
+            assert_eq!(stats.committed_spans, 0);
+            assert_eq!(db.0.lock().unwrap().attempts, 0);
+            assert_eq!(db.0.lock().unwrap().data, before);
+        } else {
+            result.unwrap();
+            assert_eq!(
+                stats.committed_spans, 1,
+                "range end is exclusive and absent key5 is valid"
+            );
+        }
+    }
+}
+
+#[test]
+fn ownership_and_index_state_seals_are_rechecked_after_on_error() {
+    let source = inputs();
+    for mutation in [
+        (vec![0], Some(vec![9])),
+        (vec![0], None),
+        (vec![3], Some(vec![])),
+        (vec![5], Some(vec![])),
+    ] {
+        let db = database();
+        let mut layout = layout();
+        layout.checks.push(ExpectedValue {
+            key: "05".into(),
+            value: None,
+        });
+        {
+            let mut state = db.0.lock().unwrap();
+            state.outcomes.push_back(Some(1020));
+            state.after_retry = Some(mutation.clone());
+        }
+        let writer = Writer::new(db.clone(), &layout, 64, RecordCompression::None).unwrap();
+        let (stats, result) = writer.write(&Context::default(), &source[..1]);
+        assert_eq!(result.unwrap_err().kind, ErrorKind::Ownership);
+        assert_eq!(stats.committed_spans, 0);
+        assert_eq!(stats.retries, 1);
+        let state = db.0.lock().unwrap();
+        assert_eq!(state.attempts, 1, "no second commit under changed seal");
+        assert_eq!(state.transactions, 1, "OnError must reuse the transaction");
+        assert!(state.committed_records.is_empty());
+        let mut expected = BTreeMap::from([(vec![0], vec![1, 2])]);
+        if let Some(value) = mutation.1 {
+            expected.insert(mutation.0, value);
+        } else {
+            expected.remove(&mutation.0);
+        }
+        assert_eq!(state.data, expected);
+    }
+}
+
+#[test]
+fn physical_record_key_accepts_exact_limit_and_rejects_one_byte_over() {
+    let source = inputs();
+    let pk_len = hex::decode(&vectors().into_iter().find(|v| v.name == "v2_0").unwrap().pk)
+        .unwrap()
+        .len();
+    for (limit, reject) in [(10_000, false), (10_001, true)] {
+        let db = database();
+        let before = db.0.lock().unwrap().data.clone();
+        let mut layout = layout();
+        layout.record_prefix = hex::encode(vec![0xaa; limit - pk_len - 1]);
+        let writer = Writer::new(db.clone(), &layout, 64, RecordCompression::None).unwrap();
+        let (stats, result) = writer.write(&Context::default(), &source[..1]);
+        if reject {
+            assert_eq!(result.unwrap_err().kind, ErrorKind::Admission);
+            assert_eq!(stats.committed_spans, 0);
+            assert_eq!(db.0.lock().unwrap().data, before);
+            assert_eq!(db.0.lock().unwrap().attempts, 0);
+        } else {
+            result.unwrap();
+            assert_eq!(stats.committed_spans, 1);
+            assert!(
+                db.0.lock()
+                    .unwrap()
+                    .data
+                    .keys()
+                    .any(|key| key.len() == 10_000)
+            );
+        }
+    }
+}
+
+#[test]
+fn actual_size_equal_guard_commits_and_combined_oversize_replans_halves() {
+    let source = inputs();
+    let db = database();
+    db.0.lock().unwrap().size_override = Some(500_000);
+    let writer = Writer::new(db.clone(), &layout(), 64, RecordCompression::None).unwrap();
+    let (stats, result) = writer.write(&Context::default(), &source[..1]);
+    result.unwrap();
+    assert_eq!(stats.committed_spans, 1);
+    assert_eq!(
+        db.0.lock().unwrap().attempts,
+        1,
+        "500000 equality must commit"
+    );
+
+    let db = database();
+    db.0.lock().unwrap().max_records_per_transaction = Some(2);
+    let writer = Writer::new(db.clone(), &layout(), 64, RecordCompression::None).unwrap();
+    let (stats, result) = writer.write(&Context::default(), &source[..6]);
+    result.unwrap();
+    assert_eq!(stats.committed_spans, 6);
+    assert_eq!(stats.committed_batches, 4);
+    let state = db.0.lock().unwrap();
+    assert_eq!(state.transactions, 7);
+    assert_eq!(state.committed_records, [1, 2, 1, 2]);
+    let fixtures = vectors();
+    let expected = fixtures
+        .iter()
+        .filter(|v| v.name.starts_with("v2_"))
+        .take(6)
+        .collect::<Vec<_>>();
+    assert_eq!(state.data, expected_physical(&layout(), &expected));
+}
+
+#[test]
+fn count_limit_and_cumulative_estimate_partition_at_inclusive_boundaries() {
+    let schema = Schema::pinned().unwrap();
+    let source = (1..=65)
+        .map(|id| minimal_span(id, 1, 0, 0))
+        .collect::<Vec<_>>();
+    let prepared = schema.prepare(&source).unwrap();
+    assert_eq!(prepared.len(), 65, "identities must not collapse");
+    assert!(prepared.iter().map(|s| s.estimate).sum::<usize>() < 300_000);
+    let db = database();
+    let writer = Writer::new(db.clone(), &layout(), 64, RecordCompression::None).unwrap();
+    let (stats, result) = writer.write(&Context::default(), &source);
+    result.unwrap();
+    assert_eq!(stats.committed_spans, 65);
+    assert_eq!(stats.committed_batches, 2);
+    let state = db.0.lock().unwrap();
+    assert_eq!(state.committed_records, [64, 1]);
+    assert_eq!(state.transactions, 2);
+    assert_eq!(state.attempts, 2);
+    drop(state);
+
+    // Pin the measured cost of these concrete inputs, not merely a relation
+    // between two estimates. No attributes contribute extra fan-out costs.
+    for (extra, batches) in [(0, vec![4, 1]), (1, vec![2, 3])] {
+        let source = vec![
+            minimal_span(1, 1, 0, 147_861),
+            minimal_span(2, 1, 0, 147_861 + extra),
+            minimal_span(3, 1, 0, 0),
+        ];
+        let prepared = schema.prepare(&source).unwrap();
+        assert_eq!(prepared[0].estimate, 150_000);
+        assert_eq!(prepared[1].estimate, 150_000 + extra);
+        assert_eq!(prepared[2].estimate, 2_134);
+        let db = database();
+        let writer = Writer::new(db.clone(), &layout(), 64, RecordCompression::None).unwrap();
+        let (stats, result) = writer.write(&Context::default(), &source);
+        result.unwrap();
+        assert_eq!(stats.committed_spans, 3);
+        assert_eq!(stats.committed_batches, 2);
+        let state = db.0.lock().unwrap();
+        assert_eq!(state.committed_records, batches, "extra={extra}");
+        assert_eq!(state.transactions, 2, "no actual-size fallback expected");
+        assert_eq!(state.attempts, 2);
+    }
+}
+
+#[test]
+fn split_unsplit_replacements_remove_every_stale_record_and_index_key() {
+    let schema = Schema::pinned().unwrap();
+    let db = database();
+    let writer = Writer::new(db.clone(), &layout(), 64, RecordCompression::None).unwrap();
+    let small = minimal_span(1, 1, 10, 0);
+    let large = minimal_span(1, 2, 110_000, 0);
+    let mut first_small = None;
+    let mut first_large = None;
+    for (source, record_count) in [(&small, 1), (&large, 3), (&small, 1), (&large, 3)] {
+        let expected = schema.prepare(std::slice::from_ref(source)).unwrap();
+        let (stats, result) = writer.write(&Context::default(), std::slice::from_ref(source));
+        result.unwrap();
+        assert_eq!(stats.committed_spans, 1);
+        assert_eq!(stats.committed_batches, 1);
+        let state = db.0.lock().unwrap();
+        let records = state
+            .data
+            .iter()
+            .filter(|(k, _)| k[0] == 1)
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), record_count);
+        let mut stored = Vec::new();
+        for (i, (key, value)) in records.iter().enumerate() {
+            let mut expected_key = vec![1];
+            expected_key.extend(&expected[0].primary_key);
+            expected_key.extend(tuple::pack(&[Element::Int(if record_count == 1 {
+                0
+            } else {
+                i as i64 + 1
+            })]));
+            assert_eq!(**key, expected_key);
+            assert!(value.len() <= 100_000);
+            stored.extend(*value);
+        }
+        assert_eq!(storage::decode(&stored).unwrap(), expected[0].row);
+        // Two no-attribute indexes plus the header and current record chunks.
+        assert_eq!(state.data.len(), record_count + 3);
+        let previous = if record_count == 1 {
+            &mut first_small
+        } else {
+            &mut first_large
+        };
+        if let Some(map) = previous {
+            assert_eq!(
+                &state.data, map,
+                "returning to the same image must be exact"
+            );
+        } else {
+            *previous = Some(state.data.clone());
+        }
+    }
+    assert_ne!(first_small.unwrap(), first_large.unwrap());
+}
+
+#[test]
+fn corrupt_prior_split_shapes_fail_without_any_ack_or_mutation() {
+    let source = minimal_span(1, 1, 110_000, 0);
+    let schema = Schema::pinned().unwrap();
+    let prepared = schema.prepare(std::slice::from_ref(&source)).unwrap();
+    let mut prefix = vec![1];
+    prefix.extend(&prepared[0].primary_key);
+    let key = |suffix| [prefix.clone(), tuple::pack(&[Element::Int(suffix)])].concat();
+    for case in [
+        "missing first",
+        "missing middle",
+        "mixed unsplit and split",
+        "noncontiguous last",
+        "oversized chunk",
+        "noncanonical suffix",
+        "unsupported transform",
+        "malformed row",
+        "primary-key disagreement",
+    ] {
+        let db = database();
+        let writer = Writer::new(db.clone(), &layout(), 64, RecordCompression::None).unwrap();
+        writer
+            .write(&Context::default(), std::slice::from_ref(&source))
+            .1
+            .unwrap();
+        let mut state = db.0.lock().unwrap();
+        assert_eq!(state.data.keys().filter(|k| k[0] == 1).count(), 3);
+        match case {
+            "missing first" => {
+                state.data.remove(&key(1));
+            }
+            "missing middle" => {
+                state.data.remove(&key(2));
+            }
+            "mixed unsplit and split" => {
+                state.data.insert(key(0), vec![10, 0]);
+            }
+            "noncontiguous last" => {
+                let value = state.data.remove(&key(3)).unwrap();
+                state.data.insert(key(4), value);
+            }
+            "oversized chunk" => {
+                state.data.insert(key(1), vec![42; 100_001]);
+            }
+            "noncanonical suffix" => {
+                let value = state.data.remove(&key(3)).unwrap();
+                state
+                    .data
+                    .insert([prefix.clone(), vec![0x16, 0, 3]].concat(), value);
+            }
+            "primary-key disagreement" => {
+                let other = schema.prepare(&[minimal_span(2, 1, 110_000, 0)]).unwrap();
+                let stored = storage::encode(&other[0].row, RecordCompression::None).unwrap();
+                for (suffix, value) in storage::split(&stored) {
+                    state.data.insert(key(suffix), value);
+                }
+            }
+            _ => {
+                state.data.retain(|k, _| k[0] != 1);
+                state.data.insert(
+                    key(0),
+                    if case == "malformed row" {
+                        vec![10, 1, 0xff]
+                    } else {
+                        vec![4, 2, 0, 0, 0, 0]
+                    },
+                );
+            }
+        }
+        let before = state.data.clone();
+        let attempts = state.attempts;
+        drop(state);
+        let (stats, result) = writer.write(&Context::default(), std::slice::from_ref(&source));
+        assert_eq!(result.unwrap_err().kind, ErrorKind::Corruption, "{case}");
+        assert_eq!(stats.committed_spans, 0, "{case}");
+        assert_eq!(stats.committed_batches, 0, "{case}");
+        let state = db.0.lock().unwrap();
+        assert_eq!(state.attempts, attempts, "{case}: must not attempt commit");
+        assert_eq!(state.data, before, "{case}");
+    }
+}
+
+#[test]
+fn replanning_retains_first_half_ack_when_second_half_fails() {
+    let db = database();
+    {
+        let mut state = db.0.lock().unwrap();
+        state.max_records_per_transaction = Some(2);
+        state.outcomes = VecDeque::from([None, Some(2004)]);
+    }
+    let writer = Writer::new(db.clone(), &layout(), 64, RecordCompression::None).unwrap();
+    let (stats, result) = writer.write(&Context::default(), &inputs()[..4]);
+    assert_eq!(result.unwrap_err().fdb_code, Some(2004));
+    assert_eq!(stats.committed_spans, 2);
+    assert_eq!(stats.committed_batches, 1);
+    let state = db.0.lock().unwrap();
+    assert_eq!(state.transactions, 3);
+    assert_eq!(state.committed_records, [2]);
+    let fixtures = vectors();
+    let expected = fixtures
+        .iter()
+        .filter(|v| v.name.starts_with("v2_"))
+        .take(2)
+        .collect::<Vec<_>>();
+    assert_eq!(state.data, expected_physical(&layout(), &expected));
 }

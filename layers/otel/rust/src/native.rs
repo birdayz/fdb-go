@@ -362,17 +362,16 @@ fn wait_ready(
     exit: &AtomicI32,
     mut cancel: impl FnMut(),
 ) -> Result<()> {
-    let mut canceled = false;
     loop {
-        // Pending plain ThreadSingleAssignmentVar::cancel queues to the network
-        // thread (ThreadHelper.actor.h); cancellation cannot drain a dead loop.
+        // Cancellation may not complete an uninitialized multiversion future.
+        // The owner releases that future/token; a late callback is a safe no-op.
         network_check(exit)?;
-        if ctx.check().is_err() && !canceled {
+        if let Err(err) = ctx.check() {
             cancel();
-            canceled = true;
+            return Err(err);
         }
         match receiver.recv_timeout(Duration::from_millis(10)) {
-            Ok(()) => return if canceled { ctx.check() } else { Ok(()) },
+            Ok(()) => return ctx.check(),
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(_) => {
                 return Err(Error::new(
@@ -573,16 +572,14 @@ mod tests {
     fn dead_network_does_not_wait_for_an_unreachable_callback() {
         let (_sender, receiver) = mpsc::sync_channel(1);
         let exit = AtomicI32::new(4000);
-        let started = std::time::Instant::now();
+        let ctx =
+            Context::default().with_deadline(std::time::Instant::now() + Duration::from_secs(5));
         assert_eq!(
-            wait_ready(&receiver, &Context::default(), &exit, || panic!(
-                "dead loop cannot cancel"
-            ))
-            .unwrap_err()
-            .kind,
+            wait_ready(&receiver, &ctx, &exit, || panic!("dead loop cannot cancel"))
+                .unwrap_err()
+                .kind,
             ErrorKind::Operation
         );
-        assert!(started.elapsed() < Duration::from_secs(1));
     }
     #[test]
     fn late_callback_after_registration_drop_is_a_noop() {
@@ -602,7 +599,46 @@ mod tests {
         );
     }
     #[test]
-    fn cancellation_is_issued_once_and_still_joins_readiness() {
+    fn registered_callback_delivers_readiness() {
+        let registration = Registration::new().unwrap();
+        unsafe {
+            ready(ptr::null_mut(), registration.token as *mut c_void);
+        }
+        assert_eq!(registration.receiver.try_recv(), Ok(()));
+        unsafe {
+            ready(ptr::null_mut(), registration.token as *mut c_void);
+        }
+        assert_eq!(
+            registration.receiver.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        );
+    }
+    #[test]
+    fn caller_cancellation_returns_even_if_native_cancel_never_delivers_readiness() {
+        let (pending, receiver) = mpsc::sync_channel(1);
+        let (canceled, cancellation) = mpsc::sync_channel(1);
+        let (finished, result) = mpsc::sync_channel(1);
+        let ctx = Context::default();
+        let caller = ctx.clone();
+        let worker = thread::spawn(move || {
+            let exit = AtomicI32::new(NETWORK_RUNNING);
+            let outcome = wait_ready(&receiver, &ctx, &exit, || {
+                canceled.send(()).unwrap();
+            });
+            finished.send(outcome).unwrap();
+        });
+        caller.cancel();
+        let cancellation = cancellation.recv_timeout(Duration::from_secs(5));
+        let outcome = result.recv_timeout(Duration::from_secs(5));
+        // Disconnect only after observing completion, so a broken waiter can
+        // terminate during test cleanup without manufacturing native readiness.
+        drop(pending);
+        worker.join().unwrap();
+        cancellation.unwrap();
+        assert_eq!(outcome.unwrap().unwrap_err().kind, ErrorKind::Canceled);
+    }
+    #[test]
+    fn cancellation_is_issued_once_when_readiness_races() {
         let (sender, receiver) = mpsc::sync_channel(1);
         let exit = AtomicI32::new(NETWORK_RUNNING);
         let ctx = Context::default();

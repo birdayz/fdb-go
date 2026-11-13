@@ -89,6 +89,10 @@ struct BoundLayout {
 }
 
 impl Layout {
+    pub fn validate(&self) -> Result<()> {
+        self.bind().map(|_| ())
+    }
+
     fn bind(&self) -> Result<BoundLayout> {
         let bad = || {
             Error::new(

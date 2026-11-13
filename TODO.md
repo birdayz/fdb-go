@@ -3944,3 +3944,17 @@ boundary in `docs/benchmarks/otel-relational-local-20261107.md`.
   upstream Collector integration and matched OTLP transports are not implemented.
   The historical GenAI profile was dominated by message persistence; span-only
   results cannot establish that workload's performance or economics.
+- [ ] Complete the remaining source-only regression/gate gaps for the experimental
+  Rust span writer: automate its locked Rust build/test gate; expand independent
+  Go vectors across scalar/projection/cap/JSON/event/link branches and repeated
+  wrappers; pin independent transformed storage and compression/fallback headers;
+  test the native API seam, job/driver/exporter filesystem safeguards, all layout
+  and identity rejection/vacuity arms, exact physical maps, split replacements,
+  64-span/300KB/500KB partition/replanning boundaries, queue blocking/barriers/
+  timers/deadlines/retry limits/panics/partial Writer progress and failure caps.
+  Both canonical compatibility ledgers now describe the experimental boundary;
+  source-only driver/manifest/map/replanning regressions are being expanded, not
+  a live acceptance substitute. The exploratory review of `53ff461` is a NAK and
+  is not admitted final review; source fixes to cancellation,
+  sequence-scoped force and acknowledged retry/isolation progress do not close
+  these independent coverage requirements or establish live conformance.

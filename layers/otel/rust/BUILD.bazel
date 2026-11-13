@@ -1,3 +1,12 @@
+load("@otel_rust_crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files([
+    "Cargo.Bazel.lock",
+    "Cargo.lock",
+    "Cargo.toml",
+])
+
 filegroup(
     name = "compatibility_fixtures",
     srcs = [
@@ -6,3 +15,74 @@ filegroup(
     ],
     visibility = ["//layers/otel/cmd/otelrust-fixture:__pkg__"],
 )
+
+rust_library(
+    name = "fdb_otel_rust",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = [
+            "src/driver_tests.rs",
+            "src/main.rs",
+        ],
+    ),
+    aliases = aliases(),
+    compile_data = [":compatibility_fixtures"],
+    crate_name = "fdb_otel_rust",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_flags = ["-Dwarnings"],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "otel-rust",
+    srcs = [
+        "src/driver_tests.rs",
+        "src/main.rs",
+    ],
+    aliases = aliases(),
+    compile_data = [":compatibility_fixtures"],
+    crate_root = "src/main.rs",
+    edition = "2024",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_flags = ["-Dwarnings"],
+    deps = [":fdb_otel_rust"] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "unit_test",
+    size = "small",
+    compile_data = [":compatibility_fixtures"],
+    crate = ":fdb_otel_rust",
+    rustc_flags = ["-Dwarnings"],
+)
+
+rust_test(
+    name = "driver_test",
+    size = "small",
+    compile_data = [":compatibility_fixtures"],
+    crate = ":otel-rust",
+    rustc_flags = ["-Dwarnings"],
+)
+
+[
+    rust_test(
+        name = name + "_test",
+        size = "small",
+        srcs = ["tests/" + name + ".rs"],
+        aliases = aliases(),
+        compile_data = [":compatibility_fixtures"],
+        crate_root = "tests/" + name + ".rs",
+        edition = "2024",
+        proc_macro_deps = all_crate_deps(proc_macro = True),
+        rustc_flags = ["-Dwarnings"],
+        deps = [":fdb_otel_rust"] + all_crate_deps(normal = True),
+    )
+    for name in [
+        "compatibility",
+        "large_records",
+        "queue",
+        "transactions",
+    ]
+]

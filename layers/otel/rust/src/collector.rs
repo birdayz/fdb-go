@@ -57,7 +57,12 @@ pub struct Stats {
     pub accepted_spans: u64,
     pub rejected_spans: u64,
     pub exported_spans: u64,
+    // Acknowledged span-write operations, including retry/isolation replays;
+    // not distinct durable identities (those require the independent census).
     pub stored_spans: u64,
+    pub committed_batches: u64,
+    pub export_attempts: u64,
+    pub native_retries: u64,
     pub failed_spans: u64,
     pub retries: u64,
     pub queued_spans: usize,
@@ -75,7 +80,7 @@ struct State {
     remaining: BTreeMap<u64, usize>,
     failures: Vec<Error>,
     omitted: usize,
-    force: bool,
+    force: Option<u64>,
     stopping: bool,
     workers: usize,
     stats: Stats,
@@ -118,7 +123,7 @@ impl Collector {
                 remaining: BTreeMap::new(),
                 failures: Vec::new(),
                 omitted: 0,
-                force: false,
+                force: None,
                 stopping: false,
                 workers: config.consumers,
                 stats: Stats::default(),
@@ -223,7 +228,9 @@ impl Collector {
         let s = &self.shared;
         let mut state = s.state.lock().unwrap();
         let target = state.next;
-        state.force = true;
+        if state.pending.front().is_some_and(|p| p.seq < target) {
+            state.force = Some(state.force.unwrap_or(0).max(target));
+        }
         s.changed.notify_all();
         while state
             .remaining
@@ -262,7 +269,7 @@ impl Collector {
         {
             let mut state = s.state.lock().unwrap();
             state.stopping = true;
-            state.force = true;
+            state.force = Some(state.next);
             s.changed.notify_all();
         }
         let result = self.flush(ctx);
@@ -299,7 +306,7 @@ impl Drop for Collector {
         {
             let mut state = self.shared.state.lock().unwrap();
             state.stopping = true;
-            state.force = true;
+            state.force = Some(state.next);
         }
         self.shared.changed.notify_all();
         for t in self.threads.lock().unwrap().drain(..) {
@@ -326,7 +333,10 @@ fn worker(s: Arc<Shared>, sink: Arc<dyn Sink>) {
                 .is_some_and(|p| p.at.elapsed() >= Duration::from_millis(s.config.flush_ms));
             if state.pending_spans > 0
                 && (state.pending_spans >= s.config.batch_min
-                    || state.force
+                    || state
+                        .pending
+                        .front()
+                        .is_some_and(|p| state.force.is_some_and(|target| p.seq < target))
                     || state.stopping
                     || expired)
             {
@@ -355,11 +365,15 @@ fn worker(s: Arc<Shared>, sink: Arc<dyn Sink>) {
             }
         }
         state.pending_spans -= spans.len();
-        if state.pending_spans == 0 {
-            state.force = false;
+        if !state
+            .pending
+            .front()
+            .is_some_and(|p| state.force.is_some_and(|target| p.seq < target))
+        {
+            state.force = None;
         }
         drop(state);
-        let (stats, outcome) = export_with_retry(&s, sink.as_ref(), &spans);
+        let outcome = export_with_retry(&s, sink.as_ref(), &spans);
         if outcome.as_ref().is_err_and(|e| e.permanent()) && parts.len() > 1 {
             for (seq, count) in parts {
                 let request = spans
@@ -368,21 +382,21 @@ fn worker(s: Arc<Shared>, sink: Arc<dyn Sink>) {
                     .filter(|(_, owner)| **owner == seq)
                     .map(|(span, _)| span.clone())
                     .collect::<Vec<_>>();
-                let (stats, result) = export_with_retry(&s, sink.as_ref(), &request);
-                complete(&s, BTreeMap::from([(seq, count)]), count, stats, result);
+                let result = export_with_retry(&s, sink.as_ref(), &request);
+                complete(&s, BTreeMap::from([(seq, count)]), count, result);
             }
         } else {
-            complete(&s, parts, spans.len(), stats, outcome);
+            complete(&s, parts, spans.len(), outcome);
         }
     }
 }
 
-fn export_with_retry(s: &Shared, sink: &dyn Sink, spans: &[Vec<u8>]) -> (WriteStats, Result<()>) {
+fn export_with_retry(s: &Shared, sink: &dyn Sink, spans: &[Vec<u8>]) -> Result<()> {
     let started = Instant::now();
     let mut delay = s.config.retry_initial_ms;
     loop {
         if let Err(err) = s.work.check() {
-            break (WriteStats::default(), Err(err));
+            break Err(err);
         }
         let mut attempt = s.work.clone();
         attempt.deadline = Some(Instant::now() + Duration::from_millis(s.config.export_timeout_ms));
@@ -395,16 +409,24 @@ fn export_with_retry(s: &Shared, sink: &dyn Sink, spans: &[Vec<u8>]) -> (WriteSt
                 Err(Error::new(ErrorKind::Operation, "sink panicked")),
             )
         });
+        {
+            let mut state = s.state.lock().unwrap();
+            state.stats.stored_spans += stats.committed_spans;
+            state.stats.committed_batches += stats.committed_batches;
+            state.stats.native_retries += stats.retries;
+            state.stats.export_attempts += 1;
+        }
         match result {
-            Ok(()) => break (stats, Ok(())),
+            Ok(()) => break Ok(()),
             Err(err) => {
                 if err.permanent()
+                    || s.work.check().is_err()
                     || s.config.retry_initial_ms == 0
                     || (s.config.retry_elapsed_ms > 0
                         && started.elapsed() + Duration::from_millis(delay)
                             > Duration::from_millis(s.config.retry_elapsed_ms))
                 {
-                    break (stats, Err(err));
+                    break Err(err);
                 }
                 {
                     s.state.lock().unwrap().stats.retries += 1;
@@ -413,22 +435,18 @@ fn export_with_retry(s: &Shared, sink: &dyn Sink, spans: &[Vec<u8>]) -> (WriteSt
                 while Instant::now() < until && s.work.check().is_ok() {
                     thread::sleep(Duration::from_millis(1));
                 }
+                if s.work.check().is_err() {
+                    break Err(err);
+                }
                 delay = delay.saturating_mul(2).min(s.config.retry_max_ms);
             }
         }
     }
 }
 
-fn complete(
-    s: &Shared,
-    parts: BTreeMap<u64, usize>,
-    count: usize,
-    stats: WriteStats,
-    outcome: Result<()>,
-) {
+fn complete(s: &Shared, parts: BTreeMap<u64, usize>, count: usize, outcome: Result<()>) {
     let mut state = s.state.lock().unwrap();
     state.outstanding -= count;
-    state.stats.stored_spans += stats.committed_spans;
     for (seq, count) in parts {
         let remaining = state.remaining.get_mut(&seq).unwrap();
         *remaining -= count;
@@ -447,4 +465,164 @@ fn complete(
         state.stats.exported_spans += count as u64;
     }
     s.changed.notify_all();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    };
+
+    fn bounded() -> Context {
+        Context::default().with_deadline(Instant::now() + Duration::from_secs(5))
+    }
+    fn source(n: usize) -> Vec<u8> {
+        let vectors: serde_json::Value =
+            serde_json::from_slice(include_bytes!("../testdata/vectors.json")).unwrap();
+        let vector = vectors
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["name"] == format!("v2_{n}"))
+            .unwrap();
+        STANDARD.decode(vector["otlp"].as_str().unwrap()).unwrap()
+    }
+    struct Partial {
+        calls: AtomicUsize,
+        isolation: bool,
+        entered: mpsc::SyncSender<()>,
+    }
+    impl Sink for Partial {
+        fn export(&self, ctx: &Context, _: &[Vec<u8>]) -> (WriteStats, Result<()>) {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                return (
+                    WriteStats {
+                        committed_spans: 1,
+                        committed_batches: 1,
+                        ..WriteStats::default()
+                    },
+                    Err(Error::new(
+                        if self.isolation {
+                            ErrorKind::Operation
+                        } else {
+                            ErrorKind::Transient
+                        },
+                        "acknowledged first batch; later batch failed",
+                    )),
+                );
+            }
+            let _ = self.entered.try_send(());
+            loop {
+                if let Err(err) = ctx.check() {
+                    return (WriteStats::default(), Err(err));
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+    #[test]
+    fn empty_flush_leaves_no_force_for_future_admissions() {
+        let (entered, _) = mpsc::sync_channel(1);
+        let sink = Arc::new(Partial {
+            calls: AtomicUsize::new(0),
+            isolation: false,
+            entered,
+        });
+        let collector = Collector::start(
+            sink,
+            Config {
+                consumers: 1,
+                batch_min: 8,
+                batch_max: 8,
+                flush_ms: 60_000,
+                ..Config::default()
+            },
+        )
+        .unwrap();
+        collector.flush(&bounded()).unwrap();
+        let forced = collector.shared.state.lock().unwrap().force;
+        assert!(forced.is_none());
+    }
+    #[test]
+    fn canceled_backoff_keeps_acknowledged_partial_writes() {
+        let (entered, _) = mpsc::sync_channel(1);
+        let sink = Arc::new(Partial {
+            calls: AtomicUsize::new(0),
+            isolation: false,
+            entered,
+        });
+        let collector = Collector::start(
+            sink.clone(),
+            Config {
+                consumers: 1,
+                batch_min: 2,
+                batch_max: 2,
+                retry_initial_ms: 60_000,
+                retry_max_ms: 60_000,
+                ..Config::default()
+            },
+        )
+        .unwrap();
+        collector
+            .consume(&bounded(), &[source(0), source(1)])
+            .unwrap();
+        let limit = bounded();
+        while collector.stats().retries == 0 {
+            limit.check().unwrap();
+            thread::yield_now();
+        }
+        let canceled = Context::default();
+        canceled.cancel();
+        assert_eq!(
+            collector.shutdown(&canceled).unwrap_err().kind,
+            ErrorKind::Canceled
+        );
+        assert!(collector.shutdown(&bounded()).is_err());
+        let stats = collector.stats();
+        assert_eq!(sink.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(stats.stored_spans, 1);
+        assert_eq!(stats.exported_spans, 0);
+        assert_eq!(stats.failed_spans, 2);
+        assert_eq!(stats.queued_spans, 0);
+    }
+    #[test]
+    fn canceled_isolation_keeps_the_merged_calls_acknowledged_writes() {
+        let (entered, received) = mpsc::sync_channel(1);
+        let sink = Arc::new(Partial {
+            calls: AtomicUsize::new(0),
+            isolation: true,
+            entered,
+        });
+        let collector = Collector::start(
+            sink.clone(),
+            Config {
+                consumers: 1,
+                batch_min: 2,
+                batch_max: 2,
+                retry_initial_ms: 1,
+                retry_max_ms: 1,
+                ..Config::default()
+            },
+        )
+        .unwrap();
+        collector.consume(&bounded(), &[source(0)]).unwrap();
+        collector.consume(&bounded(), &[source(1)]).unwrap();
+        received.recv_timeout(Duration::from_secs(5)).unwrap();
+        let canceled = Context::default();
+        canceled.cancel();
+        assert_eq!(
+            collector.shutdown(&canceled).unwrap_err().kind,
+            ErrorKind::Canceled
+        );
+        assert!(collector.shutdown(&bounded()).is_err());
+        let stats = collector.stats();
+        assert_eq!(sink.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(stats.stored_spans, 1);
+        assert_eq!(stats.exported_spans, 0);
+        assert_eq!(stats.failed_spans, 2);
+        assert_eq!(stats.queued_spans, 0);
+    }
 }
