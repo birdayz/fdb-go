@@ -772,7 +772,7 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 func (tx *Transaction) ensureReadVersionFlags(ctx context.Context, extraFlags uint32) error {
 	ctx, release := tx.opContext(ctx)
 	defer release()
-	if _, err := tx.readVersionForOperation(ctx, extraFlags); err != nil {
+	if _, err := tx.readVersionForOperation(ctx, extraFlags, true); err != nil {
 		return err
 	}
 	return tx.readEntryError(ctx)
@@ -784,7 +784,7 @@ func (tx *Transaction) ensureReadVersionFlags(ctx context.Context, extraFlags ui
 func (tx *Transaction) operationReadVersion(ctx context.Context) (int64, error) {
 	ctx, release := tx.opContext(ctx)
 	defer release()
-	readVersion, err := tx.readVersionForOperation(ctx, 0)
+	readVersion, err := tx.readVersionForOperation(ctx, 0, true)
 	if err != nil {
 		return 0, err
 	}
@@ -794,7 +794,7 @@ func (tx *Transaction) operationReadVersion(ctx context.Context) (int64, error) 
 // readVersionForOperation returns the GRV captured by this operation, not a
 // later read of the mutable handle. C++ RYWImpl::getReadVersion returns the
 // value from its completed future even if the handle is subsequently reset.
-func (tx *Transaction) readVersionForOperation(parentCtx context.Context, extraFlags uint32) (int64, error) {
+func (tx *Transaction) readVersionForOperation(parentCtx context.Context, extraFlags uint32, validateExplicit bool) (int64, error) {
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
 	if err := tx.checkReadState(ctx); err != nil {
@@ -807,7 +807,7 @@ func (tx *Transaction) readVersionForOperation(parentCtx context.Context, extraF
 	if err != nil {
 		return 0, err
 	}
-	if userSet {
+	if validateExplicit && userSet {
 		if err := validateExplicitVersion(ctx, tx.db, rv, tx.readVersionRequest); err != nil {
 			return 0, err
 		}
@@ -2766,7 +2766,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 func (tx *Transaction) GetReadVersion(ctx context.Context) (int64, error) {
 	ctx, cancel := tx.opContext(ctx)
 	defer cancel()
-	rv, err := tx.readVersionForOperation(ctx, 0)
+	rv, err := tx.readVersionForOperation(ctx, 0, false)
 	if err != nil {
 		return 0, err
 	}

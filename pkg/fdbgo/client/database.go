@@ -306,9 +306,8 @@ type database struct {
 	grvCache    grvCache
 	grvBatchers [3]*grvBatcher
 
-	// minAcceptableReadVersion tracks the minimum version this client has seen
-	// from the cluster. SetReadVersion below this throws transaction_too_old
-	// client-side, matching C++ DatabaseContext::validateVersion().
+	// minAcceptableReadVersion is the observed floor for storage/commit validation,
+	// not an MVCC boundary or a check on the explicit-pin setter/getter.
 	//
 	// It carries the EPOCH it was observed in, in the same value, for the reason
 	// grvCacheEntry does: a floor is a claim about a VERSION SPACE, and the two

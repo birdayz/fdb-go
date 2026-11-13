@@ -745,7 +745,7 @@ It ports A10 for plain key-values, in this order:
 
 1. `getRangeInternal`'s checks (NAPI:5810-5834): `isReached()` → empty; `!isValid()` → 2012;
    `removeOrEqual` both; inverted → empty. No read version is taken for these.
-2. **Read version.** `rv, err := tx.readVersionForOperation(ctx, 0)`
+2. **Read version.** `rv, err := tx.readVersionForOperation(ctx, 0, true)`
    (`transaction.go:759-777`), once. It is Go's `startTransaction` (GRV if none yet) plus
    `validateVersion` (`validateExplicitVersion`, `read_version_state.go:183`, for a
    user-set version; C++'s check at NAPI:511-524). `rv` is threaded to every request of

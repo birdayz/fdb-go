@@ -502,7 +502,7 @@ C++ `minAcceptableReadVersion` is a **cluster-switch safety guard**, not a post-
 
 C++ does **NOT** update `minAcceptableReadVersion` after commit. The RFC's earlier claim of "max(committed+1, current)" was incorrect.
 
-For a non-switchable client (which ours is), this is low risk. Phase 2: add the validation on `SetReadVersion` with correct semantics matching C++.
+For a non-switchable client (which ours is), this is low risk. The retained Go guard applies at storage reads and commit, not at `SetReadVersion` or the explicit-pin `GetReadVersion` getter; the observed floor is not an MVCC retention boundary.
 
 ## GRV cache: no explicit invalidation on proxy change
 
@@ -581,7 +581,7 @@ C++ `GRV_BATCH_TIMEOUT` = 5ms. Go clamps to 10ms. Minor latency difference. Fix 
 - `allAlternativesFailedDelay` — wait for replica recovery instead of failing transaction
 - Outbound PING connection monitor (detect dead connections in ~2s)
 - `failedEndpoints` tracking with grace period and re-resolution rate limiting
-- `minReadVersion` validation on `SetReadVersion` (cluster-switch guard)
+- `minReadVersion` validation at storage reads and commit (cluster-switch guard; not the explicit-pin setter/getter)
 - Reverse lookup parameter on location cache
 - `connection_failed` / `broken_promise` → location cache invalidation for storage servers
 - Transaction options (`SetTimeout`, `SetRetryLimit`)

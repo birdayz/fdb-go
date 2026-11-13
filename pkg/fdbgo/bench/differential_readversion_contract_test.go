@@ -4,6 +4,7 @@ package bench
 
 import (
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -135,4 +136,40 @@ func TestDifferential_OnErrorRejectsPostPinnedVersionCodes(t *testing.T) {
 			t.Fatalf("OnError(%d) Go=%d(%v) C=%d(%v)", code, gc, ge, cc, ce)
 		}
 	}
+}
+
+func TestDifferential_GetReadVersionAcceptedFarFuturePin(t *testing.T) {
+	t.Parallel()
+	// Focused new getter row avoids modifying the setter-contract table's
+	// existing independent literal123 valid/reset expectations.
+	t.Run("far_future", func(t *testing.T) {
+		g, err := goClient.CreateTransaction()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer g.Cancel()
+		c, err := cgoClient.CreateTransaction()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Cancel()
+		if err := g.Options().SetTimeout(5000); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Options().SetTimeout(5000); err != nil {
+			t.Fatal(err)
+		}
+		g.SetReadVersion(math.MaxInt64)
+		c.SetReadVersion(math.MaxInt64)
+		gv, ge := g.GetReadVersion().Get()
+		cv, ce := c.GetReadVersion().Get()
+		if ge != nil || ce != nil || gv != math.MaxInt64 || cv != math.MaxInt64 {
+			t.Fatalf("far-future transaction getter Go=%d(%v) C=%d(%v) want%d,nil", gv, ge, cv, ce, int64(math.MaxInt64))
+		}
+		gv, ge = g.Snapshot().GetReadVersion().Get()
+		cv, ce = c.Snapshot().GetReadVersion().Get()
+		if ge != nil || ce != nil || gv != math.MaxInt64 || cv != math.MaxInt64 {
+			t.Fatalf("far-future snapshot getter Go=%d(%v) C=%d(%v) want%d,nil", gv, ge, cv, ce, int64(math.MaxInt64))
+		}
+	})
 }
