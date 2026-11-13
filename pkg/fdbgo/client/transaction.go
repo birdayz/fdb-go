@@ -349,6 +349,8 @@ type txOptions struct {
 	afterReadVersion func()
 	// beforeReadVersionLock parks acquisition after entry validation.
 	beforeReadVersionLock func()
+	// beforeTraceWait observes a captured pending start without transaction locks.
+	beforeTraceWait func(context.Context)
 	// beforeReadFailureDelivery observes terminal-state publication ordering.
 	beforeReadFailureDelivery func(error)
 	// afterTimeoutRecord runs after a timeout delivery records its cause and
@@ -2250,6 +2252,9 @@ func (tx *Transaction) ensureTxSpan(ctx context.Context) {
 		}
 		if pending := tx.traceStarting; pending != nil {
 			tx.traceMu.Unlock()
+			if tx.beforeTraceWait != nil {
+				tx.beforeTraceWait(ctx)
+			}
 			select {
 			case <-pending:
 				continue

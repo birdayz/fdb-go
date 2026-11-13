@@ -642,6 +642,15 @@ func TestTracerManagedReturnDuringPublicReadStart(t *testing.T) {
 }
 
 func TestTracerPublicWaiterCancellation(t *testing.T) {
+	testTracerPublicCancellation(t, true)
+}
+
+func TestTracerPublicEntryCancellation(t *testing.T) {
+	testTracerPublicCancellation(t, false)
+}
+
+func testTracerPublicCancellation(t *testing.T, pendingStart bool) {
+	t.Helper()
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -671,11 +680,17 @@ func TestTracerPublicWaiterCancellation(t *testing.T) {
 		t.Fatal("producer did not reach Start")
 	}
 	waiterEntered := make(chan struct{})
-	// The producer has passed this hook. Park the contender after public
-	// admission checks, so cancellation cannot bypass the context handoff.
-	tx.beforeReadVersionLock = func() {
+	parkWaiter := func() {
 		close(waiterEntered)
 		<-allowWaiter
+	}
+	if pendingStart {
+		// The pending channel is already captured: cancellation must use the
+		// tracing wait's select, not the earlier entry-error check.
+		tx.beforeTraceWait = func(context.Context) { parkWaiter() }
+	} else {
+		// Retain the separate public entry-cancellation control.
+		tx.beforeReadVersionLock = parkWaiter
 	}
 	waiterCtx, cancelWaiter := context.WithCancel(ctx)
 	defer cancelWaiter()
@@ -688,7 +703,7 @@ func TestTracerPublicWaiterCancellation(t *testing.T) {
 	select {
 	case <-waiterEntered:
 	case <-ctx.Done():
-		t.Fatal("contender did not pass public admission")
+		t.Fatal("contender did not reach its cancellation gate")
 	}
 	cancelWaiter()
 	releaseWaiter()

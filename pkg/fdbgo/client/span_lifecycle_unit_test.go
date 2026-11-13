@@ -298,15 +298,13 @@ func TestTracerParentDoesNotReopenRetiredReadHelper(t *testing.T) {
 
 type traceWaitContext struct {
 	context.Context
-	waiting chan<- struct{}
+	waiting chan struct{}
 }
 
-func (ctx traceWaitContext) Done() <-chan struct{} {
-	select {
-	case ctx.waiting <- struct{}{}:
-	default:
-	}
-	return ctx.Context.Done()
+// Called only after ensureTxSpan captures a non-nil pending start. Each
+// contender has its own acknowledgement; ordinary context polling cannot signal it.
+func notifyTraceWait(ctx context.Context) {
+	close(ctx.(traceWaitContext).waiting)
 }
 
 func TestTracerConcurrentStartAndRetirement(t *testing.T) {
@@ -325,6 +323,7 @@ func TestTracerConcurrentStartAndRetirement(t *testing.T) {
 				})
 			}})
 			tx := db.CreateTransaction()
+			tx.beforeTraceWait = notifyTraceWait
 			defer tx.Cancel()
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -345,18 +344,19 @@ func TestTracerConcurrentStartAndRetirement(t *testing.T) {
 			}
 			switch action {
 			case "concurrent":
-				waiting := make(chan struct{}, 8)
-				waitCtx := traceWaitContext{Context: ctx, waiting: waiting}
-				for range 8 {
+				waiters := make([]traceWaitContext, 8)
+				for i := range waiters {
+					waitCtx := traceWaitContext{Context: ctx, waiting: make(chan struct{})}
+					waiters[i] = waitCtx
 					wg.Add(1)
 					go func() {
 						defer wg.Done()
 						tx.ensureTxSpan(waitCtx)
 					}()
 				}
-				for range 8 {
+				for _, waitCtx := range waiters {
 					select {
-					case <-waiting:
+					case <-waitCtx.waiting:
 					case <-ctx.Done():
 						t.Fatal("concurrent start did not wait for the in-flight start")
 					}
@@ -364,7 +364,7 @@ func TestTracerConcurrentStartAndRetirement(t *testing.T) {
 			case "cancelWaiter":
 				waiterCtx, cancelWaiter := context.WithCancel(ctx)
 				defer cancelWaiter()
-				waiting, done := make(chan struct{}, 1), make(chan struct{})
+				waiting, done := make(chan struct{}), make(chan struct{})
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
@@ -432,6 +432,7 @@ func TestTracerStartPanicReleasesWaiters(t *testing.T) {
 	tr := &panickingSpanTracer{Tracer: db.db.tracer, entered: make(chan struct{}), resume: make(chan struct{})}
 	db.db.tracer = tr
 	tx := db.CreateTransaction()
+	tx.beforeTraceWait = notifyTraceWait
 	defer tx.Cancel()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -448,7 +449,7 @@ func TestTracerStartPanicReleasesWaiters(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("tracer did not enter Start")
 	}
-	waiting := make(chan struct{}, 1)
+	waiting := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
