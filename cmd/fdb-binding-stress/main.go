@@ -62,6 +62,7 @@ func main() {
 	flag.Parse()
 
 	stacktester, btRunDir := setup()
+	defer os.RemoveAll(btRunDir)
 
 	// Create timestamped output directory.
 	if *outDir == "" {
@@ -354,26 +355,15 @@ func setup() (stacktester string, btRunDir string) {
 		log.Fatalf("stacktester not found at %s", stacktester)
 	}
 
-	btRunDir = "/tmp/bt-run"
 	btDir, err := findBindingTesterDir()
 	if err != nil {
 		log.Fatalf("find bindingtester: %v", err)
 	}
 
-	os.MkdirAll(filepath.Join(btRunDir, "bindingtester"), 0o755)
-	cp := exec.Command("cp", "-r", btDir+"/.", filepath.Join(btRunDir, "bindingtester/"))
-	if out, err := cp.CombinedOutput(); err != nil {
-		log.Fatalf("copy bindingtester: %s: %v", out, err)
+	btRunDir, err = prepareBindingTester(btDir, os.TempDir())
+	if err != nil {
+		log.Fatalf("prepare bindingtester: %v", err)
 	}
-
-	// Patch Python imports for standalone use.
-	initPy := filepath.Join(btRunDir, "bindingtester/__init__.py")
-	data, _ := os.ReadFile(initPy)
-	s := string(data)
-	s = strings.ReplaceAll(s, "sys.path[:0]", "# patched")
-	s = strings.ReplaceAll(s, "import util", "from bindingtester import util")
-	s = strings.ReplaceAll(s, "from fdb import LATEST_API_VERSION", "LATEST_API_VERSION = 730")
-	os.WriteFile(initPy, []byte(s), 0o644)
 
 	installPythonFDB(btRunDir)
 	preflightPythonFDB(btRunDir)
@@ -399,8 +389,7 @@ func installPythonFDB(btRunDir string) {
 		log.Fatalf("resolve python fdb tar symlinks: %v", err)
 	}
 
-	// Remove any package left by an earlier run: /tmp/bt-run persists across
-	// invocations, so a stale fdb/ would outlive a version bump.
+	// Replace the package if this private harness is initialized again.
 	if err := os.RemoveAll(filepath.Join(btRunDir, "fdb")); err != nil {
 		log.Fatalf("remove stale python fdb: %v", err)
 	}

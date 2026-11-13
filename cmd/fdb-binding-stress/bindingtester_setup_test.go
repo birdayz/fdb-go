@@ -1,0 +1,103 @@
+package main
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+const bindingTesterImports = `import sys
+sys.path[:0] = ['../python']
+import util
+from fdb import LATEST_API_VERSION
+FDB_API_VERSION = LATEST_API_VERSION
+`
+
+func TestPrepareBindingTesterDoesNotPatchPinnedSymlinkInputs(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	pinned := filepath.Join(root, "pinned.py")
+	if err := os.WriteFile(pinned, []byte(bindingTesterImports), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	forest := filepath.Join(root, "runfiles")
+	if err := os.Mkdir(forest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(pinned, filepath.Join(forest, "__init__.py")); err != nil {
+		t.Fatal(err)
+	}
+	var previous string
+	for range 3 {
+		dir, err := prepareBindingTester(forest, root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if dir == previous {
+			t.Fatal("setup reused another invocation's harness")
+		}
+		previous = dir
+		initPy := filepath.Join(dir, "bindingtester", "__init__.py")
+		info, err := os.Lstat(initPy)
+		if err != nil || !info.Mode().IsRegular() {
+			t.Fatalf("copied input is not a regular file: %v, %v", info, err)
+		}
+		data, err := os.ReadFile(initPy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "import sys\n# Use the installed FDB Python client.\nfrom bindingtester import util\nLATEST_API_VERSION = 730\nFDB_API_VERSION = LATEST_API_VERSION\n"
+		if string(data) != want {
+			t.Fatalf("patched imports = %q, want %q", data, want)
+		}
+		if out, err := exec.Command("python3", "-m", "py_compile", initPy).CombinedOutput(); err != nil {
+			t.Fatalf("patched Python does not compile: %s: %v", out, err)
+		}
+		unchanged, err := os.ReadFile(pinned)
+		if err != nil || string(unchanged) != bindingTesterImports {
+			t.Fatalf("setup modified the pinned input: %q, %v", unchanged, err)
+		}
+	}
+}
+
+func TestBindingTesterImportPatchIsIdempotentAndRejectsCorruption(t *testing.T) {
+	t.Parallel()
+	patched, err := patchBindingTesterImports(bindingTesterImports)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := patchBindingTesterImports(patched)
+	if err != nil || again != patched {
+		t.Fatalf("second patch changed imports: %q, %v", again, err)
+	}
+	for _, source := range []string{
+		strings.ReplaceAll(bindingTesterImports, "import util", "from bindingtester from bindingtester import util"),
+		bindingTesterImports + "import util\n",
+		strings.ReplaceAll(bindingTesterImports, "from fdb import LATEST_API_VERSION", ""),
+		strings.ReplaceAll(bindingTesterImports, "sys.path[:0] = ['../python']", ""),
+	} {
+		if _, err := patchBindingTesterImports(source); err == nil {
+			t.Fatalf("corrupt imports accepted: %q", source)
+		}
+	}
+}
+
+func TestPrepareBindingTesterRemovesFailedPrivateCopies(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	source := t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "__init__.py"), []byte("corrupt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, src := range []string{source, filepath.Join(source, "absent"), t.TempDir()} {
+		if dir, err := prepareBindingTester(src, root); err == nil || dir != "" {
+			t.Fatalf("invalid source accepted: %q, %v", dir, err)
+		}
+		entries, err := os.ReadDir(root)
+		if err != nil || len(entries) != 0 {
+			t.Fatalf("failed setup left private copies: %v, %v", entries, err)
+		}
+	}
+}
