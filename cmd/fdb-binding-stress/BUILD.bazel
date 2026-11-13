@@ -67,7 +67,9 @@ go_test(
     # Integration sources belong to the test-full target above.
     srcs = [
         "main_test.go",
+        "runner_guard_test.go",
         "scheduled_test.go",
+        "setup_guard_test.go",
     ],  # keep
     data = [":python_fdb_tar"],
     embed = [":fdb-binding-stress_lib"],

@@ -97,15 +97,16 @@ func main() {
 	os.RemoveAll(btRunDir)
 }
 
-func runSeed(parent context.Context, seed int, w workload, btRunDir, seedDir string) (r SeedResult) {
+func runSeed(parent context.Context, seed int, w workload, btRunDir, seedDir string) SeedResult {
+	return runSeedWithDeps(parent, seed, w, btRunDir, seedDir, defaultRunnerDeps(realRunSeed))
+}
+
+func realRunSeed(ctx context.Context, seed int, w workload, btRunDir, seedDir string) (r SeedResult) {
 	r = SeedResult{Seed: seed, Workload: w}
 
 	// Start FDB via testcontainers. WithDirectIP avoids Docker DNAT which
 	// confuses FDB's canonicalRemotePort tracking in the C binding (used by
 	// the Python tester), triggering assertion spam at FlowTransport.actor.cpp.
-	ctx, cancel := context.WithTimeout(parent, perSeedTimeout)
-	defer cancel()
-
 	container, err := foundationdb.Run(
 		ctx, "foundationdb/foundationdb:"+testedFDBVersion,
 		foundationdb.WithDirectIP(),

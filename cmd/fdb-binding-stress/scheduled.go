@@ -132,17 +132,38 @@ func runVerdict(r Report, scheduled bool, regressionsDone bool) error {
 	return nil
 }
 
+type runnerDeps struct {
+	now              func() time.Time
+	perSeedTimeout   time.Duration
+	admissionReserve time.Duration
+	seedRunner       func(context.Context, int, workload, string, string) SeedResult
+}
+
+func defaultRunnerDeps(seedRunner func(context.Context, int, workload, string, string) SeedResult) runnerDeps {
+	return runnerDeps{now: time.Now, perSeedTimeout: 5 * time.Minute, admissionReserve: 330 * time.Second, seedRunner: seedRunner}
+}
+
+func runSeedWithDeps(parent context.Context, seed int, w workload, harness, dir string, deps runnerDeps) SeedResult {
+	ctx, cancel := context.WithTimeout(parent, deps.perSeedTimeout)
+	defer cancel()
+	return deps.seedRunner(ctx, seed, w, harness, dir)
+}
+
 func executeRun(out string, seeds, start int, duration time.Duration, scheduled bool, w workload, harness string) error {
 	return executeRunContext(context.Background(), out, seeds, start, duration, scheduled, w, harness)
 }
 
 func executeRunContext(parent context.Context, out string, seeds, start int, duration time.Duration, scheduled bool, w workload, harness string) error {
+	return executeRunWithDeps(parent, out, seeds, start, duration, scheduled, w, harness, defaultRunnerDeps(realRunSeed))
+}
+
+func executeRunWithDeps(parent context.Context, out string, seeds, start int, duration time.Duration, scheduled bool, w workload, harness string, deps runnerDeps) error {
 	revision, err := exec.Command("git", "rev-parse", "HEAD").Output()
 	if err != nil {
 		return fmt.Errorf("record revision: %w", err)
 	}
-	r := Report{Revision: strings.TrimSpace(string(revision)), FDBVersion: testedFDBVersion, Scheduled: scheduled, StartedAt: time.Now().Format(time.RFC3339), Ops: w.Ops}
-	started := time.Now()
+	r := Report{Revision: strings.TrimSpace(string(revision)), FDBVersion: testedFDBVersion, Scheduled: scheduled, StartedAt: deps.now().Format(time.RFC3339), Ops: w.Ops}
+	started := deps.now()
 	ctx := parent
 	cancel := func() {}
 	if duration > 0 {
@@ -150,8 +171,8 @@ func executeRunContext(parent context.Context, out string, seeds, start int, dur
 	}
 	defer cancel()
 	persist := func() {
-		r.Finished = time.Now().Format(time.RFC3339)
-		r.Elapsed = time.Since(started).String()
+		r.Finished = deps.now().Format(time.RFC3339)
+		r.Elapsed = deps.now().Sub(started).String()
 		writeJSON(filepath.Join(out, "report.json"), r)
 	}
 	persist()
@@ -160,9 +181,9 @@ func executeRunContext(parent context.Context, out string, seeds, start int, dur
 		if err := os.Mkdir(dir, 0o755); err != nil {
 			return err
 		}
-		t0 := time.Now()
-		result := runSeed(ctx, seed, mode, harness, dir)
-		result.Duration = time.Since(t0).Seconds()
+		t0 := deps.now()
+		result := runSeedWithDeps(ctx, seed, mode, harness, dir, deps)
+		result.Duration = deps.now().Sub(t0).Seconds()
 		r.Seeds = append(r.Seeds, result)
 		r.Total++
 		if result.Pass {
@@ -180,7 +201,7 @@ func executeRunContext(parent context.Context, out string, seeds, start int, dur
 	// Do not start work we cannot give its full per-case timeout. The outer
 	// deadline still bounds all work, including startup and cleanup overhead.
 	available := func() bool {
-		return duration == 0 || time.Until(started.Add(duration)) >= perSeedTimeout+30*time.Second
+		return duration == 0 || started.Add(duration).Sub(deps.now()) >= deps.admissionReserve
 	}
 	cycles, regressionsDone, planErr := runPlan(seeds, start, duration > 0, scheduled, w, available, run)
 	r.CompleteCycles = cycles

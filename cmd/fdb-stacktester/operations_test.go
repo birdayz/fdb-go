@@ -19,6 +19,12 @@ import (
 
 func stacktesterDatabase(t *testing.T, opts ...client.Option) (*client.Database, context.Context) {
 	t.Helper()
+	db, ctx, _ := stacktesterDatabaseWithClusterFile(t, opts...)
+	return db, ctx
+}
+
+func stacktesterDatabaseWithClusterFile(t *testing.T, opts ...client.Option) (*client.Database, context.Context, string) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	t.Cleanup(cancel)
 	container, err := foundationdb.Run(ctx, "", foundationdb.WithDirectIP())
@@ -48,7 +54,7 @@ func stacktesterDatabase(t *testing.T, opts ...client.Option) (*client.Database,
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	return db, ctx
+	return db, ctx, path
 }
 
 // Upstream Python tester.log_stack concatenates the already-packed prefix with

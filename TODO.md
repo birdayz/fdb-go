@@ -36,6 +36,68 @@ Never mark a whole workstream complete because one of its subitems passed.
   source/unit validation is not a live BindingTester pass. This lane covers only
   the Go FDB client, not Record Layer or SQL. See `docs/client-correctness.md`.
 
+- [ ] Harden the remaining Go client correctness regression paths below. These
+  are deferred test/proof gaps, not completed work or hosted acceptance; retain
+  the unchecked hosted gate above. Tier 2:
+  - SO016: Instruction loop checks cancellation cause before dispatching each instruction.
+  - SO032: START_THREAD descendants inherit configured childJoinTimeout.
+  - SO039: logStack wraps transaction error with log stack diagnostic and preserved cause.
+  - RW008: Default output timestamp has nanosecond collision resistance.
+  - RW010: Parent directory creation failure is fatal.
+  - RW013: Remove private harness on executeRun failure.
+  - RW014: Remove private harness on success.
+  - RW020: Cleanup context has30s upper bound.
+  - RW023: Kill residual tester group after normal tester exit.
+  - RW026: Append explicit liveness-failed explanatory suffix.
+  - RW028: WaitDelay bounds pipe wait even when process/group cancellation incomplete.
+  - RW031: Propagate non-ESRCH kill failure.
+  - RW037: Chdir failure is fatal with diagnostic.
+  - RW039: Create unique private harness directory per invocation.
+  - RW040: MkdirTemp failure is fatal.
+  - RW042: Copy-oracle command failure has dedicated fatal path.
+  - RW043: Open known_testers append-only; failure fatal.
+  - RW045: Preserve Fprintf error and substitute Close error only after successful write.
+  - RW052: Successful atomic temp-write then rename publishes complete JSON.
+  - RW069: Timed mode bypasses counted-range overflow because exploration wraps.
+  - RW075: Accept valid scripted and directory_hca CLI test names.
+  - RW096: Persist Finished timestamp and elapsed duration every checkpoint.
+  - RW097: Persist initial empty report before starting first case.
+  - RW099: Record nonzero per-case duration.
+  - RW101: Persist report after each case rather than only final.
+  - RW123: Use bash as default workflow shell.
+  - RW129: Evidence mkdir/export failures stop initialization.
+  - RW130: Checkout disables persisted credentials.
+  - RW132: Bound setup/install step to7minutes.
+  - RW133: Fail install step on download/install/pipeline error with setup log.
+  - RW134: curl fetch fails HTTP errors and bounds retry/connect/stall windows.
+  - RW135: Reject downloaded artifact checksum mismatch.
+  - RW136: Pin download URL and SHA256 for Bazelisk1.30.0.
+  - RW137: Pin download URL and SHA256 for just1.48.1.
+  - RW138: Pin download URL and SHA256 for FoundationDB C client7.3.77.
+  - RW139: Install Bazelisk executable using verified artifact.
+  - RW140: Extract/install verified just archive.
+  - RW141: Install pinned C deb and refresh/check loader cache.
+  - RW142: Probe tool versions,Docker availability and pre-pull pinned FDB image.
+  - RW143: Bound scheduled execution step to30minutes.
+  - RW147: Stable NUL-delimited sorted unique hash population.
+  - RW155: Record runner_exit and inputs_changed values in workflow-exit.txt.
+  - RW165: INT and TERM exit130/143 then finalize evidence.
+  - RW181: Artifact name distinguishes runID and attempt and uploads EVIDENCE.
+  - RW182: Failure-only summary names artifacts/cause/reproduction and appends GITHUB_STEP_SUMMARY.
+  Tier 3:
+  - SO018: CLI API-selection error prints select api-version diagnostic and exits1.
+  - SO036: START_THREAD failure safely handles nil cancelRun for execute-only callers.
+  - RW002: CLI concurrency flag reaches workload and executed tester.
+  - RW004: CLI api-version reaches workload and tester.
+  - RW018: Explicitly pin foundationdb image to testedFDBVersion.
+  - RW029: killTesterGroup returns nil for cmd.Process=nil.
+  - RW030: Translate ESRCH into os.ErrProcessDone.
+  - RW049: JSON marshal error is fatal rather than ignored.
+  - RW066: Reject start>2^32-1 even for timed mode.
+  - RW125: Set workflow FDB_VERSION7.3.77.
+  - RW126: Set FDB_REQUIRE_DOCKER=1 to forbid skips.
+  - RW166: Generate fresh positive bounded seed via secrets.
+
 ## Pending acceptance: ingest-20k conformance gate corrections
 
 - [ ] Run the supported full stacked-tree acceptance lane and fresh native review
