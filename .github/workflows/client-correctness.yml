@@ -23,13 +23,15 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:
-      EVIDENCE: ${{ runner.temp }}/client-correctness-evidence
       FDB_VERSION: '7.3.77'
       FDB_REQUIRE_DOCKER: '1'
       WORKFLOW_SHA: ${{ github.workflow_sha }}
     steps:
       - name: Initialize evidence
-        run: mkdir -p "$EVIDENCE"
+        run: |
+          evidence="$RUNNER_TEMP/client-correctness-evidence"
+          mkdir -p "$evidence"
+          printf 'EVIDENCE=%s\n' "$evidence" >> "$GITHUB_ENV"
 
       - name: Checkout
         uses: actions/checkout@v5

@@ -27,6 +27,7 @@ type clientCorrectnessWorkflow struct {
 		RunsOn   string `yaml:"runs-on"`
 		Timeout  int    `yaml:"timeout-minutes"`
 		Strategy yaml.Node
+		Env      map[string]string
 		Steps    []struct {
 			Name, Uses, Run, If string
 			Timeout             int `yaml:"timeout-minutes"`
@@ -127,6 +128,38 @@ func TestClientCorrectnessWorkflowIsBoundedAndClientOnly(t *testing.T) {
 		if !strings.Contains(run, required) {
 			t.Errorf("missing contract %q", required)
 		}
+	}
+}
+
+func TestClientCorrectnessEvidenceInitialization(t *testing.T) {
+	t.Parallel()
+	wf, _ := readClientCorrectnessWorkflow(t)
+	job := wf.Jobs["bindingtester"]
+	for key, value := range job.Env {
+		if strings.Contains(value, "runner.") {
+			t.Fatalf("runner context is unavailable in job-level env %s", key)
+		}
+	}
+	if len(job.Steps) == 0 || job.Steps[0].Name != "Initialize evidence" {
+		t.Fatal("evidence must be initialized before setup can fail")
+	}
+	root := t.TempDir()
+	envFile := filepath.Join(root, "github-env")
+	cmd := exec.Command("bash", "-euo", "pipefail", "-c", job.Steps[0].Run)
+	cmd.Env = append(os.Environ(), "RUNNER_TEMP="+root, "GITHUB_ENV="+envFile)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("initialize evidence: %v %s", err, out)
+	}
+	data, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := filepath.Join(root, "client-correctness-evidence")
+	if string(data) != "EVIDENCE="+evidence+"\n" {
+		t.Fatalf("evidence not exported for subsequent steps: %q", data)
+	}
+	if info, err := os.Stat(evidence); err != nil || !info.IsDir() {
+		t.Fatalf("evidence directory missing: %v", err)
 	}
 }
 
