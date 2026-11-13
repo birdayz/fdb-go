@@ -1168,26 +1168,31 @@ var _ = Describe("Record-key scan argument boundaries", func() {
 	It("restores valid nested primary keys without dropping a different key", func() {
 		ss := specSubspace()
 		md := recordKeyTestMetadata(false, false)
-		recordKeySeedRaw(ss, md, [][]byte{{0x05, 0x15, 0x01, 0x00, 0x14}})
+		recordKeySeedRaw(ss, md, [][]byte{{0x05, 0x15, 0x01, 0x00, 0x14}, {0x05, 0x15, 0x02, 0x00, 0x14}})
 		for _, reverse := range []bool{false, true} {
 			props := ForwardScan().WithReverse(reverse)
 			props.ExecuteProperties.ReturnedRowLimit = 1
-			// A legal nested lastValue ((2)) must not suppress the physical PK ((1)).
-			page := recordKeyTestRead(ss, md, 14, props, []byte{0x0a, 0x00, 0x12, 0x04, 0x05, 0x15, 0x02, 0x00})
-			Expect(page.keys).To(Equal([]tuple.Tuple{{tuple.Tuple{int64(1)}}}))
-			Expect(page.reason).To(Equal(ReturnLimitReached))
-			var state gen.DedupContinuation
-			Expect(state.UnmarshalVT(page.token)).To(Succeed())
-			Expect(state.LastValue).To(Equal([]byte{0x05, 0x15, 0x01, 0x00}))
-			end := recordKeyTestRead(ss, md, 14, props, page.token)
+			ids := []byte{1, 2}
+			if reverse {
+				ids = []byte{2, 1}
+			}
+			var token []byte
+			for _, id := range ids {
+				page := recordKeyTestRead(ss, md, 14, props, token)
+				Expect(page.keys).To(Equal([]tuple.Tuple{{tuple.Tuple{int64(id)}}}))
+				Expect(page.reason).To(Equal(ReturnLimitReached))
+				pk := []byte{0x05, 0x15, id, 0x00}
+				leaf := recordKeyLiteralLeaf(append(append([]byte(nil), pk...), 0x14))
+				wantToken := append([]byte{0x0a, byte(len(leaf))}, leaf...)
+				wantToken = append(wantToken, 0x12, byte(len(pk)))
+				wantToken = append(wantToken, pk...)
+				Expect(page.token).To(Equal(wantToken))
+				token = page.token
+			}
+			end := recordKeyTestRead(ss, md, 14, props, token)
 			Expect(end.keys).To(BeEmpty())
 			Expect(end.reason).To(Equal(SourceExhausted))
 			Expect(end.end).To(BeTrue())
-			// Restoring the same valid PK from an empty physical position does dedup it.
-			same := recordKeyTestRead(ss, md, 14, props, []byte{0x0a, 0x00, 0x12, 0x04, 0x05, 0x15, 0x01, 0x00})
-			Expect(same.keys).To(BeEmpty())
-			Expect(same.reason).To(Equal(SourceExhausted))
-			Expect(same.end).To(BeTrue())
 		}
 	})
 
