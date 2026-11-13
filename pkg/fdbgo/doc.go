@@ -60,8 +60,6 @@
 // migrator who set nothing there was already unbounded there, and is equally
 // unbounded here.
 //
-// For ordinarily opened databases, [fdb.Database.Transact] and ReadTransact use
-// context.Background(), as in the Apple binding: bound them with a timeout or retry limit,
-// or use TransactCtx/ReadTransactCtx. [fdb.WrapDatabaseContext] instead supplies an inherited
-// context for these retry loops, CreateTransaction reads and transaction snapshots.
+// Ordinary databases use context.Background(): bound retries with a timeout, retry limit or TransactCtx/ReadTransactCtx.
+// [fdb.WrapDatabaseContext] instead supplies the inherited context for retries, CreateTransaction reads and snapshots.
 package fdbgo

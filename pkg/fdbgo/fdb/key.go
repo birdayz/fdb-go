@@ -26,15 +26,13 @@
 //     operation behind it continues, except a watch, which is cancelled.
 //   - As in the Apple binding, methods like Get/GetRange take no context.
 //     TransactCtx and ReadTransactCtx bound the retry loop, backoff and reads
-//     with an explicit context. Transact, ReadTransact and CreateTransaction reads
-//     inherit context.Background() for ordinarily opened databases, or the context
-//     supplied by WrapDatabaseContext. SetTimeout and Cancel() also bound transactions.
+//     with an explicit context. Transact, ReadTransact and CreateTransaction reads inherit context.Background()
+//     or the WrapDatabaseContext context. SetTimeout and Cancel() also bound transactions.
 //
 // Retries and timeouts are UNBOUNDED by default here — exactly as in libfdb_c,
 // whose per-transaction defaults are timeoutInSeconds=0.0 and maxRetries=-1
 // (ReadYourWrites.actor.cpp:2078-2082; fdb.options on the timeout option: "If set
-// to 0, will disable all timeouts"). For ordinarily opened databases, a bare
-// Transact against a down cluster retries on context.Background() until recovery;
+// to 0, will disable all timeouts"). Bare Transact retries on context.Background() until recovery;
 // WrapDatabaseContext instead supplies the inherited context. This is a matched default,
 // NOT a divergence — but it does mean every caller must choose a bound:
 // SetTimeout (the analog of C++ `timebomb`, and like it, it cancels in-flight RPC

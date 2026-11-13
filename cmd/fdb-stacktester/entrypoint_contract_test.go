@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,71 @@ import (
 	"fdb.dev/pkg/fdbgo/wire"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 )
+
+func TestRunCancellationStopsBetweenPersistedInstructions(t *testing.T) {
+	t.Parallel()
+	gate := &directoryReplyGate{}
+	db, ctx := stacktesterDatabase(t, client.WithDialFunc(gate.dial))
+	t.Cleanup(gate.release)
+	root := "between-instructions/root"
+	readKey, writeKey := []byte("between-instructions/read"), []byte("between-instructions/write")
+	writeThreadInstructions(t, ctx, db, map[string][]tuple.Tuple{
+		root: {
+			{"PUSH", readKey},
+			{"GET"},
+			{"PUSH", int64(9)},
+			{"PUSH", int64(4)},
+			{"SUB"},
+			{"PUSH", []byte("value")},
+			{"PUSH", writeKey},
+			{"SET"},
+		},
+	}, readKey)
+	sm := NewStackMachine(db, []byte(root))
+	runCtx, cancel := context.WithCancelCause(ctx)
+	defer cancel(context.Canceled)
+	cause := errors.New("cancel between persisted instructions")
+	gate.arm()
+	done := make(chan error, 1)
+	go func() { done <- sm.Run(runCtx) }()
+	select {
+	case <-gate.reached:
+	case err := <-done:
+		t.Fatalf("Run ended before read barrier: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("persisted read did not reach barrier")
+	}
+	cancel(cause)
+	select {
+	case err := <-done:
+		if !errors.Is(err, cause) {
+			t.Fatalf("Run cancellation=%v, want %v", err, cause)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Run did not stop after cancellation")
+	}
+	assertThreadWorkersJoined(t, sm)
+	wantError := tuple.Tuple{[]byte("ERROR"), []byte("0")}.Pack()
+	if sm.opRingIdx != 2 || len(sm.stack) != 1 || sm.stack[0].idx != 1 || !bytes.Equal(sm.stack[0].value.([]byte), wantError) {
+		t.Fatalf("instructions after canceled GET ran: completed=%d stack=%+v", sm.opRingIdx, sm.stack)
+	}
+	gate.release()
+	if value, err := sm.currentTr().Get(ctx, writeKey); err != nil || value != nil {
+		t.Fatalf("canceled program buffered SET: value=%q err=%v", value, err)
+	}
+
+	control := NewStackMachine(db, []byte(root))
+	if err := control.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertThreadWorkersJoined(t, control)
+	if control.opRingIdx != 8 || len(control.stack) != 2 || control.stack[1].value.(*big.Int).Cmp(big.NewInt(-5)) != 0 {
+		t.Fatalf("positive program control: completed=%d stack=%+v", control.opRingIdx, control.stack)
+	}
+	if value, err := control.currentTr().Get(ctx, writeKey); err != nil || !bytes.Equal(value, []byte("value")) {
+		t.Fatalf("positive SET control: value=%q err=%v", value, err)
+	}
+}
 
 func TestCLISelectsAPIVersionForPersistedVersionstampInstructions(t *testing.T) {
 	t.Parallel()

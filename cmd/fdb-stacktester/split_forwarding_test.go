@@ -17,9 +17,7 @@ import (
 	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
-// Record only SplitRange requests on this Database's outgoing TCP streams.
-// Observe after the real write, so captured bytes were actually sent.
-// The container uses plaintext, matching the 12-byte non-TLS frame header.
+// Record SplitRange after real writes, using the container's plaintext 12-byte frame header.
 // Framing matches client/wire_recorder_test.go's recordingConn.
 type splitRequestRecorder struct {
 	mu       sync.Mutex

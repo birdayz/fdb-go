@@ -6,10 +6,10 @@
 //
 // Usage:
 //
-//	fdb-binding-stress -seeds 100 -ops 1000                  # 100 seeds
-//	fdb-binding-stress -duration 2h -ops 1000                # run for 2 hours
-//	fdb-binding-stress -seeds 1 -ops 1000 -seed-start 146    # replay a default-mode seed
-//
+//	fdb-binding-stress -seeds 100 -ops 1000   # 100 seeds
+//	fdb-binding-stress -duration 2h -ops 1000 # run for 2 hours
+
+// Replay a default-mode seed with -seeds 1 -ops 1000 -seed-start 146.
 // For other modes, copy every workload setting from report.json; see docs/client-correctness.md.
 package main
 
@@ -106,10 +106,6 @@ func run(seedRunner func(context.Context, int, workload, string, string) SeedRes
 		return 1
 	}
 	return 0
-}
-
-func runSeed(parent context.Context, seed int, w workload, btRunDir, seedDir string) SeedResult {
-	return runSeedWithDeps(parent, seed, w, btRunDir, seedDir, defaultRunnerDeps(realRunSeed))
 }
 
 func realRunSeed(ctx context.Context, seed int, w workload, btRunDir, seedDir string) (r SeedResult) {

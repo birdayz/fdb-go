@@ -39,7 +39,6 @@ Never mark a whole workstream complete because one of its subitems passed.
 - [ ] Harden the remaining Go client correctness regression paths below. These
   are deferred test/proof gaps, not completed work or hosted acceptance; retain
   the unchecked hosted gate above. Tier 2:
-  - SO016: Instruction loop checks cancellation cause before dispatching each instruction.
   - SO032: START_THREAD descendants inherit configured childJoinTimeout.
   - SO039: logStack wraps transaction error with log stack diagnostic and preserved cause.
   - RW008: Default output timestamp has nanosecond collision resistance.

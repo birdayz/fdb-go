@@ -59,6 +59,19 @@ verification and artifact upload. A timeout is a failed run, not a successful
 20-minute sample. Hosted cold-cache build time and Docker startup can consume
 these limits; a red setup/build step establishes no client correctness result.
 
+## Native contract regressions
+
+The pinned 7.3.77 contract defers invalid `SetReadVersion` input as 2011; an
+existing or pending read version takes precedence as 2010. Accepted positive pins
+are returned unchanged by transaction/snapshot getters without validation GRVs;
+storage-facing reads retain their separate 1007/1009 guards.
+
+`OnError(0)` returns 2000, or 4100 when retry-limit exhaustion takes precedence.
+Codes 1235 and 1242 remain terminal under this pin. `WrapDatabaseContext` supplies
+the inherited context for retry loops, transaction reads and snapshots.
+Directory remove/prefix compatibility adaptations in `cmd/fdb-stacktester` are
+tester-only; they do not change the production directory library's semantics.
+
 ## Dependencies
 
 Docker must be running and usable by the invoking user. The workflow checks

@@ -432,7 +432,7 @@ func TestScheduledRunnerProcess(t *testing.T) {
 			}
 		}()
 		started := time.Now()
-		err := executeRunContext(ctx, "results", 1, 146, 0, false, workload{"api", 20, 1, false, 730}, harness)
+		err := executeRunWithDeps(ctx, "results", 1, 146, 0, false, workload{"api", 20, 1, false, 730}, harness, defaultRunnerDeps(realRunSeed))
 		ready, statErr := os.Stat(os.Getenv("CANCEL_READY"))
 		if statErr != nil || ready.ModTime().Before(started) || time.Since(ready.ModTime()) > 45*time.Second {
 			t.Fatalf("cancelled run did not terminate promptly after active readiness: %v", statErr)
@@ -442,7 +442,7 @@ func TestScheduledRunnerProcess(t *testing.T) {
 		}
 		t.Fatal("cancelled run accepted")
 	}
-	if err := executeRun("results", 1, 146, 0, true, workload{"api", 20, 1, false, 730}, harness); err != nil {
+	if err := executeRunWithDeps(context.Background(), "results", 1, 146, 0, true, workload{"api", 20, 1, false, 730}, harness, defaultRunnerDeps(realRunSeed)); err != nil {
 		t.Fatal(err)
 	}
 }

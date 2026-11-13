@@ -313,9 +313,9 @@ func dummyRetryBackoff(d time.Duration, rand01 float64) time.Duration {
 //     NativeAPI::onError; Go has no MVC layer so OnError owns it — MAYBE_COMMITTED,
 //     made idempotency-safe by the self-conflicting deep-copy. Do NOT "fix" this
 //     to the literal NativeAPI behavior; it would break cluster-version-change retry.
-//
-// FDB 7.4+ throttled_hot_shard (1235) and range_locked (1242) are deliberately
-// excluded: the pinned 7.3.77 client returns those input codes unchanged.
+
+// FDB 7.4+ throttled_hot_shard (1235) and range_locked (1242) are excluded:
+// the pinned 7.3.77 client returns those input codes unchanged.
 //
 // fdb.IsRetryable is a DIFFERENT predicate (fdb_error_predicate, 12 codes — it
 // EXCLUDES 1079/1235/1242 and includes only the C-API contract set); do not

@@ -45,8 +45,17 @@ func guardReadReport(t *testing.T, out string) Report {
 func TestRunnerDependencyDefaults(t *testing.T) {
 	t.Parallel()
 	d := defaultRunnerDeps(realRunSeed)
-	if d.perSeedTimeout != 5*time.Minute || d.admissionReserve != 330*time.Second || d.now == nil || d.seedRunner == nil {
+	if d.perSeedTimeout != 5*time.Minute || d.admissionReserve != 330*time.Second || d.now == nil || d.seedRunner == nil || d.newTimeoutContext == nil {
 		t.Fatalf("defaults=%+v", d)
+	}
+	if reflect.ValueOf(d.newTimeoutContext).Pointer() != reflect.ValueOf(context.WithTimeout).Pointer() {
+		t.Fatal("default timeout source is not context.WithTimeout")
+	}
+	parent := context.Background()
+	ctx, cancel := d.newTimeoutContext(parent, -time.Second)
+	defer cancel()
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) || parent.Err() != nil {
+		t.Fatalf("default timeout context: err=%v parent=%v", ctx.Err(), parent.Err())
 	}
 	// Positive real-clock control, not equality against a second derivation.
 	before := time.Now()
@@ -166,16 +175,47 @@ func TestExecuteRunPreservesPlanErrorAfterSuccessfulCase(t *testing.T) {
 	}
 }
 
+type guardDeadlineContext struct{ context.Context }
+
+func (ctx guardDeadlineContext) Err() error {
+	if errors.Is(context.Cause(ctx.Context), context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return ctx.Context.Err()
+}
+
+// The deadline timer is armed only after entry, independent of filesystem latency.
+func guardTimeoutAfterEntry(entered <-chan struct{}, target time.Duration) func(context.Context, time.Duration) (context.Context, context.CancelFunc) {
+	return func(parent context.Context, duration time.Duration) (context.Context, context.CancelFunc) {
+		if duration != target {
+			return parent, func() {}
+		}
+		ctx, cancel := context.WithCancelCause(parent)
+		go func() {
+			select {
+			case <-entered:
+				timer := time.AfterFunc(0, func() { cancel(context.DeadlineExceeded) })
+				defer timer.Stop()
+				<-ctx.Done()
+			case <-ctx.Done():
+			}
+		}()
+		return guardDeadlineContext{ctx}, func() { cancel(context.Canceled) }
+	}
+}
+
 func TestExecuteRunPerSeedDeadlineExpiresWithLiveParent(t *testing.T) {
 	guardGit(t, false)
 	out := t.TempDir()
 	parent := context.Background()
 	calls := 0
 	var atEntry, afterWait error
+	entered := make(chan struct{})
 	d := defaultRunnerDeps(func(ctx context.Context, seed int, w workload, _, _ string) SeedResult {
 		calls++
 		atEntry = ctx.Err()
-		watchdog := time.NewTimer(2 * time.Second)
+		close(entered)
+		watchdog := time.NewTimer(10 * time.Second)
 		defer watchdog.Stop()
 		select {
 		case <-ctx.Done():
@@ -185,7 +225,8 @@ func TestExecuteRunPerSeedDeadlineExpiresWithLiveParent(t *testing.T) {
 		}
 		return SeedResult{Seed: seed, Workload: w, FDBAlive: true, Error: afterWait.Error()}
 	})
-	d.perSeedTimeout = 100 * time.Millisecond
+	d.perSeedTimeout = time.Minute
+	d.newTimeoutContext = guardTimeoutAfterEntry(entered, d.perSeedTimeout)
 	err := executeRunWithDeps(parent, out, 1, 146, 0, false, workload{"api", 20, 1, false, 730}, "unused", d)
 	r := guardReadReport(t, out)
 	if err == nil || calls != 1 || atEntry != nil || !errors.Is(afterWait, context.DeadlineExceeded) || parent.Err() != nil || r.Total != 1 || r.Fail != 1 || r.Pass != 0 || r.FDBDeaths != 0 || len(r.Seeds) != 1 || r.Seeds[0].Error != context.DeadlineExceeded.Error() {
@@ -199,10 +240,12 @@ func TestExecuteRunPositiveDurationAutomaticallyExpiresActiveCase(t *testing.T) 
 	now := time.Unix(1000000, 0)
 	calls := 0
 	var atEntry, afterWait error
+	entered := make(chan struct{})
 	d := defaultRunnerDeps(func(ctx context.Context, seed int, w workload, _, _ string) SeedResult {
 		calls++
 		atEntry = ctx.Err()
-		watchdog := time.NewTimer(2 * time.Second)
+		close(entered)
+		watchdog := time.NewTimer(10 * time.Second)
 		defer watchdog.Stop()
 		select {
 		case <-ctx.Done():
@@ -210,13 +253,14 @@ func TestExecuteRunPositiveDurationAutomaticallyExpiresActiveCase(t *testing.T) 
 		case <-watchdog.C:
 			afterWait = errors.New("test watchdog expired without outer deadline")
 		}
-		// Accounting/admission is deterministic; cancellation uses the real timer.
+		// Accounting/admission is deterministic; the injected timer drives expiry.
 		now = now.Add(time.Second)
 		return SeedResult{Seed: seed, Workload: w, FDBAlive: true, Error: afterWait.Error()}
 	})
 	d.now = func() time.Time { return now }
 	d.perSeedTimeout = time.Hour
 	d.admissionReserve = 0
+	d.newTimeoutContext = guardTimeoutAfterEntry(entered, 100*time.Millisecond)
 	err := executeRunWithDeps(context.Background(), out, 1, 146, 100*time.Millisecond, false, workload{"api", 20, 1, false, 730}, "unused", d)
 	r := guardReadReport(t, out)
 	if err == nil || calls != 1 || atEntry != nil || !errors.Is(afterWait, context.DeadlineExceeded) || r.Total != 1 || r.Fail != 1 || r.Pass != 0 || r.FDBDeaths != 0 || len(r.Seeds) != 1 || r.Seeds[0].Error != context.DeadlineExceeded.Error() {

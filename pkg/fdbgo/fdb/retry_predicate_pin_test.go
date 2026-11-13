@@ -50,12 +50,8 @@ func TestIsRetryable_PinsFDBErrorPredicate(t *testing.T) {
 	}
 }
 
-// onErrorRetrySet is the EXACT set fdb_transaction_on_error retries (resets + backs off):
-// the fdb_error_predicate set PLUS the onError-only / Go-extension codes (1079 from C++
-// Transaction::onError, 1039 via the MVC layer — already in the predicate set).
-// MUST mirror client.onErrorRetryable (commitpath.go); the libfdb_c backend uses
-// fdb.IsOnErrorRetryable to decide whether a
-// libfdb_c OnError has a backoff worth ctx-bounding.
+// onErrorRetrySet mirrors client.onErrorRetryable: the predicate set plus 1079; 1039 is already in the predicate via MVC.
+// The libfdb_c backend uses fdb.IsOnErrorRetryable to decide whether OnError backoff needs context bounding.
 var onErrorRetrySet = map[int]bool{
 	1007: true, 1009: true, 1020: true, 1021: true, 1037: true, 1038: true,
 	1039: true, 1042: true, 1051: true, 1078: true,

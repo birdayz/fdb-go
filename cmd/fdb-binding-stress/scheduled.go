@@ -134,28 +134,21 @@ func runVerdict(r Report, scheduled bool, regressionsDone bool) error {
 }
 
 type runnerDeps struct {
-	now              func() time.Time
-	perSeedTimeout   time.Duration
-	admissionReserve time.Duration
-	seedRunner       func(context.Context, int, workload, string, string) SeedResult
+	newTimeoutContext func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	now               func() time.Time
+	perSeedTimeout    time.Duration
+	admissionReserve  time.Duration
+	seedRunner        func(context.Context, int, workload, string, string) SeedResult
 }
 
 func defaultRunnerDeps(seedRunner func(context.Context, int, workload, string, string) SeedResult) runnerDeps {
-	return runnerDeps{now: time.Now, perSeedTimeout: 5 * time.Minute, admissionReserve: 330 * time.Second, seedRunner: seedRunner}
+	return runnerDeps{newTimeoutContext: context.WithTimeout, now: time.Now, perSeedTimeout: 5 * time.Minute, admissionReserve: 330 * time.Second, seedRunner: seedRunner}
 }
 
 func runSeedWithDeps(parent context.Context, seed int, w workload, harness, dir string, deps runnerDeps) SeedResult {
-	ctx, cancel := context.WithTimeout(parent, deps.perSeedTimeout)
+	ctx, cancel := deps.newTimeoutContext(parent, deps.perSeedTimeout)
 	defer cancel()
 	return deps.seedRunner(ctx, seed, w, harness, dir)
-}
-
-func executeRun(out string, seeds, start int, duration time.Duration, scheduled bool, w workload, harness string) error {
-	return executeRunContext(context.Background(), out, seeds, start, duration, scheduled, w, harness)
-}
-
-func executeRunContext(parent context.Context, out string, seeds, start int, duration time.Duration, scheduled bool, w workload, harness string) error {
-	return executeRunWithDeps(parent, out, seeds, start, duration, scheduled, w, harness, defaultRunnerDeps(realRunSeed))
 }
 
 func executeRunWithDeps(parent context.Context, out string, seeds, start int, duration time.Duration, scheduled bool, w workload, harness string, deps runnerDeps) error {
@@ -168,7 +161,7 @@ func executeRunWithDeps(parent context.Context, out string, seeds, start int, du
 	ctx := parent
 	cancel := func() {}
 	if duration > 0 {
-		ctx, cancel = context.WithTimeout(parent, duration)
+		ctx, cancel = deps.newTimeoutContext(parent, duration)
 	}
 	defer cancel()
 	persist := func() error {
