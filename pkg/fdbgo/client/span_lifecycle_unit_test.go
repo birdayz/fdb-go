@@ -244,6 +244,58 @@ func TestTracerManagedCommitLazyReuse(t *testing.T) {
 	}
 }
 
+func TestTracerParentDoesNotReopenRetiredReadHelper(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sr := tracetest.NewSpanRecorder()
+	db := traceUnitDB(t, sr)
+	var tx *Transaction
+	result, err := db.ReadTransact(ctx, func(attempt *Transaction) (any, error) {
+		tx = attempt
+		// Seed the GRV cache so public reads exercise tracing without a server.
+		tx.readVersion, tx.hasReadVersion = 123, true
+		return tx.GetReadVersion(ctx)
+	})
+	if err != nil || result != int64(123) {
+		t.Fatalf("ReadTransact=%v, %v; want 123, nil", result, err)
+	}
+	defer tx.Cancel()
+	assertTraceBalance(t, sr, 1)
+	if tx.spanNeedsRegen.Load() {
+		t.Fatal("read helper unexpectedly left a pending lazy successor")
+	}
+	tx.traceMu.Lock()
+	retired := tx.traceClosed && tx.txSpan == nil && tx.traceCtx == nil
+	tx.traceMu.Unlock()
+	if !retired {
+		t.Fatal("read helper did not retire its tracing lifetime")
+	}
+
+	parentTrace := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	var parent [spanParentSize]byte
+	binary.LittleEndian.PutUint64(parent[:8], 0x0fdb00b073000000)
+	copy(parent[8:24], parentTrace[:])
+	binary.LittleEndian.PutUint64(parent[24:32], 0x1234)
+	parent[32] = 1
+	if err := tx.SetSpanParent(parent[:]); err != nil {
+		t.Fatal(err)
+	}
+	if span := tx.currentSpan(); span.TraceID != parentTrace || span.Flags != 1 {
+		t.Fatalf("parent injection was not accepted: %v", span)
+	}
+	if version, err := tx.GetReadVersion(ctx); err != nil || version != 123 {
+		t.Fatalf("retained public read=%d, %v; want 123, nil", version, err)
+	}
+	assertTraceBalance(t, sr, 1)
+	tx.traceMu.Lock()
+	retired = tx.traceClosed && tx.txSpan == nil && tx.traceCtx == nil
+	tx.traceMu.Unlock()
+	if !retired || tx.spanNeedsRegen.Load() {
+		t.Fatal("parent injection reopened a retired non-successor attempt")
+	}
+}
+
 type traceWaitContext struct {
 	context.Context
 	waiting chan<- struct{}
