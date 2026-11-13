@@ -60,8 +60,8 @@
 // migrator who set nothing there was already unbounded there, and is equally
 // unbounded here.
 //
-// The no-context [fdb.Database.Transact] runs on context.Background(), as the
-// Apple Go binding has no context, so a context deadline is not
-// available to it — bound it with a timeout or retry limit, or switch to
-// TransactCtx.
+// For ordinarily opened databases, [fdb.Database.Transact] and ReadTransact use
+// context.Background(), as in the Apple binding: bound them with a timeout or retry limit,
+// or use TransactCtx/ReadTransactCtx. [fdb.WrapDatabaseContext] instead supplies an inherited
+// context for these retry loops, CreateTransaction reads and transaction snapshots.
 package fdbgo

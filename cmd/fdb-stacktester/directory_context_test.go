@@ -19,8 +19,7 @@ import (
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 )
 
-// Withhold only value replies: instruction range scans and commits still run,
-// so a held reply proves that the child reached an actual directory read.
+// Withhold value replies to prove a real directory read without blocking scans or commits.
 // Framing follows the real-client hold dialer in fdb/ownership_async_test.go.
 type directoryReplyGate struct {
 	mu      sync.Mutex

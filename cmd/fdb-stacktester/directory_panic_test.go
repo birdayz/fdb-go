@@ -11,9 +11,8 @@ import (
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 )
 
-// Seed 1989826954 opens a subspace on a partition root at instruction 1419.
-// Both testers emit DIRECTORY_ERROR, but omitting the Python null slot shifts
-// every subsequent directory index and causes hundreds of unrelated errors.
+// Seed 1989826954 instruction 1419 opens a subspace on a partition root: DIRECTORY_ERROR.
+// Omitting Python's reserved null slot shifts every subsequent directory index.
 func TestDirectoryCreatorPanicReservesSlotAndPreservesLaterIndexes(t *testing.T) {
 	t.Parallel()
 	db, ctx := stacktesterDatabase(t)
