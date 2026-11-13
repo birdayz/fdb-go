@@ -179,6 +179,23 @@ func TestClientCorrectnessEvidenceAndExitGate(t *testing.T) {
 		{"wrong_revision", "wrong-sha", 1},
 		{"moving_inputs", "drift", 4},
 		{"failure_and_drift", "fail-drift", 7},
+		{"unscheduled", "unscheduled", 1},
+		{"wrong_server", "version", 1},
+		{"counter_mismatch", "pass-count", 1},
+		{"failure_counter", "nonzero-fail", 1},
+		{"death_counter", "death-count", 1},
+		{"report_error", "report-error", 1},
+		{"array_mismatch", "array-length", 1},
+		{"case_failure", "case-fail", 1},
+		{"evidence_inside_checkout", "pre-inside", 2},
+		{"ambient_override", "pre-override", 2},
+		{"empty_manifest", "pre-empty", 1},
+		{"checkout_mismatch", "pre-sha", 2},
+		{"dirty_checkout", "pre-dirty", 2},
+		{"post_override", "override", 4},
+		{"failure_post_override", "fail-override", 7},
+		{"head_changed", "head", 4},
+		{"failure_head_changed", "fail-head", 7},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -221,15 +238,54 @@ case "$RESULT_KIND" in
  incomplete) filter='.complete_cycles=0' ;;
  dead) filter='.seeds[0].fdb_alive=false' ;;
  wrong-sha) filter='.revision="wrong"' ;;
+ unscheduled) filter='.scheduled=false' ;;
+ version) filter='.fdb_version="7.3.63"' ;;
+ pass-count) filter='.pass=18' ;;
+ nonzero-fail) filter='.fail=1' ;;
+ death-count) filter='.fdb_deaths=1' ;;
+ report-error) filter='.error="deliberate error"' ;;
+ array-length) filter='.seeds |= .[0:18]' ;;
+ case-fail) filter='.seeds[0].pass=false' ;;
  *) filter='.' ;;
 esac
 jq "$filter" "$EVIDENCE/results/report.json" > "$EVIDENCE/modified.json"
 mv "$EVIDENCE/modified.json" "$EVIDENCE/results/report.json"
 if [[ "$RESULT_KIND" = *drift ]]; then echo changed >> source; fi
+if [[ "$RESULT_KIND" = *override ]]; then touch "$HOME/.bazelrc"; fi
+if [[ "$RESULT_KIND" = *head ]]; then
+ git -c user.name=Fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false commit --allow-empty -qm moved
+fi
 if [[ "$RESULT_KIND" = fail* ]]; then exit 7; fi
 `
 			if err := os.WriteFile(filepath.Join(bin, "bazelisk"), []byte(stub), 0o700); err != nil {
 				t.Fatal(err)
+			}
+			pre := strings.HasPrefix(tc.kind, "pre-")
+			switch tc.kind {
+			case "pre-inside":
+				evidence = filepath.Join(repo, "evidence")
+				if err := os.Mkdir(evidence, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			case "pre-override":
+				if err := os.WriteFile(filepath.Join(home, ".bazelrc"), nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			case "pre-sha":
+				sha = "wrong-checkout"
+			case "pre-dirty":
+				if err := os.WriteFile(filepath.Join(repo, "source"), []byte("dirty"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			case "pre-empty":
+				realGit, err := exec.LookPath("git")
+				if err != nil {
+					t.Fatal(err)
+				}
+				wrapper := "#!/bin/bash\nif [[ $1 = ls-files ]]; then exit 0; fi\nexec " + realGit + " \"$@\"\n"
+				if err := os.WriteFile(filepath.Join(bin, "git"), []byte(wrapper), 0o755); err != nil {
+					t.Fatal(err)
+				}
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
@@ -239,6 +295,12 @@ if [[ "$RESULT_KIND" = fail* ]]; then exit 7; fi
 			out, err := cmd.CombinedOutput()
 			if got := clientCorrectnessExit(err); got != tc.exit {
 				t.Fatalf("exit=%d want %d: %v\n%s", got, tc.exit, err, out)
+			}
+			if pre {
+				if _, err := os.Stat(filepath.Join(evidence, "runner.log")); !os.IsNotExist(err) {
+					t.Fatalf("preflight reached runner: %v", err)
+				}
+				return
 			}
 			for _, file := range []string{"inputs.before", "inputs.after", "head.before", "head.after", "status.before", "status.after", "workflow-exit.txt", "runner.log", "seed-start.txt"} {
 				if _, err := os.Stat(filepath.Join(evidence, file)); err != nil {

@@ -498,19 +498,22 @@ client bug that kills the server.
 just binding-stress                 # default 100 seeds × 1000 ops
 just binding-stress 200 2000        # N seeds × M ops
 just binding-stress-directory 50 500  # directory-layer
-# Reproduce ONE failing seed (a REAL CLI seed flag) — -ops AND -test-name must match the original run:
+# Reproduce ONE failing seed: copy ALL workload settings from report.json (see guide below):
 bazelisk run //cmd/fdb-binding-stress -- -seeds 1 -seed-start NNN -ops 1000
 ```
 
 - **Catches:** GET/SET/CLEAR/GET_KEY/GET_RANGE divergence, RYW, every atomic op, versionstamp
   placement, tuple/subspace round-trip, retry/conflict/GRV semantics, directory-layer, and
-  **server-killing client bugs** (detected as PASS-but-DEAD via a post-seed `fdbcli status`).
-- **Reproduce:** the op sequence is a function of `(seed, ops, test-name)` — all three must match. Per-seed
-  artifacts under `binding-stress-out/<ts>/seed-NNN/` (`tester.log`, `fdb-logs/`) + a crash-safe
-  `report.json`. A pass needs `had 0 incorrect result(s) and 0 error(s)`.
-- **Gotchas:** spins Docker per seed — **never run concurrently with `just test`** (pre-commit runs
-  `just test`). Only flags: `-seeds -ops -duration -seed-start -out -test-name` (no `-race/-v`). Needs
-  `python3` + a prior `bazelisk build`. A flaky seed **is a bug signal** (no unrelated flakes), not noise.
+  **server-killing client bugs** (a failed post-seed `fdbcli status` makes the case FAIL).
+- **Reproduce:** match seed, ops, test name, API version, concurrency, Python comparison, and pinned
+  harness/server versions from `report.json`; a seed alone is insufficient. Artifacts live under
+  `binding-stress-out/<ts>/case-NNNNN-<test>-seed-NNN/` (`tester.log`, `fdb-logs/`) with atomic
+  `report.json` updates. A pass requires an explicit zero-error verdict AND live FDB.
+- **Gotchas:** spins Docker per case — **never run concurrently with `just test`** (pre-commit runs
+  `just test`). Needs Python 3.11 and the pinned native C client for the official Python oracle;
+  the runner builds its Bazel-pinned inputs. A flaky seed **is a bug signal**, not noise.
+  See [the correctness guide](../../../docs/client-correctness.md) for the complete flags,
+  hourly client-only schedule, coverage boundaries, and exact reproduction commands.
 
 ## replay & knobs
 

@@ -48,7 +48,19 @@ func regressionCases() []seedCase {
 	return append(cases, seedCase{3179331380, hca})
 }
 
+const testedFDBVersion = "7.3.77"
+
+func validateFDBVersion(version string) error {
+	if version != "" && version != testedFDBVersion {
+		return fmt.Errorf("binding correctness requires FDB_VERSION=%s, got %q", testedFDBVersion, version)
+	}
+	return nil
+}
+
 func validateRun(seeds, start int, duration time.Duration, scheduled bool, w workload) error {
+	if err := validateFDBVersion(os.Getenv("FDB_VERSION")); err != nil {
+		return err
+	}
 	if seeds <= 0 && duration == 0 {
 		return fmt.Errorf("a positive seed count or duration is required")
 	}
@@ -125,7 +137,7 @@ func executeRun(out string, seeds, start int, duration time.Duration, scheduled 
 	if err != nil {
 		return fmt.Errorf("record revision: %w", err)
 	}
-	r := Report{Revision: strings.TrimSpace(string(revision)), FDBVersion: "7.3.77", Scheduled: scheduled, StartedAt: time.Now().Format(time.RFC3339), Ops: w.Ops}
+	r := Report{Revision: strings.TrimSpace(string(revision)), FDBVersion: testedFDBVersion, Scheduled: scheduled, StartedAt: time.Now().Format(time.RFC3339), Ops: w.Ops}
 	started := time.Now()
 	ctx := context.Background()
 	cancel := func() {}

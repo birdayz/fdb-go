@@ -227,6 +227,15 @@ func TestRunVerdictRequiresNonemptySuccessfulCompletePopulation(t *testing.T) {
 	}
 }
 
+func TestCorrectnessRejectsServerVersionOverrides(t *testing.T) {
+	t.Parallel()
+	for _, version := range []string{"", "7.3.77", "7.3.63", "latest"} {
+		if err := validateFDBVersion(version); (err == nil) != (version == "" || version == "7.3.77") {
+			t.Errorf("version %q: %v", version, err)
+		}
+	}
+}
+
 func TestValidateRunRejectsVacuousAndUnsupportedConfigurations(t *testing.T) {
 	t.Parallel()
 	valid := workload{"api", 1000, 1, true, 730}

@@ -32,6 +32,10 @@ func TestRunnerAssemblesPinnedHarnessAndPersistsRealResults(t *testing.T) {
 		{"relative_output", "directory", "relative/results", true, true, true},
 		{"tester_failure", "api", "results", true, false, true},
 		{"dead_fdb", "api", "results", false, false, false},
+		{"scheduled", "api", "results", false, true, true},
+		{"insufficient_budget", "api", "results", false, false, true},
+		{"existing_output", "api", "results", false, false, true},
+		{"version_override", "api", "results", false, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -116,16 +120,56 @@ print('Test had 0 incorrect result(s) and 0 error(s)')
 			if tc.output != "" {
 				args = append(args, "-out", tc.output)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			if tc.name == "insufficient_budget" {
+				args = append(args, "-scheduled", "-duration", "1ns")
+			}
+			if tc.name == "existing_output" {
+				command("mkdir", "-p", tc.output)
+				for _, file := range []string{"report.json", "sentinel.log"} {
+					if err := os.WriteFile(filepath.Join(ws, tc.output, file), []byte("prior evidence"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			program := binary
+			if tc.name == "scheduled" {
+				program, err = os.Executable()
+				if err != nil {
+					t.Fatal(err)
+				}
+				args = []string{"-test.run=^TestScheduledRunnerProcess$"}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, binary, args...)
+			cmd := exec.CommandContext(ctx, program, args...)
 			configureTesterProcess(cmd)
 			defer killTesterGroup(cmd)
 			cmd.Dir = initial
 			cmd.Env = append(os.Environ(), "BUILD_WORKSPACE_DIRECTORY="+ws, "FIXTURE_OUTPUT_BASE="+base, "PATH="+tools+":"+os.Getenv("PATH"), "LD_LIBRARY_PATH="+native+":"+os.Getenv("LD_LIBRARY_PATH"))
+			if tc.name == "scheduled" {
+				cmd.Env = append(cmd.Env, "SCHEDULED_RUNNER_FIXTURE=1")
+			}
+			if tc.name == "version_override" {
+				cmd.Env = append(cmd.Env, "FDB_VERSION=7.3.63")
+			}
 			out, runErr := cmd.CombinedOutput()
 			if (runErr == nil) != tc.pass {
 				t.Fatalf("pass=%v err=%v output=%s", tc.pass, runErr, out)
+			}
+			if tc.name == "existing_output" {
+				for _, file := range []string{"report.json", "sentinel.log"} {
+					data, err := os.ReadFile(filepath.Join(ws, tc.output, file))
+					if err != nil || string(data) != "prior evidence" {
+						t.Fatalf("overwrote %s: %q %v", file, data, err)
+					}
+				}
+				return
+			}
+			if tc.name == "version_override" {
+				if !strings.Contains(string(out), "requires FDB_VERSION=7.3.77") {
+					t.Fatalf("override failure: %s", out)
+				}
+				return
 			}
 			pattern := filepath.Join(ws, tc.output, "report.json")
 			if tc.output == "" {
@@ -142,6 +186,27 @@ print('Test had 0 incorrect result(s) and 0 error(s)')
 			var report Report
 			if err := json.Unmarshal(data, &report); err != nil {
 				t.Fatal(err)
+			}
+			if tc.name == "insufficient_budget" {
+				if !report.Scheduled || report.Total != 0 || len(report.Seeds) != 0 || report.CompleteCycles != 0 || !strings.Contains(report.Error, "budget exhausted") {
+					t.Fatalf("vacuous scheduled run accepted: %s", data)
+				}
+				return
+			}
+			if tc.name == "scheduled" {
+				if report.Revision != revision || report.FDBVersion != "7.3.77" || !report.Scheduled || report.Total != 19 || report.Pass != 19 || report.Fail != 0 || report.FDBDeaths != 0 || len(report.Seeds) != 19 || report.CompleteCycles != 1 || report.Error != "" {
+					t.Fatalf("scheduled population failed: %s", data)
+				}
+				want := regressionCases()
+				for _, mode := range correctnessModes(20) {
+					want = append(want, seedCase{146, mode})
+				}
+				for i, result := range report.Seeds {
+					if result.Seed != want[i].Seed || result.Workload != want[i].Workload || !result.Pass || !result.FDBAlive || len(result.Command) == 0 {
+						t.Fatalf("scheduled case %d: %+v want %+v", i, result, want[i])
+					}
+				}
+				return
 			}
 			if report.Revision != revision || report.FDBVersion != "7.3.77" || report.Total != 1 || len(report.Seeds) != 1 || report.CompleteCycles != 1 || report.Scheduled {
 				t.Fatalf("wrong report: %s", data)
@@ -172,6 +237,22 @@ print('Test had 0 incorrect result(s) and 0 error(s)')
 				t.Fatalf("output escaped into initial runfiles cwd: %v", err)
 			}
 		})
+	}
+}
+
+// Count-bound the real scheduled executor in a subprocess, avoiding a clock-based
+// test cutoff while still running all corpus cases and one full mode cycle.
+func TestScheduledRunnerProcess(t *testing.T) {
+	if os.Getenv("SCHEDULED_RUNNER_FIXTURE") != "1" {
+		return
+	}
+	harness := setup()
+	defer os.RemoveAll(harness)
+	if err := os.Mkdir("results", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := executeRun("results", 1, 146, 0, true, workload{"api", 20, 1, false, 730}, harness); err != nil {
+		t.Fatal(err)
 	}
 }
 

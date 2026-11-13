@@ -104,7 +104,7 @@ func runSeed(parent context.Context, seed int, w workload, btRunDir, seedDir str
 	ctx, cancel := context.WithTimeout(parent, perSeedTimeout)
 	defer cancel()
 
-	container, err := foundationdb.Run(ctx, "",
+	container, err := foundationdb.Run(ctx, "foundationdb/foundationdb:"+testedFDBVersion,
 		foundationdb.WithDirectIP(),
 		foundationdb.WithStorageEngine("memory"),
 	)

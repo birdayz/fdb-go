@@ -133,6 +133,9 @@ bazelisk run --config=ci //cmd/fdb-binding-stress -- \
   -seed-start 123456 -seeds 1 -ops 1000 -out "$out/api-concurrent"
 ```
 
+The runner pins the server to 7.3.77 and rejects a conflicting `FDB_VERSION`
+override rather than recording misleading version evidence.
+
 `-test-name` selects `scripted`, `api`, `directory`, or `directory_hca`;
 `-concurrency` selects tester concurrency; `-compare-python` enables comparison
 with the reference Python binding. `-seed-start` selects the first seed,
