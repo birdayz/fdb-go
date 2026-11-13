@@ -1,0 +1,43 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "otelrust-fixture_lib",
+    srcs = [
+        "fixture.go",
+        "main.go",
+    ],
+    importpath = "fdb.dev/layers/otel/cmd/otelrust-fixture",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//layers/otel",
+        "//layers/otel/otelsql",
+        "//layers/otel/otelsql/otelv1pb",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "//pkg/relational/core/embedded",
+        "@io_opentelemetry_go_proto_otlp//common/v1:common",
+        "@io_opentelemetry_go_proto_otlp//trace/v1:trace",
+        "@org_golang_google_protobuf//encoding/protowire",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protodesc",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/descriptorpb",
+    ],
+)
+
+go_test(
+    name = "otelrust-fixture_test",
+    srcs = ["fixture_test.go"],
+    data = ["//layers/otel/rust:compatibility_fixtures"],
+    embed = [":otelrust-fixture_lib"],
+    deps = [
+        "@org_golang_google_protobuf//proto",
+        "@rules_go//go/runfiles",
+    ],
+)
+
+go_binary(
+    name = "otelrust-fixture",
+    embed = [":otelrust-fixture_lib"],
+    visibility = ["//visibility:public"],
+)

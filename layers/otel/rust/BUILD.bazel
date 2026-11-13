@@ -1,0 +1,8 @@
+filegroup(
+    name = "compatibility_fixtures",
+    srcs = [
+        "testdata/descriptors.pb",
+        "testdata/vectors.json",
+    ],
+    visibility = ["//layers/otel/cmd/otelrust-fixture:__pkg__"],
+)

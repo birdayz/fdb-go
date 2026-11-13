@@ -3921,3 +3921,26 @@ boundary in `docs/benchmarks/otel-relational-local-20261107.md`.
   DIVERGENCES.md, “TEXT logical suffix bounds”. The SQL executor retains its
   whole-group filtering path for caller-built typed suffix plans; SQL planning
   does not currently produce suffix bounds.
+
+## Rust OTEL_V1 alternative (owner-requested parallel experiment)
+
+- [ ] Finish and live-certify the experimental span-only Rust implementation in
+  `layers/otel/rust`: source currently includes compiled-row/index projection,
+  split/zlib records, native libfdb_c transactions and a bounded in-process queue.
+  Source vectors and deterministic transaction/queue fakes are not live-FDB or
+  Go/Java cross-read acceptance. Complete the immutable tenant/corpus adapter,
+  matched Go-native control, exact record/index audit, complete query oracle and
+  rollback/cancel/transient/permanent native cases before accepting benchmarks.
+- [ ] Build and validate a new Rust-native / Go-native / Go-production comparison
+  runner for 1/2/3 N-storage + N-producer topologies, fresh independent stores,
+  strict health/drain, paired repeats, equal payload/index/guard/SLO settings,
+  full raw telemetry and actual held-host costs. Native C versus pure-Go client
+  is a confound, not language causality. No old approval or historical result
+  authorizes execution; exact bounded local service and paid Hetzner admission
+  are separate owner gates. Integrate the safe current Go toolchain baseline
+  legitimately before measurement; do not bypass the pending security work.
+- [ ] Full Rust Collector alternative remains beyond this span milestone: logs,
+  GenAI message dedup/restoration and TEXT indexes, joined queries, metrics,
+  upstream Collector integration and matched OTLP transports are not implemented.
+  The historical GenAI profile was dominated by message persistence; span-only
+  results cannot establish that workload's performance or economics.
