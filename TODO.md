@@ -3908,7 +3908,11 @@ boundary in `docs/benchmarks/otel-relational-local-20261107.md`.
 - [ ] Reject unterminated nested tuples and invalid UTF-8 in corrupt physical
   record keys with typed errors and Go/FDB plus Java regressions. The strict
   decoder used for restored Dedup `lastValue` does not change the pre-existing
-  permissive `tuple.Unpack` physical-key path.
+  permissive `tuple.Unpack` physical-key path. Also align the pre-existing
+  noncanonical positive-zero (`1500`) carrier: `tuplefast.Unpack` and ordinary
+  `tuple.Unpack` return `uint64(0)`, versus Java's `Long(0)` (canonical `14` is
+  `int64(0)` in Go). Canonical packing and Dedup equality already agree; retain
+  the raw physical continuation position when addressing this carrier quirk.
 
 ## TEXT SQL access paths
 

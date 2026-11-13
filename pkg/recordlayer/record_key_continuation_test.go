@@ -1340,9 +1340,10 @@ var _ = Describe("Record-key scan argument boundaries", func() {
 				}
 				recordKeySeedRaw(ss, md, keys)
 				startHex, stoppedHex, replacedHex := tc.start, tc.stopped, tc.next
-				wantID := int64(2)
+				var wantID any = int64(2)
 				if reverse {
-					startHex, stoppedHex, replacedHex, wantID = tc.stopped, tc.start, tc.prev, 0
+					// Both legacy Go decoders represent noncanonical positive zero as uint64.
+					startHex, stoppedHex, replacedHex, wantID = tc.stopped, tc.start, tc.prev, uint64(0)
 				}
 				decode := func(encoded string) []byte {
 					raw, err := hex.DecodeString(encoded)
@@ -1366,6 +1367,17 @@ var _ = Describe("Record-key scan argument boundaries", func() {
 					want = tuple.Tuple{want}
 				}
 				Expect(replaced.keys).To(Equal([]tuple.Tuple{want}))
+				if reverse {
+					ordinary, err := tuple.Unpack([]byte{0x15, 0})
+					Expect(err).NotTo(HaveOccurred())
+					Expect(ordinary).To(Equal(tuple.Tuple{uint64(0)}))
+					canonical := tuple.Tuple{int64(0)}
+					if tc.nested {
+						canonical = tuple.Tuple{canonical}
+					}
+					Expect(tuplesEqual(replaced.keys[0], canonical)).To(BeTrue())
+					Expect(replaced.keys[0].Pack()).To(Equal(canonical.Pack()))
+				}
 				Expect(replaced.rowTokens).To(Equal([][]byte{decode(replacedHex)}))
 				Expect(replaced.token).To(Equal(decode(replacedHex)))
 				Expect(replaced.reason).To(Equal(ReturnLimitReached))
