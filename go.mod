@@ -1,6 +1,6 @@
 module fdb.dev
 
-go 1.27.3
+go 1.27.4
 
 require (
 	buf.build/go/protoyaml v0.6.0

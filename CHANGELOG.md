@@ -209,6 +209,9 @@ below; neither publication nor readiness is asserted.
   checks; explicit failed commits release their transaction handles.
 
 ### Breaking changes / compatibility
+- **Go toolchain:** require **Go 1.27.4** or newer for the GO-2026-6859
+  (`net/http` MaxBytesReader header race) security fix. CI, release builds and
+  runner provisioning use 1.27.4; no application API, SQL or persisted-format change.
 - **Record-key continuations:** restart scans carrying old Go leaf-only tokens
   for every suffixed layout, including legacy split-capable stores. These scans
   now require a dedup envelope containing the physical position and last primary
@@ -311,7 +314,7 @@ below; neither publication nor readiness is asserted.
   methods have value receivers, instead of `*client.Snapshot`. `fdb.WritableTransaction`
   gains the five byte-slice methods above; implementations that do not embed one must
   add them.
-- No dependency-pin change: Java Record Layer/Relational **4.14.2.0** and
+- No Java/FoundationDB dependency-pin change: Java Record Layer/Relational **4.14.2.0** and
   FoundationDB **7.3.77** remain the references. These entries do not widen v0.2.0.
 
 ## [v0.2.0] - 2026-11-04
