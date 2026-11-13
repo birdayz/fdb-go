@@ -3921,3 +3921,16 @@ boundary in `docs/benchmarks/otel-relational-local-20261107.md`.
   DIVERGENCES.md, “TEXT logical suffix bounds”. The SQL executor retains its
   whole-group filtering path for caller-built typed suffix plans; SQL planning
   does not currently produce suffix bounds.
+
+## Persisted R-tree Hilbert decoding
+
+- [x] Preserve persisted unsigned and arbitrary-precision Hilbert values in leaf
+  and child slots instead of recomputing stored leaves or replacing child bounds
+  with zero. Match Java numeric narrowing and typed invalid-value failures.
+  Regressions cover literal numeric limits, packed slots, independent big-integer
+  copies, and real-FDB split/reopen/update/delete/pagination across both layouts
+  and stored-Hilbert settings. See `storage_hilbert_test.go`,
+  `storage_hilbert_fdb_test.go` and the compatibility boundary in DIVERGENCES.md.
+- [ ] Provide store validation/repair for entries already duplicated or lost by
+  older R-tree routing through incorrectly decoded Hilbert bounds. Correct
+  decoding prevents further misrouting; it does not reconstruct prior contents.

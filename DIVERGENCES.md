@@ -4119,6 +4119,27 @@ and `indexToProto` refuses to serialize it (`pkg/recordlayer/metadata_proto.go:4
 never stores an index every reader refuses ("Exactly one root must be specified for an index",
 `key_expression_proto.go:148`). The refusal's class and text are Go's, where Java's is an NPE.
 
+### R-tree persisted Hilbert values
+
+The shared async R-tree adapter reads Hilbert integers without losing the unsigned
+`[2^63, 2^64)` tuple representation or arbitrary-precision bits. This restores
+Java's numeric interpretation; it does not change bytes written by the adapter.
+Java Record Layer 4.14.2.0's `ItemSlot.fromKeyAndValue` recomputes only a null leaf
+value, while `ChildSlot.fromKeyAndValue` requires both numeric bounds. Java
+binding 7.1.26's `Tuple.getBigInteger` preserves `BigInteger` and otherwise calls
+`Number.longValue`: floats truncate toward zero, NaN becomes zero, and overflow
+or infinities saturate to signed 64-bit limits. Go follows those conversions and
+returns wrapped `ClassCastError` / `NullPointerError` for invalid numeric fields.
+
+`storage_hilbert_test.go` pins literal numeric boundaries, packed slot decoding,
+error context, null-leaf recomputation and big-integer copy isolation.
+`storage_hilbert_fdb_test.go` exercises split/reopen/update/delete/pagination in
+both layouts with stored leaf Hilbert values enabled and disabled. These are Go
+regressions against the upstream contract, not a new bidirectional Java runtime
+fixture. The correction does not reconstruct duplicate or missing entries from
+older misrouted updates; affected stores need independent validation and repair.
+The configuration and node-slot-index differences below remain unchanged.
+
 ### R-tree configurations Java cannot maintain (RFC-257 WS-C)
 
 Java's `MultiDimensionalIndexHelper.getConfig` takes any int for `rtreeMinimumM`,
