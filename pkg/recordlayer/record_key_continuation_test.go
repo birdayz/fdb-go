@@ -52,6 +52,7 @@ type recordKeyTestPage struct {
 	end       bool
 	records   int
 	bytes     int64
+	ranges    []recordKeyObservedRangeCall
 }
 
 func recordKeyTestMetadata(split, versions bool) *RecordMetaData {
@@ -77,7 +78,9 @@ func recordKeyTestRead(ss subspace.Subspace, md *RecordMetaData, format int32, p
 	transaction, err := sharedDB.CreateTransaction()
 	ExpectWithOffset(1, err).NotTo(HaveOccurred())
 	defer transaction.Cancel()
-	store := recordKeyTestOpen(sharedDB.NewRecordContext(transaction), ss, md, format)
+	observed := &recordKeyObservedTransaction{WritableTransaction: transaction}
+	store := recordKeyTestOpen(NewFDBRecordContext(observed, nil), ss, md, format)
+	observed.advances, observed.gets, observed.ranges = 0, 0, nil
 	state := NewScanLimiterState()
 	props.ExecuteProperties.ScanState = state
 	cursor := store.ScanRecordKeys(token, props)
@@ -107,6 +110,7 @@ func recordKeyTestRead(ss subspace.Subspace, md *RecordMetaData, format int32, p
 			ExpectWithOffset(1, state.RecordsScanned()).To(Equal(page.records))
 			ExpectWithOffset(1, state.BytesScanned()).To(Equal(page.bytes))
 		}
+		page.ranges = observed.ranges
 		return page
 	}
 }
@@ -117,9 +121,25 @@ type recordKeyObservedTransaction struct {
 	fdb.WritableTransaction
 	advances int
 	gets     int
+	ranges   []recordKeyObservedRangeCall
+}
+
+type recordKeyObservedRangeCall struct {
+	rangeRead fdb.Range
+	options   fdb.RangeOptions
+}
+
+func recordKeyAssertRangeOptions(calls []recordKeyObservedRangeCall, ss subspace.Subspace, want fdb.RangeOptions) {
+	ExpectWithOffset(1, calls).To(HaveLen(1))
+	begin, end := calls[0].rangeRead.FDBRangeKeySelectors()
+	prefix := ss.Sub(RecordKey).Bytes()
+	ExpectWithOffset(1, bytes.HasPrefix(begin.FDBKeySelector().Key.FDBKey(), prefix)).To(BeTrue())
+	ExpectWithOffset(1, bytes.HasPrefix(end.FDBKeySelector().Key.FDBKey(), prefix)).To(BeTrue())
+	ExpectWithOffset(1, calls[0].options).To(Equal(want))
 }
 
 func (tx *recordKeyObservedTransaction) GetRange(r fdb.Range, options fdb.RangeOptions) fdb.RangeResult {
+	tx.ranges = append(tx.ranges, recordKeyObservedRangeCall{rangeRead: r, options: options})
 	return recordKeyObservedRange{RangeResult: tx.WritableTransaction.GetRange(r, options), tx: tx}
 }
 
@@ -154,7 +174,7 @@ func recordKeyObservedOpen(ss subspace.Subspace, md *RecordMetaData, format int3
 	rc := NewFDBRecordContext(observed, env)
 	DeferCleanup(rc.Cancel)
 	store := recordKeyTestOpen(rc, ss, md, format)
-	observed.advances, observed.gets = 0, 0
+	observed.advances, observed.gets, observed.ranges = 0, 0, nil
 	return store, observed
 }
 
@@ -377,15 +397,27 @@ var _ = Describe("Record-key continuation framing", func() {
 				Expect(page.keys).To(Equal([]tuple.Tuple{{int64(2)}}))
 				Expect(page.records).To(Equal(1))
 				recordKeyAssertToken(page.token, 2, []byte{0x15, 2})
-				props.ExecuteProperties.Skip = 1 // applied again after the resumed bound
-				props.ExecuteProperties.ReturnedRowLimit = 0
-				rest := recordKeyTestRead(ss, md, 14, props, page.token)
-				want := int64(3)
-				if reverse {
-					want = 1
+				nativeMode := fdb.StreamingModeSmall
+				if mode == StreamingModeWantAll {
+					nativeMode = fdb.StreamingModeWantAll
 				}
-				Expect(rest.keys).To(Equal([]tuple.Tuple{{want}}))
-				Expect(rest.reason).To(Equal(SourceExhausted))
+				wantOptions := fdb.RangeOptions{Mode: nativeMode, Limit: 0, Reverse: reverse}
+				recordKeyAssertRangeOptions(page.ranges, ss, wantOptions)
+				props.ExecuteProperties.Skip = 1 // applied again after the resumed bound
+				for _, rowLimit := range []int{0, 1} {
+					props.ExecuteProperties.ReturnedRowLimit = rowLimit
+					rest := recordKeyTestRead(ss, md, 14, props, page.token)
+					want, reason := int64(3), SourceExhausted
+					if reverse {
+						want = 1
+					}
+					if rowLimit != 0 {
+						reason = ReturnLimitReached
+					}
+					Expect(rest.keys).To(Equal([]tuple.Tuple{{want}}))
+					Expect(rest.reason).To(Equal(reason))
+					recordKeyAssertRangeOptions(rest.ranges, ss, wantOptions)
+				}
 			}
 		}
 	})
@@ -670,6 +702,11 @@ var _ = Describe("Bare record-key physical limits", func() {
 					token, err = first.GetContinuation().ToBytes()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(token).To(Equal(recordKeyLiteralLeaf([]byte{0x15, id})))
+					nativeMode := fdb.StreamingModeSmall
+					if mode == StreamingModeWantAll {
+						nativeMode = fdb.StreamingModeExact
+					}
+					recordKeyAssertRangeOptions(pulls.ranges, ss, fdb.RangeOptions{Mode: nativeMode, Limit: 1, Reverse: reverse})
 					for range 3 {
 						last, err := cursor.OnNext(context.Background())
 						Expect(err).NotTo(HaveOccurred())
@@ -1088,6 +1125,72 @@ var _ = Describe("Record-key scan argument boundaries", func() {
 		})
 	}
 
+	for _, tc := range []struct{ name, token string }{
+		{"unterminated nested tuple", "0a001203051501"},
+		{"malformed UTF-8", "0a00120302ff00"},
+	} {
+		for _, empty := range []bool{false, true} {
+			It(fmt.Sprintf("rejects %s restored state before any range read, empty=%t", tc.name, empty), func() {
+				ss := specSubspace()
+				md := recordKeyTestMetadata(false, false)
+				keys := [][]byte{{0x05, 0x15, 0x01, 0x00, 0x14}}
+				want := []tuple.Tuple{{tuple.Tuple{int64(1)}}}
+				if empty {
+					keys, want = nil, []tuple.Tuple{}
+				}
+				recordKeySeedRaw(ss, md, keys)
+				token, err := hex.DecodeString(tc.token)
+				Expect(err).NotTo(HaveOccurred())
+				for _, reverse := range []bool{false, true} {
+					control := recordKeyTestRead(ss, md, 14, ForwardScan().WithReverse(reverse), nil)
+					Expect(control.keys).To(Equal(want))
+					Expect(control.reason).To(Equal(SourceExhausted))
+					Expect(control.end).To(BeTrue())
+					store, pulls := recordKeyObservedOpen(ss, md, 14, nil)
+					props := ForwardScan().WithReverse(reverse)
+					cursor := store.ScanRecordKeys(token, props)
+					DeferCleanup(func() { Expect(cursor.Close()).To(Succeed()) })
+					_, err := cursor.OnNext(context.Background())
+					var argument *IllegalArgumentError
+					Expect(errors.As(err, &argument)).To(BeTrue(), "token=%x err=%v", token, err)
+					_, repeated := cursor.OnNext(context.Background())
+					Expect(repeated).To(BeIdenticalTo(err))
+					Expect(props.ExecuteProperties.ScanState.RecordsScanned()).To(BeZero())
+					Expect(props.ExecuteProperties.ScanState.BytesScanned()).To(BeZero())
+					Expect(pulls.ranges).To(BeEmpty())
+					Expect(pulls.advances).To(BeZero())
+					Expect(pulls.gets).To(BeZero())
+				}
+			})
+		}
+	}
+
+	It("restores valid nested primary keys without dropping a different key", func() {
+		ss := specSubspace()
+		md := recordKeyTestMetadata(false, false)
+		recordKeySeedRaw(ss, md, [][]byte{{0x05, 0x15, 0x01, 0x00, 0x14}})
+		for _, reverse := range []bool{false, true} {
+			props := ForwardScan().WithReverse(reverse)
+			props.ExecuteProperties.ReturnedRowLimit = 1
+			// A legal nested lastValue ((2)) must not suppress the physical PK ((1)).
+			page := recordKeyTestRead(ss, md, 14, props, []byte{0x0a, 0x00, 0x12, 0x04, 0x05, 0x15, 0x02, 0x00})
+			Expect(page.keys).To(Equal([]tuple.Tuple{{tuple.Tuple{int64(1)}}}))
+			Expect(page.reason).To(Equal(ReturnLimitReached))
+			var state gen.DedupContinuation
+			Expect(state.UnmarshalVT(page.token)).To(Succeed())
+			Expect(state.LastValue).To(Equal([]byte{0x05, 0x15, 0x01, 0x00}))
+			end := recordKeyTestRead(ss, md, 14, props, page.token)
+			Expect(end.keys).To(BeEmpty())
+			Expect(end.reason).To(Equal(SourceExhausted))
+			Expect(end.end).To(BeTrue())
+			// Restoring the same valid PK from an empty physical position does dedup it.
+			same := recordKeyTestRead(ss, md, 14, props, []byte{0x0a, 0x00, 0x12, 0x04, 0x05, 0x15, 0x01, 0x00})
+			Expect(same.keys).To(BeEmpty())
+			Expect(same.reason).To(Equal(SourceExhausted))
+			Expect(same.end).To(BeTrue())
+		}
+	})
+
 	for _, tc := range []struct{ name, pk, token string }{
 		{"top-level", "33ffffffffffffffffffff0000", "0a00120d33ffffffffffffffffffff0000"},
 		{"nested", "0533ffffffffffffffffffff000000", "0a00120f0533ffffffffffffffffffff000000"},
@@ -1196,6 +1299,8 @@ func TestRecordKeyContinuationInvalid(t *testing.T) {
 		{"malformed", []byte{0xff}, true},
 		{"missing inner", []byte{0x12, 0x02, 0x15, 0x02}, true},
 		{"invalid packed lastValue", []byte{0x0a, 0x00, 0x12, 0x01, 0xff}, false},
+		{"unterminated nested lastValue", []byte{0x0a, 0x00, 0x12, 0x03, 0x05, 0x15, 0x01}, false},
+		{"malformed UTF-8 lastValue", []byte{0x0a, 0x00, 0x12, 0x03, 0x02, 0xff, 0x00}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

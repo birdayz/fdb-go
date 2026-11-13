@@ -657,7 +657,7 @@ func (store *FDBRecordStore) ScanRecordKeys(
 	cursor := Dedup(func(cont []byte) RecordCursor[tuple.Tuple] {
 		return physical(cont, innerProps)
 	}, tuplesEqual, func(pk tuple.Tuple) []byte { return pk.Pack() }, func(raw []byte) (tuple.Tuple, bool) {
-		pk, err := tuple.Unpack(raw)
+		pk, err := tuple.UnpackStrict(raw)
 		if err != nil {
 			unpackErr = &IllegalArgumentError{Message: err.Error()}
 		} else if incomplete, _ := pk.HasIncompleteVersionstamp(); incomplete {

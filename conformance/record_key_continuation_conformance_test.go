@@ -233,6 +233,75 @@ var _ = Describe("Record-key opaque continuation Java interchange", func() {
 		}
 	})
 
+	It("rejects malformed restored tuples before reads and exchanges valid nested primary keys", func() {
+		for _, empty := range []bool{true, false} {
+			if !empty {
+				physical := []byte{0x05, 0x15, 0x01, 0x00, 0x14}
+				_, err := env.RecordDB.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+					_, err := recordlayer.NewStoreBuilder().SetContext(rc).SetSubspace(ks.Sub("unsplit")).
+						SetFormatVersion(14).SetMetaDataProvider(recordScanMetadata(false, false, false)).CreateOrOpen()
+					if err != nil {
+						return nil, err
+					}
+					key := append(append([]byte(nil), ks.Sub("unsplit").Sub(recordlayer.RecordKey).Bytes()...), physical...)
+					rc.Transaction().Set(fdb.Key(key), []byte{0x61})
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			for _, reverse := range []bool{false, true} {
+				req := recordKeyInteropRequest{Layout: "unsplit", Reverse: reverse}
+				for _, control := range []recordKeyInteropPage{javaPage(req), goPage(req)} {
+					Expect(control.ExceptionClass).To(BeEmpty())
+					Expect(control.End).To(BeTrue())
+					Expect(control.Reason).To(Equal("SOURCE_EXHAUSTED"))
+					if empty {
+						Expect(control.Rows).To(BeEmpty())
+					} else {
+						Expect(control.Rows).To(HaveLen(1))
+						Expect(control.Rows[0].PrimaryKey).To(Equal(base64.StdEncoding.EncodeToString([]byte{0x05, 0x15, 0x01, 0x00})))
+					}
+				}
+				for _, tokenHex := range []string{"0a001203051501", "0a00120302ff00"} {
+					token, err := hex.DecodeString(tokenHex)
+					Expect(err).NotTo(HaveOccurred())
+					req.Continuation = recordKeyInteropBytes(token)
+					jp, gp := javaPage(req), goPage(req)
+					Expect(jp.ExceptionClass).To(Equal("IllegalArgumentException"))
+					Expect(gp.ExceptionClass).To(Equal("*recordlayer.IllegalArgumentError"))
+					for _, page := range []recordKeyInteropPage{jp, gp} {
+						Expect(page.Rows).To(BeEmpty())
+						Expect(page.ScannedRecords).To(BeZero())
+						Expect(page.ScannedBytes).To(BeZero())
+					}
+				}
+				if !empty {
+					req.RowLimit = 1
+					req.Continuation = recordKeyInteropBytes([]byte{0x0a, 0x00, 0x12, 0x04, 0x05, 0x15, 0x02, 0x00})
+					jp, gp := javaPage(req), goPage(req)
+					Expect(jp.Rows).To(Equal(gp.Rows))
+					for _, page := range []recordKeyInteropPage{jp, gp} {
+						Expect(page.ExceptionClass).To(BeEmpty())
+						Expect(page.Rows).To(HaveLen(1))
+						Expect(page.Rows[0].PrimaryKey).To(Equal(base64.StdEncoding.EncodeToString([]byte{0x05, 0x15, 0x01, 0x00})))
+						Expect(page.Reason).To(Equal("RETURN_LIMIT_REACHED"))
+						recordKeyInteropAssertFraming(page, false)
+					}
+					req.Continuation = jp.Continuation
+					goEnd := goPage(req)
+					req.Continuation = gp.Continuation
+					javaEnd := javaPage(req)
+					for _, page := range []recordKeyInteropPage{goEnd, javaEnd} {
+						Expect(page.ExceptionClass).To(BeEmpty())
+						Expect(page.Rows).To(BeEmpty())
+						Expect(page.Reason).To(Equal("SOURCE_EXHAUSTED"))
+						Expect(page.End).To(BeTrue())
+					}
+				}
+			}
+		}
+	})
+
 	It("pins the deliberate eager Go rejection versus Java's lazy versionstamp packing", func() {
 		type boundary struct {
 			HasNext                bool    `json:"hasNext"`

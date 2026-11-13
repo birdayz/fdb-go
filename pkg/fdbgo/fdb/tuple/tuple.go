@@ -46,6 +46,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 )
@@ -739,10 +740,13 @@ func decodeBytes(b []byte) ([]byte, int, error) {
 	return bytes.Replace(b[1:idx+1], []byte{0x00, 0xFF}, []byte{0x00}, -1), idx + 2, nil
 }
 
-func decodeString(b []byte) (string, int, error) {
+func decodeString(b []byte, strict bool) (string, int, error) {
 	bp, idx, err := decodeBytes(b)
 	if err != nil {
 		return "", 0, err
+	}
+	if strict && !utf8.Valid(bp) {
+		return "", 0, fmt.Errorf("malformed UTF-8 string")
 	}
 	return string(bp), idx, nil
 }
@@ -864,7 +868,7 @@ func decodeVersionstamp(b []byte) (Versionstamp, int) {
 	}, versionstampLength + 1
 }
 
-func decodeTuple(b []byte, nested bool) (Tuple, int, error) {
+func decodeTuple(b []byte, nested, strict bool) (Tuple, int, error) {
 	var t Tuple
 
 	var i int
@@ -892,7 +896,7 @@ func decodeTuple(b []byte, nested bool) (Tuple, int, error) {
 			}
 		case b[i] == stringCode:
 			var err error
-			el, off, err = decodeString(b[i:])
+			el, off, err = decodeString(b[i:], strict)
 			if err != nil {
 				return nil, i, fmt.Errorf("unable to decode string starting at position %d of byte array for tuple: %w", i, err)
 			}
@@ -946,7 +950,7 @@ func decodeTuple(b []byte, nested bool) (Tuple, int, error) {
 			el, off = decodeVersionstamp(b[i:])
 		case b[i] == nestedCode:
 			var err error
-			el, off, err = decodeTuple(b[i+1:], true)
+			el, off, err = decodeTuple(b[i+1:], true, strict)
 			if err != nil {
 				return nil, i, err
 			}
@@ -959,13 +963,23 @@ func decodeTuple(b []byte, nested bool) (Tuple, int, error) {
 		i += off
 	}
 
+	if nested && strict {
+		return nil, i, fmt.Errorf("no 0x00 terminator found for nested tuple")
+	}
 	return t, i, nil
 }
 
 // Unpack returns the tuple encoded by the provided byte slice, or an error if
 // the key does not correctly encode a FoundationDB tuple.
 func Unpack(b []byte) (Tuple, error) {
-	t, _, err := decodeTuple(b, false)
+	t, _, err := decodeTuple(b, false, false)
+	return t, err
+}
+
+// UnpackStrict decodes a tuple, additionally requiring nested tuple terminators
+// and valid UTF-8 strings. It still accepts noncanonical integer encodings.
+func UnpackStrict(b []byte) (Tuple, error) {
+	t, _, err := decodeTuple(b, false, true)
 	return t, err
 }
 

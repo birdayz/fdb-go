@@ -290,6 +290,12 @@ or inline versions, return no rows, and still have a non-end continuation. Keep
 resuming until `IsEnd`, not until the first empty page. Skip is physical and is
 reapplied on each resume; it does not skip logical deduplicated primary keys.
 
+Restored Dedup `lastValue` tuples require terminated nested tuples and valid
+UTF-8 strings, matching Java's restoration checks. Malformed values return
+`IllegalArgumentError` before any physical range read, including on empty stores.
+This validation is specific to restored state; the pre-existing permissive
+physical-key decoder is not changed by it.
+
 **Incomplete versionstamps are rejected eagerly in suffixed scans.** Go returns
 `IncompleteVersionstampError` before reading if a supplied Dedup `lastValue`
 contains an incomplete versionstamp, even on an empty range. Java 4.14.2.0

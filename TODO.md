@@ -3905,6 +3905,10 @@ boundary in `docs/benchmarks/otel-relational-local-20261107.md`.
   typed `UnsupportedFormatVersionException` counterpart and an end-to-end
   regression. The pre-existing Go entry point lacks this guard; the continuation
   repair does not establish support or parity for those formats.
+- [ ] Reject unterminated nested tuples and invalid UTF-8 in corrupt physical
+  record keys with typed errors and Go/FDB plus Java regressions. The strict
+  decoder used for restored Dedup `lastValue` does not change the pre-existing
+  permissive `tuple.Unpack` physical-key path.
 
 ## TEXT SQL access paths
 
