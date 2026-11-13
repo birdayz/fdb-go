@@ -13,9 +13,10 @@ range in this report is **four-block min/max, not a confidence interval**.
 This local result **locates a source interval; it does not identify a unique
 timer, dispatch or scheduling mechanism**. It is not a recoverable optimization
 budget. The Hetzner multi-node 64-worker regression did not reproduce locally.
-[RFC-264 is Rejected](../../../rfcs/264-send-wait-cost-and-ordering.md); the owner
-retains #954's 10/20 µs default and accepts its latency-versus-CPU/allocation
-trade-off. No further prototype or measurement follows from this report.
+[RFC-264 is Rejected](../../../rfcs/264-send-wait-cost-and-ordering.md); for that
+workstream the owner retained #954's 10/20 µs legacy-writer default (later
+superseded by [RFC-282](../../../rfcs/282-dng-transport-and-hotpath.md)'s 0/0
+D-NG default). No further prototype or measurement follows from this report.
 
 The motivating multi-node campaign measured new/old p50 ratios of **1.348
 get100, 1.298 get1000 and 1.283 set100** at 64 workers, and **1.113, 1.154 and

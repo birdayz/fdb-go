@@ -40,7 +40,7 @@ That is the 6.6 futex/tx above. It is also why libfdb_c needs epoll_wait 14×/tx
 ## Proposal: the waiter reads its own reply (leader/follower)
 
 Make "the reader" a role, not a goroutine:
-- The role is a mutex-protected reader state: the bufio reader, the FrameReader's partial-frame state, and the pending map.
+- The role is a mutex-protected reader state: the bufio reader and the FrameReader's partial-frame state (while pending replies live in separately locked per-token shards, `pendingShard(token).mu`).
 - A goroutine that is about to wait for a reply tries to take the role (`TryLock`).
 - While it holds the role, it reads and dispatches frames itself, exactly as readLoop does today:
   - pings are answered;
@@ -67,7 +67,7 @@ For a connection with one RPC in flight (the common case for a single transactio
 
 On cancellation the leader must return the role with the partial-frame state intact. A deadline error is therefore not a connection error: the FrameReader resumes mid-frame for the next holder. The current `FrameReader` is not resumable mid-frame; it uses `io.ReadFull` into a fresh payload. This needs an explicit state machine (header / checksum / payload offset), and that is the riskiest part of the change.
 
-**Multiplexed replies.** The leader dispatches every frame through the same `pending` map under `pendingMu`, with the same delete-then-publish discipline as readLoop. A reply for another waiter is delivered to that waiter's channel. A late reply after cancellation is dropped, as today. The leader recognises its own reply by token identity, not by order.
+**Multiplexed replies.** The leader dispatches every frame through `pendingShard(token)` under `pendingShard(token).mu`, with the same publish-then-delete discipline under the shard lock as readLoop. A reply for another waiter is delivered to that waiter's channel. A late reply after cancellation is dropped, as today. The leader recognises its own reply by token identity, not by order.
 
 **Connection failure.** A read error, EOF or checksum failure seen by a leader goes through the same `failConnection` path (cancel, close, `failAllPending`). The leader then returns its own coded 1030 error, as the reply channel would have delivered it. A leader that panics releases the role through a deferred recovery, as `recoverLoop` does.
 

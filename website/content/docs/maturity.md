@@ -17,8 +17,9 @@ readiness statement; this page is an overview, not a release certification.
 | **Record Layer** | Go ↔ Java reads and writes for your exact metadata, index types, and store formats |
 | **SQL engine** | Query correctness, plans, resource limits, and performance for your workload |
 
-These docs describe the v0.2.0 candidate and development tree, not a published tag. Pinning
-a version does not by itself establish readiness.
+These docs describe `master`. The latest release is
+[v0.2.0](https://github.com/birdayz/fdb-go/releases/tag/v0.2.0) (2026-11-07); later changes
+are listed as Unreleased in the [changelog](/changelog/). Pinning a version does not by itself establish readiness.
 
 ## Java interoperability
 

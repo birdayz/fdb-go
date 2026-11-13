@@ -51,14 +51,15 @@ func TestMappedRangeConflictMustUnmodified(t *testing.T) {
 			} else if err != nil {
 				t.Fatal(err)
 			}
+			reads := tx.readConflictRanges()
 			if tc.begin >= tc.prefixEnd {
-				if len(tx.readConflicts) != 0 {
-					t.Fatalf("unexpected conflict ranges: %+v", tx.readConflicts)
+				if len(reads) != 0 {
+					t.Fatalf("unexpected conflict ranges: %+v", reads)
 				}
 				return
 			}
-			if len(tx.readConflicts) != 1 || !bytes.Equal(tx.readConflicts[0].Begin, []byte(tc.begin)) || !bytes.Equal(tx.readConflicts[0].End, []byte(tc.prefixEnd)) {
-				t.Fatalf("conflict ranges=%+v, want [%q,%q)", tx.readConflicts, tc.begin, tc.prefixEnd)
+			if len(reads) != 1 || !bytes.Equal(reads[0].Begin, []byte(tc.begin)) || !bytes.Equal(reads[0].End, []byte(tc.prefixEnd)) {
+				t.Fatalf("conflict ranges=%+v, want [%q,%q)", reads, tc.begin, tc.prefixEnd)
 			}
 		})
 	}
@@ -133,7 +134,7 @@ func TestMappedRangeConflictPublicationRetainsIncarnation(t *testing.T) {
 					t.Fatal("mapped read never reached conflict publication")
 				}
 				tx.conflictMu.Lock()
-				prior := len(tx.readConflicts)
+				prior := len(tx.readConflictRangesLocked()) // disjoint ranges: one per publication
 				tx.conflictMu.Unlock()
 				if prior != tc.pauseAt-1 {
 					t.Fatalf("published prefix has %d ranges, want %d", prior, tc.pauseAt-1)
@@ -173,12 +174,11 @@ func TestMappedRangeConflictPublicationRetainsIncarnation(t *testing.T) {
 				} else if err != nil {
 					t.Errorf("live mapped read = %v", err)
 				}
-				tx.conflictMu.Lock()
-				defer tx.conflictMu.Unlock()
-				if len(tx.readConflicts) != len(want) {
-					t.Fatalf("conflicts = %+v, want %v", tx.readConflicts, want)
+				reads := tx.readConflictRanges()
+				if len(reads) != len(want) {
+					t.Fatalf("conflicts = %+v, want %v", reads, want)
 				}
-				for i, r := range tx.readConflicts {
+				for i, r := range reads {
 					if string(r.Begin) != want[i][0] || string(r.End) != want[i][1] {
 						t.Errorf("conflict %d = [%q,%q), want %v", i, r.Begin, r.End, want[i])
 					}
@@ -219,8 +219,9 @@ func TestMappedRangeConflictBatchOrder(t *testing.T) {
 			} else if native, ok := err.(*wire.FDBError); !ok || native.Code != 2039 {
 				t.Fatalf("error = %v, want 2039", err)
 			}
-			if len(tx.readConflicts) != len(want) {
-				t.Fatalf("conflicts = %v, want %v", tx.readConflicts, want)
+			// Disjoint, ascending ranges: the read-conflict map keeps them as published.
+			if reads := tx.readConflictRanges(); len(reads) != len(want) {
+				t.Fatalf("conflicts = %v, want %v", reads, want)
 			}
 			// Conflict storage must own keys even after the source batch is gone.
 			for i := range rows {
@@ -237,7 +238,7 @@ func TestMappedRangeConflictBatchOrder(t *testing.T) {
 					rows[i].GetRange.Rows[j].Key[0] = 'x'
 				}
 			}
-			for i, r := range tx.readConflicts {
+			for i, r := range tx.readConflictRanges() {
 				if string(r.Begin) != want[i][0] || string(r.End) != want[i][1] {
 					t.Fatalf("conflict %d = [%q,%q), want %v", i, r.Begin, r.End, want[i])
 				}
@@ -257,8 +258,9 @@ func TestMappedRangeConflictBatchAllocations(t *testing.T) {
 			GetRange: MappedGetRange{Begin: KeySelector{Key: []byte{0x30, byte(i)}}, End: KeySelector{Key: []byte{0x31, byte(i)}}},
 		}
 	}
-	tx := &Transaction{readConflicts: make([]KeyRange, 0, count+1), conflictBuf: make([]byte, 0, 8192)}
 	begin, end := []byte{0x00}, []byte{0x20}
+	// Without RYW the native list keeps every range as added.
+	tx := &Transaction{rywDisabled: true, readConflicts: make([]KeyRange, 0, count+1), conflictBuf: make([]byte, 0, 8192)}
 	allocations := testing.AllocsPerRun(100, func() {
 		clear(tx.readConflicts)
 		tx.readConflicts, tx.conflictBuf = tx.readConflicts[:0], tx.conflictBuf[:0]
@@ -266,7 +268,7 @@ func TestMappedRangeConflictBatchAllocations(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if len(tx.readConflicts) != count+1 || !bytes.Equal(tx.readConflicts[0].Begin, begin) || !bytes.Equal(tx.readConflicts[0].End, end) {
+	if reads := tx.readConflictRanges(); len(reads) != count+1 || !bytes.Equal(reads[0].Begin, begin) || !bytes.Equal(reads[0].End, end) {
 		t.Fatal("allocation sample did not insert every primary/secondary conflict")
 	}
 	// The current helper clones one endpoint per range. Collecting those ranges
@@ -275,4 +277,22 @@ func TestMappedRangeConflictBatchAllocations(t *testing.T) {
 		t.Fatalf("mapped conflict allocations = %g, want %d endpoint copies only", allocations, count+1)
 	}
 	t.Logf("mapped conflict allocations: rows=%d allocs=%.0f endpoint copies only", count, allocations)
+
+	// With RYW the read-conflict map coalesces the overlapping secondary ranges
+	// [0x30 i, 0x31 i) into one (CoalescedKeyRefRangeMap, ReadYourWrites.h:237):
+	// the endpoint copies plus the chunk holding the map's two nodes.
+	tx = &Transaction{conflictBuf: make([]byte, 0, 8192)}
+	allocations = testing.AllocsPerRun(100, func() {
+		tx.readMap, tx.conflictBuf = pseq[rywRange]{}, tx.conflictBuf[:0]
+		if err := tx.addMappedRangeConflicts(context.Background(), begin, end, false, false, rows); err != nil {
+			t.Fatal(err)
+		}
+	})
+	want := []KeyRange{{Begin: begin, End: end}, {Begin: []byte{0x30, 0}, End: []byte{0x31, count - 1}}}
+	if reads := tx.readConflictRanges(); fmt.Sprintf("%q", reads) != fmt.Sprintf("%q", want) {
+		t.Fatalf("RYW conflicts = %q, want %q", reads, want)
+	}
+	if allocations != count+1+1 {
+		t.Fatalf("RYW mapped conflict allocations = %g, want %d endpoint copies and one node chunk only", allocations, count+1+1)
+	}
 }

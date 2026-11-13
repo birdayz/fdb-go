@@ -25,7 +25,7 @@ func TestPlanCacheBindingShapesPlan(t *testing.T) {
 					named[i] = driver.NamedValue{Name: n.Name, Ordinal: i + 1, Value: n.Value}
 				}
 			}
-			if _, err := embedded.PlanPhysicalForTestWithBoundLiterals(tc.Query, PlanCacheBindingShapesSchema, named, nil); err != nil {
+			if _, err := embedded.PlanPhysicalForTestWithBoundLiterals(tc.Query, PlanCacheBindingShapesSchema, named, nil, nil); err != nil {
 				t.Errorf("%s %v: %v", tc.Name, args, err)
 			}
 		}
@@ -37,7 +37,7 @@ func TestPlanCacheBindingShapesPlan(t *testing.T) {
 func TestPlanCacheBindingShapesUnspacedDivision(t *testing.T) {
 	t.Parallel()
 	_, err := embedded.PlanPhysicalForTestWithBoundLiterals("SELECT id FROM T WHERE COALESCE(5, 1/0) > 4",
-		PlanCacheBindingShapesSchema, nil, nil)
+		PlanCacheBindingShapesSchema, nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "42601") {
 		t.Fatalf("COALESCE(5, 1/0): err=%v, want 42601", err)
 	}

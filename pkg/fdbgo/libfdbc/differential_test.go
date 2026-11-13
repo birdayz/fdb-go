@@ -690,17 +690,12 @@ func startCluster(t *testing.T) string {
 	// returns that internal bridge-IP file, usable by BOTH clients.
 	container, err := foundationdbtc.Run(ctx, "", foundationdbtc.WithDirectIP())
 	if err != nil {
-		var terminationErr *foundationdbtc.TerminationError
-		if errors.As(err, &terminationErr) {
-			t.Fatalf("container startup cleanup failed: %v", err)
+		if foundationdbtc.SkipWithoutDocker(err) {
+			t.Skipf("FDB not available (no Docker): %v", err)
 		}
-		t.Skipf("FDB not available (no Docker): %v", err)
+		t.Fatalf("FDB container startup failed: %v", err)
 	}
-	t.Cleanup(func() {
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer stopCancel()
-		foundationdbtc.TerminateT(t, stopCtx, container)
-	})
+	t.Cleanup(func() { foundationdbtc.TeardownT(t, container) })
 	content, err := container.ClusterFile(ctx)
 	if err != nil {
 		t.Fatalf("cluster file: %v", err)

@@ -13,7 +13,7 @@ func TestReadResultOwnership_Locations(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	db := &database{}
-	db.locCache.insertSorted([]locationEntry{{
+	db.locCache.insertRanges([]locationEntry{{
 		begin: []byte("a"), end: []byte("z"),
 		servers: []ServerInfo{{Address: "original:4500"}},
 	}})

@@ -93,7 +93,7 @@ func (c *RecordLayerStoreSchemaTemplateCatalog) LoadSchemaTemplate(txn api.Trans
 		return nil, api.NewErrorf(api.ErrCodeInternalError,
 			"catalog template row has unexpected type %T", r.GetValue().Record)
 	}
-	return deserializeTemplate(msg)
+	return loadTemplate(msg)
 }
 
 // LoadSchemaTemplateAtVersion — exact version lookup.
@@ -106,7 +106,7 @@ func (c *RecordLayerStoreSchemaTemplateCatalog) LoadSchemaTemplateAtVersion(txn 
 	if err != nil {
 		return nil, err
 	}
-	return deserializeTemplate(msg)
+	return loadTemplate(msg)
 }
 
 // loadTemplateRowIn is the (name, version) catalog row, or

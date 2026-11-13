@@ -39,8 +39,8 @@ func TestMappedRangeConflictPublicationAfterReset(t *testing.T) {
 			if err != nil || len(rows) != 1 || !bytes.Equal(rows[0].Key, fixture.indexEntryKey(int(skip))) {
 				t.Fatalf("live mapped control = %+v, %v; want primary %q", rows, err, fixture.indexEntryKey(int(skip)))
 			}
-			if len(control.readConflicts) < 2 {
-				t.Fatalf("live mapped control recorded %d conflicts, want primary and secondary", len(control.readConflicts))
+			if len(control.readConflictRanges()) < 2 {
+				t.Fatalf("live mapped control recorded %d conflicts, want primary and secondary", len(control.readConflictRanges()))
 			}
 			tx := db.CreateTransaction()
 			defer tx.Cancel()
@@ -100,10 +100,8 @@ func TestMappedRangeConflictPublicationAfterReset(t *testing.T) {
 			if n := publications.Load(); n != 1 {
 				t.Errorf("retired mapped read attempted %d publications, want 1", n)
 			}
-			tx.conflictMu.Lock()
-			defer tx.conflictMu.Unlock()
-			if len(tx.readConflicts) != 0 {
-				t.Fatalf("replacement inherited retired mapped conflicts: %+v", tx.readConflicts)
+			if reads := tx.readConflictRanges(); len(reads) != 0 {
+				t.Fatalf("replacement inherited retired mapped conflicts: %+v", reads)
 			}
 		})
 	}

@@ -196,7 +196,7 @@ func TestFDB_VectorSearch_ZeroCapEmpty(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ids := runParamRankQuery(t, ctx, db, ks, md, tc.sql, nil)
 			if len(ids) != 0 {
-				t.Fatalf("ROW_NUMBER() < 1 returned %v, want EMPTY (the zero-cap codex blocker)", ids)
+				t.Fatalf("ROW_NUMBER() < 1 returned %v, want EMPTY", ids)
 			}
 		})
 	}

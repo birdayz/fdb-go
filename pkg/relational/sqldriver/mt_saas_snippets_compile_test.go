@@ -31,8 +31,8 @@ import (
 // option names, or the PlanGenerationLogger interface. A paraphrase that
 // happens to avoid the renamed symbol would compile while the doc is wrong.
 //
-// Nothing here connects to FDB; the test body only asserts the wiring exists.
-// Compilation IS the assertion.
+// Nothing here connects to FDB. Compilation is the main assertion; the test
+// body also runs the §3 recipe to check its option values pass SetOption.
 
 // configureTenantConn is docs/mt-saas.md §3, "Setting them: not a DSN, not SQL
 // — conn.Raw". The type assertion is load-bearing: Connector.Connect returns
@@ -42,13 +42,17 @@ func configureTenantConn(driverConn any) error {
 	if !ok {
 		return fmt.Errorf("not an embedded connection: %T", driverConn)
 	}
-	ec.SetOptions(api.NewOptionsBuilder().
-		Set(api.OptMaxRows, int64(10_000)).                    // egress cap
-		Set(api.OptExecutionScannedRowsLimit, int64(500_000)). // per page
-		Set(api.OptExecutionScannedBytesLimit, int64(64<<20)). // per page
-		Set(api.OptExecutionTimeLimit, int64(2_000)).          // millis, narrows the 4s cap
-		Set(api.OptMaxStatementMemoryBytes, int64(256<<20)).   // statement-wide
-		Build())
+	for name, value := range map[api.OptionName]any{
+		api.OptMaxRows:                    int64(10_000),    // egress cap
+		api.OptExecutionScannedRowsLimit:  int64(500_000),   // per page
+		api.OptExecutionScannedBytesLimit: int64(64 << 20),  // per page
+		api.OptExecutionTimeLimit:         int64(2_000),     // millis, narrows the 4s cap
+		api.OptMaxStatementMemoryBytes:    int64(256 << 20), // statement-wide
+	} {
+		if err := ec.SetOption(name, value); err != nil {
+			return err
+		}
+	}
 	ec.SetFailOnScanLimitReached(true) // without this the scan limits only paginate
 	ec.SetStatementTimeout(30 * time.Second)
 	ec.SetMaxResultBytes(32 << 20)
@@ -132,6 +136,11 @@ func TestMTSaaSDocSnippetsCompile(t *testing.T) {
 	_ = installPlanLogger
 	_ = retainClientDatabaseForMetrics
 	_ = openTenantDB
+
+	// The §3 recipe's option values pass SetOption's contract checks.
+	if err := configureTenantConn(embedded.New("/T/1", nil, nil, nil, nil)); err != nil {
+		t.Fatalf("configureTenantConn: %v", err)
+	}
 
 	// The §2 option-set form the doc offers as the embedded.New alternative to
 	// the DSN parameter.

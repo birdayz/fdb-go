@@ -8,34 +8,38 @@ import (
 	"time"
 )
 
-// QueueModel tracks estimated outstanding request depth per storage server.
-// Used by sendGetValue/sendGetKey/sendGetRange to pick the least-loaded
-// server from a shard's replica set.
-//
-// Matches C++ QueueModel in fdbclient/QueueModel.h:
-// - Smoother-based continuous exponential decay (eFoldingTime=2s)
-// - Server penalty from LoadBalancedReply
-// - failedUntil with exponential backoff for future_version errors
-//
-// Selection metric: smoothOutstanding.smoothTotal() (lower = better).
-// C++ also uses latency for speculative second requests (secondDelay),
-// which we don't implement yet.
+// QueueModel tracks per-server outstanding depth, latency, penalty and backoff,
+// plus C++'s database-wide second-request budget and adaptive delay (RFC-281).
+// No number depends on two servers or a server and the pair, so per-server and
+// pair locks keep each one serial, as C++'s single network thread does.
 type QueueModel struct {
-	mu      sync.Mutex
-	servers map[string]*queueData
+	// servers maps an address to its *queueData. Entries are never removed, so
+	// lookups take no lock (C++ data[id], QueueModel.cpp:64).
+	servers sync.Map
+
+	// C++ QueueModel::secondMultiplier and secondBudget (QueueModel.h:103-104,121),
+	// written under secondMu.
+	secondMu         sync.Mutex
+	secondMultiplier float64
+	secondBudget     float64
+	// secondIdle: the pair is at firstReplied's fixed point (multiplier 1, budget max).
+	// Written under secondMu; lock-free readers use it alone, never the pair.
+	secondIdle atomic.Bool
 
 	// failMon, when set, is the connection failure monitor consulted BEFORE the
 	// per-server QueueModel backoff in chooseServer/chooseTopTwo, matching C++
 	// loadBalance's IFailureMonitor.failed gate (LoadBalance.actor.h:499 — failure
 	// gate first, QueueModel `failedUntil` second). Wired by the database constructor;
 	// nil in unit tests that exercise pure QueueModel scoring (then nothing is
-	// excluded — the pre-RFC-115 behavior). RFC-115 §1. Lock order is always
-	// QueueModel.mu → failureMonitor.mu.
+	// excluded — the pre-RFC-115 behavior). RFC-115 §1. No QueueModel lock is
+	// held while it is consulted.
 	failMon *failureMonitor
 }
 
-// queueData matches C++ QueueData. One per storage server endpoint.
+// queueData matches C++ QueueData. One per storage server endpoint; mu guards
+// its fields.
 type queueData struct {
+	mu                sync.Mutex
 	smoothOutstanding smoother // eFoldingTime=2.0s — tracks weighted outstanding requests
 	latency           float64  // last measured client-side latency in seconds. Init: 0.001
 	penalty           float64  // per-request cost multiplier from server. Init: 1.0. Always >= 1.0
@@ -66,32 +70,76 @@ const (
 	futureVersionMaxBackoff     = 8.0 // FUTURE_VERSION_MAX_BACKOFF (growth capped here)
 	futureVersionBackoffGrowth  = 2.0 // BACKOFF_GROWTH_RATE
 
-	// Speculative second request knobs (C++ CLIENT_KNOBS)
-	backupRequestDelay = 0.01 // BACKUP_REQUEST_DELAY (10ms minimum hedge delay)
-	secondMultiplier   = 2.0  // MODEL_SECOND_MULTIPLIER (latency × this = hedge delay)
+	// Second request FLOW_KNOBS (flow/Knobs.cpp:278-283).
+	instantSecondRequestMultiplier = 2.0     // INSTANT_SECOND_REQUEST_MULTIPLIER
+	baseSecondRequestTime          = 0.0005  // BASE_SECOND_REQUEST_TIME, seconds
+	secondRequestMultiplierGrowth  = 0.01    // SECOND_REQUEST_MULTIPLIER_GROWTH
+	secondRequestMultiplierDecay   = 0.00025 // SECOND_REQUEST_MULTIPLIER_DECAY
+	secondRequestBudgetGrowth      = 0.05    // SECOND_REQUEST_BUDGET_GROWTH
+	secondRequestMaxBudget         = 100.0   // SECOND_REQUEST_MAX_BUDGET
 )
 
 func newQueueModel() *QueueModel {
 	return &QueueModel{
-		servers: make(map[string]*queueData),
+		secondMultiplier: 1.0,
 	}
 }
 
-// getOrCreate returns the queueData for addr, creating if absent. Caller must hold mu.
+// getOrCreate returns the queueData for addr, creating if absent. The caller
+// locks the result to use its fields.
 func (q *QueueModel) getOrCreate(addr string) *queueData {
-	d, ok := q.servers[addr]
-	if !ok {
-		d = &queueData{
-			smoothOutstanding: smoother{
-				eFoldingTime: queueModelSmoothingAmount,
-			},
-			latency:              queueDataInitialLatency,
-			penalty:              queueDataInitialPenalty,
-			futureVersionBackoff: futureVersionInitialBackoff,
-		}
-		q.servers[addr] = d
+	if d, ok := q.servers.Load(addr); ok {
+		return d.(*queueData)
 	}
-	return d
+	d, _ := q.servers.LoadOrStore(addr, &queueData{
+		smoothOutstanding: smoother{
+			eFoldingTime: queueModelSmoothingAmount,
+		},
+		latency:              queueDataInitialLatency,
+		penalty:              queueDataInitialPenalty,
+		futureVersionBackoff: futureVersionInitialBackoff,
+	})
+	return d.(*queueData)
+}
+
+// eligible reports whether d is out of its future_version backoff at now
+// (LoadBalance.actor.h:501).
+func (d *queueData) eligible(now float64) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return now > d.failedUntil
+}
+
+// smoothTotal is d's smoothed outstanding count at now (Smoother::smoothTotal
+// updates the smoother, so it takes the lock too).
+func (d *queueData) smoothTotal(now float64) float64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.smoothOutstanding.smoothTotal(now)
+}
+
+// eligibleTotal is eligible and, if so, smoothTotal, under one lock.
+func (d *queueData) eligibleTotal(now float64) (bool, float64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if now <= d.failedUntil {
+		return false, 0
+	}
+	return true, d.smoothOutstanding.smoothTotal(now)
+}
+
+// failedUntilNow is d.failedUntil read under its lock.
+func (d *queueData) failedUntilNow() float64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.failedUntil
+}
+
+// latencyNow is d.latency read under its lock.
+func (d *queueData) latencyNow() float64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.latency
 }
 
 // chooseServer picks a server from the replica set using the "power of two
@@ -108,11 +156,9 @@ func (q *QueueModel) chooseServer(servers []ServerInfo) (ServerInfo, int) {
 
 	now := nowSeconds()
 
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
 	// Build list of available (non-failed) server indices.
-	available := make([]int, 0, len(servers))
+	var availableBuf [8]int
+	available := availableBuf[:0]
 	for i, s := range servers {
 		// RFC-115 §1: failure-monitor gate FIRST (C++ LoadBalance.actor.h:499), then
 		// the QueueModel backoff (:501). Skip a connection-dead server so a read
@@ -121,8 +167,7 @@ func (q *QueueModel) chooseServer(servers []ServerInfo) (ServerInfo, int) {
 		if q.failMon != nil && q.failMon.excluded(s.Address, now) {
 			continue
 		}
-		d := q.getOrCreate(s.Address)
-		if now > d.failedUntil {
+		if q.getOrCreate(s.Address).eligible(now) {
 			available = append(available, i)
 		}
 	}
@@ -148,8 +193,8 @@ func (q *QueueModel) chooseServer(servers []ServerInfo) (ServerInfo, int) {
 		b++ // ensure b != a
 	}
 	idxA, idxB := available[a], available[b]
-	metricA := q.getOrCreate(servers[idxA].Address).smoothOutstanding.smoothTotal(now)
-	metricB := q.getOrCreate(servers[idxB].Address).smoothOutstanding.smoothTotal(now)
+	metricA := q.getOrCreate(servers[idxA].Address).smoothTotal(now)
+	metricB := q.getOrCreate(servers[idxB].Address).smoothTotal(now)
 
 	if metricA <= metricB {
 		return servers[idxA], idxA
@@ -161,13 +206,13 @@ func (q *QueueModel) chooseServer(servers []ServerInfo) (ServerInfo, int) {
 // soonest — the least-bad pick when every replica is currently failed (the
 // "try anyway" probe). It folds both gates: the failure-monitor re-admission
 // deadline (excludedUntil) and the QueueModel future_version backoff (failedUntil),
-// taking the later of the two per server, then the earliest across servers. Caller
-// must hold q.mu. RFC-115 §1.
+// taking the later of the two per server, then the earliest across servers.
+// RFC-115 §1.
 func (q *QueueModel) soonestEligible(servers []ServerInfo) int {
 	bestIdx := 0
 	bestAt := math.MaxFloat64
 	for i, s := range servers {
-		at := q.getOrCreate(s.Address).failedUntil
+		at := q.getOrCreate(s.Address).failedUntilNow()
 		if q.failMon != nil {
 			if eu := q.failMon.excludedUntil(s.Address); eu > at {
 				at = eu
@@ -181,22 +226,57 @@ func (q *QueueModel) soonestEligible(servers []ServerInfo) int {
 	return bestIdx
 }
 
-// secondDelay returns the hedge delay for speculative second requests.
-// The delay is max(BACKUP_REQUEST_DELAY, secondMultiplier × latency) for the
-// best server. This balances between not sending too early (wasting work) and
-// not waiting too long (defeating the purpose of hedging).
-// Matches C++ LoadBalance.actor.h secondDelay computation.
-func (q *QueueModel) secondDelay(addr string) time.Duration {
-	q.mu.Lock()
-	d := q.getOrCreate(addr)
-	lat := d.latency
-	q.mu.Unlock()
-
-	delay := secondMultiplier * lat
-	if delay < backupRequestDelay {
-		delay = backupRequestDelay
+// secondDelay uses the second alternative's latency and adaptive multiplier,
+// or hedges immediately past C++'s primary-latency threshold (:554-561; RFC-281).
+func (q *QueueModel) secondDelay(bestAddr, nextAddr string) time.Duration {
+	bestTime := q.getOrCreate(bestAddr).latencyNow()
+	delay := q.multiplier()*q.getOrCreate(nextAddr).latencyNow() + baseSecondRequestTime
+	if bestTime > instantSecondRequestMultiplier*delay {
+		return 0
 	}
 	return time.Duration(delay * float64(time.Second))
+}
+
+// firstReplied earns budget and decays the multiplier on a lone reply
+// (LoadBalance.actor.h:694-701). A nil model is loadBalance without one.
+func (q *QueueModel) firstReplied() {
+	if q == nil || q.secondIdle.Load() {
+		return // at the fixed point the update below leaves both numbers as they are
+	}
+	q.secondMu.Lock()
+	q.secondMultiplier = math.Max(q.secondMultiplier-secondRequestMultiplierDecay, 1.0)
+	q.secondBudget = math.Min(q.secondBudget+secondRequestBudgetGrowth, secondRequestMaxBudget)
+	if q.secondMultiplier == 1.0 && q.secondBudget == secondRequestMaxBudget {
+		q.secondIdle.Store(true)
+	}
+	q.secondMu.Unlock()
+}
+
+// multiplier is secondMultiplier; at the idle fixed point it is 1.
+func (q *QueueModel) multiplier() float64 {
+	if q.secondIdle.Load() {
+		return 1.0
+	}
+	q.secondMu.Lock()
+	defer q.secondMu.Unlock()
+	return q.secondMultiplier
+}
+
+// spendSecond pays for a second request if the budget allows one (:710-716).
+// A nil model never sends one (LoadBalance.actor.h:563).
+func (q *QueueModel) spendSecond() bool {
+	if q == nil {
+		return false
+	}
+	q.secondMu.Lock()
+	defer q.secondMu.Unlock()
+	if q.secondBudget < 1.0 {
+		return false
+	}
+	q.secondIdle.Store(false) // a spend leaves the fixed point
+	q.secondMultiplier += secondRequestMultiplierGrowth
+	q.secondBudget -= 1.0
+	return true
 }
 
 // chooseTopTwo picks a primary and backup server for hedged reads.
@@ -209,14 +289,13 @@ func (q *QueueModel) chooseTopTwo(servers []ServerInfo) (bestIdx, secondIdx int)
 	}
 
 	now := nowSeconds()
-	q.mu.Lock()
-	defer q.mu.Unlock()
 
 	type ranked struct {
 		idx    int
 		metric float64
 	}
-	var candidates []ranked
+	var candidatesBuf [8]ranked
+	candidates := candidatesBuf[:0]
 
 	for i, s := range servers {
 		// RFC-115 §1: failure-monitor gate first (C++ LoadBalance.actor.h:499), so a
@@ -224,11 +303,11 @@ func (q *QueueModel) chooseTopTwo(servers []ServerInfo) (bestIdx, secondIdx int)
 		if q.failMon != nil && q.failMon.excluded(s.Address, now) {
 			continue
 		}
-		d := q.getOrCreate(s.Address)
-		if now <= d.failedUntil {
+		ok, metric := q.getOrCreate(s.Address).eligibleTotal(now)
+		if !ok {
 			continue
 		}
-		candidates = append(candidates, ranked{idx: i, metric: d.smoothOutstanding.smoothTotal(now)})
+		candidates = append(candidates, ranked{idx: i, metric: metric})
 	}
 
 	if len(candidates) == 0 {
@@ -273,11 +352,11 @@ func (q *QueueModel) chooseTopTwo(servers []ServerInfo) (bestIdx, secondIdx int)
 // Matches C++ QueueModel::addRequest().
 func (q *QueueModel) startRequest(addr string) float64 {
 	now := nowSeconds()
-	q.mu.Lock()
 	d := q.getOrCreate(addr)
+	d.mu.Lock()
 	delta := d.penalty
 	d.smoothOutstanding.addDelta(delta, now)
-	q.mu.Unlock()
+	d.mu.Unlock()
 	return delta
 }
 
@@ -296,8 +375,8 @@ func (q *QueueModel) endRequestFull(addr string, delta float64, latency time.Dur
 	now := nowSeconds()
 	lat := latency.Seconds()
 
-	q.mu.Lock()
 	d := q.getOrCreate(addr)
+	d.mu.Lock()
 
 	// Remove exactly the delta added at startRequest time. C++ passes the
 	// delta through the ModelHolder; we pass it explicitly.
@@ -327,7 +406,7 @@ func (q *QueueModel) endRequestFull(addr string, delta float64, latency time.Dur
 		d.penalty = penalty
 	}
 
-	q.mu.Unlock()
+	d.mu.Unlock()
 }
 
 // nowSeconds returns the current time as Unix seconds (float64).

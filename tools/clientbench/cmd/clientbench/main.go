@@ -27,7 +27,7 @@ func main() {
 func run() error {
 	var cfg bench.Config
 	flag.StringVar(&cfg.ClusterFile, "cluster-file", "", "existing FDB cluster file")
-	flag.StringVar(&cfg.Workload, "workload", "get100", "get100|get1000|get10000|read1000|grv|set100|range10|range100|ryw|batchset50|batchset50x1000")
+	flag.StringVar(&cfg.Workload, "workload", "get100", "get100|get1000|get10000|read1000|grv|set100|range10|range100|ryw|batchset50|batchset50x1000|getset100")
 	flag.IntVar(&cfg.Iterations, "iterations", 2000, "total measured operations across all workers")
 	flag.IntVar(&cfg.Warmup, "warmup", 500, "total warmup operations across all workers")
 	flag.DurationVar(&cfg.Duration, "duration", 0, "fixed-time measured window, e.g. 30s; 0 preserves count mode; requires rate 0")
@@ -46,6 +46,7 @@ func run() error {
 	flag.Int64Var(&cfg.RetryLimit, "retry-limit", 10, "database transaction retry limit")
 	flag.StringVar(&cfg.Profile, "profile", "none", "none|cpu|heap|mutex|block|trace; profiling runs are separate")
 	flag.StringVar(&cfg.CoalesceDelay, "coalesce-delay", "", "Go client connection write delay \"min,max\" (e.g. 0,0 or 10us,20us); empty keeps the default")
+	flag.DurationVar(&cfg.AdaptiveLinger, "adaptive-linger", 0, "Go client Nagle-style adaptive linger window (e.g. 20us); 0 keeps the default")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		return fmt.Errorf("unexpected positional arguments: %v", flag.Args())

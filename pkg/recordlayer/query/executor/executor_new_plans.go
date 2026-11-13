@@ -15,13 +15,11 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	"fdb.dev/pkg/relational/api"
 )
 
 // executeAggregateIndexScan scans an aggregate index (SUM, COUNT, etc.)
@@ -1367,8 +1365,10 @@ func executeFirstOrDefault(
 			}
 			if second.HasNext() {
 				_ = inner.Close()
-				return nil, api.NewErrorf(api.ErrCodeCardinalityViolation,
-					"scalar subquery returned more than one row")
+				return nil, &ExecutionError{
+					Kind:    ExecCardinalityViolation,
+					Message: "scalar subquery returned more than one row",
+				}
 			}
 			// An out-of-band (resource-limit) stop after the first row means the
 			// input was TRUNCATED — a second matching row may exist beyond the
@@ -2204,52 +2204,38 @@ func (m *mergeSortCursor) takeHeapErr() error {
 	return err
 }
 
-// unionChildResume is one child's decoded start state from a
-// RecordCursorProto.UnionContinuation — START (zero value), MID (continuation
-// bytes), or END (exhausted).
+// unionChildResume adapts shared union framing to executor START, MID and END states.
 type unionChildResume struct {
 	continuation []byte
 	exhausted    bool
 }
 
-// decodeUnionContinuation splits a UnionContinuation into n per-child resume
-// states — the exact inverse of mergeSortContinuation.ToBytes and a faithful
-// port of Java UnionCursorContinuation.from(bytes, n): absent fields mean
-// START, first_exhausted/second_exhausted (and other_child_state.exhausted)
-// mean END, continuation bytes mean MID. A corrupt token or a child-count
-// mismatch fails loudly (Java's RecordCoreException / the
-// "expected continuation count does not match read" RecordCoreArgumentException)
-// — never a silent fresh restart, which would re-emit rows the caller already
-// consumed.
+// decodeUnionContinuation adapts recordlayer.DecodeUnionContinuation and preserves executor error types.
+// Unlike the shared decoder, nil or empty input starts every child fresh.
 func decodeUnionContinuation(data []byte, n int) ([]unionChildResume, error) {
 	out := make([]unionChildResume, n)
 	if len(data) == 0 {
 		return out, nil // all children fresh (START)
 	}
-	msg := &gen.UnionContinuation{}
-	if err := recordlayer.UnmarshalVTAsJava(msg, data); err != nil {
-		return nil, &recordlayer.ContinuationParseError{Message: "invalid continuation", RawBytes: data, Cause: err}
+	states, err := recordlayer.DecodeUnionContinuation(data, n)
+	if err != nil {
+		switch e := err.(type) {
+		case *recordlayer.RecordCoreArgumentError:
+			return nil, fmt.Errorf("%s", e.Message)
+		case *recordlayer.RecordCoreError:
+			return nil, &recordlayer.ContinuationParseError{Message: "invalid continuation", RawBytes: data, Cause: e.Cause}
+		default:
+			return nil, err
+		}
 	}
-	// Java UnionCursorContinuation.from(parsed, n) always reads first + second
-	// + every other_child_state entry and requires the total to equal n.
-	if read := 2 + len(msg.OtherChildState); read != n {
-		return nil, fmt.Errorf("invalid continuation (expected continuation count does not match read): expected %d, read %d", n, read)
-	}
-	if msg.FirstContinuation != nil {
-		out[0] = unionChildResume{continuation: msg.FirstContinuation}
-	} else if msg.GetFirstExhausted() {
-		out[0] = unionChildResume{exhausted: true}
-	}
-	if msg.SecondContinuation != nil {
-		out[1] = unionChildResume{continuation: msg.SecondContinuation}
-	} else if msg.GetSecondExhausted() {
-		out[1] = unionChildResume{exhausted: true}
-	}
-	for i, cs := range msg.OtherChildState {
-		if cs.Continuation != nil {
-			out[i+2] = unionChildResume{continuation: cs.Continuation}
-		} else if cs.GetExhausted() {
-			out[i+2] = unionChildResume{exhausted: true}
+	for i, state := range states {
+		if state.IsEnd() {
+			out[i].exhausted = true
+			continue
+		}
+		out[i].continuation, err = state.ToBytes()
+		if err != nil {
+			return nil, err
 		}
 	}
 	return out, nil
@@ -2646,16 +2632,8 @@ func (m *mergeSortCursor) snapshotContinuation() *mergeSortContinuation {
 	return &mergeSortContinuation{children: children}
 }
 
-// mergeSortContinuation lazily encodes the merge's per-child state snapshot as
-// Java's RecordCursorProto.UnionContinuation (UnionCursorContinuation +
-// MergeCursorContinuation): child 0 → first_continuation/first_exhausted,
-// child 1 → second_continuation/second_exhausted, children 2+ →
-// other_child_state (exhausted=true for END, exhausted=false for START, bytes
-// for MID; for the first two children START is simply the absent field). A
-// child encode failure propagates through the RecordCursorContinuation
-// contract (the flatMapCursorContinuation lazy-encode pattern). IsEnd mirrors
-// UnionCursorContinuation.isEnd: end only when EVERY child is at end, and
-// MergeCursorContinuation.toBytes returns nil at end.
+// mergeSortContinuation snapshots child positions for recordlayer.EncodeUnionContinuation.
+// Encoding errors propagate lazily; all-END children yield END and nil bytes.
 type mergeSortContinuation struct {
 	children []recordlayer.RecordCursorContinuation
 }
@@ -2670,48 +2648,7 @@ func (u *mergeSortContinuation) IsEnd() bool {
 }
 
 func (u *mergeSortContinuation) ToBytes() ([]byte, error) {
-	if u.IsEnd() {
-		return nil, nil
-	}
-	msg := &gen.UnionContinuation{}
-	for i, c := range u.children {
-		end := c.IsEnd()
-		var b []byte
-		if !end {
-			var err error
-			b, err = c.ToBytes()
-			if err != nil {
-				return nil, fmt.Errorf("union continuation child %d: %w", i, err)
-			}
-		}
-		switch i {
-		case 0:
-			if end {
-				msg.FirstExhausted = proto.Bool(true)
-			} else if len(b) > 0 {
-				msg.FirstContinuation = b
-			}
-		case 1:
-			if end {
-				msg.SecondExhausted = proto.Bool(true)
-			} else if len(b) > 0 {
-				msg.SecondContinuation = b
-			}
-		default:
-			cs := &gen.UnionContinuation_CursorState{}
-			switch {
-			case end:
-				cs.Exhausted = proto.Bool(true)
-			case len(b) == 0:
-				// Java's START_PROTO writes exhausted=false explicitly.
-				cs.Exhausted = proto.Bool(false)
-			default:
-				cs.Continuation = b
-			}
-			msg.OtherChildState = append(msg.OtherChildState, cs)
-		}
-	}
-	return msg.MarshalVT()
+	return recordlayer.EncodeUnionContinuation(u.children)
 }
 
 func (m *mergeSortCursor) Close() error {

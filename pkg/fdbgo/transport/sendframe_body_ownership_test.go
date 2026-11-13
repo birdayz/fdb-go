@@ -27,7 +27,6 @@ func TestSendFrame_PostEnqueueCtxDone_TransportStillOwnsBody(t *testing.T) {
 		ctx:     ctx,
 		cancel:  cancel,
 		writeCh: make(chan writeReq, 1), // buffered; nothing drains it, so errCh never fires
-		pending: make(map[UID]pendingEntry),
 	}
 	body := []byte("frame-body-sentinel-owned-by-transport")
 

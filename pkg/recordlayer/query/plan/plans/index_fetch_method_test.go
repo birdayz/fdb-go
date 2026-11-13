@@ -45,6 +45,7 @@ func TestIndexPlan_FetchMethodSurvivesEveryCopy(t *testing.T) {
 			"WithValueColumnNames":            base.WithValueColumnNames([]string{"B"}),
 			"WithColumnPaths":                 base.WithColumnPaths(nil, nil),
 			"WithDistinctRecordsSignal":       base.WithDistinctRecordsSignal(false),
+			"WithKeyColumnDuplicates":         base.WithKeyColumnDuplicates([]bool{true}),
 			"WithIndexMetadata":               base.WithIndexMetadata([]string{"A"}, []string{"ID"}, true),
 			"WithOrderingColumns":             base.WithOrderingColumns(nil),
 			"WithOrderingKeyNamesUnavailable": base.WithOrderingKeyNamesUnavailable(),

@@ -24,8 +24,7 @@ Document compatibility boundaries in `docs/compatibility.md` and `DIVERGENCES.md
   check (`FDB not available (no Docker)`) is the allowed skip.
 - Finish a coherent change before moving to another. Surface genuine external
   blockers directly, with evidence and the decision or capability needed.
-- Implement before final review; do not write an RFC or design document unless
-  the owner requests one. Keep commit messages to ten lines or fewer.
+- Keep commit messages to ten lines or fewer.
 - Stage explicit paths. Do not use `--no-verify` or `git stash` (stash state is
   shared across worktrees). Preserve other agents' work.
 - Read both sides of every merge conflict. One side may correct the other;
@@ -42,7 +41,8 @@ end to end, not merely a type, rule or plan that exists.
 ## Validation
 
 Read `AGENTS.md` for the validation lanes and PR rules. Use **`just test`**, not
-`go test`, `go vet`, a hand-picked Bazel test list or a test filter. Bazel's cache
+`go test`, `go vet`, a hand-picked Bazel test list or a test filter; a single-target race
+or repeat run to prove one test is allowed (`AGENTS.md`). Bazel's cache
 is enabled: report executed and cached results separately. `just test` is the
 fast lane, not full-suite verification. Heavyweight, Java conformance, stress and
 manual targets belong to `just test-full`; run that lane in CI when local full
@@ -126,6 +126,8 @@ need scan/time limiters and continuations; large values need split records.
 - `conformance/`: Java record-layer harness.
 - `gen/`, `proto/apple/`: generated Go and upstream protobuf definitions.
 - `.claude/`: retained agent skills; `AGENTS.md`: repository workflow rules.
+- `.bruh/review/`: lenses and config for the `bruh-code-review` skill, installed with bruh
+  (`just install` or `just install-skills` in the bruh repository puts it in `~/.bruh/skills`).
 - `STATUS.md`: current readiness; `RELEASE.md`: release gates.
 
 Development uses Go, Bazel via bazelisk, gazelle, nogo, buf, just and Docker.

@@ -278,8 +278,8 @@ func TestFDB_RecursiveDFS_BelowFloorBudgetIsLoud(t *testing.T) {
 }
 
 // TestFDB_RecursiveDistinct_CycleTerminates pins the DISTINCT recursion
-// extension end-to-end (Java rejects recursive UNION distinct — "only
-// UNION ALL is supported"): a CYCLIC graph terminates only through the
+// end-to-end (Java runs recursive UNION DISTINCT as UNION ALL, a Java
+// upstream bug in DIVERGENCES.md): a CYCLIC graph terminates only through the
 // cross-level seen-set, on the level union and the DFS join alike. The
 // replay RESUME's deterministic proof is executor-level
 // (TestRecursiveDistinctReplay_ResumesMidStream) — an eager cursor only

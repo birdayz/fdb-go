@@ -64,7 +64,8 @@ func checkFallbackContinuationHandoff(t *testing.T, mode string, forced bool) []
 	if ready {
 		dial = handoffTCPDialer(t, dial, &frontends, control)
 	}
-	db, err := OpenDatabaseFromConfig(ctx, sharedClusterFile, WithDialFunc(dial), WithAPIVersion(730), WithCoalesceDelay(0, 0), withReadTagSampling(0.5, draws.draw))
+	// The forced control-write confound needs the legacy flush acknowledgment.
+	db, err := OpenDatabaseFromConfig(ctx, sharedClusterFile, WithDialFunc(dial), WithAPIVersion(730), WithCoalesceDelay(0, 0), withReadTagSampling(0.5, draws.draw), withLegacyWriter())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -505,7 +506,8 @@ func TestHandoffFlushWaitRejectsFIFO(t *testing.T) {
 		<-ctx.Done() // no socket reads: the real writer cannot drain its full queue
 	}()
 	defer func() { cancel(); client.Close(); peer.Close(); <-peerDone }()
-	conn, err := transport.Dial(ctx, "fifo-observer", nil, func(context.Context, string, string) (net.Conn, error) { return client, nil }, transport.WithCoalesceDelay(0, 0))
+	// The flush wait under test is the legacy writer acknowledgment.
+	conn, err := transport.Dial(ctx, "fifo-observer", nil, func(context.Context, string, string) (net.Conn, error) { return client, nil }, transport.WithCoalesceDelay(0, 0), transport.WithLegacyWriter())
 	if err != nil {
 		t.Fatal(err)
 	}

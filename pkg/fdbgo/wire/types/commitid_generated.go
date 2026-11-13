@@ -31,29 +31,18 @@ var CommitIDTemplate = wire.NewMessageTemplate(
 const CommitIDMaxAlign = 8
 
 type CommitID struct {
-	Version                 int64  // slot 0
-	TxnBatchId              uint16 // slot 1
-	HasMetadataVersion      bool   // slot 2, optional tag
-	MetadataVersion         []byte // slot 3, optional value
-	HasConflictingKRIndices bool   // slot 4, optional tag
-	ConflictingKRIndices    []byte // slot 5, optional value
+	Version                 int64   // slot 0
+	TxnBatchId              uint16  // slot 1
+	HasMetadataVersion      bool    // slot 2, optional tag
+	MetadataVersion         []byte  // slot 3, optional value
+	HasConflictingKRIndices bool    // slot 4, optional tag
+	ConflictingKRIndices    []int32 // slot 5, optional vector of int32
 }
 
-func (m *CommitID) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(CommitIDSlotVersion) {
-		m.Version = r.ReadInt64(CommitIDSlotVersion)
-	}
-	if r.FieldPresent(CommitIDSlotTxnBatchId) {
-		m.TxnBatchId = r.ReadUint16(CommitIDSlotTxnBatchId)
-	}
-	if r.FieldPresent(CommitIDSlotMetadataVersion) && r.ReadUint8(CommitIDSlotMetadataVersion) > 0 {
-		m.MetadataVersion = r.ReadBytes(CommitIDSlotMetadataVersion + 1)
-		m.HasMetadataVersion = true
-	}
-	if r.FieldPresent(CommitIDSlotConflictingKRIndices) && r.ReadUint8(CommitIDSlotConflictingKRIndices) > 0 {
-		m.ConflictingKRIndices = r.ReadBytes(CommitIDSlotConflictingKRIndices + 1)
-		m.HasConflictingKRIndices = true
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *CommitID) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *CommitID) UnmarshalFDB(data []byte) error {
@@ -61,19 +50,27 @@ func (m *CommitID) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *CommitID) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(CommitIDSlotVersion) {
 		m.Version = r.ReadInt64(CommitIDSlotVersion)
 	}
 	if r.FieldPresent(CommitIDSlotTxnBatchId) {
 		m.TxnBatchId = r.ReadUint16(CommitIDSlotTxnBatchId)
 	}
-	if r.FieldPresent(CommitIDSlotMetadataVersion) && r.ReadUint8(CommitIDSlotMetadataVersion) > 0 {
+	if r.FieldPresent(CommitIDSlotMetadataVersion) && r.ReadUint8(CommitIDSlotMetadataVersion) == 1 && r.FieldPresent(CommitIDSlotMetadataVersion+1) {
 		m.MetadataVersion = r.ReadBytes(CommitIDSlotMetadataVersion + 1)
 		m.HasMetadataVersion = true
 	}
-	if r.FieldPresent(CommitIDSlotConflictingKRIndices) && r.ReadUint8(CommitIDSlotConflictingKRIndices) > 0 {
-		m.ConflictingKRIndices = r.ReadBytes(CommitIDSlotConflictingKRIndices + 1)
+	if r.FieldPresent(CommitIDSlotConflictingKRIndices) && r.ReadUint8(CommitIDSlotConflictingKRIndices) == 1 && r.FieldPresent(CommitIDSlotConflictingKRIndices+1) {
+		m.ConflictingKRIndices = r.ReadVectorInt32(CommitIDSlotConflictingKRIndices + 1)
 		m.HasConflictingKRIndices = true
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "CommitID", Err: err}
 	}
 	return nil
 }
@@ -86,7 +83,14 @@ func (m *CommitID) precomputeSize(ps *wire.PrecomputeSize) int {
 		ps.VisitDynamicSize(len(m.MetadataVersion))
 	}
 	if m.HasConflictingKRIndices {
-		ps.VisitDynamicSize(len(m.ConflictingKRIndices))
+		if n := len(m.ConflictingKRIndices); n > 0 {
+			self := ps.GetMessageWriter(n * 4)
+			start := wire.RightAlign(ps.CurrentBufferSize+n*4, 4) + 4
+			ps.Write(start)
+			self.WriteToAt(ps, start-4)
+		} else {
+			ps.VisitDynamicSize(0)
+		}
 	}
 	{
 		n := ps.GetMessageWriter(int(CommitIDVTable[1]))
@@ -105,7 +109,19 @@ func (m *CommitID) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *
 		metadataVersionOff, _ = wb.VisitDynamicSize(m.MetadataVersion)
 	}
 	if m.HasConflictingKRIndices {
-		conflictingKRIndicesOff, _ = wb.VisitDynamicSize(m.ConflictingKRIndices)
+		if n := len(m.ConflictingKRIndices); n > 0 {
+			self := wb.GetMessageWriter(n*4, false)
+			for i, v := range m.ConflictingKRIndices {
+				var b [4]byte
+				binary.LittleEndian.PutUint32(b[:], uint32(v))
+				self.WriteScalar(b[:], i*4)
+			}
+			wb.WriteUint32(uint32(n), self.FinalLocation+4)
+			self.WriteToAt(self.FinalLocation)
+			conflictingKRIndicesOff = wb.CurrentBufferSize
+		} else {
+			conflictingKRIndicesOff, _ = wb.VisitDynamicSize(nil)
+		}
 	}
 	selfW := wb.GetMessageWriter(int(CommitIDVTable[1]), true)
 	selfStart := selfW.FinalLocation
@@ -251,21 +267,28 @@ func (m *CommitID) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseCommitIDVectorFromReader reads a FlatBuffers vector of CommitID.
-func ParseCommitIDVectorFromReader(r *wire.Reader, slot int) []CommitID {
+// ParseCommitIDVectorFromReader reads a FlatBuffers vector of CommitID under one decode budget.
+func ParseCommitIDVectorFromReader(r *wire.Reader, slot int) ([]CommitID, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]CommitID, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]CommitID", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]CommitID, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]CommitID", Err: err}
 		}
-		var elem CommitID
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

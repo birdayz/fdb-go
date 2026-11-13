@@ -8,8 +8,9 @@ the public `pkg/fdbgo/fdb` facade; CGo uses Apple's Go binding to `libfdb_c`.
 The workload/measurement implementation was imported from the frozen V6 VM
 harness (source archive SHA256
 `3d2504ae0db14fad14f0384287377998231cf049310c8289d6e7245d3428e0d0`).
-This lifecycle-accounting revision (V7) preserves the V6 workload and measured
-window, but adds post-window draining and terminal shutdown snapshots. It uses
+This lifecycle-accounting revision (V7) preserves the original V6 workloads and
+measured window (and adds the mixed `getset100` workload), plus post-window
+draining and terminal shutdown snapshots. It uses
 the main module and Bazel dependency graph, including its native-binding patch,
 instead of the historical standalone module. Historical frozen V6 archives are unchanged.
 It is **not a claim that newly built binaries reproduce historical results**.
@@ -40,7 +41,7 @@ bazelisk shutdown
 
 Follow the shared-machine locking/resource rules when developing in a shared
 checkout. Both executables are also built as inputs of the bounded real-FDB
-smoke test in `just test`: it exercises all eleven workloads, both backends,
+smoke test in `just test`: it exercises all twelve workloads, both backends,
 raw rows, window/drained/shutdown CPU, finalizer fixpoints, persisted validation, native linkage and overwrite
 refusal. The fast lane also runs the Go fixture/counter/scheduling tests and
 Python plan/analyzer/process-cleanup tests. These are harness checks, not a
@@ -189,9 +190,8 @@ native cleanup completed. Do not present window CPU as native full-cost evidence
 Three additional CPU scopes are reported per measured transaction:
 
 - **Drained CPU** subtracts the pre-window snapshot from a snapshot after a Go
-  finalizer and cleanup fixpoint (the pure-Go client stops an unreachable
-  transaction's timeout timer from a runtime cleanup) and a native non-I/O FIFO
-  barrier (`GetApproximateSize`).
+  finalizer and cleanup fixpoint (waiting for any outstanding Go finalizers and
+  runtime cleanups) and a native non-I/O FIFO barrier (`GetApproximateSize`).
   It includes forced GC and any pending setup/warmup cleanup, not just measured
   transaction work. It excludes persisted validation and terminal shutdown.
 - **Shutdown process CPU** is `(E-A)/N`: `RUSAGE_SELF` user + system after another
@@ -269,6 +269,7 @@ unique prefix, one benchmark process at a time. There are no database-wide clear
 | `read1000` | Fresh `ReadTransact`, exact Get, no commit |
 | `grv` | Fresh `ReadTransact`, positive read version, no data read |
 | `set100` | Changing 100-byte overwrite and commit |
+| `getset100` | Fresh `Transact`, exact 100-byte point Get and verified check, then changing 100-byte worker-key Set and commit |
 | `batchset50` | 50 distinct changing 100-byte Sets and commit |
 | `batchset50x1000` | Same 50 keys/transaction, 1,000-byte values |
 | `range10`, `range100` | Fresh `Transact`, WantAll, exact ordered keys and 8-byte little-endian row-index values |

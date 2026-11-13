@@ -38,6 +38,8 @@ type Config struct {
 	// CoalesceDelay is the Go client's connection write delay, "min,max" as Go
 	// durations; empty keeps the client default.
 	CoalesceDelay string `json:"coalesce_delay,omitempty"`
+	// AdaptiveLinger is the Go client's Nagle-style adaptive linger window; 0 keeps the default.
+	AdaptiveLinger time.Duration `json:"adaptive_linger_ns,omitempty"`
 	// Rate > 0 paces the run: operations start at Poisson arrival times averaging
 	// Rate per second, drawn from Seed, so every run with the same seed starts the
 	// same operations at the same offsets. Rate 0 is a closed loop.
@@ -76,8 +78,14 @@ func (c Config) Validate() error {
 	if c.TimeoutMS <= 0 || c.RetryLimit < 0 {
 		return errors.New("positive transaction timeout and nonnegative retry limit required")
 	}
+	if c.AdaptiveLinger < 0 {
+		return errors.New("adaptive-linger must be nonnegative")
+	}
+	if c.CoalesceDelay != "" && c.AdaptiveLinger > 0 {
+		return errors.New("coalesce-delay and adaptive-linger are mutually exclusive")
+	}
 	switch c.Workload {
-	case "get100", "get1000", "get10000", "read1000", "grv", "set100", "range10", "range100", "ryw", "batchset50", "batchset50x1000":
+	case "get100", "get1000", "get10000", "read1000", "grv", "set100", "range10", "range100", "ryw", "batchset50", "batchset50x1000", "getset100":
 	default:
 		return fmt.Errorf("unknown workload %q", c.Workload)
 	}

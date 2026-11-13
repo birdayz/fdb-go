@@ -18,7 +18,8 @@ type simRangeResult struct {
 
 // simFirstBatch is batch 1, fetched by GetRange.
 type simFirstBatch struct {
-	begin, end []byte // the resolved range
+	begin, end []byte       // the resolved range of an exact read
+	sel        simSelectors // the selectors of a selector read (sel.on)
 	limit      int
 	batch      []fdb.KeyValue
 	more       bool
@@ -39,7 +40,13 @@ func (r *simRangeResult) issueFirst() {
 		f.err = err
 		return
 	}
-	begin, end, err := r.tx.resolveRangeForRead(r.r, r.snapshot)
+	beginSel, endSel := r.r.FDBRangeKeySelectors()
+	bks, eks := beginSel.FDBKeySelector(), endSel.FDBKeySelector()
+	if !isTrivialSelector(bks) || !isTrivialSelector(eks) {
+		r.issueFirstSelectors(f, bks, eks, byteTarget)
+		return
+	}
+	begin, end, err := r.tx.resolveRangeForRead(fdb.SelectorRange{Begin: bks, End: eks})
 	if err != nil {
 		f.err = err
 		return
@@ -61,6 +68,26 @@ func (r *simRangeResult) issueFirst() {
 	if !r.snapshot {
 		r.addConflict(capBegin, capEnd, batch, more)
 	}
+}
+
+// issueFirstSelectors is batch 1 of a selector read: one getRange that resolves the selectors
+// within the read (selectorFetch). The checks run in RYW getRange's order: cancelled, then 2012
+// (ReadYourWrites.actor.cpp:1736-1750).
+func (r *simRangeResult) issueFirstSelectors(f *simFirstBatch, begin, end fdb.KeySelector, byteTarget int) {
+	if r.tx.cancelled.Load() {
+		f.err = fdb.Error{Code: 1025}
+		return
+	}
+	if r.options.Limit < -1 {
+		f.err = fdb.Error{Code: 2012}
+		return
+	}
+	f.limit = fdb.EffectiveRowLimit(r.options.Limit)
+	// The read owns its selectors' keys, as the client copies them at issue.
+	begin.Key, end.Key = fdb.Key(bytes.Clone(begin.Key.FDBKey())), fdb.Key(bytes.Clone(end.Key.FDBKey()))
+	f.sel = simSelectors{on: true, begin: begin, end: end}
+	want := min(f.limit, replyByteLimit)
+	f.batch, f.more, f.err = r.tx.selectorFetch(begin, end, want, byteTarget, r.options.Reverse, r.snapshot)
 }
 
 // take returns a consumer's own copy of batch 1. The client runs batch 1 in the background, so a
@@ -90,6 +117,23 @@ func (r *simRangeResult) GetSliceWithError() ([]fdb.KeyValue, error) {
 		return nil, err
 	}
 	more := f.more
+	if f.sel.on {
+		sel, remaining := f.sel, f.limit-len(kvs)
+		for more && remaining > 0 && len(kvs) > 0 {
+			sel.advance([]byte(kvs[len(kvs)-1].Key), r.options.Reverse)
+			rest, restMore, err := r.tx.selectorFetch(sel.begin, sel.end, remaining, fdb.ByteLimitUnlimited, r.options.Reverse, r.snapshot)
+			if err != nil {
+				return nil, err
+			}
+			if len(rest) == 0 {
+				break
+			}
+			kvs = append(kvs, rest...)
+			remaining -= len(rest)
+			more = restMore
+		}
+		return kvs, nil
+	}
 	begin, end, remaining := f.begin, f.end, f.limit-len(kvs)
 	for more && remaining > 0 && len(kvs) > 0 {
 		last := []byte(kvs[len(kvs)-1].Key)
@@ -137,6 +181,7 @@ func (r *simRangeResult) Iterator() fdb.RangeIterator {
 		iteration: 1,
 		scanBegin: f.begin,
 		scanEnd:   f.end,
+		sel:       f.sel,
 		first:     f,
 	}
 }
@@ -166,6 +211,9 @@ type rangeIter struct {
 	// scanBegin/scanEnd are the bounds the NEXT batch is fetched over — the client's
 	// ri.begin/ri.end, which advance (forward) or retreat (reverse) past each returned batch.
 	scanBegin, scanEnd []byte
+	// sel replaces scanBegin/scanEnd for a selector read (sel.on): the selectors still to read,
+	// re-resolved by each batch, as the client's rangeBounds.
+	sel simSelectors
 	// first is batch 1, fetched by GetRange; nil once this iterator has taken it.
 	first *simFirstBatch
 
@@ -232,6 +280,19 @@ func (it *rangeIter) fetchBatch() bool {
 		it.exhausted = true
 		return false
 	}
+	if it.sel.on {
+		// selectorFetch records this batch's conflict, the final empty one included.
+		batch, more, err := it.rr.tx.selectorFetch(it.sel.begin, it.sel.end, want, byteTarget, it.rr.options.Reverse, it.rr.snapshot)
+		if it.traceLog != nil {
+			it.traceLog(it.iteration-1, want, len(batch), more, err)
+		}
+		if err != nil {
+			it.err = err
+			it.exhausted = true
+			return false
+		}
+		return it.takeBatch(batch, more)
+	}
 	// The cap is recomputed per batch, as in the client, whose rywCache.issueRange caps each
 	// batch's window: a versionstamped write between two batches truncates only the second.
 	batch, more, capBegin, capEnd, err := it.rr.tx.fetchRange(
@@ -282,9 +343,12 @@ func (it *rangeIter) takeBatch(batch []fdb.KeyValue, more bool) bool {
 	// Advance the scan bounds past this batch, as the client's iterator does: forward reads
 	// resume after the last key returned, reverse reads resume before the lowest.
 	last := []byte(batch[len(batch)-1].Key)
-	if it.rr.options.Reverse {
+	switch {
+	case it.sel.on:
+		it.sel.advance(last, it.rr.options.Reverse)
+	case it.rr.options.Reverse:
 		it.scanEnd = append([]byte(nil), last...)
-	} else {
+	default:
 		it.scanBegin = keyAfter(last)
 	}
 	if !more || it.remaining <= 0 {

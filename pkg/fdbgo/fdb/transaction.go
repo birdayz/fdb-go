@@ -10,11 +10,12 @@ import (
 	"fdb.dev/pkg/fdbgo/wire"
 )
 
-// transaction wraps client.Transaction with the Apple-compatible API.
+// transaction wraps client.Transaction with the API modeled on Apple's binding.
 type transaction struct {
-	inner *client.Transaction
-	db    Database
-	ctx   context.Context
+	inner    *client.Transaction
+	db       Database
+	ctx      context.Context
+	defaults *retryTxDefaults
 
 	// ReadTransact has no commit producer. Other wrappers bind versionstamp
 	// futures directly to their client incarnation, including managed retries.
@@ -33,8 +34,8 @@ type transaction struct {
 // Option setters (the Set* configuration methods, e.g. SetPriority,
 // SetWriteConflictsDisabled, SetTag, SetReadVersion) and Reset() are NOT
 // concurrent-safe with operations or each other — configure the transaction
-// BEFORE issuing concurrent operations, and drain all pending futures before
-// calling Reset (in-flight goroutines hold references to the internal handle).
+// BEFORE issuing concurrent operations, and drain transaction-owned futures before
+// Reset. Committed watches are independent: only their future or parent cancels them.
 // This mirrors the FDB C API, where fdb_transaction_set_option is not meant to
 // race the transaction's data calls.
 //
@@ -59,22 +60,16 @@ func (tr Transaction) Get(key KeyConvertible) FutureByteSlice {
 		// ErrNeedFullRYW (the key has pending atomics needing a server read +
 		// merge) or a layer-2 locate/send failure (e.g. every located connection
 		// dropped between getOrDial and SendFrameDeferred, surfaced as
-		// all_alternatives_failed / 1006). Re-drive through the full
-		// ryw.get()/getValue path, which does the RYW merge AND the local
-		// wrong-shard/all-alternatives retry loop.
+		// all_alternatives_failed / 1006). Re-drive through StartGet, whose
+		// server read does the RYW merge AND the local wrong-shard/all-alternatives retry loop.
 		//
 		// This MUST fall back for all of them, not just ErrNeedFullRYW: 1006 is
 		// retried locally by getValue, but Transact.OnError does NOT retry 1006
 		// (the read path is expected to absorb it), so surfacing it here would
 		// turn a transient send failure into a failed transaction (RFC-010 #3).
-		// A genuinely terminal error (e.g.
-		// key_outside_legal_range) re-fails identically in inner.Get — nothing is
-		// masked, and the illegal frame was already rejected before send.
-		k = bytes.Clone(k)
-		return newFutureByteSlice(func() ([]byte, error) {
-			v, gerr := inner.Get(ctx, k)
-			return v, convertError(gerr)
-		})
+		// A genuinely terminal error (e.g. key_outside_legal_range) re-fails identically in
+		// StartGet, issued in the call as fdb_transaction_get is (ThreadSafeTransaction.cpp:426-434).
+		return startedFutureByteSlice(inner.StartGet(ctx, k))
 	}
 	if pending != nil {
 		// Server request in flight — future resolves when response arrives.
@@ -196,7 +191,7 @@ func (tr Transaction) GetRangeSplitPoints(r ExactRange, chunkSize int64) FutureK
 
 // Snapshot returns a Snapshot view of this transaction.
 func (tr Transaction) Snapshot() ReadTransaction {
-	return Snapshot{s: &snapshot{tx: tr.t}}
+	return Snapshot{tx: tr.t}
 }
 
 // Set sets a key-value pair in the database.
@@ -220,13 +215,9 @@ func (tr Transaction) ClearBytes(key []byte) {
 	tr.t.inner.Clear(key)
 }
 
-// ClearRange removes all keys k such that begin <= k < end.
-// The Apple binding's ClearRange is void because mutations are buffered
-// locally with no I/O. Our pure Go client validates begin <= end and
-// returns inverted_range (2005) on violation. We suppress all errors to
-// match the Apple void API contract. Today the only possible error is
-// inverted_range; if the client adds new error paths, this should be
-// revisited (see client.Transaction.ClearRange).
+// ClearRange removes all keys k such that begin <= k < end. The call's error is
+// dropped, as the Apple API is void; inverted_range and key_outside_legal_range
+// become the deferred error for later reads and Commit, as in libfdb_c.
 func (tr Transaction) ClearRange(er ExactRange) {
 	begin, end := er.FDBRangeKeys()
 	_ = tr.t.inner.ClearRange(begin.FDBKey(), end.FDBKey())
@@ -308,6 +299,10 @@ func (tr Transaction) AppendIfFits(key KeyConvertible, param []byte) {
 	tr.t.inner.Atomic(client.MutAppendIfFits, key.FDBKey(), param)
 }
 
+func (tr Transaction) AppendIfFitsBytes(key, param []byte) {
+	tr.t.inner.Atomic(client.MutAppendIfFits, key, param)
+}
+
 func (tr Transaction) CompareAndClear(key KeyConvertible, param []byte) {
 	tr.t.inner.Atomic(client.MutCompareAndClear, key.FDBKey(), param)
 }
@@ -353,39 +348,62 @@ func (tr Transaction) SetReadVersion(version int64) {
 
 // Reset resets the transaction to its initial state.
 // NOT safe to call concurrently with other Transaction methods.
-// Callers must drain all pending futures before calling Reset —
-// in-flight goroutines from Get/GetRange/Commit access tr.t.inner
-// and will race with Reset. This matches Apple binding semantics
-// where Reset must not be called while the transaction is in use.
+// Drain transaction-owned futures (Get/GetRange/Commit) first; their work uses the handle.
+// Committed watch futures need not drain: they survive Reset and retain future/parent cancellation.
 func (tr Transaction) Reset() {
 	// Reset in place: NativeAPI cloneAndReset preserves committedVersion and
 	// tenant identity while clearing user options and restoring DB defaults.
 	tr.t.inner.Reset()
 	tr.t.versionstamps = true
-	tr.t.db.applyTxDefaults(tr.t)
+	err, pending := tr.t.db.applyTxDefaults(tr.t, true)
+	if tr.t.defaults != nil {
+		tr.t.defaults.err, tr.t.defaults.pendingTimeout = err, pending
+	}
 }
 
-// AddReadConflictRange adds a read conflict range.
+// AddReadConflictRange adds a read conflict range. As in libfdb_c it returns only inverted_range;
+// key_outside_legal_range is deferred to the next operation and the commit (RFC-268).
 func (tr Transaction) AddReadConflictRange(er ExactRange) error {
 	begin, end := er.FDBRangeKeys()
 	return convertError(tr.t.inner.AddReadConflictRange(begin.FDBKey(), end.FDBKey()))
 }
 
-// AddReadConflictKey adds a read conflict on a single key.
+func (tr Transaction) AddReadConflictRangeBytes(begin, end []byte) error {
+	return convertError(tr.t.inner.AddReadConflictRange(begin, end))
+}
+
+// AddReadConflictKey adds a read conflict on a single key. It returns nil; an illegal key
+// defers key_outside_legal_range as AddReadConflictRange does.
 func (tr Transaction) AddReadConflictKey(key KeyConvertible) error {
 	tr.t.inner.AddReadConflictKey(key.FDBKey())
 	return nil
 }
 
-// AddWriteConflictRange adds a write conflict range.
+func (tr Transaction) AddReadConflictKeyBytes(key []byte) error {
+	tr.t.inner.AddReadConflictKey(key)
+	return nil
+}
+
+// AddWriteConflictRange adds a write conflict range. It returns only inverted_range;
+// as with libfdb_c, a range past the maximum write key fails the next operation and
+// the commit with key_outside_legal_range instead.
 func (tr Transaction) AddWriteConflictRange(er ExactRange) error {
 	begin, end := er.FDBRangeKeys()
 	return convertError(tr.t.inner.AddWriteConflictRange(begin.FDBKey(), end.FDBKey()))
 }
 
+func (tr Transaction) AddWriteConflictRangeBytes(begin, end []byte) error {
+	return convertError(tr.t.inner.AddWriteConflictRange(begin, end))
+}
+
 // AddWriteConflictKey adds a write conflict on a single key.
 func (tr Transaction) AddWriteConflictKey(key KeyConvertible) error {
 	tr.t.inner.AddWriteConflictKey(key.FDBKey())
+	return nil
+}
+
+func (tr Transaction) AddWriteConflictKeyBytes(key []byte) error {
+	tr.t.inner.AddWriteConflictKey(key)
 	return nil
 }
 

@@ -91,10 +91,8 @@ func TestSendRecorderLockOrder(t *testing.T) {
 	}
 }
 
-// TestSendRecorderRejectsMalformedField: a GetKeyValuesRequest with an
-// out-of-bounds field offset passes wire.NewReader and the generated decoder,
-// which reads the field as absent. The recorder must still reject it, while
-// the same request well formed is recorded.
+// TestSendRecorderRejectsMalformedField: a request with a field past the buffer fails to
+// decode and one with a trailing byte fails to re-encode; the well-formed one records.
 func TestSendRecorderRejectsMalformedField(t *testing.T) {
 	t.Parallel()
 	good := (&types.GetKeyValuesRequest{
@@ -108,11 +106,13 @@ func TestSendRecorderRejectsMalformedField(t *testing.T) {
 	defer remove()
 	parser.observe(recorderFrame(transport.UID{First: 7}, good))
 	parser.observe(recorderFrame(transport.UID{First: 7}, malformedGetKeyValues()))
+	parser.observe(recorderFrame(transport.UID{First: 7}, nonCanonicalGetKeyValues()))
 	got := rec.stop()
 	if len(got.requests) != 1 || !strings.HasPrefix(got.requests[0], "GetKeyValuesRequest") {
 		t.Fatalf("requests %q, want the well-formed GetKeyValuesRequest", got.requests)
 	}
-	if len(got.problems) != 1 || !strings.Contains(got.problems[0], "does not re-encode") {
-		t.Fatalf("problems %q, want one re-encoding failure", got.problems)
+	if len(got.problems) != 2 || !strings.Contains(got.problems[0], "decode GetKeyValuesRequest.Begin") ||
+		!strings.Contains(got.problems[1], "does not re-encode") {
+		t.Fatalf("problems %q, want a decode failure and a re-encoding failure", got.problems)
 	}
 }

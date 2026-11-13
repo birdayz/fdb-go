@@ -6,33 +6,33 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
-func benchKeySpace() *KeySpace {
+func benchKeySpace(b *testing.B) *KeySpace {
 	root := NewDirectory("root", KeyTypeNull)
 	app := NewDirectory("app", KeyTypeString)
 	tenant := NewDirectory("tenant", KeyTypeLong)
 	recordType := NewDirectory("type", KeyTypeString)
-	root.AddSubdirectory(app)
-	app.AddSubdirectory(tenant)
-	tenant.AddSubdirectory(recordType)
+	mustAdd(b, root, app)
+	mustAdd(b, app, tenant)
+	mustAdd(b, tenant, recordType)
 	return NewKeySpace(root)
 }
 
 func BenchmarkPath_Construction(b *testing.B) {
-	ks := benchKeySpace()
+	ks := benchKeySpace(b)
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		p1, _ := ks.Path("app", "myapp")
-		p2, _ := p1.Add("tenant", int64(42))
-		_, _ = p2.Add("type", "Order")
+		p1, _ := ks.Path(ctx, "app", "myapp")
+		p2, _ := p1.Add(ctx, "tenant", int64(42))
+		_, _ = p2.Add(ctx, "type", "Order")
 	}
 }
 
 func BenchmarkPath_ToTuple(b *testing.B) {
-	ks := benchKeySpace()
-	p1, _ := ks.Path("app", "myapp")
-	p2, _ := p1.Add("tenant", int64(42))
-	p3, _ := p2.Add("type", "Order")
+	ks := benchKeySpace(b)
+	p1, _ := ks.Path(ctx, "app", "myapp")
+	p2, _ := p1.Add(ctx, "tenant", int64(42))
+	p3, _ := p2.Add(ctx, "type", "Order")
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
@@ -41,10 +41,10 @@ func BenchmarkPath_ToTuple(b *testing.B) {
 }
 
 func BenchmarkPath_ToSubspace(b *testing.B) {
-	ks := benchKeySpace()
-	p1, _ := ks.Path("app", "myapp")
-	p2, _ := p1.Add("tenant", int64(42))
-	p3, _ := p2.Add("type", "Order")
+	ks := benchKeySpace(b)
+	p1, _ := ks.Path(ctx, "app", "myapp")
+	p2, _ := p1.Add(ctx, "tenant", int64(42))
+	p3, _ := p2.Add(ctx, "type", "Order")
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
@@ -53,7 +53,7 @@ func BenchmarkPath_ToSubspace(b *testing.B) {
 }
 
 func BenchmarkPathFromTuple(b *testing.B) {
-	ks := benchKeySpace()
+	ks := benchKeySpace(b)
 	tup := tuple.Tuple{"myapp", int64(42), "Order"}
 	b.ResetTimer()
 	b.ReportAllocs()

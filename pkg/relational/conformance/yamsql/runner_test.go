@@ -3,7 +3,6 @@ package yamsql_test
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,21 +25,16 @@ func runTests(m *testing.M) (code int) {
 
 	container, err := foundationdbtc.Run(ctx, "")
 	if err != nil {
-		var terminationErr *foundationdbtc.TerminationError
-		if errors.As(err, &terminationErr) {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
-			return 1
+		// RFC-180 Y6: a startup failure must be FATAL, never a silent all-skip —
+		// a Docker hiccup would otherwise convert the 319-scenario corpus into a
+		// green run that executed nothing. The skip path survives only for
+		// genuinely Docker-less local machines.
+		if foundationdbtc.SkipWithoutDocker(err) {
+			fmt.Fprintf(os.Stderr, "FDB tests skip: %v\n", err)
+			return m.Run()
 		}
-		// RFC-180 Y6: in CI a startup failure must be FATAL, never a silent
-		// all-skip — a Docker hiccup would otherwise convert the 319-scenario
-		// corpus into a green run that executed nothing (the dark-safety-net
-		// pattern the corpus un-skip exists to kill). The skip path survives
-		// only for genuinely Docker-less local machines.
-		if os.Getenv("CI") != "" {
-			fmt.Fprintf(os.Stderr, "FATAL: FDB container startup failed in CI — the yamsql corpus would silently skip: %v\n", err)
-			return 1
-		}
-		return m.Run()
+		fmt.Fprintf(os.Stderr, "FATAL: FDB container startup failed — the yamsql corpus would silently skip: %v\n", err)
+		return 1
 	}
 	defer func() {
 		if err := foundationdbtc.Terminate(context.Background(), container); err != nil {

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"reflect"
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/wire"
@@ -20,7 +21,7 @@ type testVectorEntry struct {
 	Hex        string `json:"hex"`
 }
 
-func loadTestVectors(t *testing.T) []testVectorEntry {
+func loadTestVectors(t testing.TB) []testVectorEntry {
 	t.Helper()
 	data, err := os.ReadFile("testdata.json")
 	if err != nil {
@@ -38,7 +39,7 @@ func loadTestVectors(t *testing.T) []testVectorEntry {
 // vectorBytes decodes the hex payload and, for request vectors, strips the
 // 8-byte IncludeVersion protocol prefix (bytes [6]=0xDB, [7]=0x0F). Reply
 // vectors are serialized with AssumeVersion and carry no prefix.
-func vectorBytes(t *testing.T, vec testVectorEntry) []byte {
+func vectorBytes(t testing.TB, vec testVectorEntry) []byte {
 	t.Helper()
 	raw, err := hex.DecodeString(vec.Hex)
 	if err != nil {
@@ -47,7 +48,7 @@ func vectorBytes(t *testing.T, vec testVectorEntry) []byte {
 	if len(raw) != vec.Size {
 		t.Fatalf("%s: hex decodes to %d bytes, size field says %d", vec.Name, len(raw), vec.Size)
 	}
-	if vec.Kind == "request" {
+	if vec.Kind == "request" || vec.Kind == "request_decode_only" {
 		if len(raw) < 8 || raw[6] != 0xDB || raw[7] != 0x0F {
 			t.Fatalf("%s: request vector missing IncludeVersion prefix", vec.Name)
 		}
@@ -274,6 +275,44 @@ var requestBuilders = map[string]func(tok [16]byte) []byte{
 			Reply: ReplyPromise{Token: tok},
 		}).MarshalFDB()
 	},
+	"CommitTransactionRequest_span_context": func(tok [16]byte) []byte {
+		return (&CommitTransactionRequest{
+			Transaction: CommitTransactionRef{
+				ReadSnapshot: 101,
+				// The legacy Go field name maps to C++ Optional<SpanContext>.
+				HasRead_conflict_ranges_disabled: true,
+				Read_conflict_ranges_disabled: SpanContext{
+					TraceID: [16]byte{0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99},
+					SpanID:  0x8877665544332211,
+					Flags:   1,
+				},
+			},
+			SpanContext: SpanContext{
+				TraceID: [16]byte{0xef, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe},
+				SpanID:  0x1020304050607080,
+				Flags:   1,
+			},
+			Reply:      ReplyPromise{Token: tok},
+			TenantInfo: TenantInfo{TenantId: -1},
+		}).MarshalFDB()
+	},
+	"Endpoint_secondary_address": func(tok [16]byte) []byte {
+		return (&Endpoint{
+			Addresses: NetworkAddressList{
+				Address: NetworkAddress{
+					Ip:   IPAddress{AddrTag: 1, AddrAlt0: 0x0a010203},
+					Port: 4500,
+				},
+				HasSecondaryAddress: true,
+				SecondaryAddress: NetworkAddress{
+					Ip:    IPAddress{AddrTag: 1, AddrAlt0: 0x0a010203},
+					Port:  4501,
+					Flags: 2,
+				},
+			},
+			Token: tok,
+		}).MarshalFDB()
+	},
 	// CommitTransactionRequest::tagSet is Optional<TagSet>, and TagSet has
 	// dynamic_size_traits — a flat [len:1][tag bytes] concatenation in insertion
 	// order. A byte blob IS the right model here, unlike the GRV map above.
@@ -326,6 +365,8 @@ func requestRoundTrip(t *testing.T, name string, data []byte) []byte {
 		return rt(&CommitTransactionRequest{})
 	case hasPrefix(name, "GetReadVersionRequest"):
 		return rt(&GetReadVersionRequest{})
+	case hasPrefix(name, "Endpoint"):
+		return rt(&Endpoint{})
 	}
 	t.Fatalf("%s: no round-trip type mapping", name)
 	return nil
@@ -387,13 +428,11 @@ func encodeVTable(vt wire.VTable) []byte {
 //
 // The request vectors above pin TransactionTagCount byte-exactly, but its
 // sibling TransactionTagThrottle is structurally different — its second slot is
-// a nested OBJECT (ClientTagThrottleLimits), not a scalar — and no emitted C++
-// vector carries a non-empty tagThrottleInfo, so the reply direction has no
-// byte-exact golden. That direction is the one production actually parses, so
-// leaving it entirely unpinned would repeat the failure this whole area was
-// fixed for: a decoder green only against itself.
+// a nested OBJECT (ClientTagThrottleLimits), not a scalar. The one C++ vector with
+// a non-empty tagThrottleInfo (GetReadVersionReply_tag_throttle, decoded in the
+// client's reply ground truth) uses NO_EXPIRATION; this pins the layouts directly.
 //
-// What makes a pin possible anyway: a serialized message carries the vtables of
+// The pin works even from an empty map: a serialized message carries the vtables of
 // its whole type closure regardless of which fields are populated, so the C++
 // bytes for GetReadVersionReply contain the exact vtables of both types even
 // though its map is empty. A vtable IS the layout — object size and per-slot
@@ -445,6 +484,76 @@ func TestGroundTruthReplyVTables(t *testing.T) {
 				"GetReadVersionReply_locked — the generated layout does not match "+
 				"what the real ObjectWriter emitted\nregion hex: %s",
 				tc.name, tc.vt, hex.EncodeToString(region))
+		}
+	}
+}
+
+// TestGroundTruthOptionalTables checks values independently of the byte-exact
+// round trips, including a table whose body the Go schema intentionally omits.
+func TestGroundTruthOptionalTables(t *testing.T) {
+	t.Parallel()
+	want := map[string]bool{
+		"CommitTransactionRequest_span_context":           false,
+		"Endpoint_secondary_address":                      false,
+		"CommitTransactionRequest_commit_cost_estimation": false,
+		"CommitTransactionRequest_empty":                  false,
+	}
+	for _, vec := range loadTestVectors(t) {
+		if _, ok := want[vec.Name]; !ok {
+			continue
+		}
+		want[vec.Name] = true
+		t.Run(vec.Name, func(t *testing.T) {
+			t.Parallel()
+			data := vectorBytes(t, vec)
+			if vec.Name == "Endpoint_secondary_address" {
+				var m Endpoint
+				if err := m.UnmarshalFDB(data); err != nil {
+					t.Fatal(err)
+				}
+				want := NetworkAddressList{
+					Address:             NetworkAddress{Ip: IPAddress{AddrTag: 1, AddrAlt0: 0x0a010203}, Port: 4500},
+					HasSecondaryAddress: true,
+					SecondaryAddress:    NetworkAddress{Ip: IPAddress{AddrTag: 1, AddrAlt0: 0x0a010203}, Port: 4501, Flags: 2},
+				}
+				if !reflect.DeepEqual(m.Addresses, want) {
+					t.Fatalf("decoded addresses: got %+v, want %+v", m.Addresses, want)
+				}
+				return
+			}
+			var m CommitTransactionRequest
+			if err := m.UnmarshalFDB(data); err != nil {
+				t.Fatal(err)
+			}
+			switch vec.Name {
+			case "CommitTransactionRequest_span_context":
+				// extract.h retains a legacy field name for CommitTransactionRef.spanContext.
+				inner := SpanContext{
+					TraceID: [16]byte{0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99},
+					SpanID:  0x8877665544332211, Flags: 1,
+				}
+				outer := SpanContext{
+					TraceID: [16]byte{0xef, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe},
+					SpanID:  0x1020304050607080, Flags: 1,
+				}
+				if !m.Transaction.HasRead_conflict_ranges_disabled || m.Transaction.Read_conflict_ranges_disabled != inner || m.SpanContext != outer {
+					t.Fatalf("decoded span contexts: transaction=%+v (present=%v), request=%+v", m.Transaction.Read_conflict_ranges_disabled, m.Transaction.HasRead_conflict_ranges_disabled, m.SpanContext)
+				}
+			case "CommitTransactionRequest_commit_cost_estimation":
+				// No re-encode: the unregistered C++ cost table is presence-only in Go.
+				if !m.HasCommitCostEstimation || m.CommitCostEstimation != nil || m.Transaction.ReadSnapshot != 102 {
+					t.Fatalf("decoded cost presence=%v body=%x snapshot=%d", m.HasCommitCostEstimation, m.CommitCostEstimation, m.Transaction.ReadSnapshot)
+				}
+			case "CommitTransactionRequest_empty":
+				if m.Transaction.HasRead_conflict_ranges_disabled || m.HasCommitCostEstimation {
+					t.Fatalf("absent optionals decoded as present: %+v", m)
+				}
+			}
+		})
+	}
+	for name, seen := range want {
+		if !seen {
+			t.Errorf("missing optional-table vector %s", name)
 		}
 	}
 }

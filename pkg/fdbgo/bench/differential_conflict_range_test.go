@@ -600,3 +600,174 @@ func TestDifferential_ConflictRangeEdges(t *testing.T) {
 		}
 	}
 }
+
+// TestDifferential_WriteConflictRangeDeferred: the call returns only inverted_range; 2004 is deferred
+// to the next read and the commit (ThreadSafeTransaction.cpp:659-663).
+func TestDifferential_WriteConflictRangeDeferred(t *testing.T) {
+	t.Parallel()
+	pfx := fmt.Sprintf("differ_wcr_deferred_%d_", os.Getpid())
+	cases := []struct {
+		name       string
+		readSystem bool
+		begin, end string
+		want       [3]int // the call, the next Get, the Commit
+	}{
+		{"legal", false, pfx + "a", pfx + "b", [3]int{0, 0, 0}},
+		{"end_past_max_write_key", false, pfx + "a", "\xff\xff\xff", [3]int{0, 2004, 2004}},
+		{"begin_past_max_write_key", false, "\xff\x05", "\xff\x06", [3]int{0, 2004, 2004}},
+		// READ_SYSTEM_KEYS raises maxReadKey only; the write check still uses \xff.
+		{"read_system_keys_end_past_max_write_key", true, pfx + "a", "\xff\x05", [3]int{0, 2004, 2004}},
+		{"inverted", false, pfx + "b", pfx + "a", [3]int{2005, 0, 0}},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			var g, cg [3]int
+			{
+				tr, err := goClient.CreateTransaction()
+				if err != nil {
+					t.Fatalf("go create: %v", err)
+				}
+				defer tr.Cancel()
+				if c.readSystem {
+					_ = tr.Options().SetReadSystemKeys()
+				}
+				g[0] = fdbErrorCode(tr.AddWriteConflictRange(gofdb.KeyRange{Begin: gofdb.Key(c.begin), End: gofdb.Key(c.end)}))
+				// No read conflict: ConflictRangeMaxKey's concurrent [a, m) write must not fail the commit.
+				_, err = tr.Snapshot().Get(gofdb.Key(pfx + "k")).Get()
+				g[1] = fdbErrorCode(err)
+				g[2] = fdbErrorCode(tr.Commit().Get())
+			}
+			{
+				tr, err := cgoClient.CreateTransaction()
+				if err != nil {
+					t.Fatalf("cgo create: %v", err)
+				}
+				defer tr.Cancel()
+				if c.readSystem {
+					_ = tr.Options().SetReadSystemKeys()
+				}
+				cg[0] = fdbErrorCode(tr.AddWriteConflictRange(cgofdb.KeyRange{Begin: cgofdb.Key(c.begin), End: cgofdb.Key(c.end)}))
+				_, err = tr.Snapshot().Get(cgofdb.Key(pfx + "k")).Get()
+				cg[1] = fdbErrorCode(err)
+				cg[2] = fdbErrorCode(tr.Commit().Get())
+			}
+			if g != cg {
+				t.Errorf("DIVERGENCE (call, next Get, Commit): go=%v cgo=%v", g, cg)
+			}
+			if g != c.want {
+				t.Errorf("go (call, next Get, Commit) = %v, want %v (libfdb_c=%v)", g, c.want, cg)
+			}
+		})
+	}
+}
+
+// TestDifferential_ReadConflictRangeDeferred (RFC-268): 2004 is deferred past the call. The growth of
+// GetApproximateSize shows what a legal call recorded, which the read-only commit cannot.
+func TestDifferential_ReadConflictRangeDeferred(t *testing.T) {
+	t.Parallel()
+	pfx := fmt.Sprintf("differ_rcr_deferred_%d_", os.Getpid())
+	const mvk, mvkEnd = "\xff/metadataVersion", "\xff/metadataVersion\x00"
+	// getMaxReadKeySize (NativeAPI.actor.cpp:11621-11633): KEY_SIZE_LIMIT + TenantAPI::PREFIX_SIZE for
+	// a user key, SYSTEM_KEY_SIZE_LIMIT for a system key. One byte more and the clamp empties [k, k\x00).
+	const userMax, systemMax = 10000 + 8, 30000
+	userKey := func(n int) string { return pfx + strings.Repeat("u", n-len(pfx)) }
+	systemKey := func(n int) string { return "\xff\x05" + strings.Repeat("s", n-2) }
+	type result struct {
+		call, size, get, commit int // codes; size is GetApproximateSize's
+		grew                    bool
+	}
+	cases := []struct {
+		name       string
+		readSystem bool
+		key        bool // AddReadConflictKey(begin); end unused
+		begin, end string
+		want       result
+	}{
+		{"legal", false, false, pfx + "a", pfx + "b", result{grew: true}},
+		{"empty", false, false, pfx + "a", pfx + "a", result{}},
+		{"end_past_max_read_key", false, false, pfx + "a", "\xff\xff\xff", result{0, 2004, 2004, 2004, false}},
+		{"begin_past_max_read_key", false, false, "\xff\x05", "\xff\x06", result{0, 2004, 2004, 2004, false}},
+		// READ_SYSTEM_KEYS raises maxReadKey to \xff\xff (unlike the write check).
+		{"read_system_keys_legal", true, false, pfx + "a", "\xff\x05", result{grew: true}},
+		{"read_system_keys_end_past_max_read_key", true, false, pfx + "a", "\xff\xff\x00", result{0, 2004, 2004, 2004, false}},
+		{"metadata_version_range", false, false, mvk, mvkEnd, result{grew: true}},
+		{"metadata_version_non_exact", false, false, mvk, mvk + "Z", result{0, 2004, 2004, 2004, false}},
+		{"inverted", false, false, pfx + "b", pfx + "a", result{call: 2005}},
+		{"key_legal", false, true, pfx + "k", "", result{grew: true}},
+		{"key_max_read_key", false, true, "\xff", "", result{0, 2004, 2004, 2004, false}},
+		{"key_system", false, true, "\xff\x05", "", result{0, 2004, 2004, 2004, false}},
+		{"key_read_system_keys_system", true, true, "\xff\x05", "", result{grew: true}},
+		{"key_read_system_keys_max_read_key", true, true, "\xff\xff", "", result{0, 2004, 2004, 2004, false}},
+		{"key_metadata_version", false, true, mvk, "", result{grew: true}},
+		{"key_at_size_limit", false, true, userKey(userMax), "", result{grew: true}},
+		{"key_over_size_limit", false, true, userKey(userMax + 1), "", result{}},
+		{"key_system_at_size_limit", true, true, systemKey(systemMax), "", result{grew: true}},
+		{"key_system_over_size_limit", true, true, systemKey(systemMax + 1), "", result{}},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			var g, cg result
+			var gGrowth, cgGrowth int64
+			{
+				tr, err := goClient.CreateTransaction()
+				if err != nil {
+					t.Fatalf("go create: %v", err)
+				}
+				defer tr.Cancel()
+				if c.readSystem {
+					_ = tr.Options().SetReadSystemKeys()
+				}
+				before, err := tr.GetApproximateSize().Get()
+				if err != nil {
+					t.Fatalf("go GetApproximateSize before the call: %v", err)
+				}
+				if c.key {
+					g.call = fdbErrorCode(tr.AddReadConflictKey(gofdb.Key(c.begin)))
+				} else {
+					g.call = fdbErrorCode(tr.AddReadConflictRange(gofdb.KeyRange{Begin: gofdb.Key(c.begin), End: gofdb.Key(c.end)}))
+				}
+				after, err := tr.GetApproximateSize().Get()
+				g.size, gGrowth = fdbErrorCode(err), after-before
+				// Only read conflicts: the commit is read-only, so no concurrent writer can fail it.
+				_, err = tr.Snapshot().Get(gofdb.Key(pfx + "k")).Get()
+				g.get = fdbErrorCode(err)
+				g.commit = fdbErrorCode(tr.Commit().Get())
+			}
+			{
+				tr, err := cgoClient.CreateTransaction()
+				if err != nil {
+					t.Fatalf("cgo create: %v", err)
+				}
+				defer tr.Cancel()
+				if c.readSystem {
+					_ = tr.Options().SetReadSystemKeys()
+				}
+				before, err := tr.GetApproximateSize().Get()
+				if err != nil {
+					t.Fatalf("cgo GetApproximateSize before the call: %v", err)
+				}
+				if c.key {
+					cg.call = fdbErrorCode(tr.AddReadConflictKey(cgofdb.Key(c.begin)))
+				} else {
+					cg.call = fdbErrorCode(tr.AddReadConflictRange(cgofdb.KeyRange{Begin: cgofdb.Key(c.begin), End: cgofdb.Key(c.end)}))
+				}
+				after, err := tr.GetApproximateSize().Get()
+				cg.size, cgGrowth = fdbErrorCode(err), after-before
+				_, err = tr.Snapshot().Get(cgofdb.Key(pfx + "k")).Get()
+				cg.get = fdbErrorCode(err)
+				cg.commit = fdbErrorCode(tr.Commit().Get())
+			}
+			g.grew, cg.grew = g.size == 0 && gGrowth > 0, cg.size == 0 && cgGrowth > 0
+			if g != cg || gGrowth != cgGrowth {
+				t.Errorf("DIVERGENCE: go=%+v (size growth %d) cgo=%+v (size growth %d)", g, gGrowth, cg, cgGrowth)
+			}
+			if g != c.want {
+				t.Errorf("go = %+v, want %+v (libfdb_c=%+v)", g, c.want, cg)
+			}
+		})
+	}
+}

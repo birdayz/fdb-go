@@ -29,6 +29,9 @@ func openBackend(cfg bench.Config) (bench.LifecycleDatabase, map[string]any, err
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	opts := []client.Option{client.WithAPIVersion(730)}
+	if cfg.AdaptiveLinger > 0 {
+		opts = append(opts, client.WithAdaptiveLinger(cfg.AdaptiveLinger))
+	}
 	if cfg.CoalesceDelay != "" {
 		lo, hi, ok := strings.Cut(cfg.CoalesceDelay, ",")
 		minDelay, err1 := time.ParseDuration(lo)
@@ -51,11 +54,23 @@ func openBackend(cfg bench.Config) (bench.LifecycleDatabase, map[string]any, err
 		db.Close()
 		return nil, nil, err
 	}
-	return &backend{db: db, raw: raw}, map[string]any{"backend": "go", "api_version": 730, "native_library": false, "coalesce_delay": cfg.CoalesceDelay}, nil
+	minDelay, maxDelay, adaptive, waits := raw.ConnectionLinger()
+	meta := map[string]any{
+		"backend":            "go",
+		"api_version":        730,
+		"native_library":     false,
+		"coalesce_delay":     cfg.CoalesceDelay,
+		"effective_min_ns":   int64(minDelay),
+		"effective_max_ns":   int64(maxDelay),
+		"effective_waits":    waits,
+		"adaptive_linger_ns": int64(adaptive),
+	}
+	return &backend{db: db, raw: raw}, meta, nil
 }
 
 func (b *backend) Close()         { b.db.Close() }
 func (b *backend) Barrier() error { return nil }
+
 func (b *backend) Shutdown() (bool, error) {
 	// Database.Close waits for background workers and all transport loops.
 	return false, b.raw.Close()

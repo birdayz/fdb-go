@@ -1,0 +1,12 @@
+apiVersion: 1
+
+# The R1 load dashboard (tests/load): 20 panels, 5 s refresh.
+providers:
+  - name: 'foundationdb'
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/provisioning/dashboards

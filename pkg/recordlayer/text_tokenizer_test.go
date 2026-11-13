@@ -6,7 +6,7 @@ package recordlayer
 // tests; this file adds:
 //   - hasLetterOrDigit (direct)
 //   - stripMarks (direct)
-//   - wordSegments (direct)
+//   - breakIteratorWrapper lazy advancement and normalized tokens
 //   - DefaultTextTokenizer metadata (Name/MinVersion/MaxVersion)
 //   - DefaultTextTokenizerFactory
 //   - DefaultTextTokenizerInstance singleton identity
@@ -90,55 +90,87 @@ func TestStripMarks(t *testing.T) {
 	}
 }
 
-// ---- wordSegments -----------------------------------------------------------
+// ---- breakIteratorWrapper ---------------------------------------------------
 
-func TestWordSegments(t *testing.T) {
+func TestBreakIteratorWrapperLazyAdvancement(t *testing.T) {
 	t.Parallel()
+	const text = "FIRST, Café!!!"
+	raw, err := DefaultTextTokenizerInstance().Tokenize(text, 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	iter, ok := raw.(*breakIteratorWrapper)
+	if !ok {
+		t.Fatalf("Tokenize returned %T, want lazy breakIteratorWrapper", raw)
+	}
+	if iter.remaining != text || iter.state != -1 || iter.hasNext || iter.next != "" {
+		t.Fatalf("constructor eagerly advanced: %+v", iter)
+	}
+	if !iter.HasNext() || iter.next != "first" || iter.remaining != ", Café!!!" {
+		t.Fatalf("first HasNext did not stop after one token: %+v", iter)
+	}
+	cached := *iter
+	if !iter.HasNext() || *iter != cached {
+		t.Fatalf("repeated HasNext advanced cached token: %+v", iter)
+	}
+	if got := iter.Next(); got != "first" {
+		t.Fatalf("first token = %q, want first", got)
+	}
+	if iter.remaining != cached.remaining || iter.state != cached.state || iter.hasNext || iter.next != "" {
+		t.Fatalf("Next did more than consume the cached token: %+v", iter)
+	}
+	// Next must also advance without a preceding HasNext, skipping punctuation
+	// and normalizing only the requested word, not the trailing punctuation.
+	if got := iter.Next(); got != "cafe" || iter.remaining != "!!!" {
+		t.Fatalf("second token = %q, iterator=%+v", got, iter)
+	}
+	if iter.HasNext() || iter.remaining != "" || iter.hasNext || iter.next != "" {
+		t.Fatalf("trailing punctuation was not filtered: %+v", iter)
+	}
+	exhausted := *iter
+	if iter.HasNext() || *iter != exhausted {
+		t.Fatalf("repeated exhaustion changed iterator: %+v", iter)
+	}
+}
 
-	t.Run("empty string returns nil", func(t *testing.T) {
-		t.Parallel()
-		if got := wordSegments(""); got != nil {
-			t.Errorf("wordSegments(\"\") = %v, want nil", got)
-		}
-	})
-
-	t.Run("segments concatenate to original", func(t *testing.T) {
-		t.Parallel()
-		text := "hello world"
-		segs := wordSegments(text)
-		if len(segs) == 0 {
-			t.Fatal("expected non-empty segments for 'hello world'")
-		}
-		joined := ""
-		for _, s := range segs {
-			joined += s
-		}
-		if joined != text {
-			t.Errorf("concatenated segments %q != original %q", joined, text)
-		}
-	})
-
-	t.Run("word segments contain the words", func(t *testing.T) {
-		t.Parallel()
-		segs := wordSegments("hello world")
-		found := make(map[string]bool)
-		for _, s := range segs {
-			found[s] = true
-		}
-		for _, w := range []string{"hello", "world"} {
-			if !found[w] {
-				t.Errorf("expected segment %q in %v", w, segs)
+func TestBreakIteratorWrapperTokens(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		text string
+		want []string
+	}{
+		{"empty", "", nil},
+		{"whitespace", " \t\n ", nil},
+		{"punctuation and emoji", "!🌍,...", nil},
+		{"punctuation separates words", "a,b", []string{"a", "b"}},
+		{"words and digits", "Hello, world! 7", []string{"hello", "world", "7"}},
+		{"midword punctuation", "don't U.S.A hello_world", []string{"don't", "u.s.a", "hello_world"}},
+		{"normalization and final sigma", "CAFÉ ﬆ ΟΣ", []string{"cafe", "st", "ος"}},
+		{"combining mark within word", "прив\u0301ет", []string{"привет"}},
+		{"CJK word boundaries", "世界", []string{"世", "界"}},
+		{"supplementary letters and digits filtered", "\U00010414 \U000104a0 abc", []string{"abc"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			iter := newBreakIteratorWrapper(tc.text)
+			var got []string
+			for iter.HasNext() {
+				cached := *iter
+				if !iter.HasNext() || *iter != cached {
+					t.Fatal("HasNext changed a cached token")
+				}
+				got = append(got, iter.Next())
 			}
-		}
-	})
-
-	t.Run("punctuation gets its own segment", func(t *testing.T) {
-		t.Parallel()
-		segs := wordSegments("a,b")
-		if len(segs) < 3 {
-			t.Errorf("expected >=3 segments for 'a,b', got %d: %v", len(segs), segs)
-		}
-	})
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("tokens for %q = %q, want %q", tc.text, got, tc.want)
+			}
+			if iter.remaining != "" || iter.HasNext() {
+				t.Fatalf("iterator did not exhaust: %+v", iter)
+			}
+		})
+	}
 }
 
 // ---- DefaultTextTokenizer metadata ------------------------------------------

@@ -43,27 +43,10 @@ type TenantMapEntry struct {
 	ConfigurationSequenceNum int64    // slot 7
 }
 
-func (m *TenantMapEntry) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(TenantMapEntrySlotId) {
-		m.Id = r.ReadInt64(TenantMapEntrySlotId)
-	}
-	if r.FieldPresent(TenantMapEntrySlotTenantName) {
-		m.TenantName = r.ReadBytes(TenantMapEntrySlotTenantName)
-	}
-	if r.FieldPresent(TenantMapEntrySlotTenantLockState) {
-		m.TenantLockState = r.ReadUint8(TenantMapEntrySlotTenantLockState)
-	}
-	if r.FieldPresent(TenantMapEntrySlotTenantLockId) && r.ReadUint8(TenantMapEntrySlotTenantLockId) > 0 {
-		copy(m.TenantLockId[:], r.ReadRelOffRaw(TenantMapEntrySlotTenantLockId+1, 16))
-		m.HasTenantLockId = true
-	}
-	if r.FieldPresent(TenantMapEntrySlotTenantGroup) && r.ReadUint8(TenantMapEntrySlotTenantGroup) > 0 {
-		m.TenantGroup = r.ReadBytes(TenantMapEntrySlotTenantGroup + 1)
-		m.HasTenantGroup = true
-	}
-	if r.FieldPresent(TenantMapEntrySlotConfigurationSequenceNum) {
-		m.ConfigurationSequenceNum = r.ReadInt64(TenantMapEntrySlotConfigurationSequenceNum)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *TenantMapEntry) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *TenantMapEntry) UnmarshalFDB(data []byte) error {
@@ -71,6 +54,11 @@ func (m *TenantMapEntry) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *TenantMapEntry) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(TenantMapEntrySlotId) {
 		m.Id = r.ReadInt64(TenantMapEntrySlotId)
 	}
@@ -80,16 +68,19 @@ func (m *TenantMapEntry) UnmarshalFDB(data []byte) error {
 	if r.FieldPresent(TenantMapEntrySlotTenantLockState) {
 		m.TenantLockState = r.ReadUint8(TenantMapEntrySlotTenantLockState)
 	}
-	if r.FieldPresent(TenantMapEntrySlotTenantLockId) && r.ReadUint8(TenantMapEntrySlotTenantLockId) > 0 {
+	if r.FieldPresent(TenantMapEntrySlotTenantLockId) && r.ReadUint8(TenantMapEntrySlotTenantLockId) == 1 && r.FieldPresent(TenantMapEntrySlotTenantLockId+1) {
 		copy(m.TenantLockId[:], r.ReadRelOffRaw(TenantMapEntrySlotTenantLockId+1, 16))
 		m.HasTenantLockId = true
 	}
-	if r.FieldPresent(TenantMapEntrySlotTenantGroup) && r.ReadUint8(TenantMapEntrySlotTenantGroup) > 0 {
+	if r.FieldPresent(TenantMapEntrySlotTenantGroup) && r.ReadUint8(TenantMapEntrySlotTenantGroup) == 1 && r.FieldPresent(TenantMapEntrySlotTenantGroup+1) {
 		m.TenantGroup = r.ReadBytes(TenantMapEntrySlotTenantGroup + 1)
 		m.HasTenantGroup = true
 	}
 	if r.FieldPresent(TenantMapEntrySlotConfigurationSequenceNum) {
 		m.ConfigurationSequenceNum = r.ReadInt64(TenantMapEntrySlotConfigurationSequenceNum)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "TenantMapEntry", Err: err}
 	}
 	return nil
 }
@@ -273,21 +264,28 @@ func (m *TenantMapEntry) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseTenantMapEntryVectorFromReader reads a FlatBuffers vector of TenantMapEntry.
-func ParseTenantMapEntryVectorFromReader(r *wire.Reader, slot int) []TenantMapEntry {
+// ParseTenantMapEntryVectorFromReader reads a FlatBuffers vector of TenantMapEntry under one decode budget.
+func ParseTenantMapEntryVectorFromReader(r *wire.Reader, slot int) ([]TenantMapEntry, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]TenantMapEntry, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]TenantMapEntry", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]TenantMapEntry, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]TenantMapEntry", Err: err}
 		}
-		var elem TenantMapEntry
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

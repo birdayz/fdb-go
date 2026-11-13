@@ -679,8 +679,7 @@ func PinConn(ctx context.Context, db *sql.DB, disabledRules []string) (*sql.Conn
 		if !ok {
 			return fmt.Errorf("driver conn is %T, want *embedded.EmbeddedConnection", dc)
 		}
-		ec.SetOptions(api.NewOptionsBuilder().Set(api.OptDisabledPlannerRules, disabledRules).Build())
-		return nil
+		return ec.SetOption(api.OptDisabledPlannerRules, disabledRules)
 	}); err != nil {
 		conn.Close() //nolint:errcheck
 		return nil, err

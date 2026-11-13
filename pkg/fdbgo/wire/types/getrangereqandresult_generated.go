@@ -24,16 +24,10 @@ type GetRangeReqAndResult struct {
 	Result RangeResultRef // slot 2, nested
 }
 
-func (m *GetRangeReqAndResult) UnmarshalFromReader(r *wire.Reader) {
-	if nr, err := r.ReadNestedReader(GetRangeReqAndResultSlotBegin); err == nil {
-		m.Begin.UnmarshalFromReader(nr)
-	}
-	if nr, err := r.ReadNestedReader(GetRangeReqAndResultSlotEnd); err == nil {
-		m.End.UnmarshalFromReader(nr)
-	}
-	if nr, err := r.ReadNestedReader(GetRangeReqAndResultSlotResult); err == nil {
-		m.Result.UnmarshalFromReader(nr)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *GetRangeReqAndResult) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *GetRangeReqAndResult) UnmarshalFDB(data []byte) error {
@@ -41,14 +35,40 @@ func (m *GetRangeReqAndResult) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if nr, err := r.ReadNestedReader(GetRangeReqAndResultSlotBegin); err == nil {
-		m.Begin.UnmarshalFromReader(nr)
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *GetRangeReqAndResult) decode(r *wire.Reader, b *wire.DecodeBudget) error {
+	if r.FieldPresent(GetRangeReqAndResultSlotBegin) {
+		nr, err := r.ReadNestedReader(GetRangeReqAndResultSlotBegin)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetRangeReqAndResult", Field: "Begin", Err: err}
+		}
+		if err := m.Begin.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if nr, err := r.ReadNestedReader(GetRangeReqAndResultSlotEnd); err == nil {
-		m.End.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetRangeReqAndResultSlotEnd) {
+		nr, err := r.ReadNestedReader(GetRangeReqAndResultSlotEnd)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetRangeReqAndResult", Field: "End", Err: err}
+		}
+		if err := m.End.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if nr, err := r.ReadNestedReader(GetRangeReqAndResultSlotResult); err == nil {
-		m.Result.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetRangeReqAndResultSlotResult) {
+		nr, err := r.ReadNestedReader(GetRangeReqAndResultSlotResult)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetRangeReqAndResult", Field: "Result", Err: err}
+		}
+		if err := m.Result.decode(nr, b); err != nil {
+			return err
+		}
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "GetRangeReqAndResult", Err: err}
 	}
 	return nil
 }
@@ -93,21 +113,28 @@ func (m *GetRangeReqAndResult) writeToBuffer(wb *wire.WriteToBuffer, vtableStart
 	return selfStart
 }
 
-// ParseGetRangeReqAndResultVectorFromReader reads a FlatBuffers vector of GetRangeReqAndResult.
-func ParseGetRangeReqAndResultVectorFromReader(r *wire.Reader, slot int) []GetRangeReqAndResult {
+// ParseGetRangeReqAndResultVectorFromReader reads a FlatBuffers vector of GetRangeReqAndResult under one decode budget.
+func ParseGetRangeReqAndResultVectorFromReader(r *wire.Reader, slot int) ([]GetRangeReqAndResult, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]GetRangeReqAndResult, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]GetRangeReqAndResult", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]GetRangeReqAndResult, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]GetRangeReqAndResult", Err: err}
 		}
-		var elem GetRangeReqAndResult
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

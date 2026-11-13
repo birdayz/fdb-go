@@ -205,6 +205,8 @@ type TransactionDefaults struct {
 	HasRetryLimit  bool
 	ReadSystemKeys bool // read \xff/* keys by default
 	AccessSysKeys  bool // read+write \xff/* keys by default
+	// ReportConflictingKeys is FDB_DB_OPTION_TRANSACTION_REPORT_CONFLICTING_KEYS (702).
+	ReportConflictingKeys bool
 }
 
 // database is the per-database state container (unexported).
@@ -274,8 +276,13 @@ type database struct {
 	proxiesChanged   chan struct{}
 
 	// Connection pool. C++ uses FlowTransport; we need explicit pool.
-	connMu   sync.RWMutex
-	connPool map[string]*transport.Conn
+	connMu        sync.RWMutex
+	connPool      map[string]*transport.Conn
+	hasConnLinger bool
+	lastMinDelay  time.Duration
+	lastMaxDelay  time.Duration
+	lastAdaptive  time.Duration
+	lastWaits     bool
 	// dialing coalesces concurrent dials to the same address (singleflight): the
 	// first miss dials, later misses to the same address wait on its result rather
 	// than each running a redundant TCP/TLS/ConnectPacket handshake. Guarded by
@@ -347,10 +354,8 @@ type database struct {
 	// slog.Default() at open). RFC-097 / P1.2.
 	logger *slog.Logger
 
-	// Speculative second request (hedge) control.
-	// When true, read RPCs send a hedge request to a second server after
-	// secondDelay if the primary is slow. Matches C++ BACKUP_REQUEST_DELAY.
-	// Default: true (always on, same as C++).
+	// Speculative second request (hedge) control: when true, a read may send a hedge
+	// to a second server, timed and paid for by queueModel as libfdb_c does.
 	hedgeEnabled atomic.Bool
 
 	// Opt-in GetRange materialization ceiling in bytes (WithRangeByteCeiling,
@@ -385,6 +390,22 @@ type database struct {
 	outstandingWatches atomic.Int64
 	// afterLocationSend observes a sent location query before its reply wait (test seam).
 	afterLocationSend atomic.Pointer[func()]
+	// beforeConnFailureMark runs in handleConnError just before it marks the address
+	// failed (test seam). Nil in production.
+	beforeConnFailureMark atomic.Pointer[func()]
+	// Test seams observe dial publication, shutdown joining and disconnect/reply races.
+	afterDialBeforePool          atomic.Pointer[func()]
+	beforeCloseJoin              atomic.Pointer[func()]
+	beforeMetricsDisconnectReply atomic.Pointer[func()]
+	beforeMetricsReplyWait       atomic.Pointer[func()]
+	afterMetricsShardResult      atomic.Pointer[func(int)]
+	// beforeAltFailureWait runs when a request starts waiting for an excluded replica (tests).
+	beforeAltFailureWait atomic.Pointer[func()]
+	// onReadBackoff observes Get/Watch retry accounting before the delay (tests).
+	onReadBackoff atomic.Pointer[func(attempts int, delay time.Duration)]
+	// Test seams: set the delay before dispatch; observe actual-live recovery checks.
+	altFailureDelayOverride time.Duration
+	afterAltRecoveryCheck   atomic.Pointer[func(bool)]
 	// rangeReadPanics is the RFC-110 backstop shared by this database's range reads.
 	rangeReadPanics panicBackstop
 	// resolveKeyPanics is the getRange fallback resolveKey goroutines' backstop.
@@ -399,11 +420,8 @@ type database struct {
 	// timeouts delivers its transactions' TIMEOUT expiries; Close leaves it running.
 	timeouts *timeoutQueue
 	wg       sync.WaitGroup
-	// closeMu guards `closed`, the barrier that stops the lazy GRV-cache background refresher from
-	// registering a wg slot once Close() has begun. Without it, the refresher's one-shot db.wg.Add(1)
-	// (grv.go) can race Close's db.wg.Wait() at a zero counter → "sync: WaitGroup misuse: Add called
-	// concurrently with Wait" panic. Close sets closed under this lock BEFORE cancel()/Wait(); the
-	// refresher launch checks it under the same lock, so the check-and-Add is atomic w.r.t. the store.
+	// GRV refreshers enroll under closeMu; dials and connections enroll under connMu.
+	// Close seals both paths before wg.Wait, including zero-count shutdown.
 	closeMu sync.Mutex
 	closed  bool
 }
@@ -461,12 +479,24 @@ func (db *database) getCommitProxy() (*ProxyInfo, int64, error) {
 	}
 	n := len(info.CommitProxies)
 	idx := db.proxyRR.nextCommit(n)
-	// basicLoadBalance skips permanently failed alternatives (LoadBalance.actor.h:790);
-	// with none left the commit waits for a proxy change, as for an empty set.
+	// basicLoadBalance skips failed endpoints and addresses (LoadBalance.actor.h:779-805); with
+	// every address failed, Go's dial of the first is C++'s wait for one to come back.
+	now := nowSeconds()
+	var probe *ProxyInfo
 	for i := 0; i < n; i++ {
-		if p := &info.CommitProxies[(idx+i)%n]; !db.failMon.endpointFailed(p.Address, p.Token) {
+		p := &info.CommitProxies[(idx+i)%n]
+		if db.failMon.endpointFailed(p.Address, p.Token) {
+			continue
+		}
+		if db.failMon == nil || !db.failMon.excluded(p.Address, now) {
 			return p, info.Epoch, nil
 		}
+		if probe == nil {
+			probe = p
+		}
+	}
+	if probe != nil {
+		return probe, info.Epoch, nil
 	}
 	return nil, 0, fmt.Errorf("no live commit proxies")
 }
@@ -499,14 +529,11 @@ func (db *database) getOrDial(ctx context.Context, addr string) (*transport.Conn
 }
 
 // handleDialError reacts to a getOrDial error. A context cancellation is the
-// CALLER giving up, not the endpoint failing — evicting the pooled connection and
-// marking the endpoint failed there would punish a healthy peer (and, in a
-// concurrent cold dial, could drop the very connection a sibling caller just
-// pooled). So only a genuine transport failure (ctx still live) feeds
-// handleConnError.
+// caller giving up, not the endpoint failing, so only a dial failure with a live
+// ctx is reported; it has no connection to name.
 func (db *database) handleDialError(ctx context.Context, addr string) {
 	if ctx.Err() == nil {
-		db.handleConnError(addr)
+		db.handleConnError(addr, nil)
 	}
 }
 
@@ -566,25 +593,31 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 		if !pb.recovered(r) {
 			return
 		}
-		db.connMu.Lock()
-		defer db.connMu.Unlock()
-		select {
-		case <-call.done:
-			return
-		default:
-		}
-		if db.dialing[addr] == call {
-			delete(db.dialing, addr)
-		}
-		if c != nil {
-			if db.connPool[addr] == c {
-				delete(db.connPool, addr)
+		closeConn := false
+		func() {
+			db.connMu.Lock()
+			defer db.connMu.Unlock()
+			select {
+			case <-call.done:
+				return
+			default:
 			}
+			if db.dialing[addr] == call {
+				delete(db.dialing, addr)
+			}
+			if c != nil {
+				if db.connPool[addr] == c {
+					delete(db.connPool, addr)
+				}
+				closeConn = true
+			}
+			call.err = fmt.Errorf("fdbgo: panic dialing %s: %v", addr, r)
+			call.sends.Seal()
+			close(call.done)
+		}()
+		if closeConn {
 			_ = c.Close()
 		}
-		call.err = fmt.Errorf("fdbgo: panic dialing %s: %v", addr, r)
-		call.sends.Seal()
-		close(call.done)
 	}()
 
 	dialCtx, cancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
@@ -593,22 +626,41 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 	dialOpts = append(dialOpts, transport.WithSendOrder(&call.sends))
 	var dialErr error
 	c, dialErr = transport.Dial(dialCtx, addr, db.tlsConfig, db.dialFn, dialOpts...)
+	if hook := db.afterDialBeforePool.Load(); hook != nil {
+		(*hook)()
+	}
 
+	discard := false
 	func() {
 		db.connMu.Lock()
 		defer db.connMu.Unlock()
 		switch {
+		case dialErr != nil && db.ctx.Err() != nil:
+			call.err = db.ctx.Err() // the database closed; no peer failed
 		case dialErr != nil:
-			call.err = dialErr
+			// A failed connect, including the dial ctx's expiry, is C++'s peer disconnect:
+			// request_maybe_delivered, not the raw dial error (FlowTransport.actor.cpp:852-869).
+			call.err = transport.NewConnectFailedError(addr, dialErr)
 		case db.ctx.Err() != nil:
 			// The database closed while we dialed: Close() drains the pool under connMu,
 			// so a conn pooled now would never be reaped (leaking its read/write/monitor
 			// goroutines). Discard it and fail the call.
 			call.err = db.ctx.Err()
-			_ = c.Close()
+			discard = true
 		default:
 			c.SetEndpointNotFoundHandler(func(token transport.UID) { db.failMon.markEndpointNotFound(addr, token) })
 			db.connPool[addr] = c
+			db.lastMinDelay, db.lastMaxDelay, db.lastWaits = c.CoalesceDelay()
+			db.lastAdaptive = c.AdaptiveLinger()
+			db.hasConnLinger = true
+			// Enroll before publication, while Close's pool-drain barrier is
+			// excluded. Ownership survives eviction, leases and stale cohorts.
+			db.wg.Add(1)
+			go func(conn *transport.Conn) {
+				defer db.wg.Done()
+				<-conn.Done()
+				_ = conn.Close()
+			}(c)
 			call.conn = c
 			// Clear the failed state on a successful dial HERE — not in a caller (so a
 			// reconnect wakes failure-monitor recovery even if every caller abandoned
@@ -631,6 +683,9 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 		}
 		close(call.done) // membership and result become visible atomically under connMu
 	}()
+	if discard {
+		_ = c.Close()
+	}
 }
 
 // warmConnections pre-establishes TCP connections to all known proxies.
@@ -821,10 +876,8 @@ func (d *Database) Metrics() ClientMetricsSnapshot {
 	return d.db.metrics.Snapshot()
 }
 
-// SetHedgeEnabled controls speculative second requests (hedge) for read RPCs.
-// When enabled (default), slow reads are rescued by sending a backup request
-// to a second server after max(10ms, 2×latency). Disable for debugging or
-// benchmarking the non-hedged path.
+// SetHedgeEnabled enables budget-funded speculative read requests (default on).
+// Disabled, no read hedges; lone replies still accrue budget (RFC-281).
 func (d *Database) SetHedgeEnabled(enabled bool) {
 	d.db.hedgeEnabled.Store(enabled)
 }
@@ -934,7 +987,7 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 	if o.readTagSampling != nil {
 		db.readTags = *o.readTagSampling
 	}
-	db.hedgeEnabled.Store(true)                       // default: hedge on (matches C++)
+	db.hedgeEnabled.Store(true)                       // default: hedge on
 	db.maxWatches.Store(defaultMaxOutstandingWatches) // C++ DEFAULT_MAX_OUTSTANDING_WATCHES (10000)
 
 	if err := db.bootstrap(ctx); err != nil {
@@ -960,12 +1013,28 @@ func (d *Database) SetDialFunc(fn transport.DialFunc) {
 	d.db.dialFn = fn
 }
 
+// ConnectionLinger reports the active write-delay and adaptive-linger settings
+// of a pooled or most recently dialed connection.
+func (d *Database) ConnectionLinger() (minDelay, maxDelay, adaptive time.Duration, waits bool) {
+	d.db.connMu.Lock()
+	defer d.db.connMu.Unlock()
+	for _, c := range d.db.connPool {
+		minDelay, maxDelay, waits = c.CoalesceDelay()
+		return minDelay, maxDelay, c.AdaptiveLinger(), waits
+	}
+	if d.db.hasConnLinger {
+		return d.db.lastMinDelay, d.db.lastMaxDelay, d.db.lastAdaptive, d.db.lastWaits
+	}
+	return 0, 0, 0, false
+}
+
 // Transact runs a function in a transaction with automatic retry.
 // This is the primary API for interacting with FDB.
 // The transaction is reused across retries — retryCount and backoff escalate.
 func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, error)) (any, error) {
-	tx := d.CreateTransaction()
+	tx := d.createTransaction(true)
 	defer tx.endTxSpan()
+	defer tx.releaseTransactTimeout()
 	for {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -986,7 +1055,10 @@ func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, 
 
 		// Commit owns the cancellable GRV / detached-native split; prefetching here
 		// would force a GRV on the no-write fast path.
-		if err := tx.Commit(ctx); err != nil {
+		tx.transactFinalCommit.Store(true)
+		err = tx.Commit(ctx)
+		tx.transactFinalCommit.Store(false)
+		if err != nil {
 			if retryErr := tx.OnError(ctx, err); retryErr != nil {
 				return nil, retryErr
 			}
@@ -1000,8 +1072,9 @@ func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, 
 // ReadTransact runs a read-only function in a transaction with automatic retry.
 // The transaction is never committed — only reads are performed.
 func (d *Database) ReadTransact(ctx context.Context, fn func(tx *Transaction) (any, error)) (any, error) {
-	tx := d.CreateTransaction()
+	tx := d.createTransaction(true)
 	defer tx.endTxSpan()
+	defer tx.releaseTransactTimeout()
 	for {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -1021,12 +1094,17 @@ func (d *Database) ReadTransact(ctx context.Context, fn func(tx *Transaction) (a
 // CreateTransaction creates a new transaction.
 // Database-level defaults (timeout, retry limit, system key access) are applied.
 func (d *Database) CreateTransaction() *Transaction {
+	return d.createTransaction(false)
+}
+
+func (d *Database) createTransaction(transactScoped bool) *Transaction {
 	tx := &Transaction{
 		committedVersion: -1, // C++ TransactionState::committedVersion starts at invalidVersion.
 		readVersionState: &readVersionState{},
 		db:               d.db,
 		txOptions:        txOptions{tenantId: NoTenantID},
 		creationTime:     time.Now(),
+		transactScoped:   transactScoped,
 	}
 	// Apply database-level defaults (matches C++ applyTxDefaults). One Load, so every
 	// option below comes from the SAME snapshot.
@@ -1057,6 +1135,7 @@ func (d *Database) CreateTransaction() *Transaction {
 	if td.AccessSysKeys {
 		tx.SetAccessSystemKeys()
 	}
+	tx.reportConflictingKeys = td.ReportConflictingKeys
 	// Generate the per-transaction trace span (RFC-115 §4) — a real, default-unsampled
 	// SpanContext stamped on every request, matching C++ (which never sends a zero span).
 	// No SPAN_PARENT can be set yet, so this is regenerateSpan's fresh-span branch.
@@ -1167,8 +1246,8 @@ func (db *database) registerBackgroundGoroutine() bool {
 	return true
 }
 
-// Close shuts down the database connection. Idempotent.
-// Cancels background goroutines, waits for them to exit, closes all connections.
+// Close is idempotent. It joins database workers, shared dials and all connection
+// teardown, including transports already evicted from the pool.
 func (d *Database) Close() error {
 	d.db.closeOnce.Do(func() {
 		// Set closed BEFORE cancel()/Wait() so a concurrent GRV-cache opt-in can't start the background
@@ -1181,11 +1260,18 @@ func (d *Database) Close() error {
 		d.db.cancel()
 		// Native commits may be blocked in SendFrame: close their sockets before joining.
 		d.db.connMu.Lock()
+		connections := make([]*transport.Conn, 0, len(d.db.connPool))
 		for addr, conn := range d.db.connPool {
-			conn.Close()
+			connections = append(connections, conn)
 			delete(d.db.connPool, addr)
 		}
 		d.db.connMu.Unlock()
+		for _, conn := range connections {
+			conn.Close()
+		}
+		if hook := d.db.beforeCloseJoin.Load(); hook != nil {
+			(*hook)()
+		}
 		d.db.wg.Wait()
 	})
 	return nil

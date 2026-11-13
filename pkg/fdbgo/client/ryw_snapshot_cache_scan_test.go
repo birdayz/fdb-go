@@ -101,7 +101,7 @@ func TestSnapshotCache_LargeScanStaysFragmented(t *testing.T) {
 		g.Expect(fetches).To(gomega.BeNumerically(">=", rows/perScan))
 
 		// One fragment per fetch, each holding only that fetch's rows.
-		entries := tx.ryw.serverCache.entries
+		entries := tx.ryw.serverCache.entryList()
 		g.Expect(entries).To(gomega.HaveLen(fetches),
 			"snapshot cache coalesced fetches — a sequential scan is quadratic again")
 		total := 0

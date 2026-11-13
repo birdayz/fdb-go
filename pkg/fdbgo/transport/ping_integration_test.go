@@ -26,13 +26,7 @@ func TestPingRequest_RealServerBidirectional(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := foundationdbtc.Terminate(ctx, server); err != nil {
-			t.Error(err)
-		}
-	})
+	t.Cleanup(func() { foundationdbtc.TeardownT(t, server) })
 	host, err := server.Host(setup)
 	if err != nil {
 		t.Fatal(err)

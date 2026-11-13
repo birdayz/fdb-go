@@ -13,9 +13,14 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "infra_test",
     srcs = [
+        "ci_triggers_test.go",
+        "download_retries_test.go",
+        "evidence_lifecycle_test.go",
         "fdb_cpp_build_test.go",
         "fleet_capacity_test.go",
         "infra_test.go",
+        "install_test.go",
+        "readme_quickstart_test.go",
         "render_test.go",
         "runner_job_guard_test.go",
         "template_model_test.go",
@@ -23,6 +28,16 @@ go_test(
     ],
     data = [
         "README.md",
+        "//:.bazelrc",
+        "//:README.md",
+        "//:website/content/docs/cli/_index.md",
+        "//:website/content/docs/cli/metadata.md",
+        "//:website/content/docs/cli/protobuf.md",
+        "//:website/content/docs/cli/reference.md",
+        "//:website/content/docs/cli/sql.md",
+        "//:website/content/docs/getting-started.md",
+        "//cmd/fdb:README.md",
+        "//tools/lanes:run-verified-lane.sh",
         # The push fan-out gate reads the workflow definitions and main.tf
         # together: it counts self-hosted jobs one push starts and compares them
         # against var.runner_count. Without this the glob finds nothing under
@@ -41,11 +56,16 @@ go_test(
         "runner-job-guard.sh",
         "wire-oracle-scope.sh",
         "wire_oracle_scope_test.sh",
+        "//:MODULE.bazel",
         "//:go.mod",
         "//:justfile",
+        "//:sift_repo.bzl",
+        "//:website/static/install.sh",
+        "//cmd/test-report",
         "//cmd/fdb-diff-oracle:BUILD.bazel",
         "//cmd/fdb-schema-extract:BUILD.bazel",
         "//cmd/fdb-schema-extract:fdb_cpp_build.bzl",
     ],
+    env = {"EVIDENCE_TEST_REPORTER": "$(rootpath //cmd/test-report)"},
     deps = ["@in_gopkg_yaml_v3//:yaml_v3"],
 )

@@ -1,6 +1,6 @@
 ---
 name: fdb-client-engineer
-description: "End-to-end engineering workflow for the pure-Go FoundationDB client (pkg/fdbgo — transport, transaction, commit path, RYW, key selectors, retry/ctx, GRV, wire encoding, the libfdb_c differential). Use for ANY client/wire change: drives RFC → review (FDB C++ maintainer + Torvalds + /code-review) → implement → review again → PR gauntlet (codex + @claude) → merge. The client analog of todo-worker: the FDB C++ dev substitutes for Graefe, C++ (libfdb_c 7.3.77) is the spec, wire compatibility is the hard line. Composes fdb-client-review (the review gate) and hunt-divergences (the differential method)."
+description: "End-to-end engineering workflow for the pure-Go FoundationDB client (pkg/fdbgo — transport, transaction, commit path, RYW, key selectors, retry/ctx, GRV, wire encoding, the libfdb_c differential). Use for ANY client/wire change: drives RFC → review (bruh-code-review) → implement → review again → PR review (bruh-code-review, posted) → merge. The client analog of todo-worker: C++ (libfdb_c 7.3.77) is the spec, wire compatibility is the hard line. Composes bruh-code-review (the review gate, with the fdb-client lens) and hunt-divergences (the differential method)."
 ---
 
 # FDB Client Engineering (pure-Go `pkg/fdbgo`)
@@ -11,13 +11,13 @@ here wire- and behavior-load-bearing.
 
 **C++ (`libfdb_c`) is the spec.** Any place the Go client behaves differently from the C++
 client is a **bug in Go**, not a "Go choice" — until proven otherwise by *reading the C++
-source* (CLAUDE.md design principle #2). This is the client/wire analog of "Graefe is final on
-Cascades": here the **FDB C++ client developer** is final on client/wire correctness.
+source* (CLAUDE.md design principle #2). Review enforces it: the `fdb-client` lens of
+`bruh-code-review` (`.bruh/review/fdb-client.md`) is final on client/wire correctness.
 
 This skill is the **entry point and orchestrator** for client work. It owns the workflow
-(RFC → impl → merge) and the discipline. It composes two narrower skills:
-- **`fdb-client-review`** — the mandatory review gate (FDB C++ dev + Torvalds). Invoke it for
-  every review cycle.
+(RFC → impl → merge) and the discipline. It composes two other skills:
+- **`bruh-code-review`** — the mandatory review gate. Run it for every review cycle; its
+  `fdb-client` lens applies to `pkg/fdbgo/**` and demands C++ `file:line` citations.
 - **`hunt-divergences`** — the differential + fuzz method for finding/proving divergences vs
   `libfdb_c` (red→green in `pkg/fdbgo/bench`). Invoke it when the change is a divergence fix.
 
@@ -45,7 +45,7 @@ shipped + differential-proved them.)
 
 The oracle is the FoundationDB C++ source at tag **7.3.77** (the `foundationdb` pin in
 `MODULE.bazel`; exactly what `libfdb_c` and the cgo binding in the differential are built from).
-**Do NOT confuse with `4.11.1.0`** (the *Java* record-layer version — different project).
+**Do NOT confuse with `4.14.2.0`** (the *Java* record-layer version — different project).
 
 Checkout is usually present at `/tmp/fdbsrc`; clone if missing:
 ```bash
@@ -60,11 +60,11 @@ If `/tmp/fdbsrc` is unavailable, fetch raw files (the source is NOT vendored):
 | `fdbclient/NativeAPI.actor.cpp` | `commit`/`tryCommit`, GRV (`getReadVersion`), `getValue`/`getKeyValues`/`getKey` retry loops, `commitDummyTransaction`, raw_access resolution |
 | `fdbclient/ReadYourWrites.actor.cpp` | RYW read/write overlay; `resolveKeySelectorFromCache`; `addConflictRange`/`updateConflictMap`; `is_unreadable` stickiness |
 | `fdbclient/RYWIterator.cpp` + `include/fdbclient/{RYWIterator,WriteMap}.h` | the RYW write-map segment model (`is_kv`/`is_unreadable`/independent/dependent/cleared) — the basis for phantom slots & conflict filtering |
-| `fdbrpc/include/fdbrpc/LoadBalance.actor.h` | `loadBalance` — note it has **no per-read client reply timeout**; it re-sends until reply or read-version aging |
+| `fdbrpc/include/fdbrpc/LoadBalance.actor.h` | `loadBalance` — note it has **no per-read client reply timeout**; it waits for the reply or read-version aging |
 | `fdbclient/include/fdbclient/Atomic.h` | atomic-op semantics (`doMinV2`/`doAndV2` gate on `Optional.present()`) |
 | `fdbclient/ClientKnobs.cpp` | retry limits, backoff, timeouts, `USE_GRV_CACHE` — the defaults Go must match |
 | `fdbserver/storageserver.actor.cpp` | `sendErrorWithPenalty` (inline read error channel); `transaction_too_old` from version aging |
-| `flow/error_definitions.h` | the authoritative error-code numbers |
+| `flow/include/flow/error_definitions.h` | the authoritative error-code numbers |
 
 Read the *actual* function before porting/verifying. Never guess wire layout or an error code.
 
@@ -80,9 +80,9 @@ Read the *actual* function before porting/verifying. Never guess wire layout or 
   (1=Error, 2=value, 0=NONE), **never by field count** (a 1-field success is indistinguishable
   from a 1-field Error by count). `wire.ReadErrorOr` parses the tag.
 - **`Optional<Error>` is a nested Error TABLE** (uint16 code at the table's slot 0) via a
-  RelativeOffset — NOT a length-prefixed string. Use `wire.ReadInlineReplyError`; the generated
-  `.Error` field mis-decodes it (schema-extractor bug — fix the extractor, don't hand-edit
-  generated code).
+  RelativeOffset — NOT a length-prefixed string. `wire.ReadInlineReplyError` and the generated
+  `.Error` field both decode it that way; any `Optional<T>` of a table follows the same rule
+  (fix the extractor, don't hand-edit generated code).
 - **Error codes are `uint16`.** Read with `ReadUint16`.
 - Codes that matter: **1001** wrong_shard_server, **1006** all_alternatives_failed (read-path
   *absorbed* — must NEVER surface to the app), **1007** transaction_too_old (retryable),
@@ -101,19 +101,18 @@ One branch, one PR. Drive every non-trivial client change through this. (For a o
 fix you may collapse the RFC into the PR description — but the review gates are never skipped.)
 
 ### Step 1 — RFC
-Write `rfcs/NNN-short-title.md`. Number = next free. Include: **Status: Draft**, the **Item** it
+Write `rfcs/NNN-short-title.md`. Number: as todo-worker Step 4 (counts RFCs in open PRs), and
+open the draft PR right after committing it (todo-worker Step 5). Include: **Status: Draft**, the **Item** it
 closes, the **problem** (with the C++ behavior cited `file:line` from `/tmp/fdbsrc`), the
 **proposed Go change**, the **executable spec** (exactly what the test/differential will prove),
 and **wire-compat impact** (bytes? conflict ranges? error codes?). The RFC's load-bearing claim
 must be a C++ citation, not an assertion.
 
-### Step 2 — review the RFC (all three, in parallel)
-- **FDB C++ maintainer** + **Torvalds** — invoke the **`fdb-client-review`** skill (its prompts
-  anchor on `/tmp/fdbsrc` 7.3.77 and demand `file:line` citations).
-- **`/code-review`** — run it on the RFC diff for a third lens.
-
-Iterate until the FDB C++ maintainer ACKs the approach (no wire divergence, no invented
-semantics the C++ lacks) and Torvalds ACKs the plan. Set **Status: Accepted**. **Never start
+### Step 2 — review the RFC
+Commit the RFC, push, open the draft PR, and post a **`bruh-code-review`** of it with the client
+lens (`review PR <N> and post it, lenses: fdb-client`: an RFC matches no lens path, and without
+it only the core lenses run). Fix the findings, push and post again until it ACKs the approach: no wire
+divergence, no invented semantics the C++ lacks. Set **Status: Accepted**. **Never start
 implementing on a NAK.**
 
 ### Step 3 — implement (read C++ first, one logical change at a time)
@@ -121,24 +120,23 @@ Port 1:1. Write the test BEFORE assuming the code is right. `just test` (or the 
 `bazelisk test //pkg/fdbgo/client:client_test`) green on every commit. For a divergence fix,
 follow **`hunt-divergences`**: a red→green differential in `pkg/fdbgo/bench` IS the proof.
 
-### Step 4 — review the implementation (same three, again)
-Re-invoke **`fdb-client-review`** (FDB C++ maintainer + Torvalds) and **`/code-review`** on the
-implementation diff. **An ACK only covers the HEAD it reviewed** — re-request after every new
-commit. Fix → add the regression that should have caught it → re-review the delta.
+### Step 4 — review the implementation
+Post a **`bruh-code-review`** of the PR with the implementation pushed. **An ACK only
+covers the HEAD it reviewed** — push and post again after every new commit. Fix → add the regression that should have caught it →
+re-review.
 
-### Step 5 — PR gauntlet (the published gates)
-- **codex** — via the **`codex-review`** skill (`gpt-5.5 xhigh`). It repeatedly catches
-  storage-shadow / cleared-base / sticky-unreadable / RYW edges the others miss. Re-review the
-  delta after each fix; its ACK must be on the final HEAD.
-- **@claude** — `@claude` in a PR comment (self-hosted runner; it's queued behind CI on the
-  single box, be patient). Its **clean LGTM must be the LAST comment on the PR, on the current
-  HEAD.** Every push re-stales it → re-request. Don't comment after the LGTM.
+### Step 5 — PR review (the published gate)
+- **`bruh-code-review` on the PR**, posted: `review PR <N> and post it`. Client divergences are
+  subtle and different reviewers catch different classes (storage-shadow / cleared-base /
+  sticky-unreadable / RYW edges): ask for `replicas: 2`, which runs each lens twice, and set
+  each copy's `model` in the plan to a different provider (both otherwise run on your model). Its ACK must be on
+  the final HEAD; every push makes it stale → post a new review (a posted run re-checks the
+  PR's open findings itself; no `previous:` needed).
 - **CI green** on the final HEAD before merge — no exceptions. A red or flaky CI is a real bug
   (see §5), root-cause it now.
 
-Merge only when **FDB C++ maintainer + Torvalds + code-review + codex + @claude are all green on
-the same final HEAD and CI is green.** Update the RFC to **Status: Implemented** and flip the
-TODO mark.
+Merge only when **the posted bruh-code-review is an ACK of the final HEAD and CI is green on
+it.** Update the RFC to **Status: Implemented** and flip the TODO mark.
 
 ---
 
@@ -206,8 +204,8 @@ TODO mark.
 | `client/fault_test.go` | fault-injection dialers (`wrongShardConn`, `dropReplyConn`, …) |
 | `transport/conn.go` | connection, write/read loops, `failConnection`, `connectionMonitor`, handshake deadline |
 | `fdb/error.go` | `IsRetryable` (the high-level predicate — keep in sync with `client.isRetryable`) |
-| `fdb/database.go` + `fdb/transaction.go` | Apple-compatible facade (functional options, `Must*` boundary, `panicToError`) |
-| `wire/reader.go` + `wire/types/` | `ReadErrorOr`/`ReadInlineReplyError`; generated reply structs (fix the extractor in `cmd/fdb-schema-extract`, don't hand-edit generated) |
+| `fdb/database.go` + `fdb/transaction.go` | facade modeled on Apple's binding (functional options, `Must*` boundary, `panicToError`) |
+| `wire/reader.go` + `wire/types/` | `ReadErrorOr`; generated reply structs, whose `HasError`/`Error` carry the inline read error (fix the extractor in `cmd/fdb-schema-extract`, don't hand-edit generated) |
 | `bench/` | dual-client differential harness (Go vs `libfdb_c`) |
 
 ---
@@ -236,5 +234,5 @@ the next engineer avoids re-auditing closed work.
   CI, no flakes** — a flake is a real concurrency/ordering bug; root-cause it now.
 - **Every fix gets a revert-proven regression.** **`-race`** the touched client package.
 - **Never paper over** at the surface (string check, tolerance gate) — fix the path the C++ uses.
-- The query-engine gate (Graefe) does **not** apply to client work; the **FDB C++ maintainer**
-  is the substitute. Don't merge a client/wire change without their ACK on the final HEAD.
+- Don't merge a client/wire change without a bruh-code-review ACK, with the `fdb-client` lens,
+  on the final HEAD.

@@ -7,12 +7,13 @@
 // Package sqldriver implements a database/sql driver for the
 // FoundationDB Record Layer relational (SQL) layer.
 //
-// Register the driver by blank-importing this package, then open a
-// connection:
+// Importing this package registers the "fdbsql" driver. Register a domain,
+// then open a connection:
 //
 //	import (
 //	    "database/sql"
-//	    _ "fdb.dev/pkg/relational/sqldriver"
+//
+//	    "fdb.dev/pkg/relational/sqldriver"
 //	)
 //
 //	sqldriver.RegisterDomainIfNotExists("FRL")
@@ -29,6 +30,19 @@
 //	fdbsql:///PATH                          — embedded, default cluster file
 //	fdbsql:///PATH?cluster_file=/path       — embedded, explicit cluster file
 //	fdbsql://HOST:PORT/PATH                 — remote (gRPC) — NOT YET IMPLEMENTED
+//
+// read_only=true makes every connection read-only: only SELECT and EXPLAIN of a
+// SELECT run (anything else, a multi-statement batch included, is 0A000), and
+// every transaction is cancelled instead of committed, so nothing a read does
+// persists, not even the store-header upgrade an open makes on a store an older
+// version wrote. sql.TxOptions{ReadOnly: true} is accepted on such a
+// connection and refused on any other.
+//
+// NewConnector drives the driver over an FDB database the caller already has,
+// with no cluster_file:
+//
+//	connector, err := sqldriver.NewConnector(fdbDB, "fdbsql:///FRL/MYDB?schema=S&read_only=true")
+//	db := sql.OpenDB(connector)
 //
 // This is the public entry point. Internally it wraps
 // pkg/relational/core which implements the SQL engine over FDB.
@@ -135,8 +149,8 @@ func applyStoreTimer(clusterFile string, db *recordlayer.FDBDatabase) {
 // make the cardinality of every record-layer metric grow with the customer list — the
 // classic way to take down a Prometheus. Per-tenant attribution is already available at a
 // layer that can afford it, because it is sampled and log-shaped rather than a live time
-// series: PlanGenerationLogger and ExecutionStatsLogger are installed per connection and
-// close over the tenant ID (see docs/mt-saas.md §4).
+// series: PlanGenerationLogger and ExecutionStatsLogger are installed per connection borrow
+// (ResetSession removes them) and close over the tenant ID (see docs/mt-saas.md §4).
 //
 // A caller who genuinely wants finer scope has it without a label: build the
 // *recordlayer.FDBDatabase, call SetTimer on it, and RegisterBackend it under a key of its
@@ -196,12 +210,47 @@ func (d *Driver) OpenConnector(name string) (driver.Connector, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Connector{driver: d, dsn: dsn, connOpts: connOpts}, nil
+	readOnly, err := dsn.ReadOnly()
+	if err != nil {
+		return nil, err
+	}
+	return &Connector{driver: d, dsn: dsn, connOpts: connOpts, readOnly: readOnly}, nil
+}
+
+// NewConnector returns a Connector over db, an FDB database the caller opened
+// and owns, for sql.OpenDB. Unlike sql.Open it neither opens nor caches a
+// database by cluster file, and unlike RegisterBackend it touches no
+// process-global state: the connector, its catalog, keyspace and plan cache
+// are its own. dsn is an embedded DSN without cluster_file, for example
+// "fdbsql:///FRL/MYDB?schema=S&read_only=true"; its domain must be registered
+// (RegisterDomainIfNotExists) like any other. The DSN is checked here, as in
+// OpenConnector. A StoreTimer is the caller's to set on db
+// (EnableStoreTimer arms only databases the driver opens by cluster file).
+func NewConnector(db *recordlayer.FDBDatabase, dsn string) (driver.Connector, error) {
+	if db == nil {
+		return nil, api.NewError(api.ErrCodeInvalidParameter, "NewConnector: nil FDB database")
+	}
+	c, err := (&Driver{}).OpenConnector(dsn)
+	if err != nil {
+		return nil, err
+	}
+	connector := c.(*Connector)
+	if connector.dsn.Mode != ModeEmbedded {
+		return nil, api.NewError(api.ErrCodeInvalidParameter,
+			"NewConnector takes an embedded DSN (fdbsql:///PATH), not a remote one")
+	}
+	if _, ok := connector.dsn.Options["cluster_file"]; ok {
+		return nil, api.NewError(api.ErrCodeInvalidParameter,
+			"NewConnector does not take cluster_file: the FDB database is the caller's")
+	}
+	connector.fdbDB, connector.callerDB = db, true
+	return connector, nil
 }
 
 // Connector holds a parsed DSN and produces connections on demand.
-// The FDB database, keyspace, and factory are initialised lazily on
-// the first Connect call. The catalog Bootstrap (Initialize) is deferred
+// The FDB database, keyspace, and factory are initialised lazily by the
+// first Connect that succeeds in doing so; a failed initialization is retried
+// by the next Connect. The catalog Bootstrap (Initialize) is deferred
 // further — it runs inside the first DDL transaction, not at Connect time.
 type Connector struct {
 	driver *Driver
@@ -210,8 +259,15 @@ type Connector struct {
 	// OpenConnector so a malformed value is a DSN error rather than a
 	// connect-time failure. Never nil.
 	connOpts *api.Options
+	// readOnly is the DSN's read_only: every connection is made read-only
+	// (EmbeddedConnection.SetReadOnly), and the connector's own catalog read
+	// at its start is cancelled too.
+	readOnly bool
+	// callerDB marks fdbDB as the caller's (NewConnector): initialize neither
+	// opens nor caches one.
+	callerDB bool
 
-	once    sync.Once
+	init    initFlight
 	fdbDB   *recordlayer.FDBDatabase
 	cat     *catalog.RecordLayerStoreCatalog
 	ks      *keyspace.RelationalKeyspace
@@ -222,10 +278,66 @@ type Connector struct {
 	planCache *embedded.RelationalPlanCache
 	// warmUp is the stored-query warm-up's outcome (Java's
 	// OFFLINE_STORED_QUERIES_* counts). Atomic because StoredQueryWarmUp is a
-	// public accessor a caller may poll while another goroutine's first
-	// Connect is still inside once.Do; nil until initialize stores it.
-	warmUp  atomic.Pointer[embedded.StoredQueryWarmUpCounts]
-	initErr error
+	// public accessor a caller may poll while another goroutine's Connect is
+	// still initializing; nil until initialize stores it.
+	warmUp atomic.Pointer[embedded.StoredQueryWarmUpCounts]
+}
+
+// initFlight runs an initialization until it succeeds once. An attempt runs
+// on its own goroutine, detached from the cancellation of the caller that
+// started it, so no caller's deadline cuts it short; every caller waits for it
+// on its own context. A failure goes to the callers waiting on that attempt,
+// and the next caller starts another.
+type initFlight struct {
+	mu      sync.Mutex
+	done    bool
+	running *initAttempt // nil when no attempt runs
+}
+
+type initAttempt struct {
+	finished chan struct{}
+	err      error // set before finished is closed
+}
+
+func (f *initFlight) do(ctx context.Context, init func(context.Context) error) error {
+	f.mu.Lock()
+	if f.done {
+		f.mu.Unlock()
+		return nil
+	}
+	a := f.running
+	if a == nil {
+		if err := ctx.Err(); err != nil {
+			f.mu.Unlock()
+			return err
+		}
+		a = &initAttempt{finished: make(chan struct{})}
+		f.running = a
+		go f.attempt(context.WithoutCancel(ctx), a, init)
+	}
+	f.mu.Unlock()
+	select {
+	case <-a.finished:
+		return a.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// attempt runs init and publishes its outcome; a panic is its error, since
+// nothing above this goroutine would recover it.
+func (f *initFlight) attempt(ctx context.Context, a *initAttempt, init func(context.Context) error) {
+	defer func() {
+		if r := recover(); r != nil {
+			a.err = embedded.RecoveredPanicError(r)
+		}
+		f.mu.Lock()
+		f.done = a.err == nil
+		f.running = nil
+		f.mu.Unlock()
+		close(a.finished)
+	}()
+	a.err = init(ctx)
 }
 
 // StoredQueryWarmUp returns what the connector's start planned into its plan
@@ -238,8 +350,9 @@ func (c *Connector) StoredQueryWarmUp() embedded.StoredQueryWarmUpCounts {
 	return embedded.StoredQueryWarmUpCounts{}
 }
 
-// Connect opens a connection. Honors ctx.Done() for cancellation.
-// On first call, initialises the FDB database and catalog (idempotent).
+// Connect opens a connection. Honors ctx.Done() for cancellation, also while
+// it waits for the connector's initialization, which ctx does not cut short
+// (initFlight).
 func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -248,11 +361,13 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 			"remote (gRPC) mode is not yet implemented")
 	}
-	c.once.Do(func() { c.initErr = c.initialize(ctx) })
-	if c.initErr != nil {
-		return nil, c.initErr
+	if err := c.init.do(ctx, c.initialize); err != nil {
+		return nil, err
 	}
 	conn := embedded.New(c.dsn.Path, c.fdbDB, c.cat, c.factory, c.ks)
+	if c.readOnly {
+		conn.SetReadOnly()
+	}
 	conn.SetOptions(c.connOpts)
 	conn.SetPlanCache(c.planCache)
 	if c.dsn.Schema != "" {
@@ -261,7 +376,8 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	return conn, nil
 }
 
-// initialize opens FDB and wires catalog + factory. The catalog Bootstrap
+// initialize opens FDB, unless the database is the caller's (NewConnector),
+// and wires catalog + factory. The catalog Bootstrap
 // (Initialize) is deferred — it runs on the first DDL transaction, not here.
 func (c *Connector) initialize(ctx context.Context) error {
 	clusterFile := c.dsn.Options["cluster_file"]
@@ -280,7 +396,9 @@ func (c *Connector) initialize(ctx context.Context) error {
 	// Reuse a previously-opened FDB database for this cluster file.
 	// See fdbDBCache docstring above for why this is necessary.
 	cacheKey := clusterFile
-	if cached, ok := fdbDBCache.Load(cacheKey); ok {
+	if c.callerDB {
+		// NewConnector's database: the caller's, neither opened nor cached here.
+	} else if cached, ok := fdbDBCache.Load(cacheKey); ok {
 		c.fdbDB = cached.(*recordlayer.FDBDatabase)
 	} else {
 		// Leave an empty path for the selected backend's default lookup, including
@@ -307,7 +425,9 @@ func (c *Connector) initialize(ctx context.Context) error {
 	// cache on every branch, which is what closes the ordering window against a
 	// concurrent EnableStoreTimer: that call stores the timer before it looks in the
 	// cache, so if it missed this database then this read cannot miss its timer.
-	applyStoreTimer(cacheKey, c.fdbDB)
+	if !c.callerDB {
+		applyStoreTimer(cacheKey, c.fdbDB)
+	}
 
 	// root subspace is the empty subspace — all catalog and schema data lives
 	// under well-known tuple prefixes via RelationalKeyspace.
@@ -322,8 +442,12 @@ func (c *Connector) initialize(ctx context.Context) error {
 	// Java's RecordLayerEngine.makeEngine: the engine's start plans every
 	// template's stored queries into the shared cache. Failures are logged,
 	// never returned.
+	var catalogReader keyspace.Runner = c.fdbDB
+	if c.readOnly {
+		catalogReader = embedded.ReadOnlyRunner(c.fdbDB)
+	}
 	warmUp := embedded.WarmStoredQueries(ctx, c.planCache,
-		embedded.StoredQueryTemplates(ctx, c.fdbDB, c.cat))
+		embedded.StoredQueryTemplates(ctx, catalogReader, c.cat))
 	c.warmUp.Store(&warmUp)
 	return nil
 }

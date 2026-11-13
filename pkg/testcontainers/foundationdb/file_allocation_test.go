@@ -41,9 +41,7 @@ func TestRun_InterruptedFileAllocation(t *testing.T) {
 				t.Fatalf("FDB must initialize with interrupted fallocate: %v", err)
 			}
 			defer func() {
-				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cleanupCancel()
-				if err := Terminate(cleanupCtx, container); err != nil {
+				if err := Teardown(container); err != nil {
 					t.Errorf("terminate: %v", err)
 				}
 			}()
@@ -104,12 +102,19 @@ func TestRun_KAIOOverride(t *testing.T) {
 				serverLog, logErr = io.ReadAll(reader)
 				return logErr
 			}
+			// Judge the startup budget before cleanup, whose own Teardown budget may outlast ctx.
+			var startupErr error
+			recordStartup := func(context.Context, testcontainers.Container) error {
+				startupErr = ctx.Err()
+				return nil
+			}
 			// One attempt suffices for the negative control; do not retry a server
 			// deliberately configured to exercise the upstream failure.
 			opts := []testcontainers.ContainerCustomizer{
 				WithKnob("disable_posix_kernel_aio", "0"),
 				withInterruptedFallocate(),
 				testcontainers.WithLifecycleHooks(testcontainers.ContainerLifecycleHooks{
+					PreStops:      []testcontainers.ContainerHook{recordStartup},
 					PreTerminates: []testcontainers.ContainerHook{captureLog},
 				}),
 			}
@@ -118,9 +123,7 @@ func TestRun_KAIOOverride(t *testing.T) {
 			}
 			container, err := runOnce(ctx, "", opts...)
 			if container != nil {
-				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cleanupCancel()
-				if err := Terminate(cleanupCtx, container); err != nil {
+				if err := Teardown(container); err != nil {
 					t.Errorf("terminate: %v", err)
 				}
 			}
@@ -128,8 +131,8 @@ func TestRun_KAIOOverride(t *testing.T) {
 			if errors.As(err, &terminationErr) {
 				t.Fatalf("container startup cleanup failed: %v", err)
 			}
-			if err == nil || ctx.Err() != nil || logErr != nil || !strings.Contains(string(serverLog), "Fatal Error: Disk i/o operation failed") {
-				t.Fatalf("KAIO override did not reproduce the upstream failure: run=%v context=%v logs=%v\n%s", err, ctx.Err(), logErr, serverLog)
+			if err == nil || startupErr != nil || logErr != nil || !strings.Contains(string(serverLog), "Fatal Error: Disk i/o operation failed") {
+				t.Fatalf("KAIO override did not reproduce the upstream failure: run=%v context=%v logs=%v\n%s", err, startupErr, logErr, serverLog)
 			}
 			t.Log("FDB-EINTR: explicit KAIO override reproduced the fatal allocation error")
 		})

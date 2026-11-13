@@ -96,6 +96,19 @@ func newReadyFutureByteSlice(val []byte, err error) FutureByteSlice {
 	return f
 }
 
+// startedFutureByteSlice is the future of a Get issued in the call: ready when
+// the transaction answered it, else completed by a goroutine.
+func startedFutureByteSlice(p *client.PendingValue) FutureByteSlice {
+	if p.Ready() {
+		v, err := p.Get()
+		return newReadyFutureByteSlice(v, convertError(err))
+	}
+	return newFutureByteSlice(func() ([]byte, error) {
+		v, err := p.Get()
+		return v, convertError(err)
+	})
+}
+
 func newFutureByteSlice(fn func() ([]byte, error)) FutureByteSlice {
 	f := &futureByteSlice{}
 	f.init()

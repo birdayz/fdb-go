@@ -24,8 +24,11 @@ import (
 // it on success, or a re-failure grows the window. The dial IS Go's probe — the
 // observable substitute for C++'s background reconnect (FDB-C-dev ACK, RFC-115 §1).
 type failureMonitor struct {
-	mu        sync.Mutex
-	failed    map[string]*failEntry
+	mu     sync.Mutex
+	failed map[string]*failEntry
+	// nFailed is len(failed), written under mu: with nothing failed, excluded
+	// answers without the lock every load-balanced read would otherwise take.
+	nFailed   atomic.Int32
 	recovered chan struct{}
 	// epFailed holds endpoints the server reported not found; they never
 	// recover (FailureMonitor.actor.cpp:228-230). Copy-on-write: reads are lock-free.
@@ -108,6 +111,7 @@ func (fm *failureMonitor) markFailedAt(addr string, now float64) (newlyFailed bo
 			window:        connFailureInitialWindow,
 			excludedUntil: now + connFailureInitialWindow,
 		}
+		fm.nFailed.Add(1)
 		return true
 	}
 	if now >= e.excludedUntil {
@@ -129,6 +133,7 @@ func (fm *failureMonitor) markAlive(addr string) {
 		return // no transition — don't signal
 	}
 	delete(fm.failed, addr)
+	fm.nFailed.Add(-1)
 	close(fm.recovered)
 	fm.recovered = make(chan struct{})
 }
@@ -155,9 +160,11 @@ func (fm *failureMonitor) isFailed(addr string) bool {
 // AND still inside its re-admission window (now < excludedUntil). Past the window a
 // failed endpoint is re-admitted (returns false) so a read re-probes it. `now` is
 // passed in (not read internally) so selection is testable without a fake clock.
-// The LB calls this while holding the QueueModel mutex — lock order is always
-// QueueModel.mu → failureMonitor.mu, never the reverse, so there is no deadlock.
+// The LB calls it holding no QueueModel lock; fm.mu is taken only when nFailed > 0.
 func (fm *failureMonitor) excluded(addr string, now float64) bool {
+	if fm.nFailed.Load() == 0 {
+		return false
+	}
 	fm.mu.Lock()
 	defer fm.mu.Unlock()
 	e, ok := fm.failed[addr]

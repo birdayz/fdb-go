@@ -193,7 +193,7 @@ func (tx *Transaction) legacySendGetKey(ctx context.Context, selectorKey []byte,
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
 				replyHandle.Release()
-				tx.db.handleReadConnError(server.Address, err)
+				tx.db.handleReadConnError(server.Address, conn, err)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			getKeyBufPool.Put(bufp)
@@ -201,6 +201,7 @@ func (tx *Transaction) legacySendGetKey(ctx context.Context, selectorKey []byte,
 				replyCh:     replyCh,
 				replyHandle: replyHandle,
 				addr:        server.Address,
+				conn:        conn,
 				delta:       delta,
 				start:       start,
 			}
@@ -209,12 +210,12 @@ func (tx *Transaction) legacySendGetKey(ctx context.Context, selectorKey []byte,
 
 	primary := makeSender(servers[bestIdx])
 	var secondary sendFunc
+	var hedgeDelay time.Duration
 	if secondIdx >= 0 {
 		secondary = makeSender(servers[secondIdx])
+		hedgeDelay = tx.db.queueModel.secondDelay(servers[bestIdx].Address, servers[secondIdx].Address)
 	}
-
-	hedgeDelay := tx.db.queueModel.secondDelay(servers[bestIdx].Address)
-	result := sendFrameWithHedge(ctx, hedgeDelay, primary, secondary, tx.readRPCTimeout())
+	result := sendFrameWithHedge(ctx, tx.db.queueModel, hedgeDelay, primary, secondary, tx.readRPCTimeout())
 
 	// End every started request that did not become the winner (hedge losers;
 	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
@@ -225,7 +226,7 @@ func (tx *Transaction) legacySendGetKey(ctx context.Context, selectorKey []byte,
 
 	if result.addr != "" {
 		if result.connErr {
-			tx.db.handleReadConnError(result.addr, result.err)
+			tx.db.handleReadConnError(result.addr, result.conn, result.err)
 			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
 		} else if result.err != nil {
 			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
@@ -387,9 +388,9 @@ func legacyRangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end
 				kvs, more, err := ops.send(ctx, shardBegin, shardEnd, remaining, bytesLeft, reverse, loc.Servers)
 				if err != nil {
 					// Reply timeout (a slow-but-alive server): the location is
-					// fine — re-send the SAME shard (no relocate), matching
-					// libfdb_c (no per-read client timeout; re-send until the
-					// server replies or the read version ages to
+					// fine — re-send the SAME shard (no relocate). libfdb_c has no
+					// per-read client timeout and waits until the server replies or
+					// the read version ages to
 					// transaction_too_old). Bounded; on exhaustion surface a
 					// RETRYABLE transaction_too_old so the Transact loop retries
 					// with a fresh read version. errReplyTimeout never escapes.
@@ -615,7 +616,7 @@ func legacySendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end 
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
 				replyHandle.Release()
-				tx.db.handleReadConnError(server.Address, err)
+				tx.db.handleReadConnError(server.Address, conn, err)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			ops.putBuf(poolBuf)
@@ -623,6 +624,7 @@ func legacySendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end 
 				replyCh:     replyCh,
 				replyHandle: replyHandle,
 				addr:        server.Address,
+				conn:        conn,
 				delta:       delta,
 				start:       start,
 			}
@@ -631,12 +633,12 @@ func legacySendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end 
 
 	primary := makeSender(servers[bestIdx])
 	var secondary sendFunc
+	var hedgeDelay time.Duration
 	if secondIdx >= 0 {
 		secondary = makeSender(servers[secondIdx])
+		hedgeDelay = tx.db.queueModel.secondDelay(servers[bestIdx].Address, servers[secondIdx].Address)
 	}
-
-	hedgeDelay := tx.db.queueModel.secondDelay(servers[bestIdx].Address)
-	result := sendFrameWithHedge(ctx, hedgeDelay, primary, secondary, tx.readRPCTimeout())
+	result := sendFrameWithHedge(ctx, tx.db.queueModel, hedgeDelay, primary, secondary, tx.readRPCTimeout())
 
 	// End every started request that did not become the winner (hedge losers;
 	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
@@ -647,7 +649,7 @@ func legacySendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end 
 
 	if result.addr != "" {
 		if result.connErr {
-			tx.db.handleReadConnError(result.addr, result.err)
+			tx.db.handleReadConnError(result.addr, result.conn, result.err)
 			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
 		} else if result.err != nil {
 			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)

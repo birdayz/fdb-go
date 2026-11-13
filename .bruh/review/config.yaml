@@ -1,0 +1,17 @@
+blocking: medium
+ignore:
+  - "gen/**"
+  - "pkg/fdbgo/wire/types/*_generated.go"
+  - "pkg/relational/core/parser/gen/**"
+  - "pkg/relational/api/apimock/mocks_*.go"
+  - "**/*.pb.go"
+  - "third_party/**"
+  # Raw benchmark receipts (JSON evidence, logs, patches); the docs/benchmarks
+  # *.md files that cite them are reviewed.
+  - "docs/benchmarks/*/**"
+  # Binary golden fixtures; the golden tests that pin them are reviewed.
+  - "**/*.binpb"
+  # npm lockfiles, and the Grafana plugin scaffold that @grafana/create-plugin
+  # generates ("auto-generated ... not intended to be changed").
+  - "**/package-lock.json"
+  - "layers/otel/grafana/.config/**"

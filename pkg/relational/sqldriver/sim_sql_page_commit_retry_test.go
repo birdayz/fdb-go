@@ -66,6 +66,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/dst"
@@ -77,6 +78,7 @@ import (
 	"fdb.dev/pkg/relational/core/embedded"
 	relkeyspace "fdb.dev/pkg/relational/core/keyspace"
 	"fdb.dev/pkg/relational/core/metadata"
+	"fdb.dev/pkg/relational/internal/connknob"
 	"fdb.dev/pkg/simfdb"
 )
 
@@ -117,6 +119,9 @@ type retryOnceBackend struct {
 	// seen counts Transact calls since the last arm/reset — the retry route's
 	// own traffic, which is what property 3 below measures.
 	seen atomic.Int64
+	// attempts counts TransactAttempt and ReadTransactAttempt calls: every
+	// attempt of the database's DB.Run and RunRead loops.
+	attempts atomic.Int64
 	// fired records whether the injection actually happened, so a test fails
 	// loudly rather than passing because nothing was exercised.
 	fired atomic.Bool
@@ -215,6 +220,7 @@ func (b *retryOnceBackend) Transact(fn func(fdb.WritableTransaction) (any, error
 // attempt. A "fail once" fault then fails the call's first attempt and lets its
 // retry through, and a permanent one fails every attempt of the call.
 func (b *retryOnceBackend) TransactAttempt(_ context.Context, call recordlayer.AttemptCall, fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	b.attempts.Add(1)
 	b.mu.Lock()
 	if b.callOrd == nil {
 		b.callOrd = map[uint64]int64{}
@@ -229,6 +235,7 @@ func (b *retryOnceBackend) TransactAttempt(_ context.Context, call recordlayer.A
 }
 
 func (b *retryOnceBackend) ReadTransactAttempt(_ context.Context, _ recordlayer.AttemptCall, fn func(fdb.ReadTransaction) (any, error)) (any, error) {
+	b.attempts.Add(1)
 	return b.SimDB.ReadTransact(fn)
 }
 
@@ -290,7 +297,10 @@ func openRetryOnceSchema(t *testing.T, seed uint64, tableDDL string) (*sql.DB, *
 }
 
 // seedPageRetryRows fills the table and returns a connection whose per-page scan
-// budget forces pagination.
+// budget forces pagination. Its first pages always join their statements'
+// shared transactions, so a sweep calibrated by an unarmed run's Transact
+// calls counts the same transactions as its armed runs, however slowly
+// either plans.
 func seedPageRetryRows(t *testing.T, ctx context.Context, db *sql.DB) *sql.Conn {
 	t.Helper()
 	for i := 0; i < pageRetryRows; i++ {
@@ -300,7 +310,17 @@ func seedPageRetryRows(t *testing.T, ctx context.Context, db *sql.DB) *sql.Conn 
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, pageRetryScanLimit).
 			Build())
+		setStatementReadMaxAge(t, ec, time.Hour)
 	})
+}
+
+// setStatementReadMaxAge sets how long after a statement's first read its first
+// page may still join the statement's shared transaction.
+func setStatementReadMaxAge(t *testing.T, ec *embedded.EmbeddedConnection, maxAge time.Duration) {
+	t.Helper()
+	if !connknob.SetStatementReadMaxAge(ec, maxAge) {
+		t.Fatal("connknob refused the embedded connection")
+	}
 }
 
 // TestPageRetry_ContinuationAdvancesOnlyOnTransactionSuccess is the regression:
@@ -310,7 +330,12 @@ func seedPageRetryRows(t *testing.T, ctx context.Context, db *sql.DB) *sql.Conn 
 // The transaction ordinal is swept so the failure lands on each of the query's
 // pages in turn — a fixed ordinal would be a guess about how many transactions
 // the connection makes before the first page, and the invariant is supposed to
-// hold wherever the failure lands.
+// hold wherever the failure lands. The sweep covers exactly the transactions an
+// unarmed run of the same statement makes (pageRetryTransactions). An
+// auto-commit statement's catalog read, planning and first page share one
+// standalone transaction that is not a Transact call, so its commit is not in
+// the sweep; TestPageRetry_SharedFirstPageCommitFailureReturnsEveryRowOnce
+// fails page one there, for both shapes.
 // Two query shapes, because a stale continuation costs differently in each. A
 // plain scan resumes from a key position; DISTINCT resumes a STATEFUL operator
 // whose continuation carries accumulated dedup state, which is where a position
@@ -330,7 +355,8 @@ func TestPageRetry_ContinuationAdvancesOnlyOnTransactionSuccess(t *testing.T) {
 	}
 
 	for _, shape := range shapes {
-		for n := int64(0); n < 8; n++ {
+		txns := pageRetryTransactions(t, ctx, 9099, shape.query)
+		for n := int64(0); n < txns; n++ {
 			t.Run(fmt.Sprintf("%s/fail_tx_%d", shape.name, n), func(t *testing.T) {
 				t.Parallel()
 				db, backend := openRetryOnceSchema(t, uint64(9100+n),
@@ -383,6 +409,31 @@ func TestPageRetry_ContinuationAdvancesOnlyOnTransactionSuccess(t *testing.T) {
 			})
 		}
 	}
+}
+
+// pageRetryTransactions is the number of Transact calls an unarmed run of query
+// makes on a fresh page-retry fixture: the ordinals a fault sweep over its
+// transactions covers. A paged statement makes at least two (its later pages).
+func pageRetryTransactions(t *testing.T, ctx context.Context, seed uint64, query string) int64 {
+	t.Helper()
+	db, backend := openRetryOnceSchema(t, seed, "CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
+	conn := seedPageRetryRows(t, ctx, db)
+	backend.arm(-1)
+	rows, err := conn.QueryContext(ctx, query)
+	if err != nil {
+		t.Fatalf("unarmed %q: %v", query, err)
+	}
+	for rows.Next() {
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("unarmed %q rows: %v", query, err)
+	}
+	rows.Close()
+	n := backend.seen.Load()
+	if n < 2 {
+		t.Fatalf("unarmed %q made %d transactions; a paged statement makes at least two", query, n)
+	}
+	return n
 }
 
 // TestPageRetry_NoFailureIsUnchanged is the control: the same paged query with
@@ -591,6 +642,11 @@ func TestPageRetry_StoreOpenWritesHeaderOnStaleFormat(t *testing.T) {
 // reaches it exactly as a concurrent writer's conflict would. The retry must
 // re-drain page one, not resume past it.
 //
+// The connection's age bound is a nanosecond, so page one runs in a DB.Run of
+// its own, at ordinal 0: the separate-first-page shape.
+// TestPageRetry_SharedFirstPageCommitFailureReturnsEveryRowOnce fails page one
+// in the statement's shared transaction instead.
+//
 // This is the arm that makes the defect shipped rather than latent: on the
 // unfixed code the caller loses page one's rows and the query reports success.
 func TestPageRetry_StaleFormatHeaderPageSurvivesCommitConflict(t *testing.T) {
@@ -599,6 +655,15 @@ func TestPageRetry_StaleFormatHeaderPageSurvivesCommitConflict(t *testing.T) {
 	db, backend := openRetryOnceSchema(t, 9600,
 		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	conn := seedPageRetryRows(t, ctx, db)
+	capture := &retryStatsCapture{}
+	if err := conn.Raw(func(driverConn any) error {
+		ec := driverConn.(*embedded.EmbeddedConnection)
+		setStatementReadMaxAge(t, ec, time.Nanosecond)
+		ec.SetExecutionStatsLogger(capture)
+		return nil
+	}); err != nil {
+		t.Fatalf("Raw: %v", err)
+	}
 
 	rdb := recordlayer.NewFDBDatabaseWithBackend(backend)
 	ss := pageRetrySchemaSubspace(t, ctx, rdb)
@@ -613,6 +678,7 @@ func TestPageRetry_StaleFormatHeaderPageSurvivesCommitConflict(t *testing.T) {
 	for warm.Next() {
 	}
 	warm.Close()
+	capture.takeOne(t)
 
 	// Now make the store look like one an older writer left behind. The next
 	// statement's FIRST page must upgrade the header, which is what gives that
@@ -655,6 +721,11 @@ func TestPageRetry_StaleFormatHeaderPageSurvivesCommitConflict(t *testing.T) {
 			"header, so no page carried writes and the injected not_committed was taken by the "+
 			"read-only fast path. This test armed nothing", got)
 	}
+	// A commit consumed the fault: exactly one page attempt was rerun.
+	if s := capture.takeOne(t); s.Retries != 1 {
+		t.Fatalf("the statement retried %d page attempts, want 1: the not_committed armed at "+
+			"page one's DB.Run was not consumed by its commit", s.Retries)
+	}
 
 	var missing, duplicated []int64
 	for i := int64(0); i < pageRetryRows; i++ {
@@ -674,6 +745,138 @@ func TestPageRetry_StaleFormatHeaderPageSurvivesCommitConflict(t *testing.T) {
 			"paginatingRows.continuation, so the retry resumed past it and those rows were "+
 			"silently dropped. This is the production shape, not a harness artifact",
 			len(seen), pageRetryRows, missing, duplicated)
+	}
+}
+
+// sharedFirstPageResult is one run of sharedFirstPageRun.
+type sharedFirstPageResult struct {
+	stats embedded.ExecutionStats
+	// attempts is the statement's DB.Run and RunRead attempts.
+	attempts int64
+}
+
+// sharedFirstPageRun runs query on a fresh page-retry fixture whose store
+// header is stale, so page one's store open writes the header, and, when
+// failSharedCommit, with SimFDB's not_committed injected at the next commit
+// that carries a write. It asserts every row arrived exactly once and the
+// header was upgraded, and returns the statement's stats and attempts.
+func sharedFirstPageRun(t *testing.T, ctx context.Context, seed uint64, query string, failSharedCommit bool) sharedFirstPageResult {
+	t.Helper()
+	db, backend := openRetryOnceSchema(t, seed, "CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
+	conn := seedPageRetryRows(t, ctx, db)
+	// The connection's first query bootstraps the catalog in a DB.Run of its
+	// own; then it is reset as a pool checkout resets it, which drops its
+	// schema cache, so the statement's catalog read opens the shared
+	// transaction and page one joins it.
+	warm, err := conn.QueryContext(ctx, "SELECT id FROM t WHERE id = 0")
+	if err != nil {
+		t.Fatalf("warm-up: %v", err)
+	}
+	for warm.Next() {
+	}
+	warm.Close()
+	capture := &retryStatsCapture{}
+	if err := conn.Raw(func(driverConn any) error {
+		ec := driverConn.(*embedded.EmbeddedConnection)
+		// ResetSession keeps the scan limit SetOptions installed and the
+		// connection's age bound.
+		if err := ec.ResetSession(ctx); err != nil {
+			return err
+		}
+		ec.SetExecutionStatsLogger(capture)
+		return nil
+	}); err != nil {
+		t.Fatalf("Raw: %v", err)
+	}
+	rdb := recordlayer.NewFDBDatabaseWithBackend(backend)
+	ss := pageRetrySchemaSubspace(t, ctx, rdb)
+	setStoreFormatVersion(t, ctx, rdb, ss, staleFormatVersion)
+	if failSharedCommit {
+		backend.SimDB.InjectOnce(1020)
+	}
+
+	attemptsBefore := backend.attempts.Load()
+	rows, err := conn.QueryContext(ctx, query)
+	if err != nil {
+		t.Fatalf("%q (shared commit failed: %t): %v", query, failSharedCommit, err)
+	}
+	seen := map[int64]int{}
+	for rows.Next() {
+		var v int64
+		if err := rows.Scan(&v); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		seen[v]++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	rows.Close()
+	attempts := backend.attempts.Load() - attemptsBefore
+
+	var missing, duplicated []int64
+	for i := int64(0); i < pageRetryRows; i++ {
+		switch seen[i] {
+		case 1:
+		case 0:
+			missing = append(missing, i)
+		default:
+			duplicated = append(duplicated, i)
+		}
+	}
+	if len(missing) > 0 || len(duplicated) > 0 || len(seen) != pageRetryRows {
+		t.Fatalf("%q (shared commit failed: %t) returned %v: missing %v, duplicated %v. Page one's rows or "+
+			"position outlived the shared transaction that produced them", query, failSharedCommit, seen, missing, duplicated)
+	}
+	if got := readStoreFormatVersion(t, ctx, rdb, ss); got == staleFormatVersion {
+		t.Fatalf("the store is still at format version %d: page one's store open wrote no header, so its "+
+			"shared commit was read-only and an injected not_committed could not reach it", got)
+	}
+	return sharedFirstPageResult{stats: capture.takeOne(t), attempts: attempts}
+}
+
+// TestPageRetry_SharedFirstPageCommitFailureReturnsEveryRowOnce fails page one
+// of a paged SELECT where it runs on a freshly checked-out connection: in the
+// statement's shared first transaction (embedded/statement_read.go), which the
+// sweep above never counts. A stale store header makes page one's store open write, so
+// SimFDB's injected not_committed fails the shared commit instead of being
+// taken by the read-only fast path. Page one then reruns in DB.Run from the
+// statement's unchanged position: every row arrives exactly once, the retry
+// is counted, and the failed attempt's scan is charged. An unfaulted run of
+// the same fixture is the reference, and shows page one ran shared.
+func TestPageRetry_SharedFirstPageCommitFailureReturnsEveryRowOnce(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for i, shape := range []struct{ name, query string }{
+		{"scan", "SELECT id FROM t"},
+		{"distinct", "SELECT DISTINCT a FROM t"},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			t.Parallel()
+			seed := uint64(9700 + 2*i)
+			base := sharedFirstPageRun(t, ctx, seed, shape.query, false)
+			if base.stats.Retries != 0 || base.attempts != int64(base.stats.Pages-1) {
+				t.Fatalf("unfaulted %q: %d retries and %d DB.Run attempts over %d pages, want 0 and %d: page one "+
+					"did not run in the statement's shared transaction, so the faulted run cannot reach it",
+					shape.query, base.stats.Retries, base.attempts, base.stats.Pages, base.stats.Pages-1)
+			}
+			got := sharedFirstPageRun(t, ctx, seed+1, shape.query, true)
+			if got.stats.Retries != 1 || got.attempts != base.attempts+1 || got.stats.Pages != base.stats.Pages {
+				t.Fatalf("%q with the injected not_committed: %d retries, %d DB.Run attempts, %d pages; want 1, %d, %d. "+
+					"The fault did not fail page one's shared commit once, with page one rerun in one DB.Run attempt",
+					shape.query, got.stats.Retries, got.attempts, got.stats.Pages, base.attempts+1, base.stats.Pages)
+			}
+			// The failed shared attempt scanned page one: one row past the
+			// budget, as every full page does.
+			if want := base.stats.RecordsScanned + pageRetryScanLimit + 1; got.stats.RecordsScanned != want {
+				t.Fatalf("%q with page one's shared commit failed scanned %d records, want %d (the unfaulted %d plus "+
+					"the failed attempt's page): the retried scan was not charged", shape.query,
+					got.stats.RecordsScanned, want, base.stats.RecordsScanned)
+			}
+			if got.stats.RowsReturned != pageRetryRows || got.stats.Err != nil {
+				t.Fatalf("%q: RowsReturned %d, error %v; want %d and none", shape.query, got.stats.RowsReturned, got.stats.Err, pageRetryRows)
+			}
+		})
 	}
 }
 

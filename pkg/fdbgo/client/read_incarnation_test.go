@@ -125,9 +125,8 @@ func TestReadIncarnationTimerRetirement(t *testing.T) {
 	}
 	tx.readErrMu.Lock()
 	arm = tx.timeoutArm
-	node := tx.timeoutNode
+	tx.withdrawTimeoutLocked() // Deliver this callback explicitly, without leaving a queued timeout.
 	tx.readErrMu.Unlock()
-	node.queue.remove(node) // Deliver this callback explicitly, without leaving a queued timeout.
 	tx.fireTimeout(arm)
 	tx.SetTimeout(0)
 	if got := fdbCodeOf(tx.readEntryError(ctx)); got != 1031 {
@@ -199,7 +198,7 @@ func TestReadReplyReadyOutranksCancellation(t *testing.T) {
 						result := waitForReply(ctx, rpc, time.Hour)
 						body, err = result.body, result.err
 					case "hedge":
-						result := sendFrameWithHedge(ctx, time.Hour, func() inFlightRPC { return rpc }, func() inFlightRPC {
+						result := sendFrameWithHedge(ctx, nil, time.Hour, func() inFlightRPC { return rpc }, func() inFlightRPC {
 							t.Error("sent secondary despite queued primary reply")
 							return other
 						}, time.Hour)

@@ -47,28 +47,10 @@ type WaitMetricsRequest struct {
 	Field_6    []byte         // slot 6
 }
 
-func (m *WaitMetricsRequest) UnmarshalFromReader(r *wire.Reader) {
-	if nr, err := r.ReadNestedReader(WaitMetricsRequestSlotKeys); err == nil {
-		m.Keys.UnmarshalFromReader(nr)
-	}
-	if nr, err := r.ReadNestedReader(WaitMetricsRequestSlotMin); err == nil {
-		m.Min.UnmarshalFromReader(nr)
-	}
-	if nr, err := r.ReadNestedReader(WaitMetricsRequestSlotMax); err == nil {
-		m.Max.UnmarshalFromReader(nr)
-	}
-	if nr, err := r.ReadNestedReader(WaitMetricsRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nr)
-	}
-	if nr, err := r.ReadNestedReader(WaitMetricsRequestSlotTenantInfo); err == nil {
-		m.TenantInfo.UnmarshalFromReader(nr)
-	}
-	if r.FieldPresent(WaitMetricsRequestSlotMinVersion) {
-		m.MinVersion = r.ReadInt64(WaitMetricsRequestSlotMinVersion)
-	}
-	if r.FieldPresent(WaitMetricsRequestSlotField_6) {
-		m.Field_6 = r.ReadBytes(WaitMetricsRequestSlotField_6)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *WaitMetricsRequest) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *WaitMetricsRequest) UnmarshalFDB(data []byte) error {
@@ -76,26 +58,64 @@ func (m *WaitMetricsRequest) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if nr, err := r.ReadNestedReader(WaitMetricsRequestSlotKeys); err == nil {
-		m.Keys.UnmarshalFromReader(nr)
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *WaitMetricsRequest) decode(r *wire.Reader, b *wire.DecodeBudget) error {
+	if r.FieldPresent(WaitMetricsRequestSlotKeys) {
+		nr, err := r.ReadNestedReader(WaitMetricsRequestSlotKeys)
+		if err != nil {
+			return &wire.DecodeError{Type: "WaitMetricsRequest", Field: "Keys", Err: err}
+		}
+		if err := m.Keys.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if nr, err := r.ReadNestedReader(WaitMetricsRequestSlotMin); err == nil {
-		m.Min.UnmarshalFromReader(nr)
+	if r.FieldPresent(WaitMetricsRequestSlotMin) {
+		nr, err := r.ReadNestedReader(WaitMetricsRequestSlotMin)
+		if err != nil {
+			return &wire.DecodeError{Type: "WaitMetricsRequest", Field: "Min", Err: err}
+		}
+		if err := m.Min.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if nr, err := r.ReadNestedReader(WaitMetricsRequestSlotMax); err == nil {
-		m.Max.UnmarshalFromReader(nr)
+	if r.FieldPresent(WaitMetricsRequestSlotMax) {
+		nr, err := r.ReadNestedReader(WaitMetricsRequestSlotMax)
+		if err != nil {
+			return &wire.DecodeError{Type: "WaitMetricsRequest", Field: "Max", Err: err}
+		}
+		if err := m.Max.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if nr, err := r.ReadNestedReader(WaitMetricsRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nr)
+	if r.FieldPresent(WaitMetricsRequestSlotReply) {
+		nr, err := r.ReadNestedReader(WaitMetricsRequestSlotReply)
+		if err != nil {
+			return &wire.DecodeError{Type: "WaitMetricsRequest", Field: "Reply", Err: err}
+		}
+		if err := m.Reply.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if nr, err := r.ReadNestedReader(WaitMetricsRequestSlotTenantInfo); err == nil {
-		m.TenantInfo.UnmarshalFromReader(nr)
+	if r.FieldPresent(WaitMetricsRequestSlotTenantInfo) {
+		nr, err := r.ReadNestedReader(WaitMetricsRequestSlotTenantInfo)
+		if err != nil {
+			return &wire.DecodeError{Type: "WaitMetricsRequest", Field: "TenantInfo", Err: err}
+		}
+		if err := m.TenantInfo.decode(nr, b); err != nil {
+			return err
+		}
 	}
 	if r.FieldPresent(WaitMetricsRequestSlotMinVersion) {
 		m.MinVersion = r.ReadInt64(WaitMetricsRequestSlotMinVersion)
 	}
 	if r.FieldPresent(WaitMetricsRequestSlotField_6) {
 		m.Field_6 = r.ReadBytes(WaitMetricsRequestSlotField_6)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "WaitMetricsRequest", Err: err}
 	}
 	return nil
 }
@@ -266,21 +286,28 @@ func (m *WaitMetricsRequest) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseWaitMetricsRequestVectorFromReader reads a FlatBuffers vector of WaitMetricsRequest.
-func ParseWaitMetricsRequestVectorFromReader(r *wire.Reader, slot int) []WaitMetricsRequest {
+// ParseWaitMetricsRequestVectorFromReader reads a FlatBuffers vector of WaitMetricsRequest under one decode budget.
+func ParseWaitMetricsRequestVectorFromReader(r *wire.Reader, slot int) ([]WaitMetricsRequest, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]WaitMetricsRequest, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]WaitMetricsRequest", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]WaitMetricsRequest, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]WaitMetricsRequest", Err: err}
 		}
-		var elem WaitMetricsRequest
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

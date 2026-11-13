@@ -287,7 +287,7 @@ func (d Dataset) validateDurationWrites(db Database, workload string, expected [
 	return db.Transact(true, func(tx Transaction) error {
 		for worker, key := range d.Writes {
 			want := d.Initial
-			if workload == "set100" {
+			if setsWorkerKey(workload) {
 				want = expected[worker]
 			}
 			got, err := tx.Get(key)
@@ -378,7 +378,7 @@ func runDuration(cfg Config, db LifecycleDatabase, metadata map[string]any, afte
 		return func(index, worker int) (int, error) {
 			payload := operands[worker][(index/cfg.Workers)%2]
 			attempts, err := d.Operation(db, cfg.Workload, worker, payload)
-			if err == nil && (cfg.Workload == "set100" || batchValueBytes(cfg.Workload) > 0) {
+			if err == nil && (setsWorkerKey(cfg.Workload) || batchValueBytes(cfg.Workload) > 0) {
 				expected[worker] = payload
 			}
 			return attempts, err

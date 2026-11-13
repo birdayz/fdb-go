@@ -274,7 +274,7 @@ func buildStatsJoinArrangement(t *testing.T, ctx context.Context, arr *statsJoin
 	arr.off = openStatsJoinDB(t, h.dbPath, false)
 	arr.on = openStatsJoinDB(t, h.dbPath, true)
 
-	// Collect through the ON connection — the same Conn.Raw path `frl stats
+	// Collect through the ON connection — the same Conn.Raw path `fdb rl stats
 	// collect` uses, so this exercises the shipped code rather than a test-only
 	// shortcut. Collection happens once and BOTH settings then read the same
 	// stored bytes; OFF ignoring statistics that are demonstrably present is

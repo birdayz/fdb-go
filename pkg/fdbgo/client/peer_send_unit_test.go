@@ -180,9 +180,9 @@ func TestColdPeerSendOrderThroughEnqueue(t *testing.T) {
 		t.Fatalf("other peer frame = %q", got)
 	}
 	resumeOnce.Do(func() { close(resumeBegin) })
-	if registered {
-		// The peer still cannot read: end reaches its flush wait only if begin
-		// releases the cold turn on enqueue, not after the blocked flush.
+	if registered && transport.NetDesign() == "" {
+		// On the legacy writer, end reaches its flush wait only if begin releases
+		// the cold turn on enqueue; D-NG has no flush wait (RFC-282 T1).
 		sendAwait(t, ctx, endQueued, "end enqueue before begin's flush completes")
 	}
 	readsOnce.Do(func() { close(reads) })
@@ -307,11 +307,19 @@ func TestColdPeerFailedGenerationDoesNotTrapNewSenders(t *testing.T) {
 	sendAwait(t, ctx, old.done, "failed dial completion")
 	_, permit, err := db.getOrDialForSend(ctx, "peer")
 	permit.Release()
-	if !errors.Is(err, secondFailure) || dials.Load() != 2 {
+	// Each generation's waiters see its own dial failure, coded as a connect failure.
+	cause := func(err error) error {
+		var connectFailed *transport.ConnectFailedError
+		if errors.As(err, &connectFailed) {
+			return connectFailed.Cause()
+		}
+		return err
+	}
+	if !errors.Is(cause(err), secondFailure) || dials.Load() != 2 {
 		t.Fatalf("new caller joined failed generation: err=%v dials=%d", err, dials.Load())
 	}
 	resumeOnce.Do(func() { close(resume) })
-	if err := <-result; !errors.Is(err, firstFailure) {
+	if err := <-result; !errors.Is(cause(err), firstFailure) {
 		t.Fatalf("old waiter migrated generations: %v", err)
 	}
 }

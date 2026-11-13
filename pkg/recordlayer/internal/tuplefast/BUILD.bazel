@@ -10,7 +10,10 @@ go_library(
 
 go_test(
     name = "tuplefast_test",
-    srcs = ["tuplefast_test.go"],
+    srcs = [
+        "tuplefast_test.go",
+        "validate_test.go",
+    ],
     embed = [":tuplefast"],
     deps = ["//pkg/fdbgo/fdb/tuple"],
 )

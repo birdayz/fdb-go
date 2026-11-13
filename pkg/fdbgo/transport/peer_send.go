@@ -17,6 +17,7 @@ func WithSendOrder(order *sendqueue.Queue) DialOption {
 			c.coldControls = make(chan coldControl, cap(c.writeCh))
 			c.prefixDone = order.Drained()
 			c.prefixOpen = true
+			c.coldOrderActive.Store(true)
 		}
 	}
 }

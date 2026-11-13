@@ -758,10 +758,17 @@ func TestHeldOutboxControlPrefixAndPostSealReply(t *testing.T) {
 	first, _ := order.Reserve()
 	defer first.Release()
 	c, peer := heldOutboxConn(t, &order)
-	pingResult := make(chan (<-chan struct{}), 1)
-	go func() { pingResult <- c.sendPingWithReply() }()
-	pingDone := admissionAwait(t, pingResult, "pre-seal monitor's immediate future")
-	if pingDone == nil || len(c.coldControls) != 1 || c.queued.Load() != 1 {
+	type pingSent struct {
+		reply  <-chan Response
+		handle *ReplyHandle
+	}
+	pingResult := make(chan pingSent, 1)
+	go func() {
+		reply, handle := c.sendPingWithReply()
+		pingResult <- pingSent{reply, handle}
+	}()
+	ping := admissionAwait(t, pingResult, "pre-seal monitor's immediate future")
+	if ping.handle == nil || len(c.coldControls) != 1 || c.queued.Load() != 1 {
 		t.Fatal("monitor did not reserve its bounded pre-seal control position")
 	}
 	// A full bounded control inbox drops rather than blocking readLoop.
@@ -793,7 +800,8 @@ func TestHeldOutboxControlPrefixAndPostSealReply(t *testing.T) {
 	if err := WriteFrame(peer, replyToken, buildVoidReply(), false); err != nil {
 		t.Fatal(err)
 	}
-	admissionAwait(t, pingDone, "actual monitor reply completion")
+	admissionAwait(t, ping.reply, "actual monitor reply completion")
+	ping.handle.Release() // received: the monitor's release
 	token, body = readFrame(t, peer)
 	if token.First != 91 || len(body) == 0 {
 		t.Fatalf("held ping response wire token/body = %+v/%x", token, body)

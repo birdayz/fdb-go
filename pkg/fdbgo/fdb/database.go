@@ -80,13 +80,12 @@ func MustGetAPIVersion() int {
 	return v
 }
 
-// txDefaults holds database-level transaction option defaults.
-// Applied to every new transaction created by Transact/ReadTransact.
-// Matches C++ FDB_DB_OPTION_TRANSACTION_* options.
+// txDefaults snapshots only the facade-owned fields below, not native conflict-reporting defaults.
+// OnError replays non-persistent fields without overwriting successfully applied persistent options.
 type txDefaults struct {
 	timeout        int64 // milliseconds, 0 = disabled
 	retryLimit     int64 // -1 = unlimited, 0 = no retries
-	hasRetryLimit  bool  // distinguishes "not set" from "set to 0"
+	hasRetryLimit  bool
 	maxRetryDelay  int64 // milliseconds, 0 = use default
 	sizeLimit      int64 // bytes, 0 = disabled
 	readSystemKeys bool  // allow reading \xff system keys
@@ -108,7 +107,8 @@ type internalDB struct {
 	inner *client.Database
 	ctx   context.Context
 
-	// txDefaults is an IMMUTABLE snapshot published atomically.
+	// txDefaults is an immutable snapshot of facade-owned fields, published atomically.
+	// Native-owned conflict reporting is separate and can observe another default generation.
 	//
 	// This is NOT thread confinement: in C++ (7.3.77) both fdb_database_set_option
 	// and fdb_database_create_transaction run on the CALLER's thread. The C shim
@@ -131,8 +131,8 @@ type internalDB struct {
 	// Go has no equivalent: any goroutine may set a DB option while another starts a
 	// transaction. Publishing a whole snapshot (rather than per-field atomics) is what
 	// reproduces that bulk-copy property — a transaction must not pick up the new
-	// timeout alongside the old retry limit. Readers take one Load; they never hold a
-	// lock across the callouts into the client that apply the options.
+	// timeout alongside the old size limit. Readers take one Load; they never hold
+	// a lock across the callouts into the client that apply the options.
 	//
 	// Note this is a property of the single-version path only. C++'s multi-version
 	// client is itself racy here: MultiVersionDatabase::createTransaction copies
@@ -149,8 +149,8 @@ type internalDB struct {
 	txDefaultsMu sync.Mutex
 }
 
-// defaults returns the current immutable snapshot of the database-level
-// transaction defaults. Safe to call from any goroutine.
+// defaults returns the current immutable snapshot of facade-owned transaction defaults.
+// Native-owned conflict reporting is not part of this snapshot.
 func (d *internalDB) defaults() txDefaults {
 	if p := d.txDefaults.Load(); p != nil {
 		return *p
@@ -184,18 +184,23 @@ type Option = client.Option
 // *crypto/tls.Config (in-memory certs, GetClientCertificate rotation, custom
 // VerifyPeerCertificate, cipher/version policy). It takes precedence over the
 // FDB_TLS_* environment / cluster-file ":tls" resolution and enables TLS even
-// when the cluster string lacks ":tls".
+// when the cluster string lacks ":tls". It keeps Go's verification, including the
+// per-dial host-name check libfdb_c does not make (see client.WithTLSConfig).
 func WithTLSConfig(cfg *tls.Config) Option { return client.WithTLSConfig(cfg) }
 
 // WithDialFunc overrides the dialer used for every connection (advanced / tests).
 func WithDialFunc(fn client.DialFunc) Option { return client.WithDialFunc(fn) }
 
-// WithCoalesceDelay sets how long each connection waits before writing a batch, so
-// requests sent meanwhile share it. The default is libfdb_c's 10/20 µs; zero for
-// both writes a request at once when its connection has nothing queued. Off Linux
-// the delay does not apply.
+// WithCoalesceDelay sets each connection's timer-based batch delay bounds (default
+// 0, 0 on D-NG; 10/20 µs on WithLegacyWriter(); the last linger/coalesce option wins).
 func WithCoalesceDelay(minDelay, maxDelay time.Duration) Option {
 	return client.WithCoalesceDelay(minDelay, maxDelay)
+}
+
+// WithAdaptiveLinger configures Nagle-style adaptive linger on the D-NG writer
+// (0 disables; the last linger/coalesce option wins; RFC-282).
+func WithAdaptiveLinger(d time.Duration) Option {
+	return client.WithAdaptiveLinger(d)
 }
 
 // WithRangeByteCeiling bounds how many bytes a single GetRange may materialize
@@ -375,7 +380,7 @@ func (db Database) CreateTransaction() (Transaction, error) {
 	// every transaction at construction (ReadYourWrites.actor.cpp); skipping this
 	// left a manual CreateTransaction/OnError loop unbounded even when the caller
 	// had set SetTransactionTimeout/SetTransactionRetryLimit on the database.
-	db.applyTxDefaults(t)
+	db.applyTxDefaults(t, true)
 	return Transaction{t: t}, nil
 }
 
@@ -389,8 +394,8 @@ func (db Database) CreateWritableTransaction() (WritableTransaction, error) {
 	return db.CreateTransaction()
 }
 
-// Transact runs a transactional function with automatic retry. This no-ctx form
-// is drop-in compatible with the Apple Go binding: it has no Go-context
+// Transact runs a transactional function with automatic retry. Like the Apple
+// Go binding's Transact, this no-ctx form has no Go-context
 // cancellation and, by default, retries indefinitely on retryable errors. Bound
 // it with DatabaseOptions.SetTransactionTimeout / SetTransactionRetryLimit (an
 // overall budget honored across retries), or use TransactCtx for Go-context
@@ -405,11 +410,12 @@ func (db Database) Transact(f func(WritableTransaction) (any, error)) (any, erro
 }
 
 // TransactCtx uses ctx to bound the retry loop, backoff, and reads (RFC-090).
-// After dispatch, the commit and its uncertainty barrier outlive ctx. If the
-// commit outcome is uncertain, the caller can wait until recovery or Database.Close
-// even after its deadline. Unlike libfdb_c, cancellation does not release that wait.
+// A dispatched commit and its uncertainty barrier outlive ctx, which, unlike
+// fdb_future_cancel in libfdb_c, does not end the wait; a transaction timeout or
+// Cancel does, as in libfdb_c (RFC-280).
 func (db Database) TransactCtx(ctx context.Context, f func(WritableTransaction) (any, error)) (any, error) {
 	var body bodyRun
+	var defaults retryTxDefaults
 	result, err := db.d.inner.Transact(ctx, func(tx *client.Transaction) (any, error) {
 		return body.run(func() (any, error) {
 			t := &transaction{
@@ -417,8 +423,11 @@ func (db Database) TransactCtx(ctx context.Context, f func(WritableTransaction) 
 				db:            db,
 				ctx:           ctx,
 				versionstamps: true,
+				defaults:      &defaults,
 			}
-			db.applyTxDefaults(t)
+			if err := defaults.apply(db, t); err != nil {
+				return nil, err
+			}
 			return f(Transaction{t: t})
 		})
 	})
@@ -429,7 +438,7 @@ func (db Database) TransactCtx(ctx context.Context, f func(WritableTransaction) 
 }
 
 // ReadTransact runs a read-only transactional function with automatic retry.
-// Like Transact, this is the Apple-binding-compatible no-ctx form: no Go-context
+// Like Transact, this no-ctx form matches the Apple binding's: no Go-context
 // cancellation, retries bounded only by SetTransactionTimeout /
 // SetTransactionRetryLimit (default unbounded, matching libfdb_c). Use
 // ReadTransactCtx for Go-context cancellation/deadline (RFC-090).
@@ -445,14 +454,18 @@ func (db Database) ReadTransactCtx(ctx context.Context, f func(ReadTransaction) 
 	// the closure doesn't store it — it only stores the Transaction value
 	// which embeds a pointer to t).
 	var body bodyRun
+	var defaults retryTxDefaults
 	result, err := db.d.inner.ReadTransact(ctx, func(tx *client.Transaction) (any, error) {
 		return body.run(func() (any, error) {
 			t := transaction{
-				inner: tx,
-				db:    db,
-				ctx:   ctx,
+				inner:    tx,
+				db:       db,
+				ctx:      ctx,
+				defaults: &defaults,
 			}
-			db.applyTxDefaults(&t)
+			if err := defaults.apply(db, &t); err != nil {
+				return nil, err
+			}
 			return f(Transaction{t: &t})
 		})
 	})
@@ -462,20 +475,64 @@ func (db Database) ReadTransactCtx(ctx context.Context, f func(ReadTransaction) 
 	return result, nil
 }
 
-// applyTxDefaults applies database-level transaction option defaults.
-// Matches C++ FDB_DB_OPTION_TRANSACTION_* behavior.
-func (db Database) applyTxDefaults(t *transaction) {
-	// One Load: every option below comes from the SAME snapshot, so a concurrent
-	// Options().SetXxx cannot split this transaction across two default sets.
-	d := db.d.defaults()
-	if d.timeout > 0 {
-		t.inner.SetTimeout(d.timeout)
+// retryTxDefaults retains failed or skipped inherited timeouts, as C++ reapplies its option list.
+// Explicit Reset refreshes both states; database updates alone do not change the captured value.
+type retryTxDefaults struct {
+	applied        bool
+	err            error
+	pendingTimeout int64
+}
+
+func (d *retryTxDefaults) apply(db Database, t *transaction) error {
+	if d.err != nil {
+		return convertError(d.err)
 	}
-	if d.hasRetryLimit {
-		t.inner.SetRetryLimit(d.retryLimit)
+	if !d.applied {
+		d.err, d.pendingTimeout = db.applyTxDefaults(t, true)
+		d.applied = true
+		// Initial option failures remain deferred; reject reentry if OnError cleared them.
+		return nil
 	}
-	if d.maxRetryDelay > 0 {
-		t.inner.SetMaxRetryDelay(d.maxRetryDelay)
+	if d.pendingTimeout > 0 {
+		d.err, d.pendingTimeout = applyTimeoutDefault(t, d.pendingTimeout)
+		if d.err != nil {
+			return convertError(d.err)
+		}
+	}
+	db.applyTxDefaults(t, false)
+	return nil
+}
+
+// applyTxDefaults captures only facade fields; its results distinguish failed and skipped timeouts.
+// Retry callbacks retain installed overrides and reattempt only the skipped timeout value.
+func (db Database) applyTxDefaults(t *transaction, persistent bool) (error, int64) {
+	return db.d.defaults().apply(t, persistent)
+}
+
+// applyTimeoutDefault distinguishes a failed timeout from an option skipped on an already-poisoned handle.
+// Both verdict queries read only local counters; pending values retain their original snapshot.
+func applyTimeoutDefault(t *transaction, timeout int64) (error, int64) {
+	if _, err := t.inner.GetApproximateSize(); err != nil {
+		return nil, timeout
+	}
+	t.inner.SetTimeout(timeout)
+	_, err := t.inner.GetApproximateSize()
+	return err, 0
+}
+
+func (d txDefaults) apply(t *transaction, persistent bool) (error, int64) {
+	var persistentErr error
+	var pendingTimeout int64
+	if persistent {
+		if d.timeout > 0 {
+			persistentErr, pendingTimeout = applyTimeoutDefault(t, d.timeout)
+		}
+		if d.hasRetryLimit {
+			t.inner.SetRetryLimit(d.retryLimit)
+		}
+		if d.maxRetryDelay > 0 {
+			t.inner.SetMaxRetryDelay(d.maxRetryDelay)
+		}
 	}
 	if d.sizeLimit > 0 {
 		t.inner.SetSizeLimit(d.sizeLimit)
@@ -483,11 +540,8 @@ func (db Database) applyTxDefaults(t *transaction) {
 	if d.readSystemKeys {
 		t.inner.SetReadSystemKeys()
 	}
-	// SET (not ++/--) the per-tx counter to the DB net. applyTxDefaults re-runs on every retry
-	// attempt against the SAME inner tx (client.Transact re-invokes the closure), and reset()
-	// preserves snapshotRYWDisableCount — so an incrementing replay would DRIFT (-1, -2, … per
-	// attempt). Setting is idempotent and re-seeds to the DB default each attempt, matching
-	// libfdb_c's reset() (ReadYourWrites.actor.cpp:2082 seeds snapshotRywEnabled = db default).
+	// Assign the DB's net counter, not another enable/disable increment on each retry.
+	// C++ likewise seeds snapshotRywEnabled from the DB (ReadYourWrites.actor.cpp:2082).
 	t.inner.SetSnapshotRYWDisableCount(d.snapshotRywDisableNet)
 	if d.bypassUnreadable {
 		t.inner.SetBypassUnreadable(true)
@@ -495,6 +549,7 @@ func (db Database) applyTxDefaults(t *transaction) {
 	if d.causalReadRisky {
 		t.inner.SetCausalReadRisky(true)
 	}
+	return persistentErr, pendingTimeout
 }
 
 // Options returns a DatabaseOptions handle for setting database-level defaults.
@@ -502,9 +557,8 @@ func (db Database) Options() DatabaseOptions {
 	return DatabaseOptions{db: db.d}
 }
 
-// SetHedgeEnabled controls speculative second requests (hedge) for read RPCs.
-// When enabled (default), slow reads are rescued by sending a backup request
-// to a second server after max(10ms, 2×latency).
+// SetHedgeEnabled enables budget-funded speculative read requests (default on).
+// Disabled, no read hedges; lone replies still accrue budget (RFC-281).
 func (db Database) SetHedgeEnabled(enabled bool) {
 	db.d.inner.SetHedgeEnabled(enabled)
 }

@@ -10,6 +10,7 @@ go_library(
         "clusterfile_lookup.go",
         "commit_input.go",
         "commitpath.go",
+        "conflict_map.go",
         "coordinator.go",
         "database.go",
         "ddsketch.go",
@@ -36,6 +37,7 @@ go_library(
         "pending_get.go",
         "range_issue.go",
         "range_limits.go",
+        "range_selector_issue.go",
         "read_incarnation.go",
         "read_send.go",
         "read_tags.go",
@@ -46,15 +48,19 @@ go_library(
         "ryw.go",
         "ryw_getkey.go",
         "ryw_nodes.go",
+        "ryw_pseq.go",
         "ryw_snapshot_cache.go",
         "ryw_walk.go",
         "ryw_walk_iter.go",
         "ryw_writes.go",
         "sizelimits.go",
         "span.go",
+        "specialkeys.go",
         "tag_throttle.go",
+        "timeout_design.go",
         "timeout_queue.go",
         "tls.go",
+        "tls_key.go",
         "topology.go",
         "transaction.go",
         "transaction_lifetime.go",
@@ -82,15 +88,19 @@ go_library(
 
 # gazelle:exclude commit_coalesce_unit_test.go
 # gazelle:exclude ownership_unit_test.go
+# gazelle:exclude commit_capture_helpers_test.go
 # gazelle:exclude read_result_ownership_unit_test.go
 # gazelle:exclude range_copy_unit_test.go
+# gazelle:exclude ryw_append_unit_test.go
 go_test(
     name = "ownership_unit_test",
     srcs = [
+        "commit_capture_helpers_test.go",
         "commit_coalesce_unit_test.go",
         "ownership_unit_test.go",
         "range_copy_unit_test.go",
         "read_result_ownership_unit_test.go",
+        "ryw_append_unit_test.go",
     ],
     embed = [":client"],
     deps = ["//pkg/fdbgo/wire/types"],
@@ -112,10 +122,20 @@ go_test(
     deps = ["//pkg/fdbgo/wire"],
 )
 
+# gazelle:exclude hedge_budget_unit_test.go
+# gazelle:exclude hedge_budget_helpers_test.go
 # gazelle:exclude hedge_timer_unit_test.go
+# gazelle:exclude hedge_sender_delay_unit_test.go
+# gazelle:exclude queue_model_unit_test.go
 go_test(
     name = "hedge_timer_unit_test",
-    srcs = ["hedge_timer_unit_test.go"],
+    srcs = [
+        "hedge_budget_helpers_test.go",
+        "hedge_budget_unit_test.go",
+        "hedge_sender_delay_unit_test.go",
+        "hedge_timer_unit_test.go",
+        "queue_model_unit_test.go",
+    ],
     embed = [":client"],
     deps = [
         "//pkg/fdbgo/transport",
@@ -136,9 +156,13 @@ go_test(
 )
 
 # gazelle:exclude conflict_coalesce_unit_test.go
+# gazelle:exclude conflict_map_unit_test.go
 go_test(
     name = "conflict_coalesce_unit_test",
-    srcs = ["conflict_coalesce_unit_test.go"],
+    srcs = [
+        "conflict_coalesce_unit_test.go",
+        "conflict_map_unit_test.go",
+    ],
     embed = [":client"],
 )
 
@@ -148,6 +172,7 @@ go_test(
     name = "conflictbuf_unit_test",
     srcs = [
         "commit_capture_borrow_unit_test.go",
+        "commit_capture_helpers_test.go",
         "conflictbuf_unit_test.go",
     ],
     embed = [":client"],
@@ -162,6 +187,7 @@ go_test(
 # gazelle:exclude turnover_finish_unit_test.go
 # gazelle:exclude turnover_ready_unit_test.go
 # gazelle:exclude timeout_alloc_unit_test.go
+# gazelle:exclude timeout_design_unit_test.go
 # gazelle:exclude timeout_generation_unit_test.go
 # gazelle:exclude timeout_init_alloc_unit_test.go
 # gazelle:exclude timeout_queue_regression_unit_test.go
@@ -172,6 +198,7 @@ go_test(
         "lazy_successor_unit_test.go",
         "lease_alloc_unit_test.go",
         "timeout_alloc_unit_test.go",
+        "timeout_design_unit_test.go",
         "timeout_generation_unit_test.go",
         "timeout_init_alloc_unit_test.go",
         "timeout_queue_regression_unit_test.go",
@@ -312,9 +339,11 @@ go_test(
 
 # gazelle:exclude ryw_pin_lifecycle_test.go
 # gazelle:exclude ryw_review_regression_test.go
+# gazelle:exclude get_issue_unit_test.go
 go_test(
     name = "ryw_pin_unit_test",
     srcs = [
+        "get_issue_unit_test.go",
         "ryw_pin_lifecycle_test.go",
         "ryw_review_regression_test.go",
         "ryw_walk_helper_test.go",
@@ -323,17 +352,78 @@ go_test(
     deps = ["//pkg/fdbgo/wire"],
 )
 
+# gazelle:exclude range_selector_unit_test.go
+# gazelle:exclude ryw_read_bench_unit_test.go
+# gazelle:exclude atomic_queue_bench_unit_test.go
+# gazelle:exclude ryw_walk_valbuf_unit_test.go
+go_test(
+    name = "range_selector_unit_test",
+    srcs = [
+        "atomic_queue_bench_unit_test.go",
+        "range_selector_unit_test.go",
+        "ryw_read_bench_unit_test.go",
+        "ryw_walk_helper_test.go",
+        "ryw_walk_valbuf_unit_test.go",
+    ],
+    embed = [":client"],
+)
+
+# Compares selector range reads and their read-conflict ranges with libfdb_c on a
+# three-process small-shard cluster; heavyweight, so it runs only in the full lane.
+# gazelle:exclude selector_range_conformance_test.go
+go_test(
+    name = "selector_range_conformance_test",
+    timeout = "long",
+    srcs = [
+        "ryw_walk_helper_test.go",
+        "selector_range_conformance_test.go",
+    ],
+    embed = [":client"],
+    tags = [
+        "resources:cpu:2",
+        "resources:memory:2500",
+        "test-full",
+    ],
+    deps = [
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb",
+    ],
+)
+
 # gazelle:exclude ryw_walk_trace_test.go
 # gazelle:exclude ryw_nodes_property_test.go
+# gazelle:exclude ryw_walk_iter_oracle_test.go
+# gazelle:exclude ryw_walk_cursor_unit_test.go
+# gazelle:exclude ryw_walk_race_on_test.go
+# gazelle:exclude ryw_walk_race_off_test.go
 go_test(
     name = "ryw_walk_unit_test",
     srcs = [
         "ryw_nodes_property_test.go",
+        "ryw_walk_cursor_unit_test.go",
         "ryw_walk_helper_test.go",
+        "ryw_walk_iter_oracle_test.go",
+        "ryw_walk_race_off_test.go",
+        "ryw_walk_race_on_test.go",
         "ryw_walk_trace_test.go",
     ],
     embed = [":client"],
     deps = ["//pkg/fdbgo/wire"],
+)
+
+# gazelle:exclude specialkeys_unit_test.go
+go_test(
+    name = "specialkeys_unit_test",
+    srcs = [
+        "commit_capture_helpers_test.go",
+        "specialkeys_unit_test.go",
+    ],
+    embed = [":client"],
+    deps = [
+        "//pkg/fdbgo/transport",
+        "//pkg/fdbgo/wire",
+        "//pkg/fdbgo/wire/types",
+    ],
 )
 
 # gazelle:exclude range_limits_unit_test.go
@@ -347,10 +437,26 @@ go_test(
     ],
 )
 
+# gazelle:exclude ryw_pseq_unit_test.go
+# gazelle:exclude ryw_pseq_finger_unit_test.go
+go_test(
+    name = "ryw_pseq_unit_test",
+    srcs = [
+        "ryw_pseq_finger_unit_test.go",
+        "ryw_pseq_unit_test.go",
+    ],
+    embed = [":client"],
+)
+
 # gazelle:exclude ryw_nodes_unit_test.go
+# gazelle:exclude ryw_atomic_nodes_unit_test.go
 go_test(
     name = "ryw_nodes_unit_test",
-    srcs = ["ryw_nodes_unit_test.go"],
+    srcs = [
+        "ryw_atomic_nodes_unit_test.go",
+        "ryw_nodes_unit_test.go",
+        "ryw_walk_helper_test.go",
+    ],
     embed = [":client"],
 )
 
@@ -362,12 +468,67 @@ go_test(
 go_test(
     name = "native_range_unit_test",
     srcs = [
+        "hedge_budget_helpers_test.go",
         "native_range_suspend_test.go",
         "native_range_unit_test.go",
         "peer_send_load_unit_test.go",
         "peer_send_unit_test.go",
         "reply_guard_unit_test.go",
     ],
+    embed = [":client"],
+)
+
+# gazelle:exclude tls_test.go
+# gazelle:exclude tls_key_unit_test.go
+# gazelle:exclude tls_key_fixtures_test.go
+# gazelle:exclude tls_fdbserver_test.go
+go_test(
+    name = "tls_unit_test",
+    srcs = [
+        "tls_fdbserver_test.go",
+        "tls_key_fixtures_test.go",
+        "tls_key_unit_test.go",
+        "tls_test.go",
+    ],
+    embed = [":client"],
+    deps = [
+        "//pkg/fdbgo/transport",
+        "//pkg/fdbgo/wire",
+    ],
+)
+
+# gazelle:exclude tls_roots_unit_test.go
+go_test(
+    name = "tls_roots_unit_test",
+    srcs = [
+        "tls_fdbserver_test.go",
+        "tls_roots_unit_test.go",
+    ],
+    embed = [":client"],
+    deps = ["//pkg/fdbgo/transport"],
+)
+
+# gazelle:exclude conn_identity_unit_test.go
+# gazelle:exclude connect_failure_unit_test.go
+# gazelle:exclude location_cache_unit_test.go
+# gazelle:exclude metrics_shards_unit_test.go
+# gazelle:exclude metrics_lifetime_unit_test.go
+# gazelle:exclude decode_failure_unit_test.go
+# gazelle:exclude reply_ground_truth_test.go
+go_test(
+    name = "conn_location_unit_test",
+    srcs = [
+        "conn_identity_unit_test.go",
+        "connect_failure_unit_test.go",
+        "decode_failure_unit_test.go",
+        "fdberror_assert_test.go",
+        "hedge_budget_helpers_test.go",
+        "location_cache_unit_test.go",
+        "metrics_lifetime_unit_test.go",
+        "metrics_shards_unit_test.go",
+        "reply_ground_truth_test.go",
+    ],
+    data = ["//pkg/fdbgo/wire/types:testdata.json"],
     embed = [":client"],
 )
 
@@ -388,13 +549,18 @@ go_test(
 
 # gazelle:exclude read_tags_plumbing_fdb_test.go
 # gazelle:exclude storage_plumbing_fdb_test.go
+# gazelle:exclude range_selector_requests_fdb_test.go
+# gazelle:exclude watch_lifecycle_fdb_test.go
 go_test(
     name = "storage_plumbing_fdb_test",
     srcs = [
+        "range_selector_requests_fdb_test.go",
         "read_tags_helpers_test.go",
         "read_tags_plumbing_fdb_test.go",
+        "ryw_walk_helper_test.go",
         "storage_plumbing_fdb_test.go",
         "testmain_test.go",
+        "watch_lifecycle_fdb_test.go",
         "wire_recorder_test.go",
     ],
     embed = [":client"],
@@ -404,6 +570,13 @@ go_test(
         "//pkg/fdbgo/wire/types",
         "//pkg/testcontainers/foundationdb",
     ],
+)
+
+# gazelle:exclude watch_lifecycle_unit_test.go
+go_test(
+    name = "watch_lifecycle_unit_test",
+    srcs = ["watch_lifecycle_unit_test.go"],
+    embed = [":client"],
 )
 
 # gazelle:exclude mappedrange_conflict_prefix_unit_test.go
@@ -451,6 +624,8 @@ go_test(
         "clusterfile_lookup_test.go",
         "clusterfile_test.go",
         "coalesce_option_test.go",
+        "commit_capture_helpers_test.go",  # keep
+        "commit_decode_fdb_test.go",
         "commit_dummy_regression_test.go",
         "commit_grv_lifetime_test.go",
         "commit_lifetime_fdb_test.go",
@@ -478,6 +653,7 @@ go_test(
         "endpoint_test.go",
         "failure_monitor_test.go",
         "fault_test.go",
+        "fdberror_assert_test.go",
         "getkey_conflict_unit_test.go",
         "getrange_conflict_unit_test.go",
         "getrange_more_limit_test.go",
@@ -499,6 +675,8 @@ go_test(
         "grv_test.go",
         "grv_throttle_ordering_test.go",
         "grv_unit_test.go",
+        "hedge_budget_fdb_test.go",
+        "hedge_budget_helpers_test.go",  # keep
         "hedge_test.go",
         "inband_maybedelivered_grv_test.go",
         "inband_reply_error_test.go",
@@ -514,6 +692,7 @@ go_test(
         "mappedrange_guards_test.go",
         "mappedrange_skip_lifecycle_test.go",
         "mappedrange_skip_unit_test.go",
+        "metrics_retry_fdb_test.go",
         "metrics_validation_test.go",
         "multishard_test.go",
         "native_commit_fdb_test.go",
@@ -540,7 +719,6 @@ go_test(
         "readversion_instant_anchor_test.go",
         "readversion_instant_test.go",
         "readversion_race_test.go",
-        "reply_ground_truth_test.go",
         "request_transcript_legacy_test.go",
         "request_transcript_test.go",
         "reset_option_lifecycle_test.go",
@@ -576,7 +754,6 @@ go_test(
         "tenant_fence_test.go",
         "testmain_test.go",
         "timeout_observer_fdb_test.go",
-        "tls_test.go",
         "topology_unit2_test.go",
         "topology_unit_test.go",
         "transaction_concurrent_unit_test.go",

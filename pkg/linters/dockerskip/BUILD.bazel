@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "dockerskip",
+    srcs = ["analyzer.go"],
+    importpath = "fdb.dev/pkg/linters/dockerskip",
+    visibility = ["//visibility:public"],
+    deps = ["@org_golang_x_tools//go/analysis"],
+)
+
+go_test(
+    name = "dockerskip_test",
+    srcs = ["analyzer_test.go"],
+    embed = [":dockerskip"],
+    deps = ["@org_golang_x_tools//go/analysis"],
+)

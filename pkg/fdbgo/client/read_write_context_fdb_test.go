@@ -88,7 +88,7 @@ func TestReadWriteContext_RealFDBBackpressure(t *testing.T) {
 			defer cancel()
 			gate := &readWriteGate{parked: make(chan struct{}), release: make(chan struct{})}
 			defer gate.releaseIt()
-			db := newTestDatabase(t, ctx, startProxyFDB(t, ctx), gate.dial)
+			db := newTestDatabase(t, ctx, startProxyFDB(t, ctx), gate.dial, withLegacyWriter()) // asserts the write acknowledgment
 			defer db.Close()
 			key := []byte(t.Name())
 			want := []byte("unchanged-body")

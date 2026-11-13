@@ -1,0 +1,687 @@
+{
+  "schema": "otel283_warm1m_query_archive_v1",
+  "created_utc": "2026-10-27T18:18:44.676Z",
+  "scope": "One separate completed3round warm/local closed-loop FDB query campaign on existing1Mimmutablecorpus; notCH/100M/HA/productionSLO evidence",
+  "run": "rw1m0286",
+  "measured_revision": "c7d00bf938edc6cb9a84df4c63b3bbd3ac22dc94",
+  "measured_binary_sha256": "e3d5f167aba6c671d31cd278dc16414dcdb784bb36a5f3a516d893f0668f762c",
+  "frozen_source_clean": true,
+  "source_before_after_identical": true,
+  "binary_before_after_identical": true,
+  "corpus_census": "No new source audit in this campaign; reference separate pilot-1m-v2-workers2-complete archive",
+  "timing": "Source-oracle preparation outside each timed sample; no hidden or discarded warmup samples. Reported mode wall_ns retained separately and not equated to sum of timed query latencies.",
+  "total_timed_answers": 48000,
+  "rounds": [
+    {
+      "round": 1,
+      "reported_start_utc": "2026-10-27T18:11:07.46776592Z",
+      "reported_wall_ns": 12343030044,
+      "samples": 16000,
+      "class_populations": {
+        "trace": 1000,
+        "trace_absent": 1000,
+        "span": 1000,
+        "span_absent": 1000,
+        "genai_response": 1000,
+        "genai_scope_resource": 1000,
+        "genai_scope_scope": 1000,
+        "genai_type": 1000,
+        "genai_absent": 1000,
+        "genai_operation": 1000,
+        "genai_provider": 1000,
+        "genai_model": 1000,
+        "time_narrow": 1000,
+        "time_empty": 1000,
+        "time_absent": 1000,
+        "time_broad": 1000
+      },
+      "histograms": {
+        "genai_absent": {
+          "population": 1000,
+          "min_ns": 469238,
+          "p50_ns": 562824,
+          "p95_ns": 656442,
+          "p99_ns": 769385,
+          "max_ns": 4955713
+        },
+        "genai_model": {
+          "population": 1000,
+          "min_ns": 1160945,
+          "p50_ns": 1359081,
+          "p95_ns": 1667474,
+          "p99_ns": 2010022,
+          "max_ns": 7449880
+        },
+        "genai_operation": {
+          "population": 1000,
+          "min_ns": 1157589,
+          "p50_ns": 1327290,
+          "p95_ns": 1573536,
+          "p99_ns": 1717007,
+          "max_ns": 2216162
+        },
+        "genai_provider": {
+          "population": 1000,
+          "min_ns": 1152910,
+          "p50_ns": 1356877,
+          "p95_ns": 1654119,
+          "p99_ns": 1954757,
+          "max_ns": 2482625
+        },
+        "genai_response": {
+          "population": 1000,
+          "min_ns": 477654,
+          "p50_ns": 570950,
+          "p95_ns": 674175,
+          "p99_ns": 778763,
+          "max_ns": 1176085
+        },
+        "genai_scope_resource": {
+          "population": 1000,
+          "min_ns": 471241,
+          "p50_ns": 544831,
+          "p95_ns": 642986,
+          "p99_ns": 783922,
+          "max_ns": 1344172
+        },
+        "genai_scope_scope": {
+          "population": 1000,
+          "min_ns": 488995,
+          "p50_ns": 566071,
+          "p95_ns": 682501,
+          "p99_ns": 837164,
+          "max_ns": 1245726
+        },
+        "genai_type": {
+          "population": 1000,
+          "min_ns": 494386,
+          "p50_ns": 564097,
+          "p95_ns": 673093,
+          "p99_ns": 802739,
+          "max_ns": 1065395
+        },
+        "span": {
+          "population": 1000,
+          "min_ns": 465912,
+          "p50_ns": 560981,
+          "p95_ns": 657844,
+          "p99_ns": 768944,
+          "max_ns": 6737413
+        },
+        "span_absent": {
+          "population": 1000,
+          "min_ns": 448749,
+          "p50_ns": 548858,
+          "p95_ns": 651302,
+          "p99_ns": 791337,
+          "max_ns": 1097285
+        },
+        "time_absent": {
+          "population": 1000,
+          "min_ns": 461372,
+          "p50_ns": 548347,
+          "p95_ns": 645301,
+          "p99_ns": 862712,
+          "max_ns": 2146260
+        },
+        "time_broad": {
+          "population": 1000,
+          "min_ns": 789143,
+          "p50_ns": 918527,
+          "p95_ns": 1109939,
+          "p99_ns": 1347478,
+          "max_ns": 2215240
+        },
+        "time_empty": {
+          "population": 1000,
+          "min_ns": 376473,
+          "p50_ns": 446495,
+          "p95_ns": 541464,
+          "p99_ns": 646282,
+          "max_ns": 835901
+        },
+        "time_narrow": {
+          "population": 1000,
+          "min_ns": 490027,
+          "p50_ns": 610445,
+          "p95_ns": 794693,
+          "p99_ns": 937584,
+          "max_ns": 5242395
+        },
+        "trace": {
+          "population": 1000,
+          "min_ns": 496238,
+          "p50_ns": 603171,
+          "p95_ns": 772100,
+          "p99_ns": 1011884,
+          "max_ns": 2089242
+        },
+        "trace_absent": {
+          "population": 1000,
+          "min_ns": 451885,
+          "p50_ns": 538248,
+          "p95_ns": 640832,
+          "p99_ns": 772190,
+          "max_ns": 4086589
+        }
+      },
+      "failures": 0,
+      "first_timed_sample": {
+        "iteration": 0,
+        "class": "trace",
+        "ns": 2089242,
+        "results": 2,
+        "consumed_candidates": 2,
+        "consumed_logical_bytes": 1208,
+        "server_summary_available": false,
+        "result_digest": "e52363d24ffc8890bf62412eb3db09dbbf904f408e44a826df88bc220a88a598"
+      },
+      "selected_summary_verified": [
+        {
+          "class": "trace",
+          "nearest_rank": 999,
+          "p999_ms": 1.117213,
+          "max_ms": 2.089242
+        },
+        {
+          "class": "span",
+          "nearest_rank": 999,
+          "p999_ms": 1.494847,
+          "max_ms": 6.737413
+        },
+        {
+          "class": "genai_response",
+          "nearest_rank": 999,
+          "p999_ms": 0.986716,
+          "max_ms": 1.176085
+        },
+        {
+          "class": "time_narrow",
+          "nearest_rank": 999,
+          "p999_ms": 4.222226,
+          "max_ms": 5.242395
+        },
+        {
+          "class": "time_broad",
+          "nearest_rank": 999,
+          "p999_ms": 1.98271,
+          "max_ms": 2.21524
+        },
+        {
+          "class": "genai_provider",
+          "nearest_rank": 999,
+          "p999_ms": 2.282718,
+          "max_ms": 2.482625
+        }
+      ],
+      "strict_health": [
+        {
+          "side": "before",
+          "aggregate_healthy_original": true,
+          "health_exception_used": false,
+          "raw_sha256": "f447093cbd9353861873ad8397fa65ff80415304a81745dab8a582b0fc64007f",
+          "summary_sha256": "cfeaf8174023250e1bbabc115974fd4e9d8a5a3959daa14685bb77606d9553df"
+        },
+        {
+          "side": "after",
+          "aggregate_healthy_original": true,
+          "health_exception_used": false,
+          "raw_sha256": "06e4048f979570bceed049c81204e414422f6a683009f42d25f5a1b166defe8c",
+          "summary_sha256": "0c5e7bd4cedd489afb7f359bf441762a8bfb3c27df3e25b02fc0ba3cc70c7ef9"
+        }
+      ]
+    },
+    {
+      "round": 2,
+      "reported_start_utc": "2026-10-27T18:11:39.058702208Z",
+      "reported_wall_ns": 12288651605,
+      "samples": 16000,
+      "class_populations": {
+        "trace": 1000,
+        "trace_absent": 1000,
+        "span": 1000,
+        "span_absent": 1000,
+        "genai_response": 1000,
+        "genai_scope_resource": 1000,
+        "genai_scope_scope": 1000,
+        "genai_type": 1000,
+        "genai_absent": 1000,
+        "genai_operation": 1000,
+        "genai_provider": 1000,
+        "genai_model": 1000,
+        "time_narrow": 1000,
+        "time_empty": 1000,
+        "time_absent": 1000,
+        "time_broad": 1000
+      },
+      "histograms": {
+        "genai_absent": {
+          "population": 1000,
+          "min_ns": 480989,
+          "p50_ns": 559628,
+          "p95_ns": 666120,
+          "p99_ns": 864275,
+          "max_ns": 6706746
+        },
+        "genai_model": {
+          "population": 1000,
+          "min_ns": 1177247,
+          "p50_ns": 1345145,
+          "p95_ns": 1670930,
+          "p99_ns": 1936152,
+          "max_ns": 6566340
+        },
+        "genai_operation": {
+          "population": 1000,
+          "min_ns": 1125949,
+          "p50_ns": 1317021,
+          "p95_ns": 1567765,
+          "p99_ns": 1817698,
+          "max_ns": 2239415
+        },
+        "genai_provider": {
+          "population": 1000,
+          "min_ns": 1156147,
+          "p50_ns": 1341497,
+          "p95_ns": 1643489,
+          "p99_ns": 1931544,
+          "max_ns": 6769635
+        },
+        "genai_response": {
+          "population": 1000,
+          "min_ns": 483826,
+          "p50_ns": 566241,
+          "p95_ns": 697179,
+          "p99_ns": 797879,
+          "max_ns": 1366194
+        },
+        "genai_scope_resource": {
+          "population": 1000,
+          "min_ns": 461433,
+          "p50_ns": 542877,
+          "p95_ns": 645952,
+          "p99_ns": 755539,
+          "max_ns": 1139085
+        },
+        "genai_scope_scope": {
+          "population": 1000,
+          "min_ns": 484706,
+          "p50_ns": 564197,
+          "p95_ns": 672702,
+          "p99_ns": 893931,
+          "max_ns": 1186344
+        },
+        "genai_type": {
+          "population": 1000,
+          "min_ns": 494966,
+          "p50_ns": 561351,
+          "p95_ns": 670569,
+          "p99_ns": 805664,
+          "max_ns": 1032833
+        },
+        "span": {
+          "population": 1000,
+          "min_ns": 459519,
+          "p50_ns": 554239,
+          "p95_ns": 662202,
+          "p99_ns": 786127,
+          "max_ns": 1120189
+        },
+        "span_absent": {
+          "population": 1000,
+          "min_ns": 463406,
+          "p50_ns": 546493,
+          "p95_ns": 670629,
+          "p99_ns": 834067,
+          "max_ns": 6114255
+        },
+        "time_absent": {
+          "population": 1000,
+          "min_ns": 465099,
+          "p50_ns": 546003,
+          "p95_ns": 665028,
+          "p99_ns": 807338,
+          "max_ns": 1770900
+        },
+        "time_broad": {
+          "population": 1000,
+          "min_ns": 793701,
+          "p50_ns": 911023,
+          "p95_ns": 1100201,
+          "p99_ns": 1287265,
+          "max_ns": 2267128
+        },
+        "time_empty": {
+          "population": 1000,
+          "min_ns": 385079,
+          "p50_ns": 443329,
+          "p95_ns": 547265,
+          "p99_ns": 660028,
+          "max_ns": 759256
+        },
+        "time_narrow": {
+          "population": 1000,
+          "min_ns": 510976,
+          "p50_ns": 608160,
+          "p95_ns": 784725,
+          "p99_ns": 981777,
+          "max_ns": 1225218
+        },
+        "trace": {
+          "population": 1000,
+          "min_ns": 502832,
+          "p50_ns": 594875,
+          "p95_ns": 781458,
+          "p99_ns": 995933,
+          "max_ns": 2043746
+        },
+        "trace_absent": {
+          "population": 1000,
+          "min_ns": 452095,
+          "p50_ns": 533810,
+          "p95_ns": 646522,
+          "p99_ns": 830651,
+          "max_ns": 1546625
+        }
+      },
+      "failures": 0,
+      "first_timed_sample": {
+        "iteration": 0,
+        "class": "trace",
+        "ns": 2024219,
+        "results": 2,
+        "consumed_candidates": 2,
+        "consumed_logical_bytes": 1208,
+        "server_summary_available": false,
+        "result_digest": "e52363d24ffc8890bf62412eb3db09dbbf904f408e44a826df88bc220a88a598"
+      },
+      "selected_summary_verified": [
+        {
+          "class": "trace",
+          "nearest_rank": 999,
+          "p999_ms": 2.024219,
+          "max_ms": 2.043746
+        },
+        {
+          "class": "span",
+          "nearest_rank": 999,
+          "p999_ms": 1.008988,
+          "max_ms": 1.120189
+        },
+        {
+          "class": "genai_response",
+          "nearest_rank": 999,
+          "p999_ms": 1.232892,
+          "max_ms": 1.366194
+        },
+        {
+          "class": "time_narrow",
+          "nearest_rank": 999,
+          "p999_ms": 1.175122,
+          "max_ms": 1.225218
+        },
+        {
+          "class": "time_broad",
+          "nearest_rank": 999,
+          "p999_ms": 1.811947,
+          "max_ms": 2.267128
+        },
+        {
+          "class": "genai_provider",
+          "nearest_rank": 999,
+          "p999_ms": 6.334812,
+          "max_ms": 6.769635
+        }
+      ],
+      "strict_health": [
+        {
+          "side": "before",
+          "aggregate_healthy_original": true,
+          "health_exception_used": false,
+          "raw_sha256": "b716a7f306dfad82eb4cc2662f2c676b1f3dff9af1f13015844c7dc1d38bc08d",
+          "summary_sha256": "b7802047b1472567ebe979ec477283ad05897a2ab74fcdb4922bb5b9b2885c68"
+        },
+        {
+          "side": "after",
+          "aggregate_healthy_original": true,
+          "health_exception_used": false,
+          "raw_sha256": "96872131e572c5d199a5791d32b1d4aabc0f40d907c8887403d4cae671949c61",
+          "summary_sha256": "6d04eeed229a0c6fae0412af65c534b0653bbc2ca269d27cc0c06020874a0974"
+        }
+      ]
+    },
+    {
+      "round": 3,
+      "reported_start_utc": "2026-10-27T18:12:10.472411824Z",
+      "reported_wall_ns": 12230106255,
+      "samples": 16000,
+      "class_populations": {
+        "trace": 1000,
+        "trace_absent": 1000,
+        "span": 1000,
+        "span_absent": 1000,
+        "genai_response": 1000,
+        "genai_scope_resource": 1000,
+        "genai_scope_scope": 1000,
+        "genai_type": 1000,
+        "genai_absent": 1000,
+        "genai_operation": 1000,
+        "genai_provider": 1000,
+        "genai_model": 1000,
+        "time_narrow": 1000,
+        "time_empty": 1000,
+        "time_absent": 1000,
+        "time_broad": 1000
+      },
+      "histograms": {
+        "genai_absent": {
+          "population": 1000,
+          "min_ns": 472664,
+          "p50_ns": 559338,
+          "p95_ns": 654367,
+          "p99_ns": 774334,
+          "max_ns": 1443039
+        },
+        "genai_model": {
+          "population": 1000,
+          "min_ns": 1144535,
+          "p50_ns": 1343361,
+          "p95_ns": 1647737,
+          "p99_ns": 1873163,
+          "max_ns": 2398246
+        },
+        "genai_operation": {
+          "population": 1000,
+          "min_ns": 1153672,
+          "p50_ns": 1315849,
+          "p95_ns": 1568638,
+          "p99_ns": 1853095,
+          "max_ns": 4028551
+        },
+        "genai_provider": {
+          "population": 1000,
+          "min_ns": 1173089,
+          "p50_ns": 1338572,
+          "p95_ns": 1645022,
+          "p99_ns": 1921855,
+          "max_ns": 6845940
+        },
+        "genai_response": {
+          "population": 1000,
+          "min_ns": 476251,
+          "p50_ns": 568766,
+          "p95_ns": 664787,
+          "p99_ns": 747223,
+          "max_ns": 1244655
+        },
+        "genai_scope_resource": {
+          "population": 1000,
+          "min_ns": 471191,
+          "p50_ns": 543789,
+          "p95_ns": 636304,
+          "p99_ns": 720322,
+          "max_ns": 6398033
+        },
+        "genai_scope_scope": {
+          "population": 1000,
+          "min_ns": 485849,
+          "p50_ns": 561793,
+          "p95_ns": 661691,
+          "p99_ns": 727215,
+          "max_ns": 1219126
+        },
+        "genai_type": {
+          "population": 1000,
+          "min_ns": 473816,
+          "p50_ns": 559870,
+          "p95_ns": 656602,
+          "p99_ns": 802608,
+          "max_ns": 5153900
+        },
+        "span": {
+          "population": 1000,
+          "min_ns": 467925,
+          "p50_ns": 557374,
+          "p95_ns": 662774,
+          "p99_ns": 788231,
+          "max_ns": 961719
+        },
+        "span_absent": {
+          "population": 1000,
+          "min_ns": 463597,
+          "p50_ns": 546424,
+          "p95_ns": 646322,
+          "p99_ns": 770598,
+          "max_ns": 954636
+        },
+        "time_absent": {
+          "population": 1000,
+          "min_ns": 470080,
+          "p50_ns": 545041,
+          "p95_ns": 650841,
+          "p99_ns": 783342,
+          "max_ns": 1026282
+        },
+        "time_broad": {
+          "population": 1000,
+          "min_ns": 793781,
+          "p50_ns": 909211,
+          "p95_ns": 1079823,
+          "p99_ns": 1242179,
+          "max_ns": 1855700
+        },
+        "time_empty": {
+          "population": 1000,
+          "min_ns": 381562,
+          "p50_ns": 444562,
+          "p95_ns": 549329,
+          "p99_ns": 670368,
+          "max_ns": 970195
+        },
+        "time_narrow": {
+          "population": 1000,
+          "min_ns": 513872,
+          "p50_ns": 602269,
+          "p95_ns": 798801,
+          "p99_ns": 1051700,
+          "max_ns": 6166886
+        },
+        "trace": {
+          "population": 1000,
+          "min_ns": 497150,
+          "p50_ns": 596819,
+          "p95_ns": 755740,
+          "p99_ns": 999611,
+          "max_ns": 1804984
+        },
+        "trace_absent": {
+          "population": 1000,
+          "min_ns": 447136,
+          "p50_ns": 533689,
+          "p95_ns": 647124,
+          "p99_ns": 750890,
+          "max_ns": 1121732
+        }
+      },
+      "failures": 0,
+      "first_timed_sample": {
+        "iteration": 0,
+        "class": "trace",
+        "ns": 1715436,
+        "results": 2,
+        "consumed_candidates": 2,
+        "consumed_logical_bytes": 1208,
+        "server_summary_available": false,
+        "result_digest": "e52363d24ffc8890bf62412eb3db09dbbf904f408e44a826df88bc220a88a598"
+      },
+      "selected_summary_verified": [
+        {
+          "class": "trace",
+          "nearest_rank": 999,
+          "p999_ms": 1.715436,
+          "max_ms": 1.804984
+        },
+        {
+          "class": "span",
+          "nearest_rank": 999,
+          "p999_ms": 0.929729,
+          "max_ms": 0.961719
+        },
+        {
+          "class": "genai_response",
+          "nearest_rank": 999,
+          "p999_ms": 1.035479,
+          "max_ms": 1.244655
+        },
+        {
+          "class": "time_narrow",
+          "nearest_rank": 999,
+          "p999_ms": 6.049203,
+          "max_ms": 6.166886
+        },
+        {
+          "class": "time_broad",
+          "nearest_rank": 999,
+          "p999_ms": 1.368369,
+          "max_ms": 1.8557
+        },
+        {
+          "class": "genai_provider",
+          "nearest_rank": 999,
+          "p999_ms": 5.555178,
+          "max_ms": 6.84594
+        }
+      ],
+      "strict_health": [
+        {
+          "side": "before",
+          "aggregate_healthy_original": true,
+          "health_exception_used": false,
+          "raw_sha256": "36cdbf4c7a0fd0a68718d1b1dec7ded32c46ad67d9014831fd5cf183f93c3413",
+          "summary_sha256": "59be1421e2923ed42c64043220e22a2be42749617dfb38695fd31cb7f8b32655"
+        },
+        {
+          "side": "after",
+          "aggregate_healthy_original": true,
+          "health_exception_used": false,
+          "raw_sha256": "1117ceb049470633724a4b122d80b3f416023cb13c68fc915dbebe85240dbc39",
+          "summary_sha256": "12f04c1c8836aff737df0e1b84865e6d4e922117fb3bf343007cff85aa2fbfd1"
+        }
+      ]
+    }
+  ],
+  "root_summary": {
+    "source": "run/selected-summary.json",
+    "origin": "Root-computed from raw sample ns;6selected classes only, all16raw classes retained",
+    "p999_method": "Empirical nearest-rank ceil(.999*n)=999 at n1000, sorted index998; notproductionSLO; checked against every supplied selectedclass/round"
+  },
+  "raw_regular_files": 25,
+  "raw_symlinks": 0,
+  "portability": "All original/tmp paths are local provenance; do not execute driver blindly. Fresh owned paths and original approval,source/binary/run/instance/stricthealth safeguards required.",
+  "exclusions": [
+    "No prior load/archive duplicated",
+    "No subsequent campaign or CH comparison",
+    "NoDocker inspect/environment/private-address dump"
+  ],
+  "archive_operations_only": true
+}

@@ -512,10 +512,9 @@ func (rs *rankedSet) GetNth(tx fdb.ReadTransaction, rank int64) ([]byte, error) 
 		}
 	}
 
-	// With CountDuplicates, a key's count at level 0 may exceed 1.
-	// When count > rank at level 0, we drilled down but there's no lower level.
-	// The key variable holds the answer. Matches Java's getNth() return path.
-	if len(key) > 0 {
+	// Below level 0: with CountDuplicates a key's count may exceed 1 and the key is
+	// the answer; without it Java's NthLookup returns null (RankedSet.java:576-581).
+	if rs.config.CountDuplicates && len(key) > 0 {
 		return key, nil
 	}
 	return nil, nil

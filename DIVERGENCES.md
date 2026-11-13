@@ -11,6 +11,93 @@ live 4.14.2.0 in `just test-full` and PR CI's `conformance-java` job with a stal
 and the suite is green). Entries below that cite 4.12.11 record the previous pin;
 not every one has been re-measured on 4.14.2.0.
 
+## Full-text SQL and query execution
+
+Go exposes `CREATE FULLTEXT INDEX ... ON table(text_column) [PARTITION BY (...)]`
+and the seven `TEXT_CONTAINS_*` SQL functions as a Go extension. Java Relational
+4.14.2.0 has only the reserved `FULLTEXT` lexer token, not these parser productions
+or built-ins (checked against the exact `4.14.2.0` source tag). The Go DDL also
+takes `OPTIONS (TOKENIZER = '<name>', TOKENIZER_VERSION = <int>)` after the
+partition clause, setting the TEXT index options `textTokenizerName` and
+`textTokenizerVersion` that Java's metadata API sets programmatically. Names are
+case-insensitive; an unknown option is `0A000`, a duplicate or a value of the
+wrong kind `42601` (the value is an unsigned integer literal, as in Java's
+`vectorIndexOptionValue`, so a negative version is a syntax error), and an
+unregistered tokenizer or a version above the tokenizer's range fails the template (`pkg/relational/sqltest/plan/fulltext_options_ddl_fdb_test.go`).
+A tokenizer registered only in Go makes the whole schema unreadable to Java,
+not just the index: Java builds the schema's metadata for every statement and
+its TEXT index validator refuses the unknown name (`42000 MetaDataException
+unrecognized text tokenizer`), while one naming `'default'` opens
+(`conformance/otel_template_overlay_java_probe_test.go`). OTEL_V1's
+MESSAGES_TEXT therefore uses the default tokenizer, and Go writers bound
+overlong tokens in the indexed text (`otelsql.IndexableText`). Existing schema
+macros retain precedence over `TEXT_CONTAINS_*` built-ins. With
+`CASE_SENSITIVE_IDENTIFIERS`, a same-casefold macro family reserves the name
+and exact spelling resolves the macro; a mismatched case is not a builtin
+escape. Without such a macro family, bare builtin names remain case-insensitive;
+quoted calls resolve only schema functions. SQL resolves its tokenizer name
+explicitly (default: `default`) at the tokenizer's maximum version. SQL text
+access requires matching name and version **0**: a current option above zero
+cannot prove all historical postings were rewritten. Such indexes retain record
+filtering, even when their option equals the tokenizer's maximum. SQL access also
+requires direct scalar key coordinates; nested, computed and fan-out keys retain
+record filtering rather than borrowing flattened column names. Metadata-created
+`NOT_NULL` text or grouping coordinates also retain record filtering: Java's
+`FieldKeyExpression.evaluateMessage` substitutes protobuf defaults for absent
+fields, while SQL reads those fields as NULL. Ordinary `NULL` and `NULL_UNIQUE`
+coordinates remain eligible; neither stored postings nor FULLTEXT DDL change.
+A quoted flat dotted column is one coordinate, not a nested path. Lower-level
+Record Layer comparisons retain Java's index-bound versus fallback tokenizer/version resolution. SQL sorting and
+residual filtering reuse the ordinary query operators above a text access path;
+Java's classic Record Layer text planner itself declines requested sorts.
+
+A SQL text plan executes through `recordlayer.TextScan`, the port of Java's
+`TextScan`: its posting scans, intersections, unions, probable intersection and
+position filters use the shared Record Layer algorithms and continuation encodings,
+subject to the bounded-range, comparison-key and unordered-identity boundaries in
+“TEXT queries” below. SQL equality on a grouping column can name several physical
+groups (a DOUBLE column's `-0.0` and `0.0`), so the grouping bindings feed a scan-range
+set with one `TextScan` per physical group, and the query continuation is that
+set's envelope around the group's `TextScan` continuation. A typed suffix range
+(never built by the SQL planner, as Java's `TextScanPlanner` never builds one)
+is applied by filtering whole-group postings in this executor. Lower-level Go
+`TextScan` also supports logical suffix bounds: it includes the predecessor bunch
+and filters decoded entries, unlike Java's physical-bunch bounds. The native
+fixture in `conformance/text_query_conformance_test.go` pins their different rows
+and same-engine resumes; see “TEXT logical suffix bounds” below. Matching bounded
+continuation framing does not promise cross-engine remaining rows or pages. A NaN
+equality on a FLOAT or DOUBLE partition column fails the text scan, as vector
+and aggregate partitions do, where record filtering would match the NaN group.
+SQL's `TEXT_CONTAINS_ALL_PREFIXES` is strict, so
+like Java's `RecordQueryPlanner` (`RecordQueryPlanner.java:1721-1728`) the
+plan keeps the predicate as a filter over the probable intersection, which
+can return false positives. Probabilistic tuning is not exposed (Java's
+`Text.containsAllPrefixes` defaults). A grouping column bound by an IN list or
+a join column runs the text scan once per outer row, as Java plans an IN list
+over a text index. SQL requires `TEXT_CONTAINS_ALL_WITHIN`'s distance to be
+positive: at distance 0 Java's `TextComparison.eval` never evicts its window
+(any distance matches) while its scan matches nothing, and Go's evaluation
+does the same. Residual evaluation is Java's `TextComparison.eval`: a
+prefix comparand that is not exactly one token (`''`) fails there, while the
+text scan returns no records for it, as in Java. Both implementations retain Java's
+permissive positional treatment of known-present tokens with omitted position
+lists; such a raw positional scan is not an exact occurrence proof. Planner
+eligibility declines those positional/prefix-set access paths for indexes with
+positions omitted. SQL PHRASE and ALL_WITHIN also keep an original-text residual
+when positions are enabled: current metadata cannot certify historical postings
+written with omission enabled. Original text is fetched, not reconstructed as a covering
+string from tokens. Existing
+persisted TEXT layout, tokenizer versions and the Unicode segmentation
+limitations are unchanged. Text access paths whose tokenized column is also a
+trimmed primary-key component are declined because the original key cannot be
+recovered from a token; raw text plans error and FULLTEXT DDL rejects that shape.
+Existing maintenance keys are not rewritten. The live Java 4.14.2.0
+`probeTextPrimaryKeyOverlap` conformance regression confirms that Java also
+extracts the token instead of the original PK text and that both direct fetch
+and its `TISCAN` plan fail with `RecordCoreStorageException`; Java does not
+provide a supported reconstruction being deferred here. Optional compatibility
+and migration work is tracked in TODO.md. See [full-text boundaries](docs/compatibility.md#full-text-queries).
+
 ## Record-load strategy
 
 Go implements Java 4.14.2.0's default `SplitHelper.loadWithSplit` range read,
@@ -236,7 +323,7 @@ No functional difference — absorbs candidate-side-only expressions (MatchableS
 
 **Remaining NLJ cases:** Joins where no predicate matches any PK or index first column (brute-force NLJ is the only option). Self-joins now work via FlatMap (aliases disambiguate). **NLJ is guarded against ExplodeExpression quantifiers** — IN-list decomposition uses Explode, and NLJ can't handle scalar Explode outer datums with map inner datums. The guard forces IN-list patterns to InJoinRule or filter+scan fallback.
 
-**Composite PK limitation:** FlatMap only matches the FIRST PK column. Joins on non-first PK columns fall back to NLJ.
+**Composite keys:** a correlated probe binds every equality-joined key column, as Java's does. `l.trace_id = s.trace_id AND l.span_id = s.span_id` plans `IndexScan(LOGS_TRACE, [=, =, *])` (Java `ISCAN(LOGS_TRACE [EQUALS q0.TRACE_ID, EQUALS q0.SPAN_ID])`) and a two-column primary key `Scan(SPANS, [=, =])` (Java `SCAN([IS SPANS, EQUALS q0.TRACE_ID, EQUALS q0.SPAN_ID])`); pinned by `OtelSQLShapesJavaProbe` and `TestFDB_OtelTraceJoins`.
 
 **JoinMergeResultValue vs RecordConstructorValue:** Go uses `JoinMergeResultValue` (spreads both correlation bindings into a flat map at eval time). Java uses `RecordConstructorValue` with per-column `FieldValue` children. Functionally equivalent — both produce a map with qualified keys from both sides. The difference is WHEN columns are enumerated: Java at plan time (has schema metadata in the relational layer), Go at eval time (translator doesn't carry schema metadata). To close: pass `RecordMetaData` to the translator so it can produce field-level RecordConstructorValue.
 
@@ -398,6 +485,20 @@ required property. Java also lacks Go's per-leg record-identity check
 (`RecordIdentityWithin`), which Go keeps in place of
 `isPrimaryKeyCompatibleWithOrdering`. Plans agree with Java on the primary-key
 disjunctions in `conformance/or_union_merge_java_probe_test.go`.
+
+### `RecordType.Equals` has no identity short-circuit
+
+Java's `Type.Record.equals` returns true for the same object before it compares
+fields (Type.java:2400-2402). Go's `RecordType.Equals`
+(`pkg/recordlayer/query/plan/cascades/values/type.go`) always compares field by
+field. For acyclic record types, the only kind Go builds, the answers agree and
+only the cost differs. Go omits the check on purpose: a record type that reached
+itself would then fail at its first comparison, even with itself, which is why
+`TypeProtoRepository` needs no cycle guard. Pinned by
+`TestProtoType_RecordEqualsHasNoIdentityShortCircuit`. The executor's edge
+binder compares a cursor's row type with a distinct flowed type object, so an
+identity check would not help it; it memoises equal pairs instead
+(`pkg/recordlayer/query/executor/record_type_equal_memo.go`).
 
 ## Planning-Layer: Java-aligned core with documented Go extensions
 
@@ -886,6 +987,53 @@ Two-tier simplification matching Java's value rule sets:
 
 **Upstream.** Reporting the target's inconsistency is an owner decision and is not filed from here.
 
+### Fan-out index scans: Java's order past bound elements, and a record-identity proof
+
+**Java.** `ValueIndexLikeMatchCandidate.computeMatchedOrderingParts` and `computeOrderingFromScanComparisons` (`ValueIndexLikeMatchCandidate.java:63-118`, `:119-198`) skip an equality-bound column below a FAN_OUT, stop at any other one, and otherwise order by the later key columns and the primary key. `EXISTS (SELECT 1 FROM s.attrs a WHERE a.scope = ? AND a.k = ? AND a.sv = ?) ORDER BY s.start_ns DESC` over an index `(a.scope, a.k, a.sv, s.start_ns, s.trace_id, s.span_id)` is one `COVERING(... REVERSE)` scan with no sort.
+
+**Go.** The same: `RecordQueryIndexPlan` carries which key columns lie below the FAN_OUT (`WithKeyColumnDuplicates`), and its ordering (`orderingKeyColumns`) and the candidate's matched ordering follow Java, subject to Go's existing physical-equality guard: a widened signed-zero element equality does not order the time/PK suffix (`TestFDB_OtelTemplateV1` and `TestComputeMatchedOrderingParts_SuffixPastBoundFanOut`). Go additionally claims record identity for a fan-out scan whose every element column is pinned by an equality (`fanOutPinned`): all of a record's entries in that range have one key and are one FDB entry. That proof lets the keyset `OR` form merge its legs (`MergeSortUnion`) as Java's `∪ ... COMPARE BY` does; Java merges without a proof. Pinned by `TestPlanFanOutExistsOrdersPastBoundElements`, `TestComputeMatchedOrderingParts_SuffixPastBoundFanOut`, `TestValueIndexScanMatchCandidate_FanOutElementIsNotCoveredAsArray`, `TestFDB_OtelFanOutExists`, `TestFDB_OtelKeysetPages` and `OtelSQLShapesJavaProbe`.
+
+An index omitting the PK columns exercises the implicit suffix through SQL in
+`TestFDB_OtelImplicitFanOutPKSuffix` (tied times, keyset pages and unbound-element negative control).
+That no-sort plan retains the existing single-type Go extension past Java's record-type horizon
+explained above; it is not an assertion that Java selects the same omitted-PK plan. A fan-out
+`ATTRS[*].ID` is never trimmed against root PK `ID`: candidate and physical ordering retain the
+root `(ID,B)` suffix, and B alone is not ordered (`TestFanOutElementNameDoesNotTrimRootPrimaryKey`
+and `TestFDB_OtelFanOutElementNameDoesNotTrimRootPK`).
+
+### BYTES ordered-union execution in Java 4.14.2.0
+
+**Java.** Planning a fan-out keyset union does not guarantee it can execute a
+BYTES tie-breaker. On the public `OTEL_V1` template, `OtelSQLShapesJavaProbe`'s
+OR cursor 1 is `(start_ns=200, trace_id=X'01000000000000000000000000000000',
+span_id=X'00000000000000ff')`. Java selects three reverse covering
+`SPANS_STR_ATTR` scans with `COMPARE BY (_.START_NS, _.TRACE_ID, _.SPAN_ID)`.
+The trace-lower and span-lower legs both contain time-200 rows, so merging must
+compare BYTES trace IDs. Execution fails with `java.lang.ClassCastException`,
+SQLSTATE `XXXXX`: `ByteString$LiteralByteString` cannot be cast to `Comparable`.
+The same fixture's AND cursors all succeed; OR cursor 0 succeeds with only one
+nonempty leg. This is not a blanket restriction on BYTES ordering or OR queries.
+
+**Source-derived cause.** In Java 4.14.2.0,
+`RecordQuerySetPlan.ComparisonKeyFunction.OnValues.apply` (`:409–417`) retains
+raw `FieldValue.eval` results; `FieldValue.java:206–208` leaves BYTES as
+`ByteString`. `UnionCursor.java:114` calls `KeyComparisons.KEY_COMPARATOR`,
+whose field comparator handles `byte[]` but casts ByteString to `Comparable`
+(`KeyComparisons.java:35–49`). The `OnKeyExpression` path instead calls
+`toTupleAppropriateList`, normalizing ByteString to byte[]. These are source
+sites, not captured Java stack frames; the probe received the structured root
+exception. Java's residual predicate comparator handles ByteString correctly.
+
+**Go and regression boundary.** Go keeps unsigned byte ordering and changes no
+stored format. The probe requires exact rows for every Go AND/OR cursor before
+running Java, and pins the exact Java exception class, full class, SQLSTATE and
+message only for the cursor above. Every other Java cursor must return the
+explicit expected suffix, including the later OR cursors; no other error is
+accepted. `TestFDB_OtelTemplateV1` additionally walks both Go forms at page sizes
+1, 2 and 3 through exhaustion, checking exact identities, ties, NUL/high bytes
+and no duplicates. Java's pinned-version execution defect is tracked in TODO;
+no upstream issue has been filed from this work.
+
 ### Plan choice: an IN ordered by a key no probe provides is probed and sorted (RFC-257 WS-F F-7c)
 
 **Divergence.** `SELECT * FROM T1 WHERE col1 IN (10, 20) ORDER BY id` over an index `I1 (col1)`: Java plans `SCAN([IS T1]) | FILTER _.COL1 IN ...`, Go `InMemorySort([ID ASC], Fetch(InJoin(IndexScan(I1, [=] COVERING))))`; likewise with 25 values and over `T5` (`w8_in_union_explain`, `w8_in25_order_by_id_explain`, `w8_tie_in_order_by_id_explain`, declared `DIFF-PATH in-memory-sort`). Rows are identical.
@@ -957,6 +1105,16 @@ where Java places QUALIFY in an aggregated block (QueryVisitor.visitSimpleTable)
 QUALIFY over grouping keys, with or without HAVING, answers as Java
 (`CorrelatedHavingExistsJavaProbe`).
 
+### Raw bytes assigned to a VECTOR column (Java refuses, Go writes them)
+
+`UPDATE t SET v = ?` with a bytes parameter for a VECTOR column: Java's PromoteValue has no
+BYTES-to-VECTOR promotion, so it refuses at planning with 22000 (INCOMPATIBLE_TYPE, "A value
+cannot be assigned to a variable…"). Go's executor writes well-formed vector bytes of the
+column's precision and dimension count and refuses other bytes at execution with 22000 "Vector
+precision or dimensions do not match the target column"
+(`TestFDB_VectorAssignmentDimensionMismatchIs22000`). Reversal: refuse BYTES-to-VECTOR at
+planning, as PromoteValue does.
+
 ### An EXISTS in an aggregated block's QUALIFY (Go refuses)
 
 `SELECT b1 FROM b GROUP BY b1 QUALIFY EXISTS (SELECT a1 FROM a)`: Java conjoins QUALIFY after its
@@ -970,35 +1128,66 @@ with 0AF00. An EXISTS in HAVING is 42803 in both (`CorrelatedHavingExistsJavaPro
 of an outer join. An INNER join after the unnest, and a LEFT JOIN before it, answer as Java
 (`CommaJoinJavaProbe`). TODO.md "An unnest leg before an outer join".
 
-## Go-Only Extensions (classified against Java 4.12.11; not yet re-verified on 4.14.2.0)
+## Go-Only Extensions (re-verified on Java 4.14.2.0)
 
 Go supports these SQL features that Java rejects. Removing them would be a user-visible regression; they stay as Go extensions.
 
+Each Java behavior below is measured on a live 4.14.2.0 JVM by `DocClaimsJavaProbe`
+(`conformance/doc_claims_java_probe_test.go`), which pins Java's and Go's answer per case; the
+case names are in backticks. Rows marked "read from source" cite the 4.14.2.0 source, relative to
+`fdb-relational-core/.../recordlayer/` or `fdb-record-layer-core/.../query/plan/`.
+
 | Feature | Java behavior | Go behavior |
 |---|---|---|
-| `GROUP BY` | Rejects ALL forms (`UnableToPlanException`) | Full support (streaming + hash aggregation) |
-| `LIMIT` / `OFFSET` | Rejects at parse time (uses JDBC `setMaxRows`) | `RecordQueryLimitPlan` |
-| `SELECT DISTINCT` (complex shapes) | Rejects most via Cascades | Broad support via `RecordQueryDistinctPlan` + hash distinct |
-| In-memory sort | Cascades eliminates or fails; legacy `RecordQueryPlanner` alone can construct `RecordQuerySortPlan` | `RecordQueryInMemorySortPlan` fallback |
-| Hash aggregation | Only streaming aggregation (requires ordered input) | `RecordQueryHashAggregationPlan` |
-| `INFORMATION_SCHEMA` | Rejects (`Unknown reference INFORMATION_SCHEMA.TABLES`) | Working system tables |
-| `NOT NULL` on scalar columns | Rejects (`NOT NULL is only allowed for ARRAY column type`) | SQL-standard behavior |
-| Date-part functions | No temporal types | YEAR/MONTH/DAY/HOUR/MINUTE/SECOND/etc. |
-| DATE and TIMESTAMP values | No temporal types: a `DATE`/`TIMESTAMP` column is 42F18, `CAST(… AS DATE/TIMESTAMP)` is 42601 | Types of VALUES only (CAST, `CURRENT_DATE`/`CURRENT_TIMESTAMP`, a bound `time.Time`), carried as canonical UTC text in 0000-9999 whose order is the instant order. A DATE meeting a TIMESTAMP (comparison, IN, CASE, COALESCE, IFNULL, GREATEST, LEAST) is promoted to its midnight. A column spelled DATE/TIMESTAMP is STRING (the type is not persisted, so catalog bytes stay Java's), and a value against it compares text. Pinned by `temporal_promotion.yaml` and `expr/temporal_promotion_property_test.go` |
-| Simple CASE (`CASE expr WHEN val`) | `visitChildren` no-op (always falls through to ELSE) | Correct evaluation |
-| Symbolic logical operators (`&&`, `\|\|`) | `SqlFunctionCatalogImpl` only registers `and`/`or`; symbolic forms throw UNSUPPORTED_QUERY | Evaluated as AND/OR |
-| `XOR` operator | Not registered in `SqlFunctionCatalogImpl`; throws UNSUPPORTED_QUERY | SQL-standard XOR with NULL propagation |
-| Scalar subqueries in expressions | Grammar has no `subqueryExpressionAtom` (parse error) | Translated via `ScalarSubqueryValue` (`DecorrelateValuesRule` covers the other values-box patterns) |
-| Direct-API insert of a bare `UUID ARRAY` | `RecordTypeTable.toDynamicMessage` (4.14.2.0) converts a UUID attribute (#4243) but its repeated-field path calls `addRepeatedField` with the unconverted `java.util.UUID`, which protobuf refuses for the UUID message field (read from source, not measured) | Each element is written as the two-word UUID message (`embedded/direct_access.go` `directFieldValue`); UUIDs inside structs in an array match Java |
-| `MAX_STATEMENT_MEMORY_BYTES` option (DSN `max_statement_memory_bytes`) | No such option | Statement-wide byte budget for in-memory buffering (RFC-130); a breach is 54F01 |
-| `TRANSACTION_TAGS` option (DSN `transaction_tags`) | No such option | FDB transaction tags on every connection transaction, for ratekeeper throttling |
-| `MAX_TOTAL_TASK_COUNT` option (DSN `max_total_task_count`) | No such option; Java's planner cap exists but its SQL layer never sets it | Bounds Cascades planning tasks; exhaustion is 54F02 |
-| `MAX_TASK_QUEUE_SIZE` option (DSN `max_task_queue_size`) | No such option; Java's planner cap exists but its SQL layer never sets it | Bounds the Cascades task queue; exhaustion is 54F02 |
-| `MAX_NUM_MATCHES_PER_RULE_CALL` option (DSN `max_num_matches_per_rule_call`) | No such option; Java's planner cap exists but its SQL layer never sets it | Bounds matches per rule call; exhaustion is 54F02 |
+| `GROUP BY` over unordered input | Plans a grouping only over input ordered on the grouping columns, by an index or the primary key (`cascades/rules/ImplementStreamingAggregationRule.java:120`; `group_by_ordered`, `group_by_primary_key`), or through an aggregate index. Otherwise 0AF00 `Cascades planner could not plan query` (`group_by_unordered`, `group_by_expression`) | Any grouping; unordered input is hash-aggregated |
+| `LIMIT` / `OFFSET` | Rejected for every query by `query/AstNormalizer.java:253-263`: 0AF00 `LIMIT clause is not supported.` / `OFFSET clause is not supported.` (`limit`, `limit_offset`, `limit_in_subquery`). The JDBC `MAX_ROWS` option is a page size, not a limit | `RecordQueryLimitPlan`, on the outer SELECT and in a derived table |
+| In-memory sort | Cascades implements a sort only when its input already has the order (`cascades/rules/RemoveSortRule.java:106-109`); otherwise 0AF00 (`order_by_no_index`, `order_by_aggregate`, `order_by_nulls_last`). Only the legacy `RecordQueryPlanner` builds `RecordQuerySortPlan` | `RecordQueryInMemorySortPlan` fallback |
+| Hash aggregation | Only streaming aggregation over ordered input and aggregate-index scans (`cascades/PlanningRuleSet.java:167,187`); unordered input is 0AF00 (`group_by_unordered`) | `RecordQueryHashAggregationPlan` |
+| `INFORMATION_SCHEMA` | 42703 `Unknown reference INFORMATION_SCHEMA.TABLES` (`information_schema_tables`, `information_schema_columns`); Java's system tables are `DATABASES`, `SCHEMAS` and `TEMPLATES` in `/__SYS` | Working system tables |
+| Date-part functions | 0AF00 `Unsupported operator YEAR` (`date_part_of_integer`); `EXTRACT(YEAR FROM v)` answers `v` unchanged (`extract_year`) | YEAR/MONTH/DAY/HOUR/MINUTE/SECOND/etc. `EXTRACT` is 0AF00 |
+| DATE and TIMESTAMP values | No temporal types: a `DATE`/`TIMESTAMP` column is 42F18 (`date_column`, `timestamp_column`), `CAST(… AS DATE/TIMESTAMP)` is 42601 (`cast_date`, `cast_timestamp`), `CURRENT_DATE`/`CURRENT_TIMESTAMP` are XX000 (`current_date`, `current_timestamp`) | Types of VALUES only (CAST, `CURRENT_DATE`/`CURRENT_TIMESTAMP`, a bound `time.Time`), carried as canonical UTC text in 0000-9999 whose order is the instant order. A DATE meeting a TIMESTAMP (comparison, IN, CASE, COALESCE, IFNULL, GREATEST, LEAST) is promoted to its midnight. A column spelled DATE/TIMESTAMP is STRING (the type is not persisted, so catalog bytes stay Java's), and a value against it compares text. Pinned by `temporal_promotion.yaml` and `expr/temporal_promotion_property_test.go` |
+| Parenthesized WHERE condition (`WHERE (v = 10)`) | `( … )` is a one-field record constructor: 42804 `expected boolean expression but got BOOLEAN AS _0` (`where_paren`). Parenthesized operands of AND/OR answer (`where_paren_compound`) | Evaluated as the condition |
+| Simple CASE (`CASE expr WHEN val`) | `visitChildren` no-op that compares no WHEN: the ELSE for every row (`simple_case`), the last THEN without an ELSE (`simple_case_no_else`) | Correct evaluation |
+| Symbolic logical operators (`&&`, `\|\|`) | `SqlFunctionCatalogImpl` only registers `and`/`or`; 0AF00 `Unsupported operator &&` / `\|\|` (`symbolic_and`, `symbolic_or`). `\|\|` is logical OR in Java's grammar, not concatenation | Evaluated as AND/OR |
+| `XOR` operator | Not registered in `SqlFunctionCatalogImpl`; 0AF00 `Unsupported operator XOR` (`xor`) | SQL-standard XOR with NULL propagation |
+| Scalar subqueries in expressions | Grammar has no `subqueryExpressionAtom`: 42601 (`scalar_subquery`, `correlated_scalar_subquery`) | Translated via `ScalarSubqueryValue` (`DecorrelateValuesRule` covers the other values-box patterns), correlated ones included |
+| String and math functions | 0AF00 `Unsupported operator UPPER` / `ABS` (`upper`, `abs`); `POSITION('zz' IN s)` answers `s` unchanged (`position_in`) | UPPER/LOWER/SUBSTRING/TRIM/CONCAT/REPLACE/POSITION/REVERSE/`*_LENGTH` (RFC-087) and ABS/MOD/FLOOR/CEIL(ING)/ROUND/SQRT. POSITION takes two arguments; `POSITION(x IN s)` is 0AF00 |
+| `FULL OUTER JOIN` | 42601: the grammar has only LEFT/RIGHT outer joins (`full_join`). Without OUTER, `FULL` is read as the left table's alias and the join is inner (`full_join_without_outer`) | Planned as an NLJ with `JoinFullOuter` |
+| A join without ON (`CROSS JOIN`, `JOIN` with no condition) | XXXXX: the visitor dereferences the absent ON (`cross_join`, `JoinWithoutOnJavaProbe`) | The cartesian product |
+| Direct-API insert of a bare `UUID ARRAY` | `RecordTypeTable.toDynamicMessage` (4.14.2.0) converts a UUID attribute (#4243) but its repeated-field path calls `addRepeatedField` with the unconverted `java.util.UUID`, which protobuf refuses for the UUID message field (read from source: `RecordTypeTable.java:247-270`, not measured) | Each element is written as the two-word UUID message (`embedded/direct_access.go` `directFieldValue`); UUIDs inside structs in an array match Java |
+| `MAX_STATEMENT_MEMORY_BYTES` option (DSN `max_statement_memory_bytes`) | No such option (read from source: `Options.Name`, `fdb-relational-api/.../Options.java:51-286`) | Statement-wide byte budget for in-memory buffering (RFC-130); a breach is 54F01 |
+| `TRANSACTION_TAGS` option (DSN `transaction_tags`) | No such option, and the SQL layer tags no transaction (read from source) | FDB transaction tags on every connection transaction, for ratekeeper throttling |
+| `MAX_TOTAL_TASK_COUNT` option (DSN `max_total_task_count`) | No such option; Java's planner cap exists but its SQL layer never sets it (read from source: `query/PlannerConfiguration.java:158-170`) | Bounds Cascades planning tasks; exhaustion is 54F02 |
+| `MAX_TASK_QUEUE_SIZE` option (DSN `max_task_queue_size`) | No such option; Java's planner cap exists but its SQL layer never sets it (read from source, as above) | Bounds the Cascades task queue; exhaustion is 54F02 |
+| `MAX_NUM_MATCHES_PER_RULE_CALL` option (DSN `max_num_matches_per_rule_call`) | No such option; Java's planner cap exists but its SQL layer never sets it (read from source, as above) | Bounds matches per rule call; exhaustion is 54F02 |
 
-Go-only plan types: `RecordQueryInMemorySortPlan`, `RecordQueryLimitPlan`, `RecordQueryValuesPlan`, `RecordQueryNestedLoopJoinPlan`. `RecordQueryMergeSortUnionPlan` is Go's collapsed ordered-union counterpart, not a semantic extension; its `removeDuplicates=false` mode is an extension. Go also has a keyless concat shape named `RecordQueryUnionPlan`; Java's same-named class is keyed and ordered, so the Go shape—not the class name—is the extension.
+Go-only plan types: `RecordQueryInMemorySortPlan`, `RecordQueryLimitPlan`, `RecordQueryValuesPlan`, `RecordQueryNestedLoopJoinPlan`. `RecordQueryMergeSortUnionPlan` is Go's collapsed ordered-union counterpart, not a semantic extension; its `removeDuplicates=false` mode is an extension. Go also has a keyless concat shape named `RecordQueryUnionPlan`; Java's same-named class is keyed and ordered, so the Go shape—not the class name—is the extension. None of the four listed plan classes exists in 4.14.2.0 (read from source).
 
-Go-only logical expressions: `LogicalLimitExpression`, `LogicalValuesExpression`.
+Go-only logical expressions: `LogicalLimitExpression`, `LogicalValuesExpression`. Neither exists in 4.14.2.0 (read from source).
+
+The 4.14.2.0 re-verification removed two former rows, and two cross-engine corpus notes that
+described Go extensions: `WITH RECURSIVE` with no self-reference is refused by both engines with
+`condition is not met!` (Java XX000, Go 0A000; `recursive_without_self_reference`,
+`recursive_union_without_self_reference`), and the parenthesized WHERE condition is the row above.
+The removed rows:
+
+- **`NOT NULL` on scalar columns — RESOLVED.** Go no longer accepts it: both engines refuse the
+  CREATE with 0A000 `NOT NULL is only allowed for ARRAY column type` (`scalar_not_null`; Go's
+  check is `embedded/ddl.go:1048-1051`, cross-engine entry `error_not_null_violation`).
+- **`SELECT DISTINCT` — RECLASSIFIED as a Java upstream bug.** Java does not reject DISTINCT; it
+  plans the query and returns every row, because no SQL-layer visitor reads the keyword
+  (`query/visitors/QueryVisitor.java:258-343`). See "Java Upstream Bugs".
+
+### Messages of wrapped record-layer and JDK exceptions
+
+Java wraps a record-layer or JDK exception (`RecordCoreException`, `SemanticException`, a decimal
+literal's `NumberFormatException`) in a `RelationalException(code, cause)`, whose message is the
+cause's `toString()`, so it starts with the exception class
+(`com.apple.foundationdb.record.RecordCoreException: only positive step is allowed in range`).
+Go's `api.Error.Message` is the exception's own message, without the class; the SQLSTATE is the
+same. Pinned by `sqltest/core` `TestFDB_RangeTableFunction` and
+`TestFDB_EnumAndUUIDAssignmentErrorMessage`, `core/query/expr`
+`TestWalkExpression_TypedNumericSuffixes`, and the plan-shape golden's `overflow.yaml#6`.
 
 ### Go-only SQLSTATEs
 
@@ -1020,13 +1209,15 @@ The first three predate this list; it was written when a claim that there was on
 
 Java's Cascades planner defines three complexity caps — `maxTotalTaskCount`, `maxTaskQueueSize`, `maxNumMatchesPerRuleCall` — and throws `RecordQueryPlanComplexityException` from `CascadesPlanner.java:456`, `:501`, and `:1081` when one trips. All three guards are gated on a positive bound (`CascadesPlanner.java:334-344`); the proto fields have no default (`record_planner_config.proto:53-55`), so each is `0`, documented as "unbound" (`RecordQueryPlannerConfiguration.java:243,251`). **Java's SQL layer never enables any of them**: `PlannerConfiguration.buildRecordQueryPlannerConfiguration` (`fdb-relational-core/.../query/PlannerConfiguration.java:158-169`) sets index scan preference, in-join union size, index fetch method, disabled rules, right-deep joins and the vector engine preference, and none of the three cap setters, and no relational `Options.Name` reaches them.
 
-Go matches those defaults: the planner is unbounded unless configured (`Planner.MaxTasks`, `MaxTaskQueueSize`, `MaxNumMatchesPerRuleCall` all default to 0), the guards trip at Java's points (a task bound N runs N+1 tasks; the queue is checked after each task), and planning is bounded in time only by the caller's context. A Go connection may opt into the caps with the Go-only options `MAX_TOTAL_TASK_COUNT`, `MAX_TASK_QUEUE_SIZE` and `MAX_NUM_MATCHES_PER_RULE_CALL`. Exhausting one is therefore a condition no Java SQL user can reach, with no shared surface to conform to.
+Go matches those defaults: the planner is unbounded unless configured (`Planner.MaxTasks`, `MaxTaskQueueSize`, `MaxNumMatchesPerRuleCall` all default to 0), the guards trip at Java's points (a task bound N runs N+1 tasks; the queue is checked after each task; rule calls count as the next paragraph describes), and planning is bounded in time only by the caller's context. A Go connection may opt into the caps with the Go-only options `MAX_TOTAL_TASK_COUNT`, `MAX_TASK_QUEUE_SIZE` and `MAX_NUM_MATCHES_PER_RULE_CALL`. Exhausting one is therefore a condition no Java SQL user can reach, with no shared surface to conform to.
+
+`MaxNumMatchesPerRuleCall` counts Java's bindings only for the rules that report them (`rule_java_bindings.go`: the plan- and stored-record-partition implementation rules, PartitionSelect, the requested-ordering pushes through a select, NestedLoopJoin and PartitionBinarySelect). The others count their Go bindings, one per call, and differ from Java where Java's matcher binds each of several members and the Go rule takes the first: the fetch push-downs, MergeFetchIntoCoveringIndex, PushDistinctBelowFilter, ImplementDistinctUnion, the explode sources of the IN rules and SplitSelectExtractIndependentQuantifiers, DecorrelateValues, ImplementIntersection and ImplementRecursiveDfsJoin. Java fires PredicateToLogicalUnion once per match partition, Go once per select; Go-only rules have no Java count. The planner's swapped-quantifier firing, which only Go has, is never counted: a set-matcher rule's count includes both orders, and Java binds every other rule once.
 
 Porting Java's mapping would have been wrong twice over: `ExceptionUtil.recordCoreToRelationalException` (`ExceptionUtil.java:59`) matches `RecordQueryPlanComplexityException` against no `instanceof` arm, so it would land on `ErrorCode.UNKNOWN` (`XXXXX`) — a code Java's own javadoc says "shouldn't be used in general" (`ErrorCode.java:173-175`) — reached only through a path Java's SQL layer never walks.
 
 Class 54 ("program limit exceeded") is the honest class: the planner gave up because the query exceeded a configured budget, and simplifying it or raising the budget is a real remedy. `54F01` (`EXECUTION_LIMIT_REACHED`) is deliberately NOT reused — it means an *execution*-time limit and is tied to a scan/row continuation reason, so conflating plan-time with it would corrupt a meaning Java owns. `54F02` is unused in Java's enum, leaving room for Java to adopt it should it ever enable the caps.
 
-The Go error carries the same context Java's `addLogInfo` attaches (`max_task_count`/`task_count` and the queue and rule-match equivalents) via `cascades.PlannerBudgetExceededError`.
+The Go error carries the counts Java's `addLogInfo` attaches (`max_task_count`/`task_count` and the queue and rule-match equivalents) via `cascades.PlannerBudgetExceededError`. Java's rule-match trip also attaches the rule call (`rule`); Go's does not.
 
 ## Java Upstream Bugs (Go is correct, Java is wrong)
 
@@ -1034,7 +1225,9 @@ Confirmed via cross-engine probes. Go's correct behavior is pinned in Go-only po
 
 | Bug | Go behavior | Java behavior |
 |---|---|---|
-| Compound DISTINCT (`SELECT DISTINCT a, b`) | Correctly deduplicates | Fails to dedup (returns all rows) |
+| `SELECT DISTINCT`, one column or several, indexed or not | Correctly deduplicates | Returns every row: no SQL-layer visitor reads the keyword (`distinct_ordered`, `distinct_unordered`, `distinct_order_by`; cross-engine corpus entries `compound_distinct_two_cols`, `count_over_distinct_derived`) |
+| `UNION` in a recursive CTE (`recursive_union_distinct_diamond`) | Deduplicates | Runs UNION ALL: a node reached by two paths is returned twice |
+| `FROM a FULL JOIN b ON …` without OUTER (`full_join_without_outer`) | A full outer join | Reads `FULL` as `a`'s alias and answers an inner join |
 | Signed-zero comparison (`WHERE v >= 0.0` with `-0.0`) | Keeps row (IEEE 754: `-0.0 == +0.0`) | Drops the row |
 | Signed-zero equality (`WHERE v = 0.0` with `-0.0`) | Keeps row (IEEE) | Drops the row — see below |
 | NaN self-equality (`WHERE v = v` with `NaN`) | **TRUE — Go MATCHES Java here, and both diverge from the SQL standard.** An earlier revision of this row claimed Go returned FALSE "(IEEE, SQL standard)". That was asserted, never measured, and is wrong — see the NaN section below. | **TRUE** |
@@ -1043,6 +1236,8 @@ Confirmed via cross-engine probes. Go's correct behavior is pinned in Go-only po
 | `WHERE pk_col = nonpk_col` | SQL-correct | `Missing binding` planner error |
 | PK-intersection whose legs fix DIFFERENT primary-key components (`PRIMARY KEY (pk1, pk2)`, indexes `(b, pk1)` and `(pk2)`, `WHERE b = 1 AND pk2 = 3`) | Intersects on `(pk1, pk2)`, the order both legs deliver; correct rows (RFC-245 declined the merge, RFC-247 widened the key) | Intersects on `COMPARE BY (_.PK1)` and returns every `pk2 = 3` record regardless of `b` (`COUNT(*)` 4 for a 1-row answer) — see below |
 | IN-union over a projection that drops the primary key (`SELECT s, b … WHERE a IN (1, 2) ORDER BY s, b`, index `(a, s, b)`) | Merges only on a key that identifies rows; otherwise sorts. Correct rows | Merges `COMPARE BY (_.S, _.B)` and drops records that tie on `(s, b)` across IN branches — see below |
+| EXISTS over a repeated field answered by a fan-out index, an element column unbound (`EXISTS (SELECT 1 FROM s.attrs a WHERE a.scope = 'span' AND a.k = 'tag')`, a span with two `tag` elements) | One row per span: the existential-to-ForEach match adds a required primary-key `Unique` (RFC-190 190.4c-8) | One row per matching element: `COVERING(SPANS_ATTR_STR [EQUALS, EQUALS])` with no distinct returns `[t1 s1]` twice (`OtelSQLShapesJavaProbe`) |
+| `SELECT DISTINCT s1.trace_id` from a trace-correlated spans self-join with one fully bound attribute EXISTS per side (model `gpt`, tag `y`) | One trace row, `[t1]` | Two `[t1]` rows; Java's plan omits distinct (`OtelSQLShapesJavaProbe`) |
 | EXISTS in a disjunction of a join condition (`ON (c.a_id = a.id AND EXISTS (…)) OR c.id > 100`) | Reapplies the existential predicate; correct rows | Drops it when the select carrying it is matched to an index: extra rows in the ON form, none in the WHERE form — see below |
 
 4.12.11 fixed three former entries, now removed from this table — they run as plain cross-engine
@@ -1149,18 +1344,37 @@ Skip=MaxInt32 selector offsets where Java's differ", which builds Java's selecto
 the read. PR #917's raw mapped-range `MappedRangeSkipReader` treats a forward `MaxInt32` as an exact
 skip instead; reconcile the two before RFC-258 wires mapped Skip into index scans.
 
-### Pure-Go selector resolution is not bounded by the scan range
+### Pure-Go selector resolution is not bounded by the scan range (RESOLVED for plain ranges)
 
-`libfdb_c` resolves a skipped selector inside the range read: RYW reads the extra rows from
-`firstGreaterOrEqual` of the selector key and stops at the other bound
-(`ReadYourWrites.actor.cpp:725-760`), and the read conflict covers the requested range
-(`:246-282`). The pure-Go facade resolves a non-trivial selector first with a `GetKey` that is not
-bounded by the range (`pkg/fdbgo/fdb/range_result.go:413-470`, `pkg/fdbgo/client/ryw_getkey.go`).
-When Skip overshoots the remaining entries, Go reads keys beyond the far bound until the selector
-resolves and, in a serializable transaction, adds them to the read-conflict range. A very large
-Skip over a large keyspace can fail before resolving (the resolver stops after 2^28 keys,
-`ryw_getkey.go:567`, or the transaction ages out). The rows returned are the same. Tracked in
-TODO.md for `pkg/fdbgo`.
+`libfdb_c` resolves a range read's selectors inside the read. Under RYW,
+`getRangeValue`/`getRangeValueBack` resolve them against the write map and snapshot cache
+and send the rest to storage inside the range request (`ReadYourWrites.actor.cpp:592-813,
+896-1123`). The storage server resolves them within its shard, and a selector that leaves the
+shard goes through `getRangeFallback` (`NativeAPI.actor.cpp:4457-4500, 4651-4679`). The read
+conflict is `addConflictRange(GetRangeReq)` (`ReadYourWrites.actor.cpp:245-319`), or with
+RYW disabled `getRangeFinished`'s range (`NativeAPI.actor.cpp:4558-4586`).
+
+The pure-Go facade used to resolve each non-trivial selector first with a separate `GetKey`.
+That read was not bounded by the range, so an overshooting index-scan Skip read keys past
+the far bound and, in a serializable transaction, added them to the read-conflict range. It
+also cost up to three sequential reads per selector range. The facade now issues one
+selector read (`pkg/fdbgo/client/range_selector_issue.go`, RFC-262 D10). That read runs the
+ported walk over `nativeGetRange`, or `readThrough` with RYW disabled. It returns the rows,
+read-conflict ranges and error codes libfdb_c does. Later batches keep the other selector,
+as Apple's binding does. Pinned by:
+
+- `//pkg/fdbgo/client:selector_range_conformance_test` (test-full): rows and coalesced
+  read-conflict ranges against libfdb_c on a small-shard cluster, including fallbacks
+  across shards.
+- `//pkg/fdbgo/client:range_selector_unit_test`: rows against a model, and one storage
+  request per cold read.
+- `TestSelectorRangeReadSendsOneStorageRequest` in `//pkg/fdbgo/client:storage_plumbing_fdb_test`.
+- `TestGetRange_SelectorRangeIsOneStorageRead` and `TestConflictRange_SelectorGetRange_Native`
+  in `//pkg/fdbgo/fdb:fdb_test`.
+- `TestDifferential_GetRangeSelectorRYW` in `//pkg/fdbgo/bench:bench_test` (test-full).
+
+Mapped range reads are unchanged: they still resolve a skipped selector before the mapped
+request (`pkg/fdbgo/client/mappedrange_skip.go`).
 
 ### Single-range query index scans pass Skip to the index cursor (RESOLVED)
 
@@ -1218,6 +1432,69 @@ intentional divergence at the statement layer:
 Go rejects up front to avoid a surprise write on a misused method; the plan
 path is identical to Java, only the execute-then-throw side effect differs.
 
+## Driver transactions: contexts and read-only (RFC-272)
+
+The database/sql driver follows database/sql's contract where Java's JDBC
+surface has no counterpart:
+
+| Aspect | Java (JDBC) | Go (database/sql) |
+|---|---|---|
+| Read-only transaction | `setReadOnly` is accepted and ignored, a hint (`EmbeddedRelationalConnection.java:143`) | `TxOptions{ReadOnly: true}` is refused with 0A000: database/sql requires a driver that does not enforce it to return an error. A connection opened with the Go-only DSN option `read_only=true` enforces it (only SELECT and EXPLAIN of a SELECT run, every transaction is cancelled instead of committed) and accepts it |
+| Cancelling a statement | `Statement.cancel` throws UNSUPPORTED_OPERATION | A statement's context that ends before or while the statement runs in an explicit transaction cancels the FDB transaction; the statement returns the context's error and the transaction is over (later statements and `Commit` 25F01) |
+| Transaction context | none | The `BeginTx` context is used until the transaction ends; when it ends the FDB transaction is cancelled and database/sql rolls it back |
+
+An FDB operation in flight can only be interrupted by cancelling its
+transaction, and a statement cut off midway may have buffered part of its
+writes, so the transaction cannot continue; PostgreSQL aborts a transaction
+whose statement was cancelled for the second reason.
+
+## Auto-commit SELECT: one transaction up to the first page, not the whole result
+
+Java 4.14.2.0 runs an auto-commit statement in one transaction from its schema
+load to the close of its result set: `AbstractEmbeddedStatement.executeInternal`
+loads the schema and store, plans and executes against `conn.getTransaction()`
+(AbstractEmbeddedStatement.java:71-95), and `RecordLayerResultSet.close` commits
+that transaction (RecordLayerResultSet.java:91-98). Every row is read at one
+read version.
+
+Go's auto-commit SELECT reads the catalog, plans (the index-state store open)
+and takes its first page in one transaction only when the first page starts
+within 250 ms of the statement's first read (`statementReadMaxAge`,
+`pkg/relational/core/embedded/statement_read.go`); the first page commits it
+before its rows are published. A first page starting later, and every page
+after the first, runs in a transaction of its own at a newer read version, as
+every page did before. So:
+
+- the rows of one paged SELECT can come from different snapshots;
+- an index-state transition committed between planning and the first page is
+  not seen when the first page shares the planning transaction (the statement
+  answers at the planning snapshot), and fails the statement with 40001 when
+  the first page runs on its own, since every page revalidates the plan's
+  index-state dependency in its own transaction. Which one happens depends on
+  how long the statement took to plan. Java answers from its one snapshot.
+- the catalog read, planning and first page share one `TRANSACTION_TIMEOUT`
+  budget; each later page gets a fresh one.
+
+With a transaction per page, a result set read for longer than FDB's
+five-second transaction lifetime does not fail with transaction_too_old, as one
+transaction would. Explicit transactions are unaffected: every statement and page runs in the
+transaction, as in Java. Pinned by
+`TestFDB_IndexStatePlanning_TransitionBetweenPlanAndFirstPageReadsOneSnapshot`
+(a shared first page), `TestFDB_IndexStatePlanning_TransitionBeforeASeparateFirstPageFails40001`
+(a separate one) and `TestFDB_IndexStatePlanning_TransitionBetweenPagesFails40001`
+(a later page), in `pkg/relational/sqltest/plan/index_state_planning_fdb_test.go`.
+
+## GROUP BY keys with bound parameters (RFC-272, unmeasured)
+
+Go compares `GROUP BY amount = ?, amount = ?` by the bound values: equal values
+are one key twice (42702), distinct values two keys, grouped by Go's streaming
+aggregation. Java's answer is not measured yet; the existing `runPreparedExtended`
+and `runPreparedSequence` JVM probe steps can bind the values needed for that
+comparison (tracked in TODO.md). Reading Java, its `MutablePlanGenerationContext` folds equal
+parameter values into one constant (42702) and its planner declines a GROUP BY
+without an aggregate index for distinct ones. Both plan caches hold such a plan
+only for the values it was planned with (Go pins them).
+
 ## Record Layer collation — explicit Go-only keys (target ICU 78.3)
 
 `collate_jre` and `collate_icu` evaluate to `golang.org/x/text/collate` sort keys,
@@ -1245,6 +1522,22 @@ collation engines and data, not just matching locale and strength. See
 option-by-option, with the `libfdb_c` C++ reference for each, in
 [`pkg/fdbgo/fdb/OPTIONS.md`](pkg/fdbgo/fdb/OPTIONS.md) (RFC-133).
 
+### TLS verification (RFC-277)
+
+The `:tls` + `FDB_TLS_*` path follows libfdb_c 7.3.77 (`flow/TLSConfig.actor.cpp`): the CA file is the only trust root, `FDB_TLS_VERIFY_PEERS` (default `Check.Valid=1`) decides, and no host name is checked. What remains different:
+
+| Aspect | C++ `libfdb_c` | Go | Why |
+|---|---|---|---|
+| `WithTLSConfig` | No equivalent | A Go `*tls.Config`: the stdlib check, including the host name of each dialed address | It is Go's API; `transport.VerifyPolicy.VerifyConnection` gives libfdb_c's check. |
+| SNI | Never sent | Sent for a host-name coordinator from the cluster file; IP addresses get none | `upgradeTLS` fills `ServerName`; on this path nothing verifies it. |
+| A bad setting (file, password, verify-peers string) | Logs `Net2TLSInitError` and fails every TLS connection (`Net2.actor.cpp:1405-1419`) | Fails the open with `*client.TLSConfigError` (`tls_error`) | Earlier and explicit; no connection works either way. |
+| Certificate without key, key without certificate, empty file, a key that does not match its certificate | Loads what it has (`TLSConfig.actor.cpp:124-134`); OpenSSL drops a key that does not match the certificate set after it | Fails the open | Go's key pair loads both or neither. |
+| Encrypted keys | Any scheme OpenSSL reads | PBES2 with PBKDF2 and AES-CBC or DES-EDE3-CBC; legacy PEM encryption, PBES1, PKCS#12 PBE and scrypt are `tls_error` | The stdlib has no PKCS#8 decryption; these are what `openssl pkcs8 -topk8 -v2` writes. |
+| Certificates `crypto/x509` cannot parse | Verified by the policy, or accepted under `Check.Valid=0` | Refused before any hook runs, even under `Check.Valid=0` (non-ASCII SANs, unparseable URIs, unsupported DN string types, RSA over 8192 bits) | `crypto/tls` parses every peer certificate first. |
+| Chains | One chain, built by OpenSSL | Accepted when a rule matches any chain `x509.Verify` returns; a non-self-signed pool CA is an anchor; SHA-1 is refused; only the extended key usage of the `ssl_server` purpose is checked, and a certificate whose only usage is anyExtendedKeyUsage is refused, as OpenSSL refuses it | `crypto/x509`'s chain builder. |
+| A `\|` or `\\|` in a verify-peers string | The parser loops forever (`:509-516`) | Parse error, `tls_error` | — |
+| `TLS_*` network options, `FDB_NETWORK_OPTION_TLS_*`, 12-hour certificate reload, 2 s handshake timeout | Present | Not implemented (TODO.md); Go's handshake timeout is 10 s and its minimum TLS 1.2 | The `fdb` facade has no network options. |
+
 ### Client knobs (Java 4.14 #4488)
 
 `FDBDatabaseFactory.SetKnob` / `SetKnobByName` validate and record a knob as Java's factory does, and
@@ -1265,6 +1558,14 @@ being silently ignored.
 | `atomicReplace` chown error | Hard-fails the whole replace; original file untouched | Keeps the write (mode already preserved → still parseable); only ownership may differ | Best-effort chown suits a client lib; chown-to-self (single-service-user deployment) always succeeds, so they match in practice. |
 | Coordinator probing shape | Sequential round-robin (`monitorProxiesOneGeneration`) | Parallel race (`tryAllCoordinators`) | Benign: identical first-success outcome, lower latency; never contacts more than the coordinator set. |
 
+### Malformed GetKeyServerLocations replies (RFC-271)
+
+| Aspect | C++ `libfdb_c` | Go | Why |
+|---|---|---|---|
+| A reply that does not deserialize (an offset or count past the buffer, an inverted shard range, a single-key range without its trailing `\x00`) | Throws in deserialization; `deliver` traces `ReceiverError` and the reply is never delivered (`FlowTransport.actor.cpp:1195-1207`), so the location request waits until the proxies change | Discards the reply, caches nothing, and asks the next proxy (`parseGetKeyServerLocationsReply`, `queryLocations`) | Go has no undelivered-reply state; the next attempt is the nearest equivalent. Real proxies never send such a reply, and C++ has no defined result for out-of-bounds input (`flat_buffers.h:1140-1153`). |
+| A shard with no storage servers | Cached as an empty `LocationInfo` (`setCachedLocation` inserts whatever list it gets, `NativeAPI.actor.cpp:2001-2019`) | Its range is cleared from the cache, not cached, and a lookup re-asks (`locateRangeWith`) | Go has no read path over an empty replica list; asking again waits for data distribution to assign one. |
+| A tenant shard boundary without the tenant prefix | Clamped to `allKeys` for the caller (`toPrefixRelativeRange`, `FDBTypes.cpp:26-34`); the absolute range is cached | `stripTenantPrefix` keeps the boundary; a reply it leaves with an inverted range is discarded as above | The commit proxy clamps every shard to the tenant (`TenantAPI::clampRangeToTenant`), so only a malformed reply has such a boundary. |
+
 **Coordinator topology adoption is a CONFIRMED NON-divergence (RFC-115 §3, FDB-C-dev verified).** The
 libfdb_c client adopts cluster topology on the **first successful** coordinator reply, **not** a majority
 quorum: `monitorProxiesOneGeneration` adopts the first successful `OpenDatabaseCoordRequest`
@@ -1273,6 +1574,36 @@ leader-election metadata, not a client adoption gate (`monitorLeaderOneGeneratio
 with no quorum wait, `:604`/`:634`). Go's first-reply-wins therefore **matches** C++ semantics; adding a
 quorum would make Go *stricter* than libfdb_c — a conformance violation. (Cluster-file re-read is
 failure-gated in both, `:888-900` — RFC-111.)
+
+### Bounded, failing reply decodes (RFC-276)
+
+| Aspect | C++ `libfdb_c` | Go | Why |
+|---|---|---|---|
+| Vector element offsets that alias one element | Decoded once per offset, with no bound: `ObjectReader` holds no buffer length (`ObjectSerializer.h:96-128`) and a vector load reserves the stored count (`flat_buffers.h:1140-1153`) | A decode fails with `*wire.DecodeBudgetError` once its vectors of tables hold more than `len(buffer)/4` elements in total (`wire.DecodeBudget`, generated `decode`, `parseGetKeyServerLocationsReply`) | C++ writes each element's 4-byte offset once, so no reply it writes reaches the bound; only aliasing does, and it would let a few KB allocate gigabytes. |
+| A present field, vector or table outside the buffer; an accessed vtable entry outside the buffer (unaccessed entries are not validated) | Undefined behaviour (reads past the buffer) | A generated decoder fails with `*wire.DecodeError` (`wire.Reader.Err`, `ReadVectorCount`, `ReadNestedReader`), and so do ClientDBInfo's own leaf reads and the ErrorOr error code. The locations, proxy-list and split-point walks fail with their own parse errors. Either way the reply is not used | C++ has no defined result; Go's old reads returned zero, nil or an absent field, so a malformed reply decoded as a valid shorter one. |
+| A present field whose RelativeOffset is 0 | Reads the offset word itself: an empty string or vector | The same, except a nested table, which fails, and a locations range key, which RFC-271 rejects | C++ never writes a zero offset. |
+| A commit reply (`CommitID` or ErrorOr envelope) that does not decode | Malformed wire has no defined decode result; an uncertain dispatched commit is fenced before `commit_unknown_result` (`NativeAPI.actor.cpp:6730-6750`) | A malformed post-send reply goes through the dummy-transaction fence and returns `commit_unknown_result`; a failed fence propagates its error instead | The proxy may have applied the commit. A terminal decode error would incorrectly hide that uncertainty. |
+| A string-strategy vector whose elements do not fill its blob | `ASSERT` in `dynamic_size_traits<VectorRef<T, String>>::load` (`Arena.h:1514-1525`) | `Parse<T>StringVector` fails with `*wire.StringVectorError` | Same rule; an error instead of an assertion. |
+| The locations reply's endpoint scan for a server without a slot-2 endpoint | No scan: C++ decodes the `StorageServerInterface` | Scans the slots the schema defines, not the vtable length the reply claims | The scan is Go's own; bounding it keeps a reply's cost linear in its size. |
+
+### Special key space reads (`\xff\xff` .. `\xff\xff\xff`)
+
+At API version 630 and later, get and getRange inside the special key space go to a port of
+`SpecialKeySpace` (`pkg/fdbgo/client/specialkeys.go`; `SpecialKeySpace.actor.cpp:61-80, 120-493,
+711-729`, `ReadYourWrites.actor.cpp:1634-1638, 1716-1721`): the module table and its
+`special_keys_cross_module_read` (2112) / `special_keys_no_module_found` (2113) checks,
+`SPECIAL_KEY_SPACE_RELAXED`, selector normalization, limits and direction, and
+`\xff\xff/transaction/conflicting_keys/` with `REPORT_CONFLICTING_KEYS` (712) and its database
+default (702). getKey and getMappedRange are not routed, as in C++. What differs:
+
+| Aspect | C++ `libfdb_c` | Go | Why |
+|---|---|---|---|
+| `\xff\xff/transaction/read_conflict_range/`, `.../write_conflict_range/` (`NativeAPI.actor.cpp:1748-1753`) | Render the RYW read-conflict map and write map (`ReadYourWrites.actor.cpp:2121-2215`) | A read that reaches either impl, or a selector that moves into one, fails with `unsupported_operation` (2108) | Not yet served from the RYW conflict maps; failing is never a wrong answer (TODO.md, "Serve the read_conflict_range/ and write_conflict_range/ special keys"). |
+| Every other module (`status/json`, `connection_string`, `cluster_file_path`, `cluster_id`, `worker_interfaces`, `metrics`, `management`, `configuration`, `global_config`, `tracing`, `error_message`, `actor_lineage`, `actor_profiler_conf`) | Served by impls that need cluster, process or client state | Each module is one unserved range: any read or selector move that reaches it fails with 2108, including parts of a module where C++ has no impl and would read nothing | A superset of the C++ impl ranges, so no read that C++ answers from such an impl is answered here. |
+| Special-key writes, `SPECIAL_KEY_SPACE_ENABLE_WRITES` | Write modules and `specialKeySpace->commit` | Not implemented; the option is `UnsupportedOptionError` | Unchanged. |
+| A conflict index outside the shipped read conflict ranges | Undefined (`read_conflict_ranges[i]` out of bounds, `NativeAPI.actor.cpp:6713`) | Ignored | The proxy maps every index from the request (`CommitProxyServer.actor.cpp:2448-2462`). |
+| A selector key longer than the maximum key size | Truncated by `KeySelectorRef::setKey` at the C binding | Used as given | No conflicting key reaches the 30 000-byte system key limit. |
+| API version below 630 | Answers a few literal keys (`ReadYourWrites.actor.cpp:1640-1672, 1722-1729`) | Not routed: such reads fail `key_outside_legal_range` (2004), as before | Those keys need cluster state the client does not expose; the failure is explicit. |
 
 ---
 
@@ -1555,10 +1886,10 @@ intersection non-max `consume()` advance). What remains is classified below.
   resumability. The deterministic child order remains a legal realization of
   Java's explicitly unspecified order. (The former eager concat's loud
   declines are gone; the dead concat cursor was deleted.)
-- **ProbableIntersectionCursor / bloom-filter weak reads**: entirely
-  unimplemented (no plan type reaches it); Java's own docs flag the
-  Guava-serialized bloom bytes as a cross-compat hazard. Missing capability,
-  not a divergence in shared code.
+- **ProbableIntersectionCursor / Bloom weak reads**: implemented for multi-token
+  `TEXT_CONTAINS_ALL_PREFIXES`, including Guava 33 continuation bytes. See
+  [TEXT queries](#text-queries) for ordering, false-positive and Guava-version
+  boundaries; pinned by `conformance/text_query_conformance_test.go`.
 - **FutureCursor / fromFuture**: absent; single-future shapes are expressed
   via FromList/flatMap composition instead.
 - **NoNextReason ordinals differ** (semantics and all predicates match); the
@@ -3102,21 +3433,47 @@ its first commit whatever the outcome, and a second commit is refused with that 
 
 **Decision: keep Go's bounded storage-range retries.** This is an intentional
 availability/error-behavior difference from FoundationDB C++ **7.3.77**, not a
-claim of equivalent retry semantics. References to Go below are at `d5c031525`.
+claim of equivalent retry semantics. Go is cited by symbol, not line.
 
 Go's shared plain/mapped storage scanner, `rangeScanImpl`, keeps two counters
-for each invocation (`pkg/fdbgo/client/readpath.go:664-682`):
+for each invocation (`relocateRetries`, `timeoutRetries` in `pkg/fdbgo/client/readpath.go`):
 
-- The relocation counter increments for `wrong_shard_server`,
-  `all_alternatives_failed`, or a maybe-delivered connection failure. With
+- The relocation counter increments for `wrong_shard_server` or
+  `all_alternatives_failed`. With
   `maxRelocateRetries = 5`, the sixth qualifying failure returns **1007
   `transaction_too_old`**, before another relocation; the first five invalidate
-  the shard's cached location and retry (`readpath.go:671`, `:773-800`).
+  the shard's cached location and retry (`maxRelocateRetries`, `rangeScanImpl`).
+- A maybe-delivered failure on every replica tried (a refused or timed-out
+  connect, a torn-down connection, an in-band 1030/1100) is **not** counted. It is
+  `loadBalance`'s own retry, which C++ never bounds: the next alternative at once,
+  then `LOAD_BALANCE_START_BACKOFF` doubling to `LOAD_BALANCE_MAX_BACKOFF`
+  (`LoadBalance.actor.h:301-308`, `:344-377`, `:682-686`, `:721-725`). Go paces it
+  with `lbRetry` (`read_send.go`) in every storage read loop, so a read whose only
+  replica refuses connections waits for it as libfdb_c does. Get, GetKey, plain,
+  native and mapped range reads advance through sender-local alternatives before
+  returning an exhausted pass for relocation (`readAlternatives`); Watch likewise
+  tries every replica in its pass (`sendWatchPaced`). Each observed maybe-delivered
+  failure counts as one attempt, including a failed primary whose secondary
+  succeeds; sequential alternatives are paced before the next request. Canceled
+  hedge laggards are not failures. Concurrent hedges can count two observed
+  failures where C++ counts the concurrent pair once (`LoadBalance.actor.h:682`),
+  so backoff can grow sooner for that case. Go still re-locates after each
+  exhausted maybe-delivered pass: it has no sustained-failure
+  `all_alternatives_failed` (C++ raises it once the FailureMonitor has marked every
+  alternative failed, after
+  `FAILURE_DETECTION_DELAY`, `FlowTransport.actor.cpp:920-930`) to re-locate later.
+  Pinned by `client/connect_failure_unit_test.go` and
+  `libfdbc/connrefused_conformance_test.go`.
 - The reply-timeout counter allows **10 re-sends** of the same shard request.
   `maxReadTimeoutRetries = 10` and the pre-incremented `> 10` check mean that
   **the eleventh reply timeout** returns synthesized **1007**, not the tenth
-  (`readpath.go:33-40`, `:755-771`). The internal `errReplyTimeout` comes from
-  the RPC reply timer, not a caller cancellation (`pkg/fdbgo/client/rpc.go:53-71`).
+  (`maxReadTimeoutRetries`, `rangeScanImpl`). The internal `errReplyTimeout` comes
+  from the RPC reply timer, not a caller cancellation (`waitReply`, `pkg/fdbgo/client/rpc.go`).
+
+The positive-skip mapped selector loops (`mappedrange_selectors.go`) apply the same
+reply-timeout cap (RFC-280). Storage metrics (`GetEstimatedRangeSizeBytes`,
+`GetRangeSplitPoints`) have neither cap nor reply timeout, as in C++: without a tenant
+they read at the latest version, so no aged version ends them (RFC-280).
 
 These caps apply if no caller deadline/cancellation or configured transaction
 timeout ends the read first. They do not prove the server rejected an aged read
@@ -3346,7 +3703,7 @@ exist` from `connect` itself (`EmbeddedRelationalDriver.java:62-94`).
 **Go.** The driver opens the connection without reading the catalog. So a program may
 connect to `fdbsql:///MYAPP` and run `CREATE DATABASE /myapp` on it. The first statement
 that needs the schema reports what Java's connect reports. `loadSchemaOfDatabase`
-(`pkg/relational/core/embedded/connection.go:526`) turns UNDEFINED_SCHEMA over a missing
+(`pkg/relational/core/embedded/connection.go`) turns UNDEFINED_SCHEMA over a missing
 database into 42F00 `Database <path> does not exist`: the same code and message, one call
 later.
 
@@ -3420,9 +3777,10 @@ pending work before clearing:
 - the subspace's pending-write commit checks;
 - the retirement metadata in the session.
 
-Cancelling marks the registration inactive (`removeCommitCheck`, `database.go:1142-1161`).
-`runCommitChecks` skips an inactive entry even when it is already in the snapshot it is
-iterating (`database.go:1177-1193`).
+Cancelling marks the registration inactive (`removeCommitCheck`, `database.go`).
+The production `sealRecordWrites` / `runPendingCommitChecks` live drain skips inactive
+registrations and includes checks registered by earlier checks or joined writers before
+sealing. It does not use a snapshot of the callback list.
 
 This corrects the boundary; it is not exact parity for Java's defective sequence. It does
 not change record or index wire encodings.
@@ -3842,7 +4200,8 @@ negative array size). Go refuses it with `RecordCoreArgumentError` ("entry size 
 positive") when it builds the maintainer, since the same arithmetic would panic. The call sites
 are the maintainer (`bitmap_value_index_maintainer.go:47`), the chaos model
 (`pkg/recordlayer/chaos/verify_bitmap.go:55`), and the planner's bitmap aggregate candidate,
-which declines the index instead (`pkg/relational/core/embedded/cascades_generator.go:4134`).
+which declines the index instead (`tryAggregateIndexCandidate` in
+`pkg/relational/core/embedded/cascades_generator.go`).
 
 ### The compensation correlation guard refuses a residual on an outer alias the probe does not feed (RFC-150)
 
@@ -4025,7 +4384,8 @@ what Go writes, and in both a Java reader reads what Go writes:
   stored-record read site. A store with no serializer reads a record that Java's relational layer
   or a compressing Java application wrote, where Java's default serializer would fail it. An
   encrypted record still needs the key: a store whose serializer has no key manager fails it with
-  Java's "this serializer cannot decrypt" (`pkg/recordlayer/transformed_record_serializer.go:683`).
+  Java's "this serializer cannot decrypt" (`TransformedRecordSerializer.decrypt` in
+  `pkg/recordlayer/transformed_record_serializer.go`).
 - **The ciphers are the AES transformations Java's serializer can run.** Java initializes every
   cipher with a 16-byte `IvParameterSpec` (`TransformedRecordSerializerJCE.java:67-72`,
   `:98-106`), so only an AES mode that takes that IV works. Go implements those modes from NIST
@@ -4081,7 +4441,8 @@ what Go writes, and in both a Java reader reads what Go writes:
   string can name otherwise.
 - **Compressed bytes are Go's deflate, not the JDK's zlib.** Both write a zlib stream (Java's
   `Deflater.finish()` then `FULL_FLUSH`, `TransformedRecordSerializer.java:133-134`; Go's
-  `compress/zlib`, `transformed_record_serializer.go:444-480`). Each engine inflates the other's,
+  `compress/zlib`, `TransformedRecordSerializer.compress` in
+  `pkg/recordlayer/transformed_record_serializer.go`). Each engine inflates the other's,
   and the prefix and length header are Java's. But `compress/zlib` (over `compress/flate`) is a
   different encoder from the zlib the JDK links, so the compressed bytes differ from Java's for the
   same record and level. Each engine keeps the compression only when its own output is shorter
@@ -4094,7 +4455,8 @@ what Go writes, and in both a Java reader reads what Go writes:
   (`TransformedRecordSerializer.java:184-185`), whose key number is 0. So a sampled write under any
   other key fails ("encryption validation error: decryption failed", or a mismatch if the padding
   happens to hold). Go validates under the record's own key and accepts that write
-  (`transformed_record_serializer.go:306-326`). The stored bytes are the ones Java would have
+  (`TransformedRecordSerializer.transformRead` in
+  `pkg/recordlayer/transformed_record_serializer.go`). The stored bytes are the ones Java would have
   written, and Java reads them. `TestTransformedSerializer_WriteValidation`
   (`pkg/recordlayer/transformed_record_serializer_test.go:691`) pins Go's answer and, mutated to
   Java's key number 0, reddens with Java's error. Both validations are otherwise Java's: a
@@ -4338,17 +4700,32 @@ planned before keeps its plan: `TestFDB_FilteredDerivedTableInsideAJoin` and
 (`pkg/relational/sqldriver/derived_star_join_beside_source_fdb_test.go:126`, `:22`) pin the GROUP
 BY arms' EXPLAIN.
 
-### Go does not reproduce Java's record_types order or anonymous type names (RFC-257 WS-J)
+### Anonymous type names are engine-private (RFC-257 WS-J)
 
-Java lists a schema template's `record_types` in `HashMap` iteration order. It names an anonymous
-type (a struct column's unnamed type) `__type__<uuid>`, with a random UUID drawn per build
-(`ProtoUtils.java:96-98`). It then emits a table's types from a `TreeSet` keyed by those names
-(`TypeRepository.java:269-271`), so two anonymous types swap places between two builds of one
-template. Go sorts `record_types` by name and names an anonymous type by the path that reaches it.
-None of this is identity: union field numbers, record-type keys, field numbers and every named
-message's position agree. A loader of either engine reads the other's template. The conformance
-comparison (`wsjCanonical`, `conformance/ws_j_index_fidelity_conformance_test.go`) removes exactly
-these three differences and nothing else.
+Java names an anonymous type (a struct column's unnamed type) `__type__<uuid>`, with a random UUID
+per build (`ProtoUtils.java:96-98`). It emits a table's types from a `TreeSet` keyed by those names
+(`TypeRepository.java:269-271`), so anonymous types can swap places within a contiguous run between
+builds. Go uses the path that reaches the type. Union field numbers, record-type keys, field numbers
+and every named message's position agree; both engines load the other's template. `wsjCanonical`
+normalizes random aliases and anonymous names/order within consecutive anonymous runs, not
+`record_types` order.
+
+Record-type serialization follows Java 4.14.2.0's two map stages: default HashMap insertion at each
+type's first occurrence in the stored union's declaration order (`fillUnionFields:859-875`), then
+Guava `newHashMapWithExpectedSize` and individual insertion in builder-map order
+(`RecordMetaDataBuilder.java:1473-1483`, `RecordMetaData.java:673-684`). Minimum union field numbers
+still determine record-type keys, not map insertion order; a later alias does not reinsert the type.
+Hand-built types absent from the union use a deterministic index/name fallback before map insertion.
+The insertion-only string-key implementation includes collision-triggered growth, tree-bin iteration
+and resize splits, using UTF-16 hashing/comparison. Ten complete, unnormalized Go `ToProto`/Java
+`buildInCodeMetaData` cases cover 3/6/12-type sizing, collision growth, treeification, 49-type resize
+splits (both halves rebuilt and either/both untreeified), and nonmonotonic union numbers with a
+repeated alias; WS-J also compares the unnormalized record-type sequence.
+
+The separate `javahashmap.Order(first, then)` API retains existing bulk-first caller sizing. It is
+not a claim that every JDK patch implements `putAll` identically: managed JDK 21.0.12 uses ceil
+sizing while this legacy contract uses float-plus-one. The record-type encoder uses the distinct
+Guava expected-size adapter, not that bulk-first operation.
 
 ### Arithmetic overflow is 22003 in Go; the target's escapes unmapped (RFC-257 WS-J/WS-E)
 
@@ -4473,3 +4850,402 @@ conflicts. Snapshot and CGo facade transactions do not expose this capability.
 It is distinct from ordinary index cursor Skip; Record Layer remote-fetch scans
 continue routing positive Skip to SCAN_AND_FETCH, and index plans keep it above
 their remote-fetch leaves.
+
+## Native FDB client connection writer and linger
+
+RFC-282 (#1019) replaces the synchronous write-acknowledgment handoff with an
+enqueue-only per-connection writer (`naWriter`, `D-NG`) matching `Peer::send`
+(`FlowTransport.actor.cpp:1038-1043`), bounded by a 16 MiB per-connection
+high-water mark. Because Go callers run across `P`s rather than on a single
+network thread, the `D-NG` writer defaults to immediate flush on wakeup
+(`minCoalesce = 0, maxCoalesce = 0`), coalescing frames that arrive while the
+writer goroutine is scheduled or inside `conn.Write`. Callers can opt into
+`libfdb_c`'s 10/20 µs timer wait via
+`WithCoalesceDelay(transport.DefaultMinCoalesceDelay, transport.DefaultMaxCoalesceDelay)`
+or into Nagle-style adaptive linger via `WithAdaptiveLinger(window)`.
+`Transact`/`ReadTransact` pool per-transaction timeout timers when no custom
+test clock/hooks are installed on the database's `timeoutQueue`.
+
+## Version-dependent record keys before RFC-275
+
+Earlier Go metadata accepted native `VersionKey()` primary-key columns that Java refuses.
+RFC-275 rejects those declarations with `MetaDataError` ("Version in primary key not supported")
+at construction and load. Existing unsupported metadata is not migrated automatically.
+Functions declare zero version columns even when their arguments contain a version.
+Consequently VERSION indexes rooted at such functions are refused during metadata and SQL
+DDL validation, as in Java; the SQL error is UNKNOWN (`XXXXX`). VALUE indexes with the
+same roots remain legal metadata. A version in a KeyWithValue VALUE portion also remains
+legal metadata; an incomplete version fails recoverably at write time, not at DDL.
+
+Maintained-count expressions and function-wrapped primary keys now see the chosen
+record version, as Java's save record builder does. Incomplete values reaching ordinary key
+encoders return `IncompleteVersionstampError` rather than a panic. Earlier null-version
+counters are not corrected automatically; migrate or recreate affected pre-release stores
+before mixed-engine use. Unaffected stores and tuple encodings are unchanged.
+
+## Transaction size thresholds (Go-only extension, RFC-275)
+
+Java has no user-set transaction size threshold. Its only size check is the
+online indexer's write limit (`IndexingBase.hadTransactionReachedLimits`), and
+FDB's own 2101 is counted and wrapped. Go adds two opt-in `ContextConfig` fields,
+which `SaveRecord` and `DeleteRecord` check after their write:
+- `TransactionSizeWarnBytes` logs at WARN and counts `CountTransactionSizeWarning`,
+  once per transaction. The operation still succeeds.
+- `TransactionSizeErrorBytes` returns `TransactionSizeExceededError`, a signal to
+  commit and start a new transaction.
+
+Neither changes any stored byte.
+
+## Key-space paths hold the stored value (RFC-275)
+
+Go's `keyspace` follows Java's `KeySpaceDirectory` in these respects:
+- sibling rules (`addSubdirectory`);
+- declaration-order key matching;
+- the "No subdirectory available to hold provided type" error.
+
+It differs in three places:
+- **Stored value only.** A path stores only the value that goes into the tuple. A
+  resolver directory's path carries the resolved `int64`, and `PathFromTuple`
+  makes no reverse lookup. Java's `ResolvedKeySpacePath` also carries the logical
+  name.
+- **Byte constants.** Two constant `BYTES` siblings with equal content are refused.
+  Java compares constants with `Objects.equals`, which for arrays is identity, so
+  it accepts them and then matches the first.
+  Integer constants compare by value too. Java's `Objects.equals` tells an `Integer` 1
+  from a `Long` 1 and accepts both. Floats compare as Java's `Double.equals` does.
+- **No constant resolver directories.** A resolver directory is always open, so
+  Java's `isCompatible` check, which applies only between constants, never applies.
+
+### Earlier Go nested KeySpace prefixes
+
+Earlier Go `Path.ToSubspace()` packed the whole path as one tuple element:
+`(("app", "store"))`. It now emits Java's flat `("app", "store")` prefix.
+This changes persisted addresses, not record bytes, and has no automatic migration.
+`Path.LegacyNestedSubspace()` provides explicit access to the old address.
+Subspaces returned by `ToSubspace()` retain the old address through `.Sub(...)`;
+Record Layer `Create`, `Open` and `CreateOrOpen` serializably probe it and return
+`LegacyKeySpacePrefixError` if data remains, instead of silently opening a new store.
+After export/import and verification, `SetAllowLegacyKeySpaceCutover(true)` explicitly
+acknowledges choosing the flat destination while old data remains. It copies nothing.
+Converting these subspaces to raw bytes discards the guard; application code doing
+raw FDB reads/writes must enforce its own write freeze and prefix choice. See
+[the upgrade procedure](docs/upgrade.md#earlier-go-keyspace-path-prefixes).
+
+## A fan-out composite under an absent parent: earlier Go's entries and counts
+
+Earlier Go builds evaluated every child of a composite (`Concat`) as a scalar
+first, and a field on a nil message evaluated as one null whatever its fan
+type. Under an absent singular parent that gave Java-incompatible results:
+
+- A composite holding a `FanOut` child, such as
+  `Nest("p", Concat(Field("a"), FanOut("tags")))` on a record without `p`,
+  yielded one all-null tuple. A VALUE index got the entry `(null, null, pk)`;
+  a COUNT or COUNT_UPDATES index grouped by it counted the record at
+  `(null, null)`. Java 4.14.2.0 writes no entry and no count.
+  NestingKeyExpression.java:77-84 evaluates the child on the parent's null
+  value. FieldKeyExpression.java:179-180 returns getNullResult() for a null
+  message, which is an empty list for FanOut (:229-232).
+  ThenKeyExpression.java:90-98 crosses the children, so the product is empty,
+  and AtomicMutationIndexMaintainer.java:125-147 mutates once per entry.
+- A `Concatenate` child under the NOT_NULL standin, such as
+  `Nest("p", Concat(Field("a"), FieldWithNullStandin("tags", FanTypeConcatenate,
+  NullStandinNotNull)))` on a record without `p`, yielded null where Java's
+  getNullResult yields the empty list, which packs as an empty nested tuple:
+  earlier Go wrote `(null, null, pk)` where Java writes `(null, (), pk)`.
+
+Separately, an atomic index whose grouping key is a fan-out nesting, such as
+`GroupAll(NestFanOut("ps", Field("a")))`, read only a record's first element:
+COUNT and COUNT_UPDATES counted a record with several elements once, under the
+first element's group, and one with an empty list at `()` when saved but at
+`(null)` when deleted; SUM added only the first element's value. Java mutates
+once per entry.
+
+An update also skipped shared entries differently. Java's
+StandardIndexMaintainer.update (StandardIndexMaintainer.java:219-227) collects
+every old entry the new list contains (commonKeys, :390-399) and removes every
+occurrence of each from both lists with List.removeAll, comparing whole entries
+(IndexEntry.java:256-271). Atomic indexes do the same except COUNT_UPDATES
+(AtomicMutationIndexMaintainer.java:235-237). Earlier Go cancelled SUM entries
+one for one, so updating ps.n from [10] to [10, 10] added 10 where Java adds
+nothing, and compared COUNT_NOT_NULL entries by their group alone, so a counted
+value that changed within a group was skipped. Java's rule leaves a count that
+is not the arithmetic count of the record's current entries (the SUM stays 10
+above); Go reproduces it. VALUE indexes already matched: their update
+(`RemoveCommonEntries`) drops every shared entry.
+
+Go now writes what Java writes in all of these cases, measured against Java
+4.14.2.0: the fan-out cases of `conformance/null_standin_conformance_test.go`
+save the same records and updates through both engines and compare every
+index key-value pair, VALUE entries and COUNT, COUNT_UPDATES, COUNT_NOT_NULL
+and SUM values (including the [10] to [10, 10] to [10] walk).
+
+There is no automatic migration.
+When Go updates or deletes such a record, it evaluates the old record as Java
+does, so what an earlier build wrote is never corrected: a stale VALUE entry
+stays visible to Go and Java index scans, and a count or sum stays off by what
+the earlier build added. After upgrading, rebuild:
+
+- every index whose expression nests, under a singular message field, a
+  composite holding a `FanOut` child or a NOT_NULL `Concatenate` field;
+- every atomic index grouped by a fan-out nesting;
+- every SUM or COUNT_NOT_NULL index over a fan-out that earlier Go updated.
+
+Pinned against Java by those conformance cases, and in Go alone by
+`pkg/recordlayer/key_expression_fanout_absent_parent_test.go`: evaluation;
+VALUE, COUNT, COUNT_UPDATES and SUM through insert, an online rebuild and
+delete; and updates of VALUE, COUNT, COUNT_UPDATES, COUNT_NOT_NULL and SUM
+over a fan-out with repeated values.
+
+## Native FDB client read hedging
+
+RFC-281 (#1017) aligns the second-request budget and adaptive delay with
+libfdb_c 7.3.77 (`QueueModel.h:121`, `LoadBalance.actor.h:554-563,694-716`):
+new databases start at zero budget; lone replies earn 0.05 up to 100; a hedge
+costs 1 and raises the delay multiplier by 0.01; lone replies decay it by
+0.00025 toward 1. Watches neither accrue budget nor record read latency.
+`SetHedgeEnabled(false)` remains a Go control that suppresses hedges while
+allowing lone replies to accrue budget.
+
+Remaining differences are tracked in TODO.md: Go chooses the primary by
+best-of-two random rather than C++'s minimum outstanding depth, and retryable
+reply handling does not implement C++'s full alternative loop (including
+continuing after a failed hedge, and decoding lone inline errors before
+choosing another alternative). The budget tests do not claim to close these
+selection/retry gaps. Single-replica wire goldens and data-plane differentials
+remain useful but cannot measure speculative duplicate requests; the budget
+regressions use two storage-server aliases and held replies against real FDB.
+
+## Split-disabled replacement clears known old split tails
+
+For an unsplit replacement with a retained suffix (`splitLongRecords=false`,
+`omitUnsplitSuffix=false`) and no incomplete versionstamp in the primary key,
+Go clears the previous chunks when the supplied previous size information says
+`IsSplit=true`, even if `VersionedInline=false`. It then writes the new body at
+suffix 0. This intentionally avoids leaving old split chunks alongside the new
+unsplit body after splitting is disabled.
+
+Java 4.14.2.0's `SplitHelper.saveWithSplit` clears only when the key has no
+incomplete versionstamp and `splitLongRecords || previousSizeInfo == null ||
+previousSizeInfo.isVersionedInline()`. For the known, split, non-inline-versioned
+previous image above, Java skips the clear and writes suffix 0 alongside the old
+suffixes 1..n. Its `loadWithSplit` still range-loads suffix-bearing records when
+splitting is disabled, so those leftover chunks can affect subsequent reads.
+This is a persisted-key cleanup divergence, not byte parity for that transition.
+The shared suffix-0/1..n format is unchanged; ordinary split-enabled saves,
+unknown previous sizes, inline-versioned previous images and legacy bare-key
+unsplit overwrites are not the distinguishing case. There is no automatic
+historical sweep of abandoned chunks. `split_helper_test.go`'s "clears known
+unversioned split tails when splitting is disabled" regression pins Go's cleanup.
+
+## Mutual indexing has no anyJumper (RFC-279)
+
+Java's mutual builder records an FDB error that ends a claimed range, after the
+runner's retries, and returns quietly without lessening the limit
+(`IndexingMutuallyByRecords.java:495-544`). On the next walk:
+- in another fragment, or with nothing left to build, it forgets the error;
+- in the same fragment on a different range, it jumps to the next fragment, as a
+  peer is building there;
+- in the same fragment on the same range, it throws the error again and keeps it.
+
+Because the error is kept, every lessen-work retry throws it again, and the build
+fails. A claimed range too large for one transaction (2101) therefore fails a Java
+mutual build without a retry at a smaller limit.
+
+Go does not port it. A failed chunk of a claimed range goes through the runner's
+retries and then lessen-work, as every other build does. Peers inside one fragment
+progress by the runner's retries in both engines. Java jumps only after a range
+fails every runner attempt. No stored byte differs; the built ranges are the same
+kind of primary-key ranges.
+
+Java's `infiniteLoopProtection`, which fails a build after the same range is picked
+1000 times in a row, is not ported either. A Go claim is built until nothing in it
+is missing, and a chunk that keeps failing ends the build after the lessen-work
+retries, so no build picks one range forever.
+
+## Brotli record compression (Go-only extension)
+
+Java 4.14.2.0's `TransformedRecordSerializer` accepts compression version 1
+only: a version byte, a big-endian uncompressed length and a zlib stream.
+Go preserves that default format and its compression, encryption and validation
+behavior. Brotli never replaces the contents of a version-1 frame.
+
+`TransformedRecordSerializerBuilder.SetGoOnlyBrotliCompression(level)` explicitly
+opts a serializer into writing and reading version 2 at levels 0 through 4.
+The version-2 body contains a version byte, a big-endian uint32 uncompressed
+length, a big-endian CRC32C checksum of the uncompressed union, and a Brotli
+stream. Compression is retained only when the complete body is smaller than
+the original union. The outer transformation prefix, compress-then-encrypt
+order, split-record storage, primary keys and index maintenance are unchanged.
+The original protobuf union, including unknown fields, is recovered on load.
+This option does not compress index keys or custom index values.
+
+Java and non-opted Go serializers reject version 2 with an unknown-compression-
+version error. Brotli-enabled serializers also read bare, clear-prefixed and
+version-1 records. A subsequent `SetCompressWhenSerializing(false)` disables
+compressed writes without revoking version-2 read permission, allowing a Go
+application to rewrite records through the normal save path. There is no
+Java-side migration or automatic store-wide rewrite.
+
+Version-2 uncompressed records are capped at 10,000,000 bytes, checked before
+encoding or allocating decoded output. Decoding is bounded and rejects
+truncated streams, wrong lengths, trailing input and checksum mismatches.
+Released codec states can retain plaintext in their windows, as the existing
+zlib free lists do; reuse is bounded and does not provide memory zeroization.
+
+## TEXT queries
+
+`recordlayer.TextScan` ports `TextScan.scan` (TextScan.java:160-262) and its
+merge cursors; `PlanTextQuery` ports `RecordQueryPlanner.planText`
+(RecordQueryPlanner.java:1702-1734). On the shared, unbounded token-scan surface
+with equivalent comparison-key ordering, entries, records and continuations are
+Java's, subject to the ordered-comparator and unordered-identity exceptions below.
+Logical suffix bounds have the separate read-side boundary below. Pinned by
+`conformance/text_query_conformance_test.go` (target `//conformance:conformance_test`,
+tag `conformance_java`) and `pkg/recordlayer/text_scan_seek_test.go`.
+
+### TEXT logical suffix bounds (intentional read-side extension)
+
+Go applies suffix bounds to decoded logical `(suffix, primary key)` entries.
+A bunch's first entry is its physical key: an inclusive lower bound inside a
+bunch must include that predecessor bunch, then discard decoded entries below
+the lower bound and at or above the exclusive upper bound. This applies to
+forward/reverse scans, reopened intersection seeks and resumed pages. The stored
+bunches, entry encodings and continuation framing are unchanged.
+
+Java 4.14.2.0 `TextIndexMaintainer.scan` passes the packed range directly to
+`BunchedMap.scanMulti` (TextIndexMaintainer.java:538-548;
+BunchedMap.java:1017-1041). A fresh scan starts at the physical lower bound,
+without its predecessor. `BunchedMapIterator` decodes every entry of selected
+bunches without a logical-range filter. Java can therefore omit valid lower-bound
+rows and return decoded rows at or beyond the upper bound, in both directions;
+`TextScan`'s intersection/union/phrase operations do not repair those bounds.
+Go deliberately does not copy these physical-signpost results or drop valid rows.
+
+`conformance/text_query_conformance_test.go` keeps all 18 original bounded
+comparison/direction/limit/skip variants, with an independent seed-predicate
+logical oracle and a source-modeled native physical-owner oracle. A controlled
+persisted Go-serialized fixture pins literal bunches `{0,10,11}`, `{15,19,20,21}`,
+`{30}` for both tokens. For `[10,20)`, Go returns IDs `10,11,15,19`; native Java
+returns `15,19,20,21`, not a normalized subset. Forward/reverse, skip/limits and
+same-engine continuation replays are covered separately. The bounded engines'
+continuations have the same wire format but are **not a cross-engine result/page
+contract**: Java retains its physical lower fence and lacks logical upper filtering,
+whereas Go includes the predecessor and filters decoded entries. Do not exchange
+bounded TEXT continuations expecting identical remaining rows. Unbounded ordered
+cases with equivalent key comparison retain exact native entries, order, stop
+reasons and cross-engine resumes.
+
+### TEXT ordered-merge comparison keys
+
+Go deliberately compares packed tuple keys in ordered intersection/union merges,
+matching physical FDB order. Java 4.14.2.0 `KeyComparisons.compareKeys` instead
+compares objects: UUID halves are signed, strings use UTF-16 code units, boxed
+NaNs compare canonically, and mixed `Long`/`BigInteger` comparisons can throw.
+These differences can change an unpaged ALL result or ANY ordering/duplicates,
+not merely a continuation. For UUID keys, the literal conformance fixture pins
+Java ALL as empty and ANY as `10,90,20,90`, versus Go ALL `90` and ANY `10,20,90`.
+Native answers are not sorted or normalized into Go answers. Raw typed comparator
+contrasts and actual Java UUID scans live in
+`conformance/text_query_boundary_conformance_test.go`; expectations must be
+established by that lane, not inferred from source inspection.
+
+Tuple encodings and stored bytes remain unchanged. Do not exchange ordered TEXT
+merge continuations over these typed keys expecting equal remaining rows. The
+unbounded parity statements here apply only where object and packed ordering
+agree, independently of the bounded-range and probable-merge identity boundaries.
+
+### TEXT intersections seek (intentional, result-preserving cost divergence)
+
+Java intersects the token scans of `TEXT_CONTAINS_ALL`, `TEXT_CONTAINS_PHRASE`
+and `TEXT_CONTAINS_ALL_WITHIN` by streaming each one in primary-key order
+(`IntersectionCursorBase.computeNextResultStates`, IntersectionCursorBase.java:
+111-145), one entry of each non-maximal child per round, so one rare token
+intersected with common ones reads the common tokens' postings one by one
+between its candidates. Go discards a token scan's entries below the candidate key by
+seeking: within the bunch in memory, otherwise by reopening the range read at the
+bunch that holds the candidate (a bunch is keyed by its first entry, so that is
+the last bunch keyed below the candidate). The seeking child's cached
+continuation is that of the last entry passed over, the one Java holds after
+consuming the same entries one by one, so the matches, their order and every
+continuation are Java's. Only the key-values read differ: Go reads at most two
+bunches per token per candidate. On the 1200-record corpus of
+`text_scan_seek_test.go` (rare ∩ common ∩ frequent) that is 10 key-values
+against Java's 77; the test derives both counts.
+
+Out-of-band limits are charged per entry read, so under a scanned-records, byte
+or time limit a Go page can hold more rows than Java's page for the same
+budget; the continuation at each stop still resumes at the next row both engines
+return. The read costs are exposed as `CountTextScanKeyValues`,
+`CountTextScanBytes` and `CountTextScanSeeks` on the store timer, Java's
+`LOAD_SCAN_ENTRY`/`LOAD_TEXT_ENTRY` per entry, and the bytes as the scan's
+`ScanLimiterState.BytesScanned`.
+
+### Unordered TEXT merges are serial
+
+Java's `UnorderedUnionCursor` (`TEXT_CONTAINS_ANY_PREFIX`) and
+`ProbableIntersectionCursor` (multi-token `TEXT_CONTAINS_ALL_PREFIXES`) return
+rows as child reads complete (MergeCursor.whenAny, MergeCursor.java:115-136), so
+their order over FDB varies run to run. Go pulls children in index order, which
+is Java's order when every child's next result is already complete; the
+in-memory conformance pins this order and the continuation bytes, including the
+Bloom filters. Apart from the comparison-key identity exceptions below,
+over a store both engines return the same set of rows; a resumed non-strict `TEXT_CONTAINS_ALL_PREFIXES` may add different Bloom false positives
+in each, as Java may between its own runs.
+
+`ProbableIntersectionCursorState` remembers seen keys in a `HashSet<List<Object>>`,
+where a `byte[]` element compares by identity, so Java never matches two equal
+byte-array primary keys from different children within one pass. Go compares
+keys by their tuple encoding and matches them. Conversely, Java's boxed
+`Float.equals`/`Double.equals` canonicalizes NaNs in these lists (including
+nested lists). Distinct NaN payloads are distinct stored tuple keys; Go retains
+that packed identity instead of falsely suppressing the later key as a definite
+duplicate. This can return two distinct NaN keys where Java returns one, even
+within an unpaged scan and before Bloom lookup. Float and Double remain different
+tuple types. These are seen-set identity exceptions, not changes to the Bloom
+funnel or floating tuple bytes; cross-engine regressions pin the contrast.
+The structural-key continuation oracle uses Java `ByteString` (supported by
+`ProbableIntersectionCursorState`'s byte funnel and structural list equality),
+not freshly allocated `byte[]`. It exchanges actual continuations in both
+directions for Go unsigned integers, raw bytes, `fdb.Key`, key-convertible byte
+aliases and nested tuples; fresh native byte-array identity is asserted separately.
+
+The Bloom filter is Guava 33's (`optimalNumOfHashFunctions(p)`); a Java
+deployment on a Guava whose sizing differs writes a continuation Go still reads
+(the serialized form carries the hash count) but sizes fresh filters differently.
+
+The merge cursors do not record Java's `QUERY_INTERSECTION*`, `QUERY_UNION*` and
+`QUERY_TEXT_FILTER*` timer counts.
+
+### Legacy pending record-version deletion
+
+For old-version-format stores whose metadata disables record versions, Go still
+removes current pending version mutations and local-cache entries when deleting
+a body, including ordinary partial-prefix `DeleteRecordsWhere`. Java 4.14.2.0
+ignores the legacy version in its delete load and leaves an explicitly saved
+incomplete version pending, so that save/delete sequence can commit a version key
+without its body. Go deliberately prevents this resurrection. Previously committed
+legacy version bytes remain ignored and preserved when metadata disables versions;
+this is not a migration or a cleanup of historical bytes. Mixed engines may thus
+produce different legacy version keys for the same explicit-version save/delete
+sequence. Lifecycle and contrasting Java/Go conformance tests pin the boundary.
+
+A separate **versions-enabled, format-5 point-delete** sequence first commits
+complete V0, then saves an incomplete version and deletes the body in one context.
+Java's `oldHasIncompleteVersion` branch removes only the pending mutation, leaving
+the exact old V0 key/value orphaned (`FDBRecordStore.java:1776-1783`). Go clears
+both the pending mutation and committed version key. This is intentional cleanup,
+not byte parity: `legacy_pending_version_divergence_test.go` contrasts the exact
+key and twelve old bytes `{1,0,0,0,0,0,0,0,0,0,0,9}` and retains all four
+versions-disabled point/where × seed cases. No automatic historical cleanup or
+metadata-disabled committed-byte deletion is implied.
+
+### Opt-in batch index conflict widening
+
+`BatchSaveOptions.CoalesceIndexWriteConflicts` adds full primary/secondary
+maintained-index write-conflict ranges without removing ordinary entry conflicts.
+It trades fewer/wider conflict encodings for additional conflicts and retries:
+a writing reader of an untouched part of that index can receive 1020 where
+individual Java saves would not conflict. Defaults do not widen ranges. Persisted
+record/index bytes are unchanged. `store_batch_conflicts_test.go` pins both the
+untouched-index-reader contrast and unaffected indexes/subspaces; this option
+is not a promise of lower live transaction size or higher throughput.

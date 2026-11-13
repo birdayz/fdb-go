@@ -23,7 +23,6 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	"fdb.dev/pkg/relational/api"
 	functions "fdb.dev/pkg/relational/core/functions"
 )
 
@@ -2187,9 +2186,9 @@ func TestGoToProtoValue_DoubleToIntRejects22000(t *testing.T) {
 	t.Parallel()
 	typed := (&demopb.TypedRecord{}).ProtoReflect().Descriptor()
 	_, err := goToProtoValue(typed.Fields().ByName("val_int64"), float64(20.0))
-	var apiErr *api.Error
-	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeCannotConvertType {
-		t.Fatalf("float64 → BIGINT: want 22000 (CannotConvertType), got %v", err)
+	var mismatch *values.ScalarTypeMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("float64 → BIGINT: want ScalarTypeMismatchError (22000), got %v", err)
 	}
 }
 
@@ -2200,9 +2199,9 @@ func TestGoToProtoValue_StringToIntRejects22000(t *testing.T) {
 	t.Parallel()
 	typed := (&demopb.TypedRecord{}).ProtoReflect().Descriptor()
 	_, err := goToProtoValue(typed.Fields().ByName("val_int64"), "nope")
-	var apiErr *api.Error
-	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeCannotConvertType {
-		t.Fatalf("string → BIGINT: want 22000 (CannotConvertType), got %v", err)
+	var mismatch *values.ScalarTypeMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("string → BIGINT: want ScalarTypeMismatchError (22000), got %v", err)
 	}
 }
 
@@ -5529,6 +5528,27 @@ func newUnorderedUnionForTest(children ...recordlayer.RecordCursor[QueryResult])
 		reasons:   make([]recordlayer.NoNextReason, len(children)),
 		stopped:   make([]bool, len(children)),
 		exhausted: make([]bool, len(children)),
+	}
+}
+
+func TestUnionContinuationEmptyInputAdapter(t *testing.T) {
+	t.Parallel()
+	states, err := decodeUnionContinuation([]byte{}, 3)
+	if err != nil || len(states) != 3 {
+		t.Fatalf("executor empty input must start three children: %v", err)
+	}
+	for i, state := range states {
+		if state.exhausted || state.continuation != nil {
+			t.Fatalf("child %d is not START: %+v", i, state)
+		}
+	}
+	if _, err := decodeUnionContinuation([]byte{0xff}, 3); err == nil {
+		t.Fatal("accepted malformed union continuation")
+	} else {
+		var parse *recordlayer.ContinuationParseError
+		if !errors.As(err, &parse) {
+			t.Fatalf("lost executor parse-error policy: %T %v", err, err)
+		}
 	}
 }
 

@@ -117,7 +117,7 @@ func TestFDB_GRVCache_RefresherStartsOnOptInMiss(t *testing.T) {
 		t.Fatalf("GRVCacheHits advanced by %d on a cold-cache opt-in, want 0 — this must be the MISS path", got)
 	}
 	if !batcher.refresherStarted.Load() {
-		t.Fatal("background refresher did not start on an opt-in cache MISS — a cold/stale cache stays un-warmed (codex PR #291)")
+		t.Fatal("background refresher did not start on an opt-in cache MISS — a cold/stale cache stays un-warmed")
 	}
 }
 
@@ -201,6 +201,6 @@ func TestFDB_GRVCache_ImmediateServesButStartsNoRefresher(t *testing.T) {
 	}
 	// The other half: it must NOT start the IMMEDIATE batcher's refresher.
 	if immBatcher.refresherStarted.Load() {
-		t.Fatal("IMMEDIATE opt-in started the IMMEDIATE refresher — a stream of ratekeeper-bypassing IMMEDIATE GRVs (codex #16 P2)")
+		t.Fatal("IMMEDIATE opt-in started the IMMEDIATE refresher — a stream of ratekeeper-bypassing IMMEDIATE GRVs")
 	}
 }

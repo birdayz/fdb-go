@@ -1,0 +1,175 @@
+{
+  "tool": "otelbench-v2",
+  "backend": "sql",
+  "mode": "query",
+  "suite": "all",
+  "revision": "unrecorded",
+  "go": "go1.27.3",
+  "config": {
+    "run": "g2a1107_sqlz1_1",
+    "backend": "sql",
+    "seed": 283,
+    "count": 50000,
+    "tenants": 10,
+    "attributes": 8,
+    "match_every": 100,
+    "batch": 32,
+    "save_mode": "batch",
+    "record_compression": "zlib-1",
+    "posting_value_format": "json",
+    "workers": 8,
+    "diagnostics": false,
+    "ch_batch": 8192,
+    "ch_batch_bytes": 8388608,
+    "ch_index_granularity": 8192,
+    "ch_query_transport": "http",
+    "tenant": 0,
+    "k": 100,
+    "iterations": 1200,
+    "max_candidates": 20000,
+    "max_bytes": 4194304,
+    "hash_bytes": 32,
+    "order": "time"
+  },
+  "corpus_fingerprint": "3dd3cb10b91329acbca1a824af7bdd58387b53484fe71009d75cffafe086107f",
+  "start_utc": "2026-11-07T15:32:30.808193252Z",
+  "wall_ns": 719352741,
+  "stats": {
+    "rows": 0,
+    "attributes": 0,
+    "logical_payload_bytes": 0,
+    "structures": null
+  },
+  "histograms": {
+    "genai_absent": {
+      "population": 75,
+      "min_ns": 251557,
+      "p50_ns": 363168,
+      "p95_ns": 800046,
+      "p99_ns": 1643383,
+      "max_ns": 1643383
+    },
+    "genai_model": {
+      "population": 75,
+      "min_ns": 678966,
+      "p50_ns": 935763,
+      "p95_ns": 2647204,
+      "p99_ns": 3707092,
+      "max_ns": 3707092
+    },
+    "genai_operation": {
+      "population": 75,
+      "min_ns": 656063,
+      "p50_ns": 927297,
+      "p95_ns": 1626150,
+      "p99_ns": 2937694,
+      "max_ns": 2937694
+    },
+    "genai_provider": {
+      "population": 75,
+      "min_ns": 670270,
+      "p50_ns": 950180,
+      "p95_ns": 2123142,
+      "p99_ns": 9669378,
+      "max_ns": 9669378
+    },
+    "genai_response": {
+      "population": 75,
+      "min_ns": 279780,
+      "p50_ns": 390389,
+      "p95_ns": 639531,
+      "p99_ns": 1664363,
+      "max_ns": 1664363
+    },
+    "genai_scope_resource": {
+      "population": 75,
+      "min_ns": 260193,
+      "p50_ns": 367656,
+      "p95_ns": 741044,
+      "p99_ns": 2445953,
+      "max_ns": 2445953
+    },
+    "genai_scope_scope": {
+      "population": 75,
+      "min_ns": 252479,
+      "p50_ns": 356195,
+      "p95_ns": 703824,
+      "p99_ns": 1020834,
+      "max_ns": 1020834
+    },
+    "genai_type": {
+      "population": 75,
+      "min_ns": 244152,
+      "p50_ns": 353720,
+      "p95_ns": 849840,
+      "p99_ns": 1297028,
+      "max_ns": 1297028
+    },
+    "span": {
+      "population": 75,
+      "min_ns": 279810,
+      "p50_ns": 379779,
+      "p95_ns": 760550,
+      "p99_ns": 1166099,
+      "max_ns": 1166099
+    },
+    "span_absent": {
+      "population": 75,
+      "min_ns": 253931,
+      "p50_ns": 375902,
+      "p95_ns": 672064,
+      "p99_ns": 1620790,
+      "max_ns": 1620790
+    },
+    "time_absent": {
+      "population": 75,
+      "min_ns": 247489,
+      "p50_ns": 393155,
+      "p95_ns": 688264,
+      "p99_ns": 741014,
+      "max_ns": 741014
+    },
+    "time_broad": {
+      "population": 75,
+      "min_ns": 484207,
+      "p50_ns": 683715,
+      "p95_ns": 1163715,
+      "p99_ns": 1244648,
+      "max_ns": 1244648
+    },
+    "time_empty": {
+      "population": 75,
+      "min_ns": 481,
+      "p50_ns": 631,
+      "p95_ns": 2545,
+      "p99_ns": 3146,
+      "max_ns": 3146
+    },
+    "time_narrow": {
+      "population": 75,
+      "min_ns": 267527,
+      "p50_ns": 391302,
+      "p95_ns": 828279,
+      "p99_ns": 1050470,
+      "max_ns": 1050470
+    },
+    "trace": {
+      "population": 75,
+      "min_ns": 357597,
+      "p50_ns": 509685,
+      "p95_ns": 1120874,
+      "p99_ns": 10209001,
+      "max_ns": 10209001
+    },
+    "trace_absent": {
+      "population": 75,
+      "min_ns": 267146,
+      "p50_ns": 376073,
+      "p95_ns": 655491,
+      "p99_ns": 931494,
+      "max_ns": 931494
+    }
+  },
+  "failures": 0,
+  "boundary": "fixture V2 immutable synthetic spans; local closed-loop diagnostic, not SLO/HA/production evidence; typed scoped equality, complete trace, standalone span ID, intrinsic half-open time; synthetic ID/response uniqueness is not a provider or semconv guarantee; ClickHouse ownership checks and data queries use the selected transport, HTTP JSON or native typed transport; DDL, ingest, storage audit and EXPLAIN remain HTTP; transport arms are not protocol-cost-equivalent"
+}

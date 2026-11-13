@@ -190,9 +190,9 @@ func TestAndOrValue_WithChildren(t *testing.T) {
 }
 
 // TestAndOrValue_SimplifyConstantFold verifies that SimplifyValue
-// folds an all-constant AndOrValue into a literal. With the
-// simplifier dispatch added in this same shift, a constant
-// AND/OR expression should reduce to a single ConstantValue.
+// folds an all-constant AndOrValue into a literal: through the
+// simplifier dispatch, a constant AND/OR expression reduces to a
+// single ConstantValue.
 func TestAndOrValue_SimplifyConstantFold(t *testing.T) {
 	t.Parallel()
 	// AND(true, false) = false → should fold to a ConstantValue(false).

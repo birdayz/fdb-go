@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/fdbgo/wire/types"
 )
@@ -192,18 +193,73 @@ func TestSetTimeout_UndeliveredKeepsPipelinedReplyWait(t *testing.T) {
 	tx.creationTime = time.Now().Add(-2 * time.Minute)
 	tx.deadlineNs.Store(tx.creationTime.Add(tx.timeoutDur()).UnixNano())
 	var sent *PendingGet
-	tx.afterPendingSend = func(p *PendingGet) { sent = p }
+	var origReplyCh <-chan transport.Response
+	delayedCh := make(chan transport.Response, 1)
+	timerChecked := false
+	tx.afterPendingSend = func(p *PendingGet) {
+		sent = p
+		origReplyCh = p.replyCh
+		p.replyCh = delayedCh
+		p.onReplyTimer = func(tm *time.Timer) {
+			timerChecked = true
+			select {
+			case <-tm.C:
+				t.Error("the reply wait ended at the elapsed deadline before the timeout was delivered")
+			case <-time.After(50 * time.Millisecond):
+			}
+			select {
+			case r, ok := <-origReplyCh:
+				if ok {
+					delayedCh <- r
+				}
+			case <-ctx.Done():
+				t.Errorf("timed out waiting for server reply: %v", ctx.Err())
+			case <-time.After(10 * time.Second):
+				t.Error("server reply did not arrive within 10s")
+			}
+		}
+	}
 	_, pending, err := tx.GetPipelined(ctx, []byte(t.Name()))
 	if err != nil || pending == nil || sent != pending {
 		t.Fatalf("GetPipelined = pending %v, sent %v, err %v; want one sent pending read", pending != nil, sent != nil, err)
 	}
-	select {
-	case <-sent.timer.C:
-		t.Fatal("the reply wait ended at the elapsed deadline before the timeout was delivered")
-	case <-time.After(50 * time.Millisecond):
-	}
 	if _, err := pending.Resolve(); err != nil {
 		t.Fatalf("Resolve with an undelivered timeout = %v, want the reply", err)
+	}
+	if !timerChecked || !sent.replyConsumed {
+		t.Fatalf("timerChecked=%t replyConsumed=%t, want (true, true)", timerChecked, sent.replyConsumed)
+	}
+
+	// When the reply is already ready in replyCh on Resolve entry, the nonblocking
+	// fast probe consumes it without acquiring a pooled reply timer.
+	var sentReady *PendingGet
+	readyTimerAcquired := false
+	tx.afterPendingSend = func(p *PendingGet) {
+		sentReady = p
+		orig := p.replyCh
+		readyCh := make(chan transport.Response, 1)
+		select {
+		case r := <-orig:
+			readyCh <- r
+		case <-ctx.Done():
+			t.Errorf("timed out waiting for ready reply: %v", ctx.Err())
+		case <-time.After(10 * time.Second):
+			t.Error("ready reply did not arrive within 10s")
+		}
+		p.replyCh = readyCh
+		p.onReplyTimer = func(*time.Timer) {
+			readyTimerAcquired = true
+		}
+	}
+	_, pendingReady, err := tx.GetPipelined(ctx, []byte(t.Name()+"_ready"))
+	if err != nil || pendingReady == nil || sentReady != pendingReady {
+		t.Fatalf("GetPipelined(ready) = pending %v, sent %v, err %v", pendingReady != nil, sentReady != nil, err)
+	}
+	if _, err := pendingReady.Resolve(); err != nil {
+		t.Fatalf("Resolve(ready) = %v, want nil", err)
+	}
+	if readyTimerAcquired || !sentReady.replyConsumed {
+		t.Fatalf("readyTimerAcquired=%t replyConsumed=%t, want (false, true)", readyTimerAcquired, sentReady.replyConsumed)
 	}
 }
 

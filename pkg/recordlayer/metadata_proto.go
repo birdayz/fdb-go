@@ -17,6 +17,7 @@ import (
 	"fdb.dev/pkg/recordlayer/internal/tuplefast"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/javahashmap"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/internal/protovalue"
 	"fdb.dev/pkg/recordlayer/protoscope"
@@ -82,10 +83,15 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 		md.Records = protodesc.ToFileDescriptorProto(m.fileDescriptor)
 	}
 
-	// 2. Dependencies (transitive)
+	// Java emits all transitive dependencies from a filename-keyed TreeMap.
 	deps := collectDependencies(m.fileDescriptor)
+	sort.Slice(deps, func(i, j int) bool { return deps[i].Path() < deps[j].Path() })
 	for _, dep := range deps {
-		md.Dependencies = append(md.Dependencies, protodesc.ToFileDescriptorProto(dep))
+		if source := m.dependencySourceProtos[dep.Path()]; source != nil {
+			md.Dependencies = append(md.Dependencies, proto.Clone(source).(*descriptorpb.FileDescriptorProto))
+		} else {
+			md.Dependencies = append(md.Dependencies, protodesc.ToFileDescriptorProto(dep))
+		}
 	}
 
 	// 3. Build index → record type name mapping
@@ -111,10 +117,8 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 		md.Indexes = append(md.Indexes, idxProto)
 	}
 
-	// 5. Record types, in DECLARATION order (the union field number):
-	// Java's serializer emits them in visit order, so the stored bytes
-	// carry union order, not name order — byte-golden-pinned. Name is the
-	// deterministic tiebreak for equal indexes (hand-built metadata).
+	// 5. Java inserts types in union declaration order, then rebuilds from that
+	// iteration in an expected-size map (fillUnionFields/build), not field-number order.
 	rtNames := make([]string, 0, len(m.recordTypes))
 	for name := range m.recordTypes {
 		rtNames = append(rtNames, name)
@@ -126,6 +130,29 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 		}
 		return rtNames[i] < rtNames[j]
 	})
+	// Hand-built types absent from the union follow in index/name order.
+	insertionOrder := make([]string, 0, len(rtNames))
+	seen := make(map[string]bool, len(rtNames))
+	if m.unionDescriptor != nil {
+		fields := m.unionDescriptor.Fields()
+		for i := 0; i < fields.Len(); i++ {
+			message := fields.Get(i).Message()
+			if message == nil {
+				continue
+			}
+			name := string(message.Name())
+			if m.recordTypes[name] != nil && !seen[name] {
+				insertionOrder = append(insertionOrder, name)
+				seen[name] = true
+			}
+		}
+	}
+	for _, name := range rtNames {
+		if !seen[name] {
+			insertionOrder = append(insertionOrder, name)
+		}
+	}
+	rtNames = javahashmap.ExpectedSizeOrder(javahashmap.Order(nil, insertionOrder))
 
 	for _, name := range rtNames {
 		rt := m.recordTypes[name]
@@ -286,6 +313,7 @@ func RecordMetaDataFromProto(md *gen.MetaData, opts ...MetaDataProtoOption) (*Re
 		return nil, builder.buildErrors[0]
 	}
 	builder.SetRecordsSourceProto(recordsSource)
+	builder.SetDependenciesSourceProtos(md.Dependencies)
 
 	// 2b. The unmodelled fields, carried verbatim for re-emission.
 	builder.preserved = preservedMetaDataFieldsFromProto(md)
@@ -342,6 +370,9 @@ func RecordMetaDataFromProto(md *gen.MetaData, opts ...MetaDataProtoOption) (*Re
 			pk, err := KeyExpressionFromProto(rtProto.PrimaryKey)
 			if err != nil {
 				return nil, protoDeserializationError(fmt.Errorf("record type %s primary key: %w", rtProto.GetName(), err))
+			}
+			if countVersionColumns(pk) != 0 {
+				return nil, &MetaDataError{Message: "Version in primary key not supported"}
 			}
 			rt.PrimaryKey = pk
 		}

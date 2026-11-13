@@ -87,7 +87,7 @@ func plannerFailureFamily(planErr error) string {
 // withheldPlannerDetail carries an engine-internal planner failure without
 // rendering it.
 //
-// api.Error.Error() appends its cause unconditionally, so attaching a raw
+// api.Error.Error() appends a WrapError cause, so attaching a raw
 // invariant violation would print Go internals straight into a database/sql
 // caller's error string — the yield-invariant messages format the offending
 // expression with %T, which is how "*expressions.LogicalFilterExpression
@@ -212,7 +212,7 @@ func translatePlannerError(planErr error, unableToPlanMessage string) error {
 // withBudgetContext attaches which budget was exhausted and how far the run
 // got, under the same keys Java's addLogInfo uses on
 // RecordQueryPlanComplexityException. A user should learn which limit they hit
-// and by how much, not merely that some limit existed.
+// and by how much (the rule-match budget reports bound+1, as Java's does).
 func withBudgetContext(out *api.Error, planErr error) *api.Error {
 	var budget *cascades.PlannerBudgetExceededError
 	if !errors.As(planErr, &budget) {

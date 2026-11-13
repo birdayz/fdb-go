@@ -114,7 +114,7 @@ func TestHandleConnError_MarksEndpointFailedWithEmptyPool(t *testing.T) {
 	if db.failMon.isFailed(addr) {
 		t.Fatal("setup: addr should not be marked failed yet")
 	}
-	db.handleConnError(addr)
+	db.handleConnError(addr, nil)
 	if !db.failMon.isFailed(addr) {
 		t.Error("handleConnError must mark the endpoint as failed even when pool is empty")
 	}
@@ -126,7 +126,7 @@ func TestHandleConnError_PoolUnchangedWhenAddrAbsent(t *testing.T) {
 		connPool: make(map[string]*transport.Conn),
 		failMon:  newFailureMonitor(),
 	}
-	db.handleConnError("not-in-pool:4500")
+	db.handleConnError("not-in-pool:4500", nil)
 	if len(db.connPool) != 0 {
 		t.Errorf("pool size should remain 0, got %d", len(db.connPool))
 	}

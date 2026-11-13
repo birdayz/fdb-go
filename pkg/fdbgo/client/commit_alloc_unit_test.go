@@ -20,10 +20,10 @@ func TestRYWSetFirstEntryAllocs(t *testing.T) {
 func TestCaptureCommitVectorsConflictOwnership(t *testing.T) {
 	tx := &Transaction{readVersionState: &readVersionState{}}
 	ws := []KeyRange{{Begin: []byte("a"), End: []byte("b")}}
-	if in := tx.captureCommitVectors(nil, false, ws, true, nil, false); &in.writeConflicts[0] != &ws[0] {
+	if in := tx.captureCommitVectors(nil, false, ws, true, nil); &in.writeConflicts[0] != &ws[0] {
 		t.Fatal("ALLOC_CAPTURE_OWNED: an owned vector was copied")
 	}
-	if in := tx.captureCommitVectors(nil, false, ws, false, nil, false); &in.writeConflicts[0] == &ws[0] {
+	if in := tx.captureCommitVectors(nil, false, ws, false, nil); &in.writeConflicts[0] == &ws[0] {
 		t.Fatal("a borrowed vector was captured without a copy")
 	}
 }

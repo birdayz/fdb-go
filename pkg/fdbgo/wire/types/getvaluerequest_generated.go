@@ -51,35 +51,10 @@ type GetValueRequest struct {
 	SsLatestCommitVersions []byte       // slot 9
 }
 
-func (m *GetValueRequest) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(GetValueRequestSlotKey) {
-		m.Key = r.ReadBytes(GetValueRequestSlotKey)
-	}
-	if r.FieldPresent(GetValueRequestSlotVersion) {
-		m.Version = r.ReadInt64(GetValueRequestSlotVersion)
-	}
-	if r.FieldPresent(GetValueRequestSlotTags) && r.ReadUint8(GetValueRequestSlotTags) > 0 {
-		m.Tags = r.ReadBytes(GetValueRequestSlotTags + 1)
-		m.HasTags = true
-	}
-	if nr, err := r.ReadNestedReader(GetValueRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nr)
-	}
-	if nr, err := r.ReadNestedReader(GetValueRequestSlotSpanContext); err == nil {
-		m.SpanContext.UnmarshalFromReader(nr)
-	}
-	if nr, err := r.ReadNestedReader(GetValueRequestSlotTenantInfo); err == nil {
-		m.TenantInfo.UnmarshalFromReader(nr)
-	}
-	if r.FieldPresent(GetValueRequestSlotOptions) && r.ReadUint8(GetValueRequestSlotOptions) > 0 {
-		if nr, err := r.ReadNestedReader(GetValueRequestSlotOptions + 1); err == nil {
-			m.Options.UnmarshalFromReader(nr)
-		}
-		m.HasOptions = true
-	}
-	if r.FieldPresent(GetValueRequestSlotSsLatestCommitVersions) {
-		m.SsLatestCommitVersions = r.ReadBytes(GetValueRequestSlotSsLatestCommitVersions)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *GetValueRequest) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *GetValueRequest) UnmarshalFDB(data []byte) error {
@@ -87,33 +62,63 @@ func (m *GetValueRequest) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *GetValueRequest) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(GetValueRequestSlotKey) {
 		m.Key = r.ReadBytes(GetValueRequestSlotKey)
 	}
 	if r.FieldPresent(GetValueRequestSlotVersion) {
 		m.Version = r.ReadInt64(GetValueRequestSlotVersion)
 	}
-	if r.FieldPresent(GetValueRequestSlotTags) && r.ReadUint8(GetValueRequestSlotTags) > 0 {
+	if r.FieldPresent(GetValueRequestSlotTags) && r.ReadUint8(GetValueRequestSlotTags) == 1 && r.FieldPresent(GetValueRequestSlotTags+1) {
 		m.Tags = r.ReadBytes(GetValueRequestSlotTags + 1)
 		m.HasTags = true
 	}
-	if nr, err := r.ReadNestedReader(GetValueRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetValueRequestSlotReply) {
+		nr, err := r.ReadNestedReader(GetValueRequestSlotReply)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetValueRequest", Field: "Reply", Err: err}
+		}
+		if err := m.Reply.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if nr, err := r.ReadNestedReader(GetValueRequestSlotSpanContext); err == nil {
-		m.SpanContext.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetValueRequestSlotSpanContext) {
+		nr, err := r.ReadNestedReader(GetValueRequestSlotSpanContext)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetValueRequest", Field: "SpanContext", Err: err}
+		}
+		if err := m.SpanContext.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if nr, err := r.ReadNestedReader(GetValueRequestSlotTenantInfo); err == nil {
-		m.TenantInfo.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetValueRequestSlotTenantInfo) {
+		nr, err := r.ReadNestedReader(GetValueRequestSlotTenantInfo)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetValueRequest", Field: "TenantInfo", Err: err}
+		}
+		if err := m.TenantInfo.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if r.FieldPresent(GetValueRequestSlotOptions) && r.ReadUint8(GetValueRequestSlotOptions) > 0 {
-		if nr, err := r.ReadNestedReader(GetValueRequestSlotOptions + 1); err == nil {
-			m.Options.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetValueRequestSlotOptions) && r.ReadUint8(GetValueRequestSlotOptions) == 1 && r.FieldPresent(GetValueRequestSlotOptions+1) {
+		nr, err := r.ReadNestedReader(GetValueRequestSlotOptions + 1)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetValueRequest", Field: "Options", Err: err}
+		}
+		if err := m.Options.decode(nr, b); err != nil {
+			return err
 		}
 		m.HasOptions = true
 	}
 	if r.FieldPresent(GetValueRequestSlotSsLatestCommitVersions) {
 		m.SsLatestCommitVersions = r.ReadBytes(GetValueRequestSlotSsLatestCommitVersions)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "GetValueRequest", Err: err}
 	}
 	return nil
 }
@@ -306,21 +311,28 @@ func (m *GetValueRequest) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseGetValueRequestVectorFromReader reads a FlatBuffers vector of GetValueRequest.
-func ParseGetValueRequestVectorFromReader(r *wire.Reader, slot int) []GetValueRequest {
+// ParseGetValueRequestVectorFromReader reads a FlatBuffers vector of GetValueRequest under one decode budget.
+func ParseGetValueRequestVectorFromReader(r *wire.Reader, slot int) ([]GetValueRequest, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]GetValueRequest, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]GetValueRequest", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]GetValueRequest, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]GetValueRequest", Err: err}
 		}
-		var elem GetValueRequest
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

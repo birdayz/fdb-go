@@ -71,9 +71,6 @@ func TestDiffReadOptions(t *testing.T) {
 			if err != nil {
 				t.Fatalf("oracle error: %v", err)
 			}
-			if cppBytes == nil {
-				t.Fatal("oracle returned error response")
-			}
 
 			compareBytesStructural(t, goBytes, cppBytes, "ReadOptions",
 				unmarshalGetValueRequest, equalReadOptionsCarrier)

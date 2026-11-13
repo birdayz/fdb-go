@@ -50,7 +50,7 @@ func uuidStringToProtoMessage(fd protoreflect.FieldDescriptor, s string) (protor
 	b, ok := values.ParseJavaUUID(s)
 	if !ok {
 		invalid := &values.InvalidUUIDValueError{Value: s}
-		return protoreflect.Value{}, api.WrapError(api.ErrCodeInternalError, invalid.Error(), invalid)
+		return protoreflect.Value{}, api.WrapStatedError(api.ErrCodeInternalError, invalid.Error(), invalid)
 	}
 	u := uuid.UUID(b)
 	msgDesc := fd.Message()
@@ -78,32 +78,6 @@ func uuidProtoMessageToString(msg protoreflect.Message) string {
 	binary.BigEndian.PutUint64(u[0:8], most)
 	binary.BigEndian.PutUint64(u[8:16], least)
 	return u.String()
-}
-
-// LiteralMatchesPKKind reports whether a driver-value literal is a
-// safe tuple element for a column of the given proto kind. Only
-// numeric / string / bytes kinds are in scope — booleans and enums
-// can be columns in theory but are unusual and left to the scan
-// path for now.
-func LiteralMatchesPKKind(val any, kind protoreflect.Kind) bool {
-	switch kind {
-	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
-		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind,
-		protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
-		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
-		switch val.(type) {
-		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
-			return true
-		}
-		return false
-	case protoreflect.StringKind:
-		_, ok := val.(string)
-		return ok
-	case protoreflect.BytesKind:
-		_, ok := val.([]byte)
-		return ok
-	}
-	return false
 }
 
 // ProtoValueToDriver maps a protoreflect.Value (read off a record)

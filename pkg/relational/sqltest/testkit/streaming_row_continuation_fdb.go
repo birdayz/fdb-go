@@ -25,7 +25,8 @@ import (
 func PagedConn(t *testing.T, db *sql.DB, budget int) *sql.Conn {
 	t.Helper()
 	return PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
-		ec.SetOptions(api.NewOptionsBuilder().
-			Set(api.OptExecutionScannedRowsLimit, budget).Build())
+		if err := ec.SetOption(api.OptExecutionScannedRowsLimit, budget); err != nil {
+			t.Fatalf("SetOption: %v", err)
+		}
 	})
 }

@@ -1,0 +1,83 @@
+{
+  "setup": {
+    "minutes": 5,
+    "idleSeconds": 60,
+    "sampleMs": 5000,
+    "refresh": "30s",
+    "panels": 20
+  },
+  "phases": {
+    "idle": {
+      "plugin": {
+        "cpuPctMean": 0.2,
+        "cpuPctP95": 0.4,
+        "rssMiBStart": 77,
+        "rssMiBEnd": 79.2,
+        "rssMiBMax": 79.2
+      },
+      "grafana": {
+        "cpuPctMean": 0.3,
+        "cpuPctP95": 1,
+        "rssMiBStart": 376.5,
+        "rssMiBEnd": 377.8,
+        "rssMiBMax": 377.8
+      },
+      "fdbserver": {
+        "cpuPctMean": 1,
+        "cpuPctP95": 1.4,
+        "rssMiBStart": 436.9,
+        "rssMiBEnd": 437.1,
+        "rssMiBMax": 437.1
+      },
+      "fdb": {
+        "samples": 3,
+        "txnStartedPerS": 15.2,
+        "readsPerS": 10.8,
+        "keysReadPerS": 4.9,
+        "MiBReadPerS": 0,
+        "limitedBy": "workload"
+      }
+    },
+    "load": {
+      "plugin": {
+        "cpuPctMean": 167,
+        "cpuPctP95": 652.6,
+        "rssMiBStart": 81.4,
+        "rssMiBEnd": 700.9,
+        "rssMiBMax": 1186.6
+      },
+      "grafana": {
+        "cpuPctMean": 1.4,
+        "cpuPctP95": 4,
+        "rssMiBStart": 377.8,
+        "rssMiBEnd": 648.1,
+        "rssMiBMax": 702.5
+      },
+      "fdbserver": {
+        "cpuPctMean": 13.9,
+        "cpuPctP95": 47.8,
+        "rssMiBStart": 437,
+        "rssMiBEnd": 390.3,
+        "rssMiBMax": 437.1
+      },
+      "fdb": {
+        "samples": 21,
+        "txnStartedPerS": 17.1,
+        "readsPerS": 7008.9,
+        "keysReadPerS": 14230.1,
+        "MiBReadPerS": 3.9,
+        "limitedBy": "workload"
+      }
+    }
+  },
+  "queries": {
+    "requests": 200,
+    "perMinute": 40,
+    "byStatus": {
+      "200": 200
+    },
+    "msP50": 1799,
+    "msP95": 9076,
+    "msMax": 14013
+  }
+}

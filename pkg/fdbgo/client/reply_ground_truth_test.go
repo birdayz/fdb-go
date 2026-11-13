@@ -2,11 +2,13 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
+	"math"
 	"os"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire"
@@ -31,7 +33,7 @@ type replyVectorEntry struct {
 func loadReplyVectors(t *testing.T) []replyVectorEntry {
 	t.Helper()
 	// Shared with //pkg/fdbgo/wire/types:types_test; declared as a bazel data
-	// dep of client_test. Absence is a build bug, never a skip.
+	// dep of conn_location_unit_test. Absence is a build bug, never a skip.
 	data, err := os.ReadFile("../wire/types/testdata.json")
 	if err != nil {
 		t.Fatalf("testdata.json not found (missing bazel data dep?): %v", err)
@@ -287,6 +289,14 @@ var replyAsserters = map[string]func(t *testing.T, data []byte){
 			t.Fatal("parseCommitReply = nil, want not_committed (1020)")
 		}
 		assertFDBErrorCode(t, err, ErrNotCommitted)
+		// conflictingKRIndices is a VectorRef<int> (CommitProxyInterface.h:193) the C++
+		// constructor filled with {0, 2}: a count, then the ints, not a byte string.
+		out, err := parseCommitOutcome(data)
+		assertFDBErrorCode(t, err, ErrNotCommitted)
+		if !out.conflictReply || !out.hasConflictIndices || len(out.conflictIndices) != 2 ||
+			out.conflictIndices[0] != 0 || out.conflictIndices[1] != 2 {
+			t.Fatalf("commit outcome %+v, want an in-band conflict with indices [0 2]", out)
+		}
 	},
 	"WatchValueReply_basic": func(t *testing.T, data []byte) {
 		// Production path: a non-error reply means "key changed".
@@ -300,7 +310,9 @@ var replyAsserters = map[string]func(t *testing.T, data []byte){
 			t.Fatalf("ReadErrorOrInto: %v", err)
 		}
 		var reply types.WatchValueReply
-		reply.UnmarshalFromReader(&r)
+		if err := reply.UnmarshalFromReader(&r); err != nil {
+			t.Fatalf("UnmarshalFromReader: %v", err)
+		}
 		if reply.Version != 424242 {
 			t.Errorf("Version = %d, want 424242", reply.Version)
 		}
@@ -360,17 +372,74 @@ var replyAsserters = map[string]func(t *testing.T, data []byte){
 				s.Token.First, s.Token.Second, wantTok.First, wantTok.Second)
 		}
 	},
-}
-
-func assertFDBErrorCode(t *testing.T, err error, wantCode int) {
-	t.Helper()
-	var fdbErr *wire.FDBError
-	if !errors.As(err, &fdbErr) {
-		t.Fatalf("error %v is not a wire.FDBError", err)
-	}
-	if fdbErr.Code != wantCode {
-		t.Fatalf("error code = %d, want %d", fdbErr.Code, wantCode)
-	}
+	"GetKeyServerLocationsReply_secondary_address": func(t *testing.T, data []byte) {
+		entries, err := parseGetKeyServerLocationsReply(data)
+		if err != nil || len(entries) != 1 || len(entries[0].servers) != 1 {
+			t.Fatalf("parseGetKeyServerLocationsReply: %+v, %v", entries, err)
+		}
+		if s := entries[0].servers[0]; s.Address != "10.1.2.3:4500" || s.TLS {
+			t.Errorf("server = %+v, want the plaintext primary 10.1.2.3:4500", s)
+		}
+		// The secondary address decodes as the NetworkAddress table C++ writes.
+		_, ss := firstLocation(t, data)
+		ep, err := ReadEndpointFromSlot(ss, types.StorageServerInterfaceSlotField_2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a := ep.Addresses; !a.HasSecondaryAddress || a.SecondaryAddress.Port != 4501 ||
+			a.SecondaryAddress.Flags&types.FlagTLS == 0 || networkAddressString(&a.SecondaryAddress) != "10.1.2.3:4501" {
+			t.Errorf("secondary address = %+v (has %t), want 10.1.2.3:4501 with TLS", a.SecondaryAddress, a.HasSecondaryAddress)
+		}
+	},
+	"ClientDBInfo_secondary_address": func(t *testing.T, data []byte) {
+		info, err := parseErrorOrClientDBInfo(data)
+		if err != nil {
+			t.Fatalf("parseErrorOrClientDBInfo: %v", err)
+		}
+		if len(info.GRVProxies) != 1 || len(info.CommitProxies) != 1 ||
+			info.GRVProxies[0].Address != "10.1.2.3:4500" || info.CommitProxies[0].Address != "10.1.2.3:4500" {
+			t.Fatalf("proxies = %+v / %+v, want one of each at 10.1.2.3:4500", info.GRVProxies, info.CommitProxies)
+		}
+		if want := (transport.UID{First: 0xd5d5d5d5d5d5d5d5, Second: 0xe6e6e6e6e6e6e6e6}); info.ID != want {
+			t.Errorf("id = %+v, want %+v", info.ID, want)
+		}
+		if got := info.GRVProxies[0].Token.First; got != 0x9191919191919191 {
+			t.Errorf("GRV proxy token = %#x, want 0x9191919191919191", got)
+		}
+	},
+	"GetReadVersionReply_version_vector": func(t *testing.T, data []byte) {
+		version, _, _, _, _, _, err := parseGetReadVersionReply(data)
+		if err != nil || version != 0x2233445566 {
+			t.Fatalf("parseGetReadVersionReply: version %#x, %v", version, err)
+		}
+	},
+	"GetReadVersionReply_tag_throttle": func(t *testing.T, data []byte) {
+		version, _, _, _, throttles, _, err := parseGetReadVersionReply(data)
+		if err != nil || version != 0x3344556677 {
+			t.Fatalf("parseGetReadVersionReply: version %#x, %v", version, err)
+		}
+		// C++ sends NO_EXPIRATION (DBL_MAX) minus now(), which is DBL_MAX.
+		if len(throttles) != 1 || string(throttles[0].Tag) != "tag_a" ||
+			throttles[0].Limits.TpsRate != 12.5 || throttles[0].Limits.Duration != math.MaxFloat64 {
+			t.Fatalf("tagThrottleInfo = %+v, want tag_a at 12.5 tps with no expiration", throttles)
+		}
+	},
+	"GetValueReply_error": func(t *testing.T, data []byte) {
+		_, _, err := parseGetValueReply(data)
+		assertFDBErrorCode(t, err, 1001)
+	},
+	"GetKeyReply_error": func(t *testing.T, data []byte) {
+		_, _, _, _, err := parseGetKeyReply(data)
+		assertFDBErrorCode(t, err, 1001)
+	},
+	"GetKeyValuesReply_error": func(t *testing.T, data []byte) {
+		_, _, _, err := parseGetKeyValuesReply(data)
+		assertFDBErrorCode(t, err, 1001)
+	},
+	"GetMappedKeyValuesReply_error": func(t *testing.T, data []byte) {
+		_, _, _, err := parseGetMappedKeyValuesReply(data)
+		assertFDBErrorCode(t, err, 1001)
+	},
 }
 
 // TestReplyGroundTruth feeds C++-ObjectWriter-serialized reply payloads to
@@ -408,4 +477,156 @@ func TestReplyGroundTruth(t *testing.T) {
 			t.Errorf("asserter %s has no vector in testdata.json", name)
 		}
 	}
+}
+
+func requireNativeConflictBounds(t *testing.T, m *conflictingKeyMap, bounds ...string) {
+	t.Helper()
+	if m == nil || len(m.entries) != len(bounds) {
+		t.Fatalf("conflict map=%+v, want %d boundaries", m, len(bounds))
+	}
+	for i, bound := range bounds {
+		wantKey := append(bytes.Clone(conflictingKeysBegin), bound...)
+		wantValue := "1"
+		if i%2 != 0 {
+			wantValue = "0"
+		}
+		if !bytes.Equal(m.entries[i].Key, wantKey) || string(m.entries[i].Value) != wantValue {
+			t.Fatalf("conflict boundary %d=%q/%q, want %q/%q", i, m.entries[i].Key, m.entries[i].Value, wantKey, wantValue)
+		}
+	}
+}
+
+// Gate after decoding: Reset cancels a wire wait before it can test stale publication.
+func TestNativeConflictPublicationUsesCommittingIncarnation(t *testing.T) {
+	t.Parallel()
+	for _, reset := range []bool{false, true} {
+		name := "live"
+		if reset {
+			name = "replaced"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			tx := &Transaction{}
+			defer tx.Cancel()
+			lease := tx.enterState()
+			tx.readErrMu.Lock()
+			completion := tx.newVersionstampLocked(lease.inc)
+			completion.claimed = true
+			tx.readErrMu.Unlock()
+			lease.release()
+			retained := newConflictingKeyMap([]int32{0}, []KeyRange{{Begin: []byte("q"), End: []byte("r")}})
+			tx.conflictingKeys.Store(retained)
+			result, err := parseCommitOutcome(replyVector(t, "CommitID_conflict"))
+			assertFDBErrorCode(t, err, 1020)
+			if !result.conflictReply || !result.hasConflictIndices || len(result.conflictIndices) != 2 || result.conflictIndices[0] != 0 || result.conflictIndices[1] != 2 {
+				t.Fatalf("decoded conflict outcome=%+v, want indices [0 2]", result)
+			}
+			result.conflictingKeys = newConflictingKeyMap(result.conflictIndices, []KeyRange{
+				{Begin: []byte("a"), End: []byte("b")},
+				{Begin: []byte("c"), End: []byte("d")},
+				{Begin: []byte("e"), End: []byte("f")},
+			})
+			decoded, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			go func() {
+				defer close(done)
+				close(decoded)
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return
+				}
+				tx.readErrMu.Lock()
+				tx.finishNativeCommitLocked(completion, result, err)
+				tx.readErrMu.Unlock()
+			}()
+			<-decoded
+			if reset {
+				tx.Reset()
+				if tx.conflictingKeys.Load() != retained {
+					t.Fatal("Reset dropped the retained conflict map")
+				}
+				lease := tx.enterState()
+				if lease.inc == completion.inc {
+					t.Fatal("Reset did not replace the committing incarnation")
+				}
+				lease.release()
+				retained = newConflictingKeyMap([]int32{0}, []KeyRange{{Begin: []byte("r"), End: []byte("s")}})
+				tx.conflictingKeys.Store(retained)
+			}
+			close(release)
+			select {
+			case <-done:
+			case <-ctx.Done():
+				t.Fatal("decoded native completion did not finish")
+			}
+			if reset {
+				if tx.conflictingKeys.Load() != retained {
+					t.Fatal("retired native conflict replaced the successor's map")
+				}
+				requireNativeConflictBounds(t, tx.conflictingKeys.Load(), "r", "s")
+				assertFDBErrorCode(t, completion.err, ErrTransactionCancelled)
+			} else {
+				if tx.conflictingKeys.Load() != result.conflictingKeys {
+					t.Fatal("live native conflict was not published")
+				}
+				requireNativeConflictBounds(t, tx.conflictingKeys.Load(), "a", "b", "e", "f")
+				assertFDBErrorCode(t, completion.err, 2020)
+			}
+		})
+	}
+}
+
+func TestNativeConflictPublicationFromWire(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	peer := newIdentityPeer(t)
+	db, _ := identityDatabase(ctx, peer)
+	defer closeIdentityDatabase(db)
+	db.dbInfo.Store(&DBInfo{CommitProxies: []ProxyInfo{{Address: armAddr, Token: armToken}}})
+	db.minAcceptableReadVersion.Store(&minAcceptableStamp{epoch: db.grvCache.epochNow(), version: 1})
+	tx := (&Database{db: db}).CreateTransaction()
+	defer tx.Cancel()
+	tx.SetReadVersion(1)
+	tx.SetReportConflictingKeys()
+	for _, kr := range []KeyRange{
+		{Begin: []byte("a"), End: []byte("b")},
+		{Begin: []byte("c"), End: []byte("d")},
+		{Begin: []byte("e"), End: []byte("f")},
+	} {
+		if err := tx.AddReadConflictRange(kr.Begin, kr.End); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tx.Set([]byte("a"), []byte("v"))
+	done := make(chan error, 1)
+	go func() { done <- tx.Commit(ctx) }()
+	frame, ok := peer.recv(ctx)
+	if !ok {
+		t.Fatal("native commit did not reach the proxy")
+	}
+	var req types.CommitTransactionRequest
+	if err := req.UnmarshalFDB(frame.body); err != nil {
+		t.Fatal(err)
+	}
+	if !req.Transaction.Report_conflicting_keys || len(req.Transaction.ReadConflictRanges) != 3 {
+		t.Fatalf("commit report flag=%t reads=%+v, want three captured ranges", req.Transaction.Report_conflicting_keys, req.Transaction.ReadConflictRanges)
+	}
+	for i, bounds := range [][2]string{{"a", "b"}, {"c", "d"}, {"e", "f"}} {
+		if got := req.Transaction.ReadConflictRanges[i]; string(got.Begin) != bounds[0] || string(got.End) != bounds[1] {
+			t.Fatalf("wire read %d=%+v, want %v", i, got, bounds)
+		}
+	}
+	if err := transport.WriteFrame(peer.server, replyToken(req.Reply.Token), replyVector(t, "CommitID_conflict"), false); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		assertFDBErrorCode(t, err, 1020)
+	case <-ctx.Done():
+		t.Fatal("native conflict commit did not finish")
+	}
+	requireNativeConflictBounds(t, tx.conflictingKeys.Load(), "a", "b", "e", "f")
 }

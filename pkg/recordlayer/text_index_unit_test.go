@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -15,23 +16,8 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/proto"
 )
-
-// packVarInt / unpackVarInt drive a single varint through the LIVE stream codec
-// (serializeVarInt / deserializeVarInt, the ones the bunched-map serializer uses
-// at every call site). They live here rather than beside the codec because
-// nothing in production encodes one varint in isolation; a helper of this shape
-// in a production file reads as part of the codec's surface when it is only ever
-// a test's convenience.
-func packVarInt(val int) []byte {
-	buf := &bytes.Buffer{}
-	serializeVarInt(buf, val)
-	return buf.Bytes()
-}
-
-func unpackVarInt(data []byte) (int, error) {
-	return deserializeVarInt(bytes.NewReader(data))
-}
 
 // ---------------------------------------------------------------------------
 // VarInt encoding roundtrip
@@ -58,10 +44,13 @@ func TestVarIntRoundtrip(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			encoded := packVarInt(tc.val)
-			decoded, err := unpackVarInt(encoded)
+			encoded := appendVarInt(nil, tc.val)
+			decoded, next, canonical, err := readVarInt(encoded, 0)
 			if err != nil {
-				t.Fatalf("unpackVarInt(%x): %v", encoded, err)
+				t.Fatalf("readVarInt(%x): %v", encoded, err)
+			}
+			if next != len(encoded) || !canonical {
+				t.Fatalf("readVarInt(%x): next=%d, canonical=%v", encoded, next, canonical)
 			}
 			if decoded != tc.val {
 				t.Fatalf("roundtrip: got %d, want %d", decoded, tc.val)
@@ -101,7 +90,7 @@ func TestVarIntSize(t *testing.T) {
 				t.Fatalf("varIntSize(%d): got %d, want %d", tc.val, gotSize, tc.wantSize)
 			}
 			// Cross-check: actual encoded length must match.
-			encoded := packVarInt(tc.val)
+			encoded := appendVarInt(nil, tc.val)
 			if len(encoded) != tc.wantSize {
 				t.Fatalf("actual encoded len(%d) = %d, varIntSize = %d", tc.val, len(encoded), tc.wantSize)
 			}
@@ -136,12 +125,18 @@ func TestPositionListRoundtrip(t *testing.T) {
 			if err != nil {
 				t.Fatalf("positionListSize: %v", err)
 			}
-			var buf bytes.Buffer
-			serializePositionList(&buf, tc.list, size)
-			reader := bytes.NewReader(buf.Bytes())
-			got, err := deserializePositionList(reader)
+			encoded := appendPositionList(nil, tc.list, size)
+			got := []int{}
+			next, count, canonical, err := walkPositionList(encoded, 0, &got)
 			if err != nil {
-				t.Fatalf("deserializePositionList: %v", err)
+				t.Fatalf("walkPositionList: %v", err)
+			}
+			if next != len(encoded) || count != len(tc.list) || !canonical {
+				t.Fatalf("walkPositionList: next=%d, count=%d, canonical=%v", next, count, canonical)
+			}
+			skipNext, skipCount, skipCanonical, err := walkPositionList(encoded, 0, nil)
+			if err != nil || skipNext != next || skipCount != count || skipCanonical != canonical {
+				t.Fatalf("walkPositionList without output: next=%d, count=%d, canonical=%v, err=%v", skipNext, skipCount, skipCanonical, err)
 			}
 			// Normalize nil vs empty.
 			if len(tc.list) == 0 {
@@ -247,25 +242,27 @@ func TestSerializeEntryRoundtrip(t *testing.T) {
 			}
 			// SerializeEntry format: varInt(keyLen) + keyBytes + positionList
 			// Verify we can parse it back.
-			reader := bytes.NewReader(data)
-			keyLen, err := deserializeVarInt(reader)
+			keyLen, pos, canonical, err := readVarInt(data, 0)
 			if err != nil {
 				t.Fatalf("reading key length: %v", err)
 			}
-			keyBytes := make([]byte, keyLen)
-			if _, err := reader.Read(keyBytes); err != nil {
-				t.Fatalf("reading key bytes: %v", err)
+			if !canonical || keyLen < 0 || keyLen > len(data)-pos {
+				t.Fatalf("invalid key length %d at %d (canonical=%v)", keyLen, pos, canonical)
 			}
-			parsedKey, err := tuple.Unpack(keyBytes)
+			parsedKey, err := tuple.Unpack(data[pos : pos+keyLen])
 			if err != nil {
 				t.Fatalf("unpacking key: %v", err)
 			}
 			if !reflect.DeepEqual(parsedKey, tc.key) {
 				t.Fatalf("key mismatch: got %v, want %v", parsedKey, tc.key)
 			}
-			positions, err := deserializePositionList(reader)
+			positions := []int{}
+			next, count, canonical, err := walkPositionList(data, pos+keyLen, &positions)
 			if err != nil {
 				t.Fatalf("reading positions: %v", err)
+			}
+			if next != len(data) || count != len(tc.positions) || !canonical {
+				t.Fatalf("reading positions: next=%d, count=%d, canonical=%v", next, count, canonical)
 			}
 			if len(tc.positions) == 0 {
 				if len(positions) != 0 {
@@ -1117,9 +1114,13 @@ func TestVarIntEncodingBytes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("%d", tc.val), func(t *testing.T) {
 			t.Parallel()
-			got := packVarInt(tc.val)
+			got := appendVarInt(nil, tc.val)
 			if !bytes.Equal(got, tc.want) {
-				t.Fatalf("packVarInt(%d): got %x, want %x", tc.val, got, tc.want)
+				t.Fatalf("appendVarInt(%d): got %x, want %x", tc.val, got, tc.want)
+			}
+			decoded, next, canonical, err := readVarInt(tc.want, 0)
+			if err != nil || decoded != tc.val || next != len(tc.want) || !canonical {
+				t.Fatalf("readVarInt(%x): value=%d, next=%d, canonical=%v, err=%v", tc.want, decoded, next, canonical, err)
 			}
 		})
 	}
@@ -1662,3 +1663,131 @@ var _ = Describe("InstrumentedBunchedMap", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 })
+
+// bunchRecordingTx answers a put's snapshot read with canned rows and records
+// its writes and conflict ranges in call order.
+type bunchRecordingTx struct {
+	benchBunchTx
+	ops []string
+}
+
+func (tx *bunchRecordingTx) record(op string, a, b []byte) {
+	tx.ops = append(tx.ops, fmt.Sprintf("%s %x %x", op, a, b))
+}
+
+func (tx *bunchRecordingTx) Set(k fdb.KeyConvertible, v []byte) { tx.record("set", k.FDBKey(), v) }
+func (tx *bunchRecordingTx) SetBytes(k, v []byte)               { tx.record("set", k, v) }
+func (tx *bunchRecordingTx) Clear(k fdb.KeyConvertible)         { tx.record("clear", k.FDBKey(), nil) }
+func (tx *bunchRecordingTx) ClearBytes(k []byte)                { tx.record("clear", k, nil) }
+func (tx *bunchRecordingTx) AppendIfFits(k fdb.KeyConvertible, v []byte) {
+	tx.record("append", k.FDBKey(), v)
+}
+func (tx *bunchRecordingTx) AppendIfFitsBytes(k, v []byte) { tx.record("append", k, v) }
+func (tx *bunchRecordingTx) AddReadConflictKey(k fdb.KeyConvertible) error {
+	tx.record("read-key", k.FDBKey(), nil)
+	return nil
+}
+
+func (tx *bunchRecordingTx) AddReadConflictKeyBytes(k []byte) error {
+	tx.record("read-key", k, nil)
+	return nil
+}
+
+func (tx *bunchRecordingTx) AddWriteConflictKey(k fdb.KeyConvertible) error {
+	tx.record("write-key", k.FDBKey(), nil)
+	return nil
+}
+
+func (tx *bunchRecordingTx) AddWriteConflictKeyBytes(k []byte) error {
+	tx.record("write-key", k, nil)
+	return nil
+}
+
+func (tx *bunchRecordingTx) AddReadConflictRange(r fdb.ExactRange) error {
+	b, e := r.FDBRangeKeys()
+	tx.record("read-range", b.FDBKey(), e.FDBKey())
+	return nil
+}
+
+func (tx *bunchRecordingTx) AddReadConflictRangeBytes(b, e []byte) error {
+	tx.record("read-range", b, e)
+	return nil
+}
+
+func (tx *bunchRecordingTx) AddWriteConflictRange(r fdb.ExactRange) error {
+	b, e := r.FDBRangeKeys()
+	tx.record("write-range", b.FDBKey(), e.FDBKey())
+	return nil
+}
+
+func (tx *bunchRecordingTx) AddWriteConflictRangeBytes(b, e []byte) error {
+	tx.record("write-range", b, e)
+	return nil
+}
+
+// fixedTokenizer tokenizes every text to positions.
+type fixedTokenizer struct {
+	TextTokenizer
+	positions map[string][]int
+}
+
+func (fixedTokenizer) Name() string { return "fixed" }
+func (f fixedTokenizer) TokenizeToMap(string, int, TokenizerMode) (map[string][]int, error) {
+	return f.positions, nil
+}
+
+// A prepacked TEXT put, appending (APPEND_IF_FITS) or inside a bunch, makes BunchedMap.Put's
+// writes and conflict ranges, for tokens whose encoding escapes NUL bytes too.
+func TestTextPutMatchesBunchedMapPut(t *testing.T) {
+	t.Parallel()
+	index := NewTextIndex("text", Field("text"))
+	indexSubspace := subspace.Sub("idx", int64(3))
+	put := func(tokens map[string][]int, pk tuple.Tuple, bunch []fdb.KeyValue, viaMaintainer bool) []string {
+		tx := &bunchRecordingTx{benchBunchTx: benchBunchTx{kvs: bunch}}
+		if viaMaintainer {
+			m := &textIndexMaintainer{
+				index: index, indexSubspace: indexSubspace, tx: tx, tokenizer: fixedTokenizer{positions: tokens},
+				bunchedMap: NewBunchedMap(textIndexBunchSize), pipelineSize: 1,
+			}
+			if err := m.updateOneKey(&FDBStoredRecord[proto.Message]{PrimaryKey: pk}, false, []any{"text"}, 0, 0, nil); err != nil {
+				t.Fatal(err)
+			}
+			return tx.ops
+		}
+		for token, positions := range tokens {
+			if _, _, err := NewBunchedMap(textIndexBunchSize).Put(tx, indexSubspace.Sub(token), pk, positions); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return tx.ops
+	}
+	for _, token := range []string{"alpha", "a\x00b", "\x00lead", "trail\x00", "x\x00\x00y"} {
+		ss := indexSubspace.Sub(token)
+		bunch := []fdb.KeyValue{benchBunch(ss, 1000, 10)}
+		for _, tc := range []struct {
+			name   string
+			pk     tuple.Tuple
+			append bool
+		}{
+			{"append", benchMessageKey(1010), true},
+			{"inside", tuple.Tuple{"writer-0042", int64(1004), int64(1)}, false},
+		} {
+			one := map[string][]int{token: {0, 3}}
+			got, want := put(one, tc.pk, bunch, true), put(one, tc.pk, bunch, false)
+			if !slices.Equal(got, want) {
+				t.Fatalf("%q %s: TEXT put\n%s\nBunchedMap.Put\n%s", token, tc.name, strings.Join(got, "\n"), strings.Join(want, "\n"))
+			}
+			appended := slices.ContainsFunc(got, func(op string) bool { return strings.HasPrefix(op, "append ") })
+			if appended != tc.append {
+				t.Fatalf("%q %s: appended=%t, want %t:\n%s", token, tc.name, appended, tc.append, strings.Join(got, "\n"))
+			}
+			if tc.append {
+				keyBytes := tc.pk.PackWithPrefix(ss.Bytes())
+				conflict := fmt.Sprintf("read-range %x %x", []byte(bunch[0].Key), append(keyBytes, 0x00))
+				if !slices.Contains(got, conflict) {
+					t.Fatalf("%q: no APPEND_IF_FITS read conflict [signpost, key+\\x00):\n%s", token, strings.Join(got, "\n"))
+				}
+			}
+		}
+	}
+}

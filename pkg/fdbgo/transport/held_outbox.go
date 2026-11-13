@@ -304,6 +304,7 @@ func (c *Conn) nextWrite(block bool) (request writeReq, frame, ready bool) {
 type coldControl struct {
 	request writeReq
 	permit  *sendqueue.Permit
+	held    bool
 }
 
 // The single worker must see controls in reservation order: consuming a later
@@ -313,14 +314,41 @@ func (c *Conn) reserveColdControl(order *sendqueue.Queue, request writeReq) (res
 	defer c.controlMu.Unlock()
 	permit, _, reserved := order.TryReserve()
 	if reserved {
-		return true, c.tryEnqueueColdControl(request, permit), false
+		return true, c.tryEnqueueColdControl(request, permit, false), false
 	}
 	return false, false, order.Pending()
 }
 
-// readLoop cannot wait for a cold predecessor. One connection-owned worker
-// drains this bounded queue; post-seal controls append directly to heldCh.
-func (c *Conn) tryEnqueueColdControl(request writeReq, permit *sendqueue.Permit) (enqueued bool) {
+// tryEnqueueNAControl serializes both prefix and held control permit reservation
+// with coldControls publication under controlMu.
+func (c *Conn) tryEnqueueNAControl(request writeReq) (handled, accepted bool) {
+	if !c.coldOrderActive.Load() && !c.heldWaiters.Pending() {
+		return false, false
+	}
+	if c.beforeControlLock != nil {
+		c.beforeControlLock()
+	}
+	c.controlMu.Lock()
+	defer c.controlMu.Unlock()
+	if order := c.peerSendOrder.Load(); order != nil {
+		if permit, _, reserved := order.TryReserve(); reserved {
+			return true, c.tryEnqueueColdControl(request, permit, false)
+		}
+		if order.Pending() || c.heldWaiters.Pending() {
+			hPermit, _ := c.heldWaiters.Reserve()
+			return true, c.tryEnqueueColdControl(request, hPermit, true)
+		}
+	} else if c.heldWaiters.Pending() && c.coldControls != nil {
+		hPermit, _ := c.heldWaiters.Reserve()
+		return true, c.tryEnqueueColdControl(request, hPermit, true)
+	}
+	c.coldOrderActive.Store(false)
+	return false, false
+}
+
+// readLoop cannot wait for a cold predecessor; coldControlLoop drains this
+// bounded queue behind the cold prefix and heldWaiters.
+func (c *Conn) tryEnqueueColdControl(request writeReq, permit *sendqueue.Permit, held bool) (enqueued bool) {
 	defer func() {
 		if !enqueued {
 			permit.Release()
@@ -333,7 +361,7 @@ func (c *Conn) tryEnqueueColdControl(request writeReq, permit *sendqueue.Permit)
 	}
 	c.queued.Add(1)
 	select {
-	case c.coldControls <- coldControl{request: request, permit: permit}:
+	case c.coldControls <- coldControl{request: request, permit: permit, held: held}:
 		return true
 	default:
 		c.queued.Add(-1)
@@ -341,29 +369,52 @@ func (c *Conn) tryEnqueueColdControl(request writeReq, permit *sendqueue.Permit)
 	}
 }
 
+func (c *Conn) runColdControl(control coldControl) {
+	defer control.permit.Release()
+	ownsCredit := true
+	defer func() {
+		if ownsCredit {
+			c.queued.Add(-1)
+		}
+	}()
+	select {
+	case <-control.permit.Ready():
+	case <-c.ctx.Done():
+		return
+	}
+	if control.held {
+		select {
+		case <-c.prefixDone:
+		case <-c.ctx.Done():
+			return
+		}
+	}
+	if c.na != nil {
+		_ = c.naSend(c.ctx, control.request.token, control.request.body)
+		return
+	}
+	ownsCredit = false // enqueuePrefix owns the existing queued credit
+	_, _ = c.enqueuePrefix(c.ctx, control.request, nil, control.permit, true)
+}
+
 func (c *Conn) coldControlLoop() {
 	defer c.loopWG.Done()
 	defer c.finishColdControls()
 	defer c.recoverLoop("coldControlLoop")
+	if c.na != nil {
+		for {
+			select {
+			case control := <-c.coldControls:
+				c.runColdControl(control)
+			case <-c.ctx.Done():
+				return
+			}
+		}
+	}
 	for {
 		select {
 		case control := <-c.coldControls:
-			func() {
-				defer control.permit.Release()
-				ownsCredit := true
-				defer func() {
-					if ownsCredit {
-						c.queued.Add(-1)
-					}
-				}()
-				select {
-				case <-control.permit.Ready():
-				case <-c.ctx.Done():
-					return
-				}
-				ownsCredit = false // enqueuePrefix owns the existing queued credit
-				_, _ = c.enqueuePrefix(c.ctx, control.request, nil, control.permit, true)
-			}()
+			c.runColdControl(control)
 		case <-c.prefixDone:
 			return
 		case <-c.ctx.Done():

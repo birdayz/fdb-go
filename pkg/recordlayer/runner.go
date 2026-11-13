@@ -28,9 +28,8 @@ type RecordContextConfig struct {
 	// TransactionID is an optional identifier for tracing/debugging.
 	TransactionID string
 
-	// TransactionSizeWarnBytes triggers a warning when the approximate
-	// transaction size exceeds this threshold. Zero disables the check.
-	// FDB's hard limit is 10MB; a typical warning threshold is 8MB.
+	// TransactionSizeWarnBytes (Go-only): past it, a save or delete logs and counts
+	// CountTransactionSizeWarning once per transaction, and still succeeds. Zero disables it.
 	TransactionSizeWarnBytes int64
 
 	// TransactionSizeErrorBytes causes operations to return
@@ -259,51 +258,13 @@ func (r *FDBDatabaseRunner) RunWithRetry(ctx context.Context, fn func(rtx *FDBRe
 
 // runOnce executes fn in a single transaction, applying context config.
 func (r *FDBDatabaseRunner) runOnce(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
-	// CreateWritableTransaction is backend-agnostic (handles tenant / pure-Go /
-	// libfdb_c internally) and returns the WritableTransaction interface the record
-	// context holds — so the manual runner works on either backend (RFC-109).
-	tx, err := r.db.CreateWritableTransaction()
+	recordCtx, err := r.OpenContext(ctx)
 	if err != nil {
 		return nil, err
 	}
-	r.db.applyReadSystemKeys(tx.Options())
-
-	recordCtx := &FDBRecordContext{
-		createTime: r.db.env.Now(),
-		tx:         tx,
-		ctx:        ctx,
-		env:        r.db.env,
-		database:   r.db,
-		// RunWithRetry commits each attempt itself.
-		routeOwned: true,
-	}
-	recordCtx.SetTimer(r.contextTimer())
-
-	// Apply context config
-	if r.ContextConfig != nil {
-		if r.ContextConfig.TransactionTimeout > 0 {
-			if err := tx.Options().SetTimeout(int64(r.ContextConfig.TransactionTimeout / time.Millisecond)); err != nil {
-				tx.Cancel()
-				return nil, err
-			}
-		}
-		if r.ContextConfig.Priority != PriorityDefault {
-			if err := recordCtx.SetTransactionPriority(r.ContextConfig.Priority); err != nil {
-				tx.Cancel()
-				return nil, err
-			}
-		}
-		if r.ContextConfig.TransactionID != "" {
-			if err := tx.Options().SetDebugTransactionIdentifier(r.ContextConfig.TransactionID); err != nil {
-				tx.Cancel()
-				return nil, err
-			}
-		}
-		if err := applyTags(tx, r.ContextConfig.Tags); err != nil {
-			tx.Cancel()
-			return nil, err
-		}
-	}
+	// RunWithRetry, not its callback, owns the attempt's commit.
+	recordCtx.routeOwned = true
+	tx := recordCtx.tx
 
 	result, err := fn(recordCtx)
 	if err != nil {
@@ -311,12 +272,11 @@ func (r *FDBDatabaseRunner) runOnce(ctx context.Context, fn func(rtx *FDBRecordC
 		return nil, err
 	}
 
-	// Run pre-commit checks
-	if err := recordCtx.runCommitChecks(); err != nil {
+	// Drain commit checks through writer quiescence before sealing.
+	if err := recordCtx.drainCommitChecksAndSealWrites(); err != nil {
 		tx.Cancel()
 		return nil, err
 	}
-
 	recordCtx.flushVersionMutations()
 
 	if err := tx.Commit().Get(); err != nil {

@@ -5,9 +5,37 @@
 pre-1.0 project does not promise an automatic upgrade or downgrade between every
 pair of Go revisions. The current readiness statement is [STATUS.md](../STATUS.md).
 
+**v0.2.0 was published on 2026-11-07.** Its scope is in `CHANGELOG.md`;
+sections explicitly marked **Unreleased (post-v0.2.0)** describe later development,
+not additions to that release.
+
+## CLI name, commands, and configuration
+
+v0.2.0 replaces `frl` with the root module's `cmd/fdb`
+package. Install it with `go install fdb.dev/cmd/fdb@v0.2.0` or
+`curl -fsSL https://fdb.dev/install.sh | sh -s -- --version v0.2.0`, or build a
+checkout with `go build -o .tmpbuild/fdb ./cmd/fdb`. Old nested-module releases do not contain
+the new CLI. Remove an old `fdb.dev/cmd/frl` tool dependency if one was added to
+an application's `go.mod`.
+
+Update scripts explicitly: Record Layer operations are now `fdb rl record`,
+`fdb rl index`, `fdb rl store`, `fdb rl meta`, `fdb rl stats`, `fdb rl keyspace`,
+and `fdb rl status`. Local cluster management is `fdb dev up|down|status`;
+SQL and transaction utilities are `fdb sql` and `fdb tx`.
+
+Configuration and SQL history use `~/.fdb`, not `~/.frl`. `FDB_CONFIG` replaces
+`FRL_CONFIG`; the new CLI does not read the old config automatically. Copy any
+needed contexts deliberately and inspect them with `fdb config view` before
+writing data. There are no legacy command aliases. The installer accepts only
+`fdb_<version>_<os>_<arch>.tar.gz` release archives; `FDB_CLI_VERSION` selects the
+CLI version, while `FDB_VERSION` remains a server-tooling variable.
+
+The [website CLI guide](https://fdb.dev/docs/cli/) covers configuration and
+runnable protobuf and SQL workflows.
+
 ## From v0.1.0 SQL storage
 
-The v0.2.0 candidate uses Java's relational keyspace: the catalog store is
+v0.2.0 uses Java's relational keyspace: the catalog store is
 `(NULL, NULL, 0)` and schema stores are `(domain, database, schema)`, with directory
 and interning layers resolving those names. Earlier Go SQL builds used a different
 layout. **The old layout is not automatically migrated.** See the breaking-storage
@@ -28,6 +56,45 @@ A raw FDB backup restores the old bytes; it does not translate them into a new
 layout. Do not “migrate” by editing only a header or reusing the old subspace.
 The changelog also excludes stores written only by earlier pre-release Go builds;
 check the exact originating revision, not just whether it predates a tag.
+
+## Earlier Go KeySpace path prefixes
+
+**Unreleased (post-v0.2.0).** This address change is not part of the v0.2.0 cut.
+
+Earlier `Path.ToSubspace()` encoded a path `(a, b)` as the nested tuple `((a, b))`;
+now it uses Java's flat `(a, b)` prefix. Record and index bytes are unchanged but
+live at a different address. There is **no automatic copy or prefix rewrite**.
+
+1. Back up and freeze old-layout writers. Retain the old binary for rollback.
+2. Use `path.LegacyNestedSubspace()` (and the same `.Sub(...)` suffixes, if any)
+   to explicitly open/export the populated old store with its matching metadata.
+3. Create/import a separately verified flat destination. Record Layer opens on
+   `path.ToSubspace()` serializably probe the old prefix and refuse with
+   `LegacyKeySpacePrefixError` while it contains data. Only after choosing the
+   destination deliberately, use `SetAllowLegacyKeySpaceCutover(true)` to permit
+   that import/open; this flag acknowledges the address choice, not data migration.
+4. Compare records, indexes and query results, switch all readers/writers together,
+   and retain the old prefix read-only through the rollback window before deleting it.
+
+An empty legacy probe conflicts with a concurrent old-prefix write if the new
+transaction also commits writes. It is not a permanent cross-transaction lock:
+old writers must remain frozen after cutover. Calling `subspace.FromBytes` or
+otherwise discarding the guarded path subspace also discards automatic probing;
+raw FDB consumers must select/check the old/new prefix explicitly. Fresh stores
+continue using Java-flat keys; do not silently revert the default to the old form.
+
+## Unreleased Go-only compression and TEXT resumes
+
+Brotli compression version 2 is explicitly opt-in and cannot be read by Java
+4.14.2.0 or default Go readers. Before rollback or mixed-engine access, rewrite
+those records with the compatible default serializer and verify reads with both
+engines. Enabling a reader option does not migrate stored records.
+
+Do not transfer suffix-bounded TEXT continuations, or ordered TEXT merges over
+UUID/UTF-16-string/NaN/mixed-integer comparison keys, between engines expecting
+identical remaining rows. Their framing is compatible but their bound/comparison
+semantics differ; restart with the destination engine. See the unreleased TEXT
+boundaries in [compatibility](compatibility.md#text-queries).
 
 ## Sharing a Java store / changing store format
 

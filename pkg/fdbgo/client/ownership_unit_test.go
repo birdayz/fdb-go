@@ -56,7 +56,7 @@ func TestOwnedMutationSnapshotSurvivesArenaReuse(t *testing.T) {
 	tx := &Transaction{}
 	defer tx.Cancel()
 	tx.Set([]byte("original"), []byte("owned-value"))
-	input := tx.captureCommit(tx.mutations, tx.writeConflicts)
+	input := tx.captureCommit(tx.mutations, tx.writeConflictRanges())
 	tx.Reset()
 	tx.Set([]byte("replaced"), []byte("other-value"))
 	assertOwnedMutations(t, "detached after reset", input.muts, []Mutation{{
@@ -185,7 +185,7 @@ func TestMutationInputsOwnedByTransaction(t *testing.T) {
 			Mutation{Type: MutSetVersionstampedKey, Key: append([]byte(nil), svk...), Value: operand},
 			nil,
 		},
-		// A malformed key is buffered as given and validated at commit.
+		// A malformed key is buffered as given; its error is deferred at the call.
 		{
 			"SetVersionstampedKeyMalformed", []byte("ab"), operand, func(tx *Transaction, k, v []byte) { tx.Atomic(MutSetVersionstampedKey, k, v) },
 			Mutation{Type: MutSetVersionstampedKey, Key: []byte("ab"), Value: operand},
@@ -212,10 +212,10 @@ func TestMutationInputsOwnedByTransaction(t *testing.T) {
 
 				want := []Mutation{c.want}
 				assertOwnedMutations(t, "buffered", tx.mutations, want)
-				assertOwnedConflicts(t, "write conflicts", tx.writeConflicts, c.conflict)
+				assertOwnedConflicts(t, "write conflicts", tx.writeConflictRanges(), c.conflict)
 
 				lease := tx.enterState()
-				input := tx.captureCommit(tx.mutations, tx.writeConflicts)
+				input := tx.captureCommit(tx.mutations, tx.writeConflictRanges())
 				lease.release()
 				scribbleCallerBuf(k)
 				assertOwnedMutations(t, "captured", input.muts, want)

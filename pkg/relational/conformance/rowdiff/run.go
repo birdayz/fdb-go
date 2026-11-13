@@ -152,8 +152,7 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 				if !ok {
 					return fmt.Errorf("driver conn is %T, want *embedded.EmbeddedConnection", dc)
 				}
-				ec.SetOptions(api.NewOptionsBuilder().Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
-				return nil
+				return ec.SetOption(api.OptExecutionScannedRowsLimit, scanLimit)
 			}); rerr != nil {
 				res.Kind = OutcomeInfra
 				res.InfraErr = fmt.Errorf("set scan limit: %w", rerr)

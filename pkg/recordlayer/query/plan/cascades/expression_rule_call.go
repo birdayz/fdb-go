@@ -227,7 +227,9 @@ func (c *ExpressionRuleCall) StagedInsertCount() int {
 // child References for yielded expressions. This is how the Cascades
 // planner avoids redundant exploration of shared sub-trees.
 func (c *ExpressionRuleCall) MemoizeExpression(expr expressions.RelationalExpression) *expressions.Reference {
-	if c.memo != nil {
+	// A cancelled call's yields are dropped, so its children need not be found
+	// in (or added to) the memo: skipping the search ends a cancelled fan-out's work.
+	if c.memo != nil && c.CancellationErr() == nil {
 		ref := c.memo.MemoizeExpression(expr)
 		// Compare canonical identities: after a cross-group merge (RFC-037)
 		// the memoized Reference and c.Reference may be the same group
@@ -256,7 +258,7 @@ func (c *ExpressionRuleCall) MemoizeExpression(expr expressions.RelationalExpres
 // group minted per firing would make every parent built over it a new member,
 // and rules that rebuild each other's children would never converge.
 func (c *ExpressionRuleCall) MemoizeExpressions(exprs []expressions.RelationalExpression) *expressions.Reference {
-	if len(exprs) == 1 || c.memo == nil {
+	if len(exprs) == 1 || c.memo == nil || c.CancellationErr() != nil {
 		if len(exprs) == 1 {
 			return c.MemoizeExpression(exprs[0])
 		}
@@ -322,7 +324,7 @@ func (c *ExpressionRuleCall) MemoizeUnknownExpression(expr expressions.Relationa
 		return c.MemoizeExpression(expr)
 	}
 	ref := c.MemoizeFinalExpression(expr)
-	if c.memo != nil {
+	if c.memo != nil && c.CancellationErr() == nil {
 		c.memo.indexReference(ref)
 	}
 	return ref

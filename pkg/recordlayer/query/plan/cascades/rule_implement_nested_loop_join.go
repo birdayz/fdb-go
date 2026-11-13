@@ -1804,6 +1804,32 @@ func translateCorrelatedAccessPrograms(
 		if moved {
 			return typed.WithIndexPlan(translated.(*plans.RecordQueryIndexPlan)), true, nil
 		}
+	case *plans.RecordQueryTextIndexPlan:
+		scan := typed.GetTextScan()
+		suffix, moved, err := translateCorrelatedComparisonRanges(scan.Suffix, comparisonTransform)
+		if err != nil {
+			return nil, false, err
+		}
+		scan.Suffix = suffix
+		var operands []*values.Value
+		for i := range scan.Grouping {
+			operands = append(operands, &scan.Grouping[i])
+		}
+		if scan.Predicate != nil && scan.Predicate.Operand != nil {
+			operands = append(operands, &scan.Predicate.Operand)
+		}
+		for _, operand := range operands {
+			translated, err := comparisonTransform(*operand)
+			if err != nil {
+				return nil, false, fmt.Errorf("correlated text scan operand: %w", err)
+			}
+			if translated != *operand {
+				*operand, moved = translated, true
+			}
+		}
+		if moved {
+			return typed.WithTextScan(scan), true, nil
+		}
 	case *plans.RecordQueryMapPlan:
 		// A query block's result, as Java's RecordQueryMapPlan translates its
 		// result value with the rest of the plan.

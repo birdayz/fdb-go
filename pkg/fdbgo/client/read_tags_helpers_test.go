@@ -70,8 +70,8 @@ var (
 // taggedRequests returns the recorded read requests of the five kinds that carry read tags.
 func taggedRequests(t *testing.T, rec recording) []taggedRequest {
 	t.Helper()
-	if problems := rec.readProblems(); len(problems) > 0 {
-		t.Fatalf("recorder problems:\n%s", strings.Join(problems, "\n"))
+	if len(rec.problems) > 0 {
+		t.Fatalf("recorder problems:\n%s", strings.Join(rec.problems, "\n"))
 	}
 	var out []taggedRequest
 	for _, r := range rec.requests {

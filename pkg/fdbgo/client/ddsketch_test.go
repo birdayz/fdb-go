@@ -155,3 +155,24 @@ func FuzzDDSketch(f *testing.F) {
 		}
 	})
 }
+
+// stats() locks all stripes before visiting any stripe so a writer cannot mutate
+// a later stripe after an earlier stripe was aggregated into the same snapshot.
+func TestDDSketch_PointInTimeSnapshot(t *testing.T) {
+	t.Parallel()
+	var s latencySketch
+	s.addSampleAt(0, 10)
+	s.onStripeRead = func(i int) {
+		if i == 0 && s.stripes[numSketchStripes-1].mu.TryLock() {
+			st := &s.stripes[numSketchStripes-1]
+			st.populationSize = 1
+			st.minValue, st.maxValue, st.sum = 20, 20, 20
+			st.buckets = map[int]uint64{bucketIndex(20): 1}
+			st.mu.Unlock()
+		}
+	}
+	st := s.stats()
+	if st.Count != 1 || st.Max != 10 {
+		t.Fatalf("torn snapshot across stripes: Count=%d Max=%v, want Count=1 Max=10", st.Count, st.Max)
+	}
+}

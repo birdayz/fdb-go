@@ -26,10 +26,8 @@ import (
 // cursor's error.
 type ComparisonKeyFunc[T any] func(T) (tuple.Tuple, error)
 
-// compareKeys compares two comparison keys using FDB's order-preserving tuple
-// encoding. Returns negative if a < b, positive if a > b, 0 if equal.
-// Returns error if values are not tuple-encodable.
-// Matches Java's KeyComparisons.KEY_COMPARATOR.
+// compareKeys returns packed-tuple ordering or an encoding error, unlike Java’s per-object comparator.
+// This preserves token-scan ordering for UUIDs, strings, NaNs and mixed-width integers.
 func compareKeys(a, b tuple.Tuple) (c int, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -73,6 +71,28 @@ type mergeChildState[T any] struct {
 	// what keeps a read-ahead error from being bundled with (and discarding)
 	// a match that was already decided.
 	needsAdvance bool
+	// seek skips to a comparison key without streaming preceding values; nil means streaming only.
+	seek childSeeker
+}
+
+// childSeeker advances a behind child to target, returning the last-skipped-entry continuation
+// that Java streaming intersection would retain.
+type childSeeker func(ctx context.Context, target tuple.Tuple) (RecordCursorContinuation, error)
+
+// discardTo skips nonmatches up to target while preserving Java’s consumed continuation;
+// seeking changes physical reads, not later matches or continuation state.
+func (s *mergeChildState[T]) discardTo(ctx context.Context, target tuple.Tuple) error {
+	if s.seek == nil {
+		s.consume()
+		return nil
+	}
+	cont, err := s.seek(ctx, target)
+	if err != nil {
+		return err
+	}
+	s.continuation = cont
+	s.needsAdvance = true
+	return nil
 }
 
 // advance fetches the next result from this child's cursor. Mirrors Java
@@ -110,14 +130,6 @@ func (s *mergeChildState[T]) consume() {
 	s.continuation = s.result.GetContinuation()
 	s.needsAdvance = true
 }
-
-// NOTE: there is deliberately NO merge-union cursor in this file. The
-// wire-format UnionContinuation encoder lives in the executor's
-// mergeSortCursor (pkg/recordlayer/query/executor/executor_new_plans.go) — the
-// single union pipeline. A previous unionCursor here snapshotted
-// peeked-but-unconsumed children's POST-peek continuations, so a resume
-// skipped their held rows; it was dead code (zero production callers) and was
-// removed rather than fixed.
 
 // --- IntersectionCursor ---
 
@@ -164,7 +176,25 @@ func IntersectionResume[T any](
 		return Empty[T]()
 	}
 	return &intersectionCursor[T]{
-		children: newMergeChildren(cursors, compKeyFunc, resume),
+		children: newMergeChildren(cursors, compKeyFunc, resume, nil),
+		reverse:  reverse,
+	}
+}
+
+// intersectionSeeking is IntersectionResume whose children discard
+// non-matching values through seekers[i] when it is non-nil.
+func intersectionSeeking[T any](
+	cursors []RecordCursor[T],
+	seekers []childSeeker,
+	compKeyFunc ComparisonKeyFunc[T],
+	reverse bool,
+	resume []IntersectionChildResume,
+) RecordCursor[T] {
+	if len(cursors) == 0 {
+		return Empty[T]()
+	}
+	return &intersectionCursor[T]{
+		children: newMergeChildren(cursors, compKeyFunc, resume, seekers),
 		reverse:  reverse,
 	}
 }
@@ -176,6 +206,7 @@ func newMergeChildren[T any](
 	cursors []RecordCursor[T],
 	compKeyFunc ComparisonKeyFunc[T],
 	resume []IntersectionChildResume,
+	seekers []childSeeker,
 ) []*mergeChildState[T] {
 	children := make([]*mergeChildState[T], len(cursors))
 	for i, c := range cursors {
@@ -184,6 +215,9 @@ func newMergeChildren[T any](
 			compKeyFunc:  compKeyFunc,
 			continuation: initialIntersectionContinuation(resume, i),
 			needsAdvance: true, // first pull is due, same as any post-consume() child
+		}
+		if i < len(seekers) {
+			children[i].seek = seekers[i]
 		}
 	}
 	return children
@@ -324,7 +358,9 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 				return RecordCursorResult[T]{}, neqErr
 			}
 			if neq != 0 {
-				child.consume()
+				if err := child.discardTo(ctx, maxKey); err != nil {
+					return RecordCursorResult[T]{}, err
+				}
 			}
 		}
 	}
@@ -545,7 +581,25 @@ func IntersectionMultiResume[T any](
 		return Empty[[]T]()
 	}
 	return &intersectionMultiCursor[T]{
-		children: newMergeChildren(cursors, compKeyFunc, resume),
+		children: newMergeChildren(cursors, compKeyFunc, resume, nil),
+		reverse:  reverse,
+	}
+}
+
+// intersectionMultiSeeking is IntersectionMultiResume whose children discard
+// non-matching values through seekers[i] when it is non-nil.
+func intersectionMultiSeeking[T any](
+	cursors []RecordCursor[T],
+	seekers []childSeeker,
+	compKeyFunc ComparisonKeyFunc[T],
+	reverse bool,
+	resume []IntersectionChildResume,
+) RecordCursor[[]T] {
+	if len(cursors) == 0 {
+		return Empty[[]T]()
+	}
+	return &intersectionMultiCursor[T]{
+		children: newMergeChildren(cursors, compKeyFunc, resume, seekers),
 		reverse:  reverse,
 	}
 }
@@ -666,7 +720,9 @@ func (c *intersectionMultiCursor[T]) OnNext(ctx context.Context) (RecordCursorRe
 				return RecordCursorResult[[]T]{}, neqErr
 			}
 			if neq != 0 {
-				child.consume()
+				if err := child.discardTo(ctx, maxKey); err != nil {
+					return RecordCursorResult[[]T]{}, err
+				}
 			}
 		}
 	}

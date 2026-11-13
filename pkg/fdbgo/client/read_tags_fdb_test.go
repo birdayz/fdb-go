@@ -262,8 +262,8 @@ func TestReadTagSamplingOneDrawPerRequest(t *testing.T) {
 				draws   int
 				want    []taggedRequest
 			}{
-				// The primary's reply is lost, so the hedge to a second replica wins.
-				{"hedge", func(e *env) { duplicateServers(e.db, 2) }, nil, 1, []taggedRequest{tagged, tagged}},
+				// The primary's reply is lost, so the paid hedge to a second replica wins.
+				{"hedge", func(e *env) { duplicateServers(e.db, 2); setSecondBudget(e.db.db.queueModel, 1) }, nil, 1, []taggedRequest{tagged, tagged}},
 				{"reply-timeout", func(e *env) { e.tx.rpcTimeoutOverride = 300 * time.Millisecond }, nil, 1, []taggedRequest{tagged, tagged}},
 				{"wrong-shard", func(*env) {}, wrongShard, 2, []taggedRequest{tagged, untagged}},
 			} {
@@ -289,11 +289,12 @@ func TestReadTagSamplingOneDrawPerRequest(t *testing.T) {
 		check(t, e, "GetValueRequest", 2, tagged, untagged)
 	})
 
-	// Both the primary and the hedge time out; the sequential fallback tries the
-	// remaining replica with the same request (resolveFallback).
+	// Both the primary and the paid hedge time out; the sequential fallback tries
+	// the remaining replica with the same request (resolveFallback).
 	t.Run("GetValueRequest/alternatives", func(t *testing.T) {
 		e := setup(t)
 		duplicateServers(e.db, 3)
+		setSecondBudget(e.db.db.queueModel, 1)
 		e.tx.rpcTimeoutOverride = 300 * time.Millisecond
 		start(t, e, dropReply("GetValueRequest"), dropReply("GetValueRequest"))
 		if _, err := e.tx.getValue(ctx, key); err != nil {

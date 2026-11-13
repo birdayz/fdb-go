@@ -559,6 +559,10 @@ func (t *txn) ClearBytes(key []byte)      { t.tr.Clear(cgofdb.Key(key)) }
 func (t *txn) AddBytes(key, param []byte) { t.tr.Add(cgofdb.Key(key), param) }
 func (t *txn) MaxBytes(key, param []byte) { t.tr.Max(cgofdb.Key(key), param) }
 func (t *txn) MinBytes(key, param []byte) { t.tr.Min(cgofdb.Key(key), param) }
+func (t *txn) AppendIfFitsBytes(key, param []byte) {
+	t.tr.AppendIfFits(cgofdb.Key(key), param)
+}
+
 func (t *txn) CompareAndClearBytes(key, param []byte) {
 	t.tr.CompareAndClear(cgofdb.Key(key), param)
 }
@@ -568,16 +572,32 @@ func (t *txn) AddReadConflictRange(er fdb.ExactRange) error {
 	return convErr(t.tr.AddReadConflictRange(cgoExactRange(er)))
 }
 
+func (t *txn) AddReadConflictRangeBytes(begin, end []byte) error {
+	return convErr(t.tr.AddReadConflictRange(cgofdb.KeyRange{Begin: cgofdb.Key(begin), End: cgofdb.Key(end)}))
+}
+
 func (t *txn) AddReadConflictKey(key fdb.KeyConvertible) error {
 	return convErr(t.tr.AddReadConflictKey(cgoKey(key)))
+}
+
+func (t *txn) AddReadConflictKeyBytes(key []byte) error {
+	return convErr(t.tr.AddReadConflictKey(cgofdb.Key(key)))
 }
 
 func (t *txn) AddWriteConflictRange(er fdb.ExactRange) error {
 	return convErr(t.tr.AddWriteConflictRange(cgoExactRange(er)))
 }
 
+func (t *txn) AddWriteConflictRangeBytes(begin, end []byte) error {
+	return convErr(t.tr.AddWriteConflictRange(cgofdb.KeyRange{Begin: cgofdb.Key(begin), End: cgofdb.Key(end)}))
+}
+
 func (t *txn) AddWriteConflictKey(key fdb.KeyConvertible) error {
 	return convErr(t.tr.AddWriteConflictKey(cgoKey(key)))
+}
+
+func (t *txn) AddWriteConflictKeyBytes(key []byte) error {
+	return convErr(t.tr.AddWriteConflictKey(cgofdb.Key(key)))
 }
 
 // Lifecycle.

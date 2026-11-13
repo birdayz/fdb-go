@@ -1,0 +1,250 @@
+{
+  "schema": "otel283_ch_initial_deadline_archive_v1",
+  "created_utc": "2026-10-27T18:54:18.640Z",
+  "outcome": "FAILED/incomplete:initialwhole10mgranularity1deadline;no main1Mtimed querymatrix",
+  "measured_revision": "9244882a5914e0f897b0216866ca77d2bd4b6910",
+  "measured_source_clean": true,
+  "measured_binary_sha256": "ffdb0e4ff43e12fa2605b7c61bf3a2695ab464c8c518cd21c5ff136a46f1a515",
+  "source_binary_config_before_after_identical": true,
+  "frozen_config_checks": [
+    {
+      "name": "server.xml",
+      "expected": "f47a7ea2bd2e0aa60967b69ae789dd4c29a266f5d6927f25764e44dda8cf4d68",
+      "archived": "f47a7ea2bd2e0aa60967b69ae789dd4c29a266f5d6927f25764e44dda8cf4d68"
+    },
+    {
+      "name": "profile.xml",
+      "expected": "11108499e6913769ccb59186d455ccb32e3017adfb501f49b4326fc3a942c6ae",
+      "archived": "11108499e6913769ccb59186d455ccb32e3017adfb501f49b4326fc3a942c6ae"
+    },
+    {
+      "name": "launch.sh",
+      "expected": "0e0e598987f76d25a2e5071bfce6744048315f5d7f347da839e8b88ae3075c04",
+      "archived": "0e0e598987f76d25a2e5071bfce6744048315f5d7f347da839e8b88ae3075c04"
+    },
+    {
+      "name": "monitor.sh",
+      "expected": "5bafcd0d3c49f0a9b227d9a24244ab4f4167c25529a8f6550498224f49010f3a",
+      "archived": "5bafcd0d3c49f0a9b227d9a24244ab4f4167c25529a8f6550498224f49010f3a"
+    },
+    {
+      "name": "resources.sh",
+      "expected": "e8f607885824e81cd98361c911303174318a33e8fedf838b7349f6645b6cbcc4",
+      "archived": "e8f607885824e81cd98361c911303174318a33e8fedf838b7349f6645b6cbcc4"
+    },
+    {
+      "name": "resources-policy.sh",
+      "expected": "544ec37c94d9473b1a0be000043e17cda60c044b52eec7e492289c5bde6916fd",
+      "archived": "544ec37c94d9473b1a0be000043e17cda60c044b52eec7e492289c5bde6916fd"
+    },
+    {
+      "name": "readiness.sh",
+      "expected": "54fd9edded68193df8b42c616a1493c4bdb1c64ee43bb2317993520758e01e83",
+      "archived": "54fd9edded68193df8b42c616a1493c4bdb1c64ee43bb2317993520758e01e83"
+    }
+  ],
+  "campaign_status": "exit=1 end=2026-10-27T18:41:02Z elapsed_seconds=820",
+  "successful_load_audit_arms": [
+    {
+      "granularity": 8192,
+      "run": "ch1m_g8192_0287",
+      "ack_rows": 1000000,
+      "ingest_wall_ns": 42307497516,
+      "audit_wall_ns": 28173450127,
+      "audit_rows": 1000000,
+      "audit_attributes": 8000000,
+      "audit_failures": 0,
+      "projection_rows": [
+        {
+          "name": "by_span",
+          "rows": 1000000,
+          "marks": "144",
+          "parts": "14"
+        },
+        {
+          "name": "by_time",
+          "rows": 1000000,
+          "marks": "144",
+          "parts": "14"
+        },
+        {
+          "name": "by_trace",
+          "rows": 1000000,
+          "marks": "144",
+          "parts": "14"
+        }
+      ],
+      "server_version": "26.10.2.103"
+    },
+    {
+      "granularity": 512,
+      "run": "ch1m_g512_0287",
+      "ack_rows": 1000000,
+      "ingest_wall_ns": 42790925153,
+      "audit_wall_ns": 27965601659,
+      "audit_rows": 1000000,
+      "audit_attributes": 8000000,
+      "audit_failures": 0,
+      "projection_rows": [
+        {
+          "name": "by_span",
+          "rows": 1000000,
+          "marks": "1969",
+          "parts": "14"
+        },
+        {
+          "name": "by_time",
+          "rows": 1000000,
+          "marks": "1969",
+          "parts": "14"
+        },
+        {
+          "name": "by_trace",
+          "rows": 1000000,
+          "marks": "1969",
+          "parts": "14"
+        }
+      ],
+      "server_version": "26.10.2.103"
+    },
+    {
+      "granularity": 64,
+      "run": "ch1m_g64_0287",
+      "ack_rows": 1000000,
+      "ingest_wall_ns": 44226404684,
+      "audit_wall_ns": 28337884403,
+      "audit_rows": 1000000,
+      "audit_attributes": 8000000,
+      "audit_failures": 0,
+      "projection_rows": [
+        {
+          "name": "by_span",
+          "rows": 1000000,
+          "marks": "15639",
+          "parts": "11"
+        },
+        {
+          "name": "by_time",
+          "rows": 1000000,
+          "marks": "15639",
+          "parts": "11"
+        },
+        {
+          "name": "by_trace",
+          "rows": 1000000,
+          "marks": "15639",
+          "parts": "11"
+        }
+      ],
+      "server_version": "26.10.2.103"
+    }
+  ],
+  "failed_arm": {
+    "run": "ch1m_g1_0287",
+    "granularity": 1,
+    "budget": "10minutewholeoperation",
+    "wall_ns": 600000871682,
+    "error": "otel http ingest batch 921075: otel http request: Post \"http://127.0.0.1:18125?enable_http_compression=0&query=INSERT+INTO+otel_ch1m_g1_0287.spans+SETTINGS+async_insert%3D0+FORMAT+JSONEachRow&send_progress_in_http_headers=0&use_query_cache=0\": context deadline exceeded",
+    "reported_rows": 0,
+    "ack_progress_available": false,
+    "zero_interpretation": "API discardsACKprogress on failure;reported0isnotzero stored/ACKrows",
+    "postfailure_counts": [
+      {
+        "component": "spans",
+        "rows": 925010
+      },
+      {
+        "component": "attr_lookup",
+        "rows": 7400080
+      }
+    ],
+    "counts_are_not_ack_or_full_source_audit": true,
+    "ready_audit_error": "otel ownership manifest: run is not ready (state \"loading\"); explicit owned drop only",
+    "ready_audit_start_utc": "2026-10-27T18:46:36.785760192Z",
+    "ready_audit_exit": "1"
+  },
+  "main_campaign_timed_query_samples": 0,
+  "completed_four_layout_matrix": false,
+  "granularity1_infeasible_or_optimality_claim": false,
+  "selection": {
+    "campaign_end_utc": "2026-10-27T18:41:02Z",
+    "monitor": {
+      "selection": "Unmodified completed-line prefix through initial campaignend; ongoing0288tail excluded",
+      "lines": 260,
+      "bytes": 18101,
+      "first": "2026-10-27T18:19:00Z memory_current=442421248 memory_max=17179869184",
+      "last": "2026-10-27T18:41:02Z memory_current=7161442304 memory_max=17179869184"
+    },
+    "postdeadline_samples": [
+      {
+        "path": "run/gran1-after-deadline-counts.jsonl",
+        "source_mtime_utc": "2026-10-27T18:46:36.469Z",
+        "basis": "Original filemtime; not an embedded SQL sampling timestamp, not within frozen timed campaign"
+      },
+      {
+        "path": "run/gran1-after-deadline-parts.jsonl",
+        "source_mtime_utc": "2026-10-27T18:46:36.695Z",
+        "basis": "Original filemtime; not an embedded SQL sampling timestamp, not within frozen timed campaign"
+      },
+      {
+        "path": "run/gran1-audit-rejected.json",
+        "source_mtime_utc": "2026-10-27T18:46:36.787Z",
+        "basis": "Original filemtime; not an embedded SQL sampling timestamp, not within frozen timed campaign"
+      }
+    ],
+    "guard": {
+      "posthoc_receipt": "profile/readiness/readiness-settings-guard-controls.txt",
+      "source_mtime_utc": "2026-10-27T18:50:47.486Z",
+      "scope": "Posthoc pure exact query-settings comparison only, not whole readiness or serverprofile mutation",
+      "positive_exact_matches": true,
+      "negative_exact_matches": false,
+      "negative_sql_exit": "0",
+      "initial_negative_control_attempt": "Original empty readiness-cast-negative.tsv retained separately; root reports exception704 for that failed attempt; no fabricated stderr/exit"
+    }
+  },
+  "preflight": {
+    "separate": true,
+    "run": "chpre10k0287",
+    "corpus_count": 10000,
+    "timed_native_samples": 160,
+    "classes": 16,
+    "reported_oracle_failures": 0,
+    "untimed_querylog_reconciliations": 160,
+    "querylog_flush_opt_in": true,
+    "querylog_source_hash_matches": true,
+    "reconciliation_digest_checks": [
+      {
+        "name": "schema.json",
+        "expected": "98293618da45d93c49d482091805ab8747fb8948662647846e9065b22d3fccb7",
+        "archived": "98293618da45d93c49d482091805ab8747fb8948662647846e9065b22d3fccb7"
+      },
+      {
+        "name": "query-log.jsonl",
+        "expected": "2883b0afabcafd30a12f7a6be3edc2232e46cd46e9a37d774eac115bf164f083",
+        "archived": "2883b0afabcafd30a12f7a6be3edc2232e46cd46e9a37d774eac115bf164f083"
+      },
+      {
+        "name": "reconciliation.json",
+        "expected": "3df00dc12d11b315b6a4bfcd07c1f19637c880e92c1aaa051964611c388aa35c",
+        "archived": "3df00dc12d11b315b6a4bfcd07c1f19637c880e92c1aaa051964611c388aa35c"
+      }
+    ],
+    "owned_drop_receipt": {
+      "mode": "drop",
+      "failures": 0,
+      "error": null
+    },
+    "excluded_from_main_campaign_counts": true
+  },
+  "raw_regular_files": 81,
+  "raw_symlinks": 0,
+  "readiness_scope": "InitialBoolfalsevs0failure retained;correctedUInt8wholepositive readiness passes. NegativeSQLexit0meansSQLsuccess. Laterpureexactsettingsguard exits0/1areposthoc only;earlier failedcontrol704rootreported,missingstderrnotfabricated.",
+  "exclusions": [
+    "New0288fresh30marm and allongoingtail",
+    "Dockerinspect/environment/private-address dumps",
+    "Priorhugearchives"
+  ],
+  "portability": "Original/tmp paths arelocalprovenance. Do notexecute archived drivers/helpers blindly;freshownedpaths and all originalapproval/source/binary/config/instance/profile/monitor safeguards required.",
+  "cleanup": "NoDB/dropaction duringarchiving; failedrootcleanup requires separateownerauthorization and matchingidentity/config/count evidence",
+  "archive_operations_only": true
+}

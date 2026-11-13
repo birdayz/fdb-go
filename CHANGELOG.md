@@ -12,10 +12,297 @@ semantics, and required dependency versions.
 
 This changelog starts **2026-06-20**; earlier history is in `git log`. The first tagged release is
 **v0.1.0** (2026-08-26). v0.1.0 shipped the `frl` CLI from a parallel nested-module tag,
-`cmd/frl/v0.1.0`; from v0.2.0 `frl` is a package of the root module and ships under the
-project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (`RELEASE.md`).
+`cmd/frl/v0.1.0`. v0.2.0 (published 2026-11-07) replaces it with `fdb`, the root
+module's `cmd/fdb` package, installed with `go install fdb.dev/cmd/fdb@vX.Y.Z` or
+the release archives (`RELEASE.md`).
 
 ## [Unreleased]
+
+**Post-v0.2.0 development.** These changes are outside the frozen v0.2.0 scope
+below; neither publication nor readiness is asserted.
+
+### Added
+- `layers/otel/otelsql` OTEL_V1 template API (`TemplateDDL`, `CreateTemplate`,
+  `CreateTenant`) for Java-readable tenant spans, logs and message tables, and
+  for writers of those stores: `EnsureTenant` (creates or verifies the
+  template, database, schema and store through catalog actions; a stale
+  template or a foreign binding is a `*TemplateMismatchError`),
+  `CreateTemplateNamed`, `CreateTenantWithTemplate`, `RevisionTemplateName`,
+  `OpenTenantStore`/`OpenTenantStoreCompiled` and `TenantStore`, the compiled
+  row builders (`BuildCompiled`, `BuildLogCompiled`, `BuildMessageCompiled`,
+  `BuildMessageTraceCompiled`, `BuildStoreMetaCompiled`, with
+  `SpanProjection`/`LogProjection`), the row inputs (`Span`, `Log`,
+  `MessagePart`, `MessageRef`, `MessageText`, `StoreMeta`, `Projection`,
+  `SpanRows`/`NewSpanRows`, `ScopeLog`), the reference chunks
+  (`PackRefChunks`, `UnpackRefChunk`, `RefChunkReader`,
+  `MalformedRefChunkError`, `InvalidMessageRefError`, `MaxRefChunkKeyBytes`),
+  full text (`IndexableText`, `UnindexableTextError`, `MaxIndexedTokenBytes`,
+  `OverlongTokenPlaceholder`, `MessageTokenizer`/`MessageTokenizerName`),
+  message keys (`MessageContentHash`, `MessageHashBytes`, `MessageShard`,
+  `MessageTextShards`, `MessageAttributeKeys`, `MessageAttributeCode`),
+  attribute projection (`CanonicalJSON`, `FormatDouble`, `CanonicalNaN`,
+  `ProjectedDouble`, `LongStringDigest`, `LongStringDigestBytes`,
+  `MaxAttributeKeyBytes`, `MaxAttributeValueBytes`, the `Scope*` constants),
+  `TemplateOverlay`, the `StoreMeta*` row names, the
+  generated `otelv1pb` row types and `InvalidRowError` (input a row builder
+  refuses). Importing `otelsql` registers the `otel_message_v1` tokenizer in
+  the process-wide TEXT tokenizer registry.
+- `otel.SpanReader`/`NewSpanReader`, `otel.SpanWriter`/`NewSpanWriter`
+  (`SpanWriterOptions`), `otel.RecordSerializer`, `otel.FixtureOTLP`,
+  `otel.NewError` (a typed `otel` error of a given kind, for backends outside
+  the package) and `Exporter.ClientMetrics`, the pure-Go client's metrics
+  snapshot.
+- `otelbench --backend sql` on OTEL_V1 tenant stores, with `--sql-ingest`
+  (direct or insert), `--sql-query` (sql or direct), `--sql-rows` (compiled or
+  dynamic), `--sql-pinned-conn` and `--sql-page-rows`; the backend is the new
+  `layers/otel/sqlbackend` package (`Options`, `Backend`, `Open`).
+- `otelbench --mode collector-bench --query-only`, `--query-samples` and
+  `--query-classes`: post-ingest queries alone on an existing run, per-iteration
+  samples (`CollectorBenchConfig.QueryOnly`/`QuerySamples`/`QueryClasses`,
+  `CollectorBenchSample`).
+- SQL `CREATE FULLTEXT INDEX ... OPTIONS (TOKENIZER = '<name>',
+  TOKENIZER_VERSION = <n>)` (Go extension) sets the TEXT index's tokenizer
+  options (`docs/compatibility.md`, "SQL full-text syntax").
+- TEXT query APIs (`NewTextScan` / `TextScan`, `PlanTextQuery`, TEXT comparisons),
+  ordered union/intersection and probable/unordered merge cursors, and store-timer
+  `CountTextScanKeyValues`, `CountTextScanBytes` and `CountTextScanSeeks` counters.
+- `PipelineOperation`, `PipelineSizer`, `StoreBuilder.SetPipelineSizer` and
+  `GetPipelineSize`; INSERT saves honor their configured window (Java default one).
+- `SaveRecordBatch`, `SaveRecordBatchWithOptions`, `BatchSaveOptions` and
+  store/builder `PrefetchRecordBatch`, including batch TEXT-bunch prefetch.
+- Directory-backed KeySpace resolution (`DirectoryLayerDirectory`,
+  `KeySpaceResolver`, `ExtendedDirectoryLayerGlobal`), exported `CompareTuples`,
+  and the custom-maintainer `UpdateWhileWriteOnlyNonIdempotent` helper.
+- Opt-in Go-only Brotli records via `SetGoOnlyBrotliCompression` (compression
+  version 2); default version-1 zlib bytes are unchanged.
+- `tuple.AppendString`, which appends a string element's tuple encoding to a buffer,
+  and byte-slice `fdb.Transaction` methods `AppendIfFitsBytes`,
+  `AddReadConflictRangeBytes`, `AddReadConflictKeyBytes`,
+  `AddWriteConflictRangeBytes` and `AddWriteConflictKeyBytes`.
+- Record Layer `FDBDatabase.OpenRecordContext` (a record context over a
+  transaction its caller commits or cancels and retries), `IsRetriable`
+  (whether `FDBDatabase.Run` would retry an error) and `PrefetchStoreState`
+  (issues a store open's header and index-state reads early); catalog
+  `SchemaWitness` with `RecordLayerStoreCatalog.LoadSchemaWitnessed` and
+  `SchemaUnchanged`; and keyspace `RelationalKeyspace.ResolvedSchemaSubspace`
+  (a schema's store subspace when already resolved, without I/O).
+- `sqldriver.NewConnector(db, dsn)`, a `driver.Connector` over an FDB
+  database the caller opened, for `sql.OpenDB` (no `cluster_file`; nothing is
+  opened, cached or registered), and the Go-only DSN option `read_only=true`:
+  only SELECT and EXPLAIN/DESCRIBE of a SELECT run (anything else, a
+  multi-statement batch included, is `0A000`); every transaction of the
+  connection is cancelled instead of committed, so a read persists nothing,
+  not even a store-header upgrade; `BeginTx` accepts
+  `TxOptions{ReadOnly: true}`, still `0A000` without `read_only`
+  (`docs/operations.md` §1). The engine side is
+  `EmbeddedConnection.SetReadOnly` and `embedded.ReadOnlyRunner`.
+- `otel.Reader`, a read-only view of one OTEL_V1 tenant store for dashboards
+  (`layers/otel/rfcs/grafana-datasource.md`): `OpenReader` with
+  `ReaderConfig`; `Reader.Layout` and the `StoreLayoutNone`,
+  `StoreLayoutDeltas` and `StoreLayoutFullText` values; `TraceOTLP`, one scan
+  of a trace's spans with GenAI messages restored, bounded by `TraceBudget`
+  and reported in `TraceReadStats` with the `TraceReason*` values; the span
+  searches and log queries; and `AttributeKeys`/`AttributeValues`, capped
+  skip scans of the typed span and log attribute indexes
+  (`MaxAttributeKeys`, `MaxAttributeValues`). The open creates and publishes
+  nothing, and every transaction is cancelled, never committed. A store whose
+  header names newer metadata than a Reader loaded fails with
+  `*otel.StaleMetadataError`, the new error kind `stale`: reopen the Reader.
+  `otelsql.OpenTenantStoreCompiledIn` opens a tenant store with its catalog
+  reads in a transaction the caller runs (`layers/otel/README.md`, "Reader").
+- Grafana datasource plugin `birdayz-foundationdb-datasource`
+  (`layers/otel/grafana`, a nested Go module with an npm frontend;
+  `just grafana-build`, `just grafana-test`): a Go backend that talks to FDB
+  directly. SQL tables, time series and logs over any relational schema store
+  through read-only `fdbsql` connections, with integer-nanosecond time macros;
+  OTEL_V1 trace by ID in Grafana's TraceView, typed trace search and logs
+  through `otel.Reader`, with span↔log links. Unsigned; self-hosted Grafana
+  12.0 or later (`allow_loading_unsigned_plugins`).
+
+### Changed / fixed
+- The relational engine caches deserialized schema templates process-wide (up
+  to 256, keyed by name, version and the row's exact bytes; each read still
+  loads the row). A pooled connection keeps its loaded schema across
+  `ResetSession` and reuses it while the catalog still holds the bytes it was
+  built from, one parallel read instead of a reload. Index scans memoise their
+  scan-range identity salt per plan object.
+- `otel.Exporter` stores every signal of a `(run, tenant)` in one OTEL_V1
+  relational tenant store (database `/OTEL/R_<RUN>`, schema `T<tenant>`) and
+  serves every read from a direct scan of a standard OTEL_V1 index
+  (`layers/otel/rfcs/relational-exporter-migration.md`). The custom FDB store
+  is deleted: `FDBBackend`, its posting index and keyspace, raw-KV logs,
+  `Message` records, the ownership manifests, `otel.OpenFDB`/`OpenFDBContext`,
+  `IngestClientMetrics`/`IngestDiagnostics`/`IngestPhaseLatency`, and
+  `otelbench --backend fdb`, `--posting-value-format`, `--hash-bytes`,
+  `--diagnostics` and the Brotli values, with `otel.Config`'s
+  `PostingValueFormat`, `Diagnostics`, `HashBytes` and `KeyLayout` fields.
+  `otelbench --mode collector-bench` takes no `--backend` and always drives
+  `otel.Exporter`, and `collector.CollectorBenchConfig` loses its
+  `PostingValueFormat`, `HashBytes` and `Order` fields; it refuses the
+  otelbench flags it ignores (`--count`, `--tenants`, `--save-mode`,
+  `--bulk-index-conflicts`, `--k`, the ClickHouse flags, ...) and an explicit
+  zero or empty `--seed`, `--record-compression`, `--iterations`, `--batch` or
+  `--workers`, which would fall back to its defaults. Attribute equality is
+  typed.
+  `NewExporter` opens the fixed template name OTEL_V1. Exporter reads use the
+  client's cached read version.
+- OTel span and log exports still admit the whole call before any write;
+  admission writes nothing. A failure found while saving (a log's prior image
+  grown since admission, a span replacement whose index clears pass the 500 KB
+  guard even alone) is an `OperationError`, after the call's earlier batches
+  committed. An attribute is indexed up to a 1,024-byte key and a 64,000-byte value (strings
+  over 1,024 bytes through the digest-indexed array), so tuple NUL escaping
+  cannot push an OTEL_V1 index key past FDB's limits; larger attributes stay in
+  the stored OTLP but are not indexed. Raw OTLP is never truncated.
+- An auto-commit SELECT reads the catalog, plans (the index-state store open)
+  and takes its first page in one FDB transaction, not three, and the page
+  reuses the planner's store. The first page commits it before its rows are
+  published; later pages, and a first page starting more than 250 ms after
+  the statement's first read, run in their own transactions. A retryable
+  failure reruns the work in a fresh transaction. Explicit transactions are
+  unchanged. The shared transaction has one `TRANSACTION_TIMEOUT` budget for
+  the catalog read, planning and first page. Java reads the whole result in
+  one transaction; Go's pages can come from different snapshots, and an
+  index-state transition before a separate first page fails 40001
+  (DIVERGENCES.md, "Auto-commit SELECT: one transaction up to the first page").
+- `CompositeKeyExpression` evaluation with a `FanOut` child under an absent
+  non-repeated parent (for example `Nest("p", Concat(Field("a"),
+  FanOut("tags")))` on a record without `p`) yields no tuple, as Java 4.14.2.0
+  does; earlier Go yielded one all-null tuple and wrote that index entry or
+  count. A `Concatenate` child under NOT_NULL there yields the empty list, not
+  null. COUNT, COUNT_UPDATES and SUM indexes grouped by a fan-out nesting count
+  every entry, as Java does, not only a record's first element. An update of
+  a SUM or COUNT_NOT_NULL index skips every entry the old and new record share,
+  all occurrences and by whole entry, as Java's `StandardIndexMaintainer.update`
+  does; Go cancelled SUM entries one for one and compared COUNT_NOT_NULL
+  entries by group only. The Java 4.14.2.0 differential in
+  `conformance/null_standin_conformance_test.go` measures each case.
+- Message full-text role discovery charges the raw TEXT bunch key/value bytes,
+  including discovery preceding an empty result, against the remaining query budget.
+- Drained message and Collector queues clear consumed slots and release exhausted
+  backing slices while exporters remain alive.
+- Fan-out VALUE index scans expose time/primary-key suffix ordering and record
+  identity only past physically equality-pinned elements; keyset OR predicates
+  can use `MergeSortUnion` without an in-memory sort.
+- SQL VALUE-scan candidacy fails closed for TEXT, MULTIDIMENSIONAL,
+  TIME_WINDOW_LEADERBOARD and custom index layouts, including EXPLAIN plans;
+  factory `ValidateIndexOptions` runs for all registered types, not just VECTOR.
+- BunchedMap mutations preserve stored noncanonical key bytes; scan continuation
+  resumes no longer repeat a bunch's first entry. Logical TEXT suffix bounds and intersection seeks include predecessor bunches,
+  handle foreign-token reverse predecessors as exhaustion, and retain original
+  tuple endpoint semantics (including upper-only and exclusive bounds).
+- Message writers never reuse IDs after committed-but-unknown 1021/1039 retries;
+  multipart size fallback counts abandoned committed tails without publishing
+  their heads. Oversized raw words with short normalized tokens remain bounded
+  in indexed segments while raw reconstruction stays lossless.
+- Log admission counts native mutations, read/write conflicts and actual prior
+  image clears before writing; live batch images are rechecked before mutation.
+- Commit checks use the production live drain, including checks registered by
+  checks; explicit failed commits release their transaction handles.
+
+### Breaking changes / compatibility
+- **`read_only` and `NewConnector`:** no persisted or wire change; SQL
+  behaviour changes only on a `read_only` connection. The unknown-DSN-parameter
+  error lists `read_only`. `RelationalKeyspace.LookupSchemaSubspace` and
+  `embedded.StoredQueryTemplates` take a `keyspace.Runner` where they took an
+  `*recordlayer.FDBDatabase`, which still satisfies it.
+- **OTel store (persisted format):** the custom store's persisted layout
+  (posting indexes, `logs_v1` rows, `Message` records, manifests, the
+  `directory_v1` keyspace) is gone, with no migration and no reader: an OTel
+  store an earlier build wrote is not read. OTEL_V1 is rewritten in place at
+  catalog version 1 (record-metadata version 21 for `TemplateBody`, 22 for
+  `TemplateDDL`: new tables and indexes). A catalog holding OTEL_V1 from an
+  earlier revision makes `NewExporter` fail with `TemplateMismatchError`;
+  recreate such stores. Java 4.14.2.0 reads every table of a Go-written
+  `TemplateDDL` store.
+- **`ExporterConfig`:** the `Order`, `HashBytes` and `PostingValueFormat`
+  fields are removed. A JSON or YAML document naming `order`, `hash_bytes` or
+  `posting_value_format` fails with a "was removed" `ConfigError`, and any other
+  unknown key fails too; earlier builds ignored unknown keys. YAML merge keys
+  (`<<`) and aliases are followed, and the keys they bring in are checked the
+  same way.
+  `record_compression` takes `none`, `zlib-1` or `zlib-default` and refuses
+  Brotli (SQL and Java read the records); the default is `zlib-1` instead of
+  `brotli-4`. A removed key fails with the typed `RemovedConfigKeyError`.
+- **OTel NaN attributes:** a NaN double attribute is stored in the typed
+  projection (span, event, link and log `DOUBLE_ATTRS`) as the canonical quiet
+  NaN `0x7FF8000000000000` whatever its payload, so equality on `NaN` matches
+  every NaN; the span's or log's OTLP keeps the original bits.
+- **OTel span admission:** the 300 KB estimate counts the whole serialized
+  `SPANS` row (OTLP plus every copied column such as name, status message,
+  events and links) plus each index entry, so a new span always fits the
+  500 KB guard; a span over it fails the call before any write. A save that
+  the index clears of the spans it replaces (a re-export with a new start time
+  or attribute values) push past the guard is retried in smaller
+  transactions, each holding the spans that fit the estimate with those
+  clears, read from the save's prefetch, or a span over it alone. A
+  replacement that passes the guard even alone fails as an `OperationError`;
+  the call's batches committed before it stay committed.
+- **Exporter read consistency:** reads take their read version from the
+  client's GRV cache, at most 100 ms old. A read sees every write committed
+  through the same Exporter before it began, but a commit by another Exporter
+  handle or process (another Collector replica) can be invisible to it for up
+  to 100 ms. The deleted store read at a fresh version.
+- **OTel admission and budgets:** full-text queries can return a budget error
+  for raw role-discovery reads that earlier builds undercounted.
+- **SQL auto-commit SELECT:** the catalog read, planning and a first page that
+  starts within 250 ms see one read version unless a retryable failure ends
+  the shared transaction; the failed work then reruns in fresh transactions,
+  as every step did before. Later pages run their own transactions. Java reads
+  the whole result in one transaction, so this is a divergence (DIVERGENCES.md,
+  "Auto-commit SELECT").
+- **FULLTEXT `OPTIONS` (persisted):** the clause persists the TEXT index options
+  `textTokenizerName` and `textTokenizerVersion`, as Java's metadata API sets
+  them. A tokenizer registered only in Go makes the whole schema unreadable to
+  Java 4.14.2.0 (`42000 MetaDataException unrecognized text tokenizer`);
+  `'default'` opens. An unknown option is `0A000`, a duplicate or wrong-kind
+  value (a negative version included) `42601`, an unregistered tokenizer or a
+  version above the tokenizer's range `42F59`.
+- **Fan-out composite index entries and counts:** an index over a composite
+  with a `FanOut` child under an absent non-repeated parent no longer gets the
+  all-null entry or count earlier Go wrote, a NOT_NULL `Concatenate` field
+  there now holds the empty list, not null, and Go never corrects what an
+  earlier build wrote there. Atomic indexes grouped by a fan-out nesting now
+  count every entry, and SUM and COUNT_NOT_NULL updates skip shared entries as
+  Java does. Rebuild after upgrading: indexes over such a composite (a
+  `FanOut` child or a NOT_NULL `Concatenate` field under a singular parent),
+  atomic indexes grouped by a fan-out nesting, and SUM or COUNT_NOT_NULL
+  indexes over a fan-out that earlier Go updated (DIVERGENCES.md, "A fan-out
+  composite under an absent parent").
+- Apart from the entries above, the relational OTel store change (PR #1035)
+  leaves persisted Record Layer and SQL bytes and FDB client option semantics
+  unchanged; the Exporter uses the existing GRV-cache option. The entries
+  below are from earlier changes.
+- **Schema-template metadata:** Go-written `MetaData.record_types` now follows
+  Java's two-stage HashMap iteration order instead of union-declaration order.
+  Already-stored templates retain their old order; this does not rewrite them.
+- **KeySpace persisted prefixes:** `Path.ToSubspace()` packs Java-flat path
+  elements instead of a nested tuple. Existing Go nested prefixes require explicit
+  `LegacyNestedSubspace()` export/import and guarded cutover; no automatic migration.
+- **Brotli:** Java 4.14.2.0 and default Go readers reject version 2. Rewrite opted-in
+  records with a compatible serializer before mixed-engine use or rollback.
+- **TEXT:** logical suffix bounds deliberately differ from Java's physical bunch
+  bounds. Packed ordered-merge comparison differs from Java object comparison for
+  UUIDs, UTF-16 strings, NaNs and mixed integer widths; probable merges also differ
+  in byte-array/NaN identity. These typed/bounded continuations are not a shared
+  remaining-row contract; keep them in one engine. See `docs/compatibility.md`.
+- **Legacy versions:** Go removes pending versions with deleted records; Java can
+  retain pending orphan bytes with versions disabled or committed V0 bytes after
+  an incomplete save/point delete with versions enabled (format 5).
+- **Batch conflicts:** opt-in `CoalesceIndexWriteConflicts` widens conflicts over
+  maintained indexes; untouched-entry readers may retry unlike ordinary Java saves.
+- **Go API:** `client.Transaction.Snapshot()` returns a `client.Snapshot` value, whose
+  methods have value receivers, instead of `*client.Snapshot`. `fdb.WritableTransaction`
+  gains the five byte-slice methods above; implementations that do not embed one must
+  add them.
+- No dependency-pin change: Java Record Layer/Relational **4.14.2.0** and
+  FoundationDB **7.3.77** remain the references. These entries do not widen v0.2.0.
+
+## [v0.2.0] - 2026-11-04
+
+**Published 2026-11-07** as tag `v0.2.0` (commit `aef9515`), from the scope cut on
+2026-11-04. Publication does not declare production readiness; see `STATUS.md`.
+Install wording below predates publication: install with `go install fdb.dev/cmd/fdb@v0.2.0`.
 
 ### Breaking changes
 Each is described in full under Compatibility or Changed below.
@@ -37,11 +324,36 @@ Each is described in full under Compatibility or Changed below.
   names and options (#804).
 - **TEXT indexes:** the default tokenizer handles a word-final capital sigma and supplementary-plane
   text as Java does; rebuild Go-written TEXT indexes over such text (#803).
+- **Pure-Go client TLS** (`:tls` cluster files with `FDB_TLS_*`, RFC-277): verification follows
+  libfdb_c 7.3.77. The CA file is the only trust root (no CA file trusts nothing; the system
+  roots never count), and no host name is checked. A set but empty path variable means no file
+  and no default. A bad setting fails the open with `*client.TLSConfigError` (`tls_error`, 2107).
 - **Pure-Go client:** API versions outside 510-730 are refused with 2203 (#823).
   `SetLockAware`/`SetReadLockAware` take no argument, a read-lock-aware commit with writes fails
   with 2023 unless the transaction is also lock-aware, and `SetSizeLimit` outside
   [32, 10,000,000] is a deferred error (#820). `SetTimeout` outside [0, INT_MAX] is a deferred
   2006 (#799).
+- **Record layer (RFC-275):**
+  - `TransactionSizeWarningError` is removed. Past `TransactionSizeWarnBytes`, saves and deletes
+    succeed, and the warning is logged and counted as `CountTransactionSizeWarning`.
+  - A corrupt store header is a `RecordCoreStorageError` ("Error reading version") that unwraps to
+    the parse error.
+  - A TEXT index whose text column is not a string fails the save with `ClassCastError`, as Java
+    does.
+  - A BY_RANK bound that is not a number also fails with `ClassCastError`.
+  - Primary-key expressions declaring version columns are refused with `MetaDataError`
+    ("Version in primary key not supported"), as Java does. The chosen record version is
+    visible to function-wrapped primary keys and maintained-count keys; an
+    incomplete value in their ordinary tuple encoders returns `IncompleteVersionstampError`.
+    Dry runs share primary-key preparation but do not maintain counts. Count-key checks run
+    only when a count is maintained.
+- **`keyspace` (RFC-275):**
+  - `AddSubdirectory` and `AddSubdirectories` return an `*ArgumentError` under Java's sibling
+    rules, instead of panicking on a duplicate name.
+  - `ResolverFunc`, `KeySpace.Path` and `Path.Add` take a `context.Context`.
+  - `PathFromTuple` fails on an element that no subdirectory of a non-leaf directory holds.
+  - `FindChildForValue` matches a stored value: a resolver directory is found by its `int64`,
+    not by its string name.
 - **Continuations:** restart paged queries across this release; plan changes and cursor
   encoding corrections do not preserve old tokens. See `docs/upgrade.md`.
 - **Record layer:** `FDBDatabase.Run` and its variants make at most 10 attempts by default, and a
@@ -51,15 +363,44 @@ Each is described in full under Compatibility or Changed below.
   `FindRegisteredMessageType` is replaced by `GeneratedMessageType` (#842).
 - **SQL driver:** an unknown DSN parameter, or a DSN boolean other than `true`/`false`, fails at
   open with 22023 (#799).
+- **SQL driver transactions (RFC-272):** `TxOptions{ReadOnly: true}` is refused with 0A000 (it
+  was ignored). Inside an explicit transaction a statement whose context ends (its deadline, a
+  cancel, the statement timeout) cancels the FDB transaction: the statement returns the context's
+  error and the transaction is over, so later statements and `Commit` return 25F01. The
+  `BeginTx` context now bounds the transaction (`DIVERGENCES.md`).
+- **Go API:** `functions.ApplyMathOp`, `ApplyBitOp`, `IsTruthy`, `LiteralMatchesPKKind`,
+  `ToIntegerArg`, `ToFloat64`, `AddInt64Checked`/`SubInt64Checked`/`MulInt64Checked` and
+  `values.JavaFloatToString` are removed; nothing outside their tests called them (RFC-272).
 - **Go API moves:** the gomock mocks moved to `pkg/relational/api/apimock` (#810), the demo protos
   to `fdb.dev/gen/demopb` (#842), and index-predicate normalization, the plan walkers and the
   R-tree to `pkg/recordlayer/indexpredicate`, `pkg/recordlayer/query/plan/plans` and
   `pkg/async/rtree`. The planner census left the public `values`, `cascades`, `executor` and
-  `core/query` packages (#836). `keyspace.FDBResolver` is removed.
-- **frl:** `frl` is a package of the root module; retiring the nested module requires
-  the post-publication retraction procedure in `RELEASE.md`.
+  `core/query` packages (#836). `keyspace.FDBResolver` is removed. The executor's
+  `api.ResultSet` adapter (`RecordLayerResultSet`, `ColumnDef`, `NewResultSetMetaData`) moved
+  to `pkg/relational/core/resultset`, and the executor returns `executor.ExecutionError` kinds
+  (or `values` errors) where it returned SQLSTATE `api.Error`s; SQL sees the same SQLSTATE and `api.Error` message,
+  without the executor's wrapping context in the error string (RFC-274).
+- **CLI:** `frl` is replaced by `fdb`, with Record Layer commands under `fdb rl`.
+  Config/history move to `~/.fdb`, with `FDB_CONFIG` replacing `FRL_CONFIG`.
+  There are no legacy command aliases, config fallbacks, or archive fallbacks.
+  Release archives are `fdb_<version>_<os>_<arch>.tar.gz`; `FDB_CLI_VERSION`
+  selects the CLI release, leaving `FDB_VERSION` for FoundationDB server tooling.
+- **`pkg/fdbgo/wire/types`:** generated decoders return errors,
+  `NetworkAddressList.SecondaryAddress` is a `NetworkAddress` and
+  `CommitTransactionRef.Read_conflict_ranges_disabled` a `SpanContext` (RFC-276).
 
 ### Compatibility
+- **Version-dependent record keys (RFC-275):** native `VersionKey()` primary-key columns are
+  unsupported, as in Java; formerly accepted Go-only metadata is now refused. Complete supplied
+  versions participate in maintained-count keys and reach primary-key functions such as
+  ordering wrappers. Incomplete values reaching ordinary key encoders are refused with
+  `IncompleteVersionstampError`. Existing null-version counters and unsupported primary-key
+  metadata are not migrated automatically; migrate or recreate affected pre-release stores
+  before mixed-engine use. VERSION indexes rooted at a function over a version are also
+  refused at metadata/DDL validation: functions declare zero version columns, but VERSION
+  requires exactly one. A version in a KeyWithValue VALUE portion remains valid metadata
+  and fails recoverably at write time if incomplete. Tuple encodings and unaffected stores
+  are unchanged.
 - **Collation:** collated index access and writes that evaluate collated primary/count keys now fail with `GoOnlyCollationError` unless the store explicitly opts into Go-only bytes with `StoreBuilder.SetGoOnlyCollation(true)`; existing keys are not migrated.
 - **Collation metadata:** fan-out follows the function arguments as in Java, permitting scalar collations in primary keys.
 - **Wire format:** the Java target is upgraded to `fdb-record-layer-core` 4.14.2.0 (RFC-257). Records Java writes through `TransformedRecordSerializer` (compressed, encrypted) are
@@ -71,22 +412,44 @@ Each is described in full under Compatibility or Changed below.
   classification in `pkg/fdbgo/fdb/OPTIONS.md` still holds against `libfdb_c` 7.3.77. Changed since
   v0.1.0: `SetReadLockAware` and `SetSizeLimit` (see Changed), and `Transaction.SetTimeout` outside
   [0, INT_MAX] records a deferred 2006 (`invalid_option_value`) like libfdb_c, where a negative
-  value used to disable the timeout (0 still disables it).
+  value used to disable the timeout (0 still disables it). `SetReportConflictingKeys`,
+  `SetTransactionReportConflictingKeys` and `SetSpecialKeySpaceRelaxed` are now honored instead of
+  returning `UnsupportedOptionError`: a `not_committed` leaves its conflicting read ranges under
+  `\xff\xff/transaction/conflicting_keys/`. Other special-key reads fail with
+  `special_keys_cross_module_read` (2112), `special_keys_no_module_found` (2113) or
+  `unsupported_operation` (2108) instead of `key_outside_legal_range` (2004).
 - **Continuation tokens:** key-value cursor tokens (index, COUNT/atomic, BITMAP_VALUE and record scans) strip Java's range common prefix (`KeyValueCursorBase.calculatePrefixLength`), so a token is valid only for the range that minted it, as in Java. Restart paged queries across this encoding correction (#871).
 - **DSN booleans are strictly `true`/`false`** (any case): a bare `?flag`, `1`/`0`, `t`/`f`,
   `yes`/`no` and `on`/`off` now fail at open with 22023.
 - **Required versions:** Java `fdb-record-layer-core` **4.14.2.0**, FDB C++ client **7.3.77**, Go
   **1.27.3** or newer (`go.mod` enforces this minimum).
+- **Pure-Go client TLS (RFC-277):** a `:tls` cluster file with `FDB_TLS_*` now verifies the
+  server as libfdb_c 7.3.77 does. Trust comes only from `FDB_TLS_CA_FILE`; with no CA file no
+  server is trusted, where the system roots used to be. The host name is no longer checked, so
+  a server certificate needs no IP SANs. `FDB_TLS_VERIFY_PEERS` (default `Check.Valid=1`)
+  decides which peers to accept, and `FDB_TLS_PASSWORD` decrypts a PBES2 PKCS#8 key. A path
+  variable set but empty means no file and no default. A setting that cannot be used (a file,
+  a password, a verify-peers string) fails the open with `*client.TLSConfigError`, which reads
+  as `tls_error` (2107). `WithTLSConfig` configs keep Go's own verification.
 - **Go 1.27 runtime defaults** apply to applications built with this module, because their
   `go` line must be at least 1.27.3:
   - `x509sslcertoverrideplatform=1`: on macOS and Windows, a nonempty `SSL_CERT_FILE` or
     `SSL_CERT_DIR` replaces the platform certificate verifier. Pure-Go client TLS connections
-    without a configured CA file are affected. Add `godebug x509sslcertoverrideplatform=0`
+    through a `WithTLSConfig` config with nil `RootCAs` are affected; the `FDB_TLS_*` path
+    never reads system roots (RFC-277). Add `godebug x509sslcertoverrideplatform=0`
     to the application's `go.mod` to keep the previous behavior.
   - `tracebacklabels=1`: tracebacks include goroutine labels.
   - Legacy GODEBUG values removed in Go 1.27 abort program startup if set.
 
 ### Added
+- `transport.WithAdaptiveLinger`, `client.WithAdaptiveLinger`, `fdb.WithAdaptiveLinger`, and `transport.Conn.AdaptiveLinger` configure and report Nagle-style adaptive writer linger on the pure-Go client's enqueue-only connection writer (RFC-282). `client.Database.ConnectionLinger` reports the effective linger settings. `transport.NetDesign` reports the default writer design; `FDBGO_NET_DESIGN=legacy` (or `0`) selects the legacy writer and timeout path process-wide, while `transport.WithLegacyWriter` selects that writer for one connection.
+- `FDBRecordStore.GetPrimaryKeyBoundaries`, Java's `getPrimaryKeyBoundaries`: the primary keys at
+  the records' shard boundaries. `IndexingRangeSet.FirstMissingRangeInBytes`, Java's
+  `firstMissingRangeAsync(begin, end)` (RFC-279).
+- Record Layer explicit-version saves: `SaveRecordWithVersion`, `OverrideLockSaveRecordWithVersion`
+  and the typed store's `SaveRecordWithVersion`, with Java's `VersionstampSaveBehavior` (RFC-275).
+- The pure-Go client reads `FDB_TLS_VERIFY_PEERS` (libfdb_c's verify-peers grammar,
+  `transport.ParseVerifyPeers`) and `FDB_TLS_PASSWORD` (encrypted PBES2 PKCS#8 keys) (RFC-277).
 - Pure-Go `fdb.MappedRangeReader` capability with byte-driven batch iteration for exact primary ranges; the libfdb_c backend does not expose it.
 - Record Layer remote-fetch index scans: `ScanIndexRecordsWithFetchMethod` with `USE_REMOTE_FETCH` and `USE_REMOTE_FETCH_WITH_FALLBACK`, `ScanIndexRemoteFetch` and `BuildSingleRecord`, with Java's `scan_remote_fetch_entry` event and `remote_fetch` count.
 - The SQL driver DSN sets `max_rows`, `execution_scanned_rows_limit`, `execution_scanned_bytes_limit`,
@@ -95,6 +458,51 @@ Each is described in full under Compatibility or Changed below.
   and tags now apply to every statement transaction, autocommit and read-only ones included.
 
 ### Changed
+- Pure-Go client transport writer and hot path (RFC-282): connections use an enqueue-only writer (`D-NG`) with a 16 MiB high-water backpressure bound and default to immediate flush on wakeup (`0, 0` coalesce delay; pass `WithCoalesceDelay(transport.DefaultMinCoalesceDelay, transport.DefaultMaxCoalesceDelay)` for `libfdb_c`'s 10/20 µs timer coalescing or `WithAdaptiveLinger` for Nagle-style adaptive linger). Reply registration uses a 32-shard connection table, `Transact`/`ReadTransact` pool per-transaction timeout timers, `latencySketch` is 16-way striped, and single-read/single-waiter transaction paths inline their state.
+- Record layer (RFC-275), in full:
+  - Native version columns in primary keys are refused at metadata construction and load,
+    as in Java. The chosen version is visible to function-wrapped primary keys and
+    maintained-count expressions. Incomplete values in ordinary key encoders return
+    `IncompleteVersionstampError`; dry runs share primary-key preparation and return the
+    chosen version without count maintenance.
+  - `CheckTransactionSize` returns only `TransactionSizeExceededError`. The Go-only warning
+    threshold logs at WARN and counts `CountTransactionSizeWarning` once per transaction.
+  - Header parse failures are `RecordCoreStorageError{Message: "Error reading version", Cause}`.
+  - The TEXT maintainer reads its text column as Java's `Tuple.getString` does. A non-string is a
+    `ClassCastError` and a position past the key an `IndexOutOfBoundsError`; null and `""` are
+    still skipped.
+  - BY_RANK bounds, SCORE_FOR_RANK and SCORE_FOR_TIME_WINDOW_RANK ranks and the arguments of the
+    long-arithmetic key functions are taken with Java's `Number.longValue()`. Every Go integer
+    carrier is accepted, with `uint64`/`*big.Int` keeping their low 64 bits, and floats are
+    truncated with NaN as 0. A float bound used to be an unbounded endpoint and now selects a
+    rank; a bound that is not a number is a `ClassCastError`, and a null rank answers null.
+- `keyspace` (RFC-275), in full:
+  - `AddSubdirectory`/`AddSubdirectories(...) error` refuse:
+    - a duplicate name;
+    - a same-type sibling unless both are distinct constants (a NULL directory counts as a
+      constant);
+    - an equal constant (bytes by content, floats as `Double.equals`).
+  - `PathFromTuple` and `FindChildForValue` match a stored value in declaration order. An element
+    no subdirectory of a non-leaf directory holds, or any element under a root without
+    subdirectories, is an `*ArgumentError`.
+  - `ResolverFunc`, `KeySpace.Path` and `Path.Add` take the caller's context.
+- SQL driver transactions (RFC-272): `BeginTx` with `TxOptions{ReadOnly: true}` fails with 0A000
+  (Java accepts `setReadOnly` and ignores it; database/sql requires a driver that does not enforce
+  it to refuse it). The `BeginTx` context bounds the transaction: when it ends, the FDB transaction
+  is cancelled and database/sql rolls it back. A statement whose context ends inside an explicit
+  transaction (deadline, cancel, statement timeout, also while its rows are open) returns the
+  context error and ends the transaction; later statements and `Commit` return 25F01 wrapping the
+  context error, and its writes are discarded. `Commit` on an ended transaction is 25F01.
+  `DIVERGENCES.md` "Driver transactions" has the comparison with Java. `functions.ApplyMathOp`,
+  `ApplyBitOp`, `IsTruthy`, `LiteralMatchesPKKind`, `ToIntegerArg`, `ToFloat64` and
+  `Add/Sub/MulInt64Checked` and `values.JavaFloatToString` are removed.
+- Online indexer (RFC-279):
+  - A mutual build whose fragment walk finds nothing to build in FULL and then in ANY fails
+    with Java's `IndexingValidationError` "Mutual indexing failure - third iteration". A walk
+    finds work whenever a range is missing.
+  - A mutual build reads the shard map in a transaction, and an error reading it fails that
+    transaction, and the build when it is not retried. It used to fall back to one fragment.
+    A database without a shard map (`BackendCapabilityError`) still builds one fragment.
 - Development builds use Bazel 9.3.1, Bazelisk 1.30.0, and updated stable BCR build rules.
 - Require Go 1.27 (minimum toolchain Go 1.27.3).
 - Go 1.27.3 includes the GO-2026-6809 `crypto/x509` fix used by pure-Go client TLS.
@@ -143,6 +551,10 @@ Each is described in full under Compatibility or Changed below.
 - SQL planning has no task budget by default, as in Java (was 150,000 tasks, 250,000 right-deep); the
   caller's context bounds it, and `MAX_TOTAL_TASK_COUNT`, `MAX_TASK_QUEUE_SIZE` and
   `MAX_NUM_MATCHES_PER_RULE_CALL` opt into Java's caps (54F02 when exhausted).
+- `MAX_NUM_MATCHES_PER_RULE_CALL` counts the bindings Java's matcher makes per rule call (per plan
+  partition, quantifier, combination or permutation) where it counted Go's root bindings, the
+  planner's swapped-quantifier firing included. A bound can now trip where it planned, or plan
+  where the swapped firing tripped it; a trip reports the bound+1 Java reports (RFC-274).
 - `OnlineIndexer.MergeIndexes` holds no session, as Java's `mergeIndex`: it writes no heartbeat (which blocked Java's exclusive builders), checks no index state, and proceeds under a live peer and over a DISABLED target.
 - `plandiff.SeedCorpus`, `SeedRunCorpus`, `ApplyRFC082Divergences` and `IsKnownRed` moved to the
   testonly package `plandiff/seedcorpus`; `plandiff` keeps the `Query` and `RunQuery` types.
@@ -171,7 +583,7 @@ Each is described in full under Compatibility or Changed below.
 - **Breaking (storage/metadata):** a VECTOR index is refused at build as Java's `VectorIndexValidator` refuses it: without a dimension count ("need to specify the number of dimensions"; Go's 128 default is gone), or with a grouping root, a unique option, a version column, a root that is not a `KeyWithValueExpression` ("vector index type must use top key with value expression") or a fan-out. Recreate such an index with `KeyWithValue(root, splitPoint)` and an explicit `hnswNumDimensions`.
 - A `collate_jre`/`collate_icu` key expression no longer counts as a fan-out, as in Java (`CollateFunctionKeyExpression.createsDuplicates` delegates to its argument): a collated primary key, `CARDINALITY` argument, online-build source index and vector partition column are accepted, and a collated VALUE index's scans count as distinct records; `Split(collate(x))` is refused.
 - **Breaking (storage/metadata):** a VECTOR index's `hnswMetric`/`vectorMetric` must name one of Java's `Metric` constants (`EUCLIDEAN_METRIC`, `EUCLIDEAN_SQUARE_METRIC`, `COSINE_METRIC`, `DOT_PRODUCT_METRIC`); the lower-case `cosine`, `inner_product` and `euclidean` are refused when the meta-data is built (`MetaDataError` "incorrect index options"), as in Java. With `vectorindex` linked, a plain VECTOR index is now also refused at build for an option under both its name and alias, an unknown engine ("unknown vector index engine"), an unparsable number, Java's `Config` bounds and GuardiANN parse failures. Recreate an index that used them.
-- **Breaking:** a relational database path is `/DOMAIN/DATABASE`, as in Java, and its domain must be registered once per process before use: `sqldriver.RegisterDomainIfNotExists("FRL")` (Java's `RelationalKeyspaceProvider.instance().registerDomainIfNotExists`). The driver registers none; `frl` registers `FRL`, as Java's server and CLI do. A path outside the registered domains (including a one-segment `/name`) is INVALID_PATH (08F01) on CREATE DATABASE, on a schema's store and when connecting to a schema; a malformed path is 08F01 `invalid database path '…'` (was 22023). `/__SYS` needs no domain.
+- **Breaking:** a relational database path is `/DOMAIN/DATABASE`, as in Java, and its domain must be registered once per process before use: `sqldriver.RegisterDomainIfNotExists("FRL")` (Java's `RelationalKeyspaceProvider.instance().registerDomainIfNotExists`). The driver registers none; `fdb` registers `FRL`, as Java's server and CLI do. A path outside the registered domains (including a one-segment `/name`) is INVALID_PATH (08F01) on CREATE DATABASE, on a schema's store and when connecting to a schema; a malformed path is 08F01 `invalid database path '…'` (was 22023). `/__SYS` needs no domain.
 - An array result column's `DatabaseTypeName` is `ARRAY`, as Java's `getColumnTypeName` (it was the element's type name), and its scan type is not a scalar. `api.WithResultSetMetaDataObserver` gives a query's result-set metadata, whose `ColumnDataType` carries a struct column's declared type name and fields and an array column's element type.
 - A SQL query block is one Select, as in Java 4.14.2.0: predicates reach a derived table's or CTE's access paths, a computed column without an alias is named by its position (`_0`), and EXPLAIN shows `Map(…, {…})` where it showed `Project(…)`.
 - A SQL function call binds its arguments as Java does (a one-row values source pushed into the body), so its body's predicates reach index scans and joins of calls plan in Java's order.
@@ -205,10 +617,11 @@ Each is described in full under Compatibility or Changed below.
 - An IN list item that fails to evaluate (`a IN (1 / 0, 3)`) raises when the query runs (22012), even over an empty table, as Java's does; it was 0AF00 `Cascades translation failed`.
 - An unknown column is 42703 `Attempting to query non existing column X`, Java's text, with the reference as written (`T.X`, `Q.ID` for an unknown qualifier) in every clause and in UPDATE's SET; a qualified star over no source and a JOIN USING column missing from either side are `Unknown reference X`.
 - A query block reports its faults in Java's clause order: a join's ON first, then the WHERE, then the select list (an unknown function in the select list included).
-- `frl` is a package of the root module and releases under the project's `vX.Y.Z` tag. The nested
-  module `fdb.dev/cmd/frl` is scheduled for retraction (`cmd/frl/v0.1.1`) only after the root
-  v0.2.0 release is available as proxy `@latest` (`RELEASE.md`); no retraction is asserted yet. A module that requires `fdb.dev/cmd/frl` drops it with
-  `go get fdb.dev/cmd/frl@none` before upgrading `fdb.dev`, or the build reports an ambiguous import.
+- The CLI is the root module's `cmd/fdb` package and releases under the project's
+  `vX.Y.Z` tag. Build the current source until a release containing it is published.
+  Old nested-module tags are historical releases, not a fallback for `fdb`; no
+  retraction is asserted here. Replace old tool dependencies and command invocations
+  explicitly; see `docs/upgrade.md` and the website's CLI guide.
 - SQL `LIKE` follows Java 4.14.2.0: wildcards cross newlines, `LIKE NULL` is allowed, and invalid escapes raise 22019/2200B/22025 per row.
 - SQL comments follow Java 4.14.2.0: block comments nest, an unterminated one is 42601, and `#` is no longer a comment.
 - `OPTIONS (...)` is statement-level only and adds `PLAN RIGHT DEEP` and `ISOLATION LEVEL SNAPSHOT`; `PLAN` and `DEEP` are reserved words.
@@ -297,12 +710,98 @@ Each is described in full under Compatibility or Changed below.
 - Scalar literals and prepared values reuse immutable SQL plans through per-execution constant pools and checked type, equality and specialization constraints.
 - **Breaking:** a typed record store works over any metadata's union and reads and writes only its record type's union field, as Java's `TypedRecordSerializer`: loading, deleting or overwriting a record of another type fails with `RecordDeserializationError` ("Specified union field was not set"), and so does `ScanRecords` at the first such record (it skipped them); saving one fails with `RecordSerializationError`. A Go type the metadata does not decode the record type as is refused on load ("Builder does not match union type"; a save of it, typed or not, fails first with `MetaDataError` "descriptor did not match record type"), and one of another message at construction ("fieldDescriptor and getter do not match"). `NewTypedRecordStore` takes `baseStore` and `recordType` (its demo-union wrap/unwrap functions are gone) and returns an error.
 - A struct value buffered in a continuation resumes with the store metadata's descriptor, as Java's does; a compiled Go message that only shares its full name no longer decodes it. **Breaking:** `recordlayer.FindRegisteredMessageType(name)` is replaced by `GeneratedMessageType(descriptor)`, which answers only the compiled type whose descriptor that is. A buffered struct value whose type is in neither the metadata nor the plan now fails the resume instead of decoding through the global registry.
-- **Breaking:** the demo schema (`record_layer_demo.proto`: `Order`, `Customer`, `Flower`, `TypedRecord`, `UnionDescriptor`, the `Color` enum) moved from `fdb.dev/gen` to `fdb.dev/gen/demopb`, so the driver and `frl` no longer register `com.apple.foundationdb.record` demo messages.
+- **Breaking:** the demo schema (`record_layer_demo.proto`: `Order`, `Customer`, `Flower`, `TypedRecord`, `UnionDescriptor`, the `Color` enum) moved from `fdb.dev/gen` to `fdb.dev/gen/demopb`, so the driver and `fdb` no longer register `com.apple.foundationdb.record` demo messages.
 - `RecordMetaDataFromProto` takes options (`MetaDataProtoOption`): `WithLocalFileDescriptor`, Java's `RecordMetaDataBuilder.setLocalFileDescriptor`, makes meta-data loaded from its stored proto use the compiled (local) descriptors and the local union's record type keys once they validate as an evolution of the stored ones (checked by `WithEvolutionValidator`'s validator, Java's `setEvolutionValidator`, else the default), so compiled records can be saved; such meta-data refuses `ToProto`. `RecordMetaData.GetRecordTypeForDescriptor` is Java's `getRecordTypeForDescriptor`.
 - **Breaking:** every save (untyped, pipelined, batch and dry run) resolves the record type by the record's descriptor, as Java's does: a compiled message saved into meta-data loaded without `WithLocalFileDescriptor`, or a same-named message of another shape, fails with `MetaDataError` "descriptor did not match record type" (it was matched by name).
 - `fdb` `GetRange` sends its first batch at the call, as Apple's Go binding does: the rows reflect the transaction's writes as of that call, and commit waits for every issued range read (also one never consumed) and keeps its read conflict, as libfdb_c does. `GetSliceWithError` over more than batch 1's bytes (about 4 KB in the default mode) now takes two sequential round trips, batch 1 and then the rest, as libfdb_c does. `client.Transaction.StartGetRange` starts such a read and returns at once; `Database.Metrics()` (on `fdb.Database` too) reports `TransactionGetRangeRequests`. A watch whose read fails no longer leaves a read conflict.
 
+- `pkg/fdbgo/wire/types` decoders fail on malformed input (RFC-276):
+  - `UnmarshalFromReader` returns an error. `Parse<T>VectorFromReader` and the `Parse<T>StringVector` functions (`KeyValueRef`, `KeyRangeRef`, `GetValueReqAndResult`) return `([]T, error)`.
+  - Optional tables decode and encode as tables. `NetworkAddressList.SecondaryAddress` is a `NetworkAddress`, and `CommitTransactionRef.Read_conflict_ranges_disabled` (C++ `spanContext`) a `SpanContext`; both used to be read and written as byte strings. `ClientDBInfo.EncryptKeyProxy`, `CommitTransactionRequest.CommitCostEstimation` and `TenantInfo.Token` decode as presence only; their encoders still write a byte string, so a decoded message that holds one does not re-encode as C++ wrote it (the client sets none of them).
+  - Presence follows C++: an Optional is present only for tag 1 with its value slot set (`HasX` used to be true for any non-zero tag), and an unknown variant tag leaves `XTag` at 0 (it kept the raw tag).
+  - `pkg/fdbgo/wire`: `Reader.Err` reports a field read outside the buffer; `ReadVectorCount` fails on a vector field past the buffer, `ReadErrorOrInto` on an error code past it. `ReadOptionalInt32`, `ReadOptionalString` and `ReadInlineReplyError` take only tag 1 as present (`ReadInlineReplyError` returned an error for any non-zero tag), and `ReadInlineReplyError` returns nil for an error table whose code lies outside the buffer (it returned code 0). A nested table or vector field past the buffer is a `FieldBoundsError`. New: `DecodeBudget`, `DecodeError`, `DecodeBudgetError`, `FieldBoundsError`, `StringVectorError`.
+  - The pure-Go client rejects a malformed reply instead of decoding it as a shorter valid one: a vector count, element, table or field outside the buffer, or row bytes that do not fill their blob, fails the read.
+  - Vector offsets that alias one element no longer allocate without bound (a 24 KB reply allocated 292 MB): each decode is limited to `len/4` elements, which no reply an FDB server writes reaches.
 ### Fixed
+- Pure-Go client: database and tenant retry helpers preserve per-transaction timeout,
+  retry-limit and maximum-retry-delay overrides across `OnError`, instead of replaying
+  persistent database defaults on every callback.
+- Pure-Go client: watches handed off by a successful commit survive later transaction
+  `Reset`, `OnError` and `Cancel`. Uncommitted watches still cancel, and committed watches
+  remain independently cancellable through their futures or caller contexts.
+- Record layer: `FDBDatabaseRunner.RunWithRetry` applies transaction-size warning and
+  error thresholds through the same context setup as `OpenContext`, including retries.
+- Record layer (RFC-275):
+  - An online build no longer conflicts on writes to records of a type its target indexes do not
+    cover. Java filters by record type before it adds the read conflict.
+  - `GetNth` returns nil past level 0 of a ranked set without duplicate counting.
+  - Key-space matching follows Java's declaration order.
+  - The behavior changes listed under Breaking changes are Java's (`RecordCoreStorageException`,
+    `ClassCastException`, `RecordCoreArgumentException`).
+- SQL driver (RFC-272): a failed connector initialization (an FDB open failure) is retried by the
+  next `Connect` instead of failing the `*sql.DB` for good, and the initialization runs detached
+  from the `Connect` that starts it: a `Connect` whose deadline ends first returns its context
+  error while the initialization (and its stored-query warm-up) completes for the next one. `ResetSession` also resets the statement timeout, result-byte cap,
+  fail-on-scan-limit flag, plan and execution-stats loggers and slow-query threshold, so a
+  pooled connection's next borrower no longer inherits them. A panic in any exported connection,
+  transaction, result-set or DirectAccess entry is the internal error (XX000) and closes the
+  connection, which the pool then discards. A stale `driver.Tx` no longer ends the newer
+  transaction on its connection, and `Commit` on an ended transaction is 25F01 instead of a
+  second commit. A self-returning `driver.Valuer` (or any cycle through Valuers, pointers and
+  arrays) is 22023 instead of a stack overflow. Parentheses inside string literals, quoted
+  identifiers and comments no longer count toward the 500-level nesting limit. Per-borrow
+  options belong in `SetOption`: `SetOptions` sets what `ResetSession` restores, so code that
+  copied the earlier `docs/mt-saas.md` recipe (`SetOptions` per tenant borrow) hands one
+  borrow's options to the next borrower; the recipe now uses `SetOption`.
+- SQL driver (#1013): a panic while an ended context aborts a transaction (on the context's own
+  goroutine, outside every entry point) is logged and closes the connection instead of crashing
+  the process. Enum, UUID, `range()` bound, 42602 invalid-name, UUID index-predicate and
+  decimal-literal errors render their message once (`XX000: Invalid enum value for the enum type
+  BOGUS`, not three times); a schema template's invalid-name error no longer carries its
+  `build file descriptor: table …` context, as in Java. New `api.WrapStatedError` builds such an
+  error: its message states the cause, which still unwraps.
+- GROUP BY duplicate-key detection (42702) compares expression keys by their resolved value in
+  value context, as Java does: keys differing only in literal case are two keys
+  (`GROUP BY c = 'a', c = 'A'` was refused; Java declines it in its planner), `<>`/`!=` and other
+  spellings of one comparison are still refused, and a key that does not resolve reports its own
+  error (42703 for an undefined column) instead of 42702. With parameters the bound values decide
+  (`amount = ?, amount = ?`: 42702 for equal values, two keys otherwise; a cached plan serves only
+  the values it was planned with); Java's answer there is unmeasured (RFC-272).
+- Online indexer (RFC-279):
+  - A retry with a lessened limit waits the runner's exponential delay first, timed as
+    `EventRetryDelay`, as Java's `buildCommitRetryAsync` does.
+  - Mutual build fragments end at primary keys, as Java's do. The builder reads the shard map
+    over the indexed record types' records in its first transaction, and maps each boundary to
+    the first record at or after it. A shard boundary inside a split record no longer fails the
+    build.
+  - A mutual chunk commits once its transaction passes the time or write limit.
+  - The mutual FULL phase builds a claimed fragment to its end before it moves on, so
+    concurrent builders keep to their own fragments.
+- Pure-Go client: a failed connect is `transport.ConnectFailedError`, which matches only
+  `request_maybe_delivered` (1030); the dial error is message-only (`Cause()`), so
+  `errors.Is(err, syscall.ECONNREFUSED)` no longer matches. Storage reads retry it with
+  libfdb_c's load-balancer backoff and no attempt limit; a commit through a refusing proxy ends
+  in `commit_unknown_result` (1021), as with libfdb_c.
+- Pure-Go client: a range read whose key selectors have an offset other than 1 is one storage
+  request, as libfdb_c's RYW selector walk does, instead of a `GetKey` per selector first; its
+  read conflict is the scanned span (`addConflictRange(GetRangeReq)`), not the resolved keys.
+  New `client.Transaction`/`Snapshot` `StartGetRangeSelectors`, `GetRangeSelectors` and the
+  `...OwnedSelectors` variants.
+- Pure-Go client, matching libfdb_c 7.3.77 (pinned by `//conformance:ryw_script_conformance_test`):
+  - An illegal Set, Clear, ClearRange or Atomic (oversized key or value, key outside the legal
+    range, metadataVersion misuse) is the transaction's deferred error from that call on: later
+    reads and the commit report it, where it used to fail only the commit. A commit after such a
+    write and an earlier failed read reports the write's error (e.g. 2102), not the read's.
+  - Newly failing: an inverted ClearRange (2005; `fdb.Transaction.ClearRange` used to drop it and
+    commit) and an out-of-range ClearRange that is empty or clamps to empty (2004; used to be
+    accepted) now fail later reads and the commit.
+  - `AddWriteConflictKey`/`AddWriteConflictRange` are recorded under
+    `SetNextWriteNoWriteConflictRange` and leave the option to the next write; they used to be
+    dropped and consume it.
+  - A Get is issued at the call: `Snapshot().Get`, and `Get` of a key with pending atomics, no
+    longer see writes made after the call. Commit waits for such a read whether or not it was
+    awaited, and fails with its error; new `client.Transaction.StartGet`/`Snapshot.StartGet`.
+- Pure-Go client (RFC-280): `GetEstimatedRangeSizeBytes` and `GetRangeSplitPoints` retry `wrong_shard_server`, `all_alternatives_failed` and (for size estimates) `future_version` until the context or transaction timeout ends them, as libfdb_c does, instead of failing with `all_alternatives_failed` (1006) after 50 rounds; each request is sent as libfdb_c's load balancer sends it, with no 5 s reply timeout, a backoff after a round without a reply, and the all-alternatives-failed wait (ended by a recovery) when every replica is down. A positive-skip mapped-range read returns a retryable `transaction_too_old` after 10 reply-timeout re-sends instead of re-sending forever. A failed connection is closed after the pool lock is released, so a slow TLS close no longer stalls connection lookups.
 - Built-in TEXT tokenization, casing/name lookup and Go-only collated keys use frozen Unicode-15 data, so compiler upgrades preserve existing terms, positions and keys; pre-existing Java differences remain explicit in `docs/compatibility.md` (RFC-265).
 - Ordinary, covering and fetch query index scans over one physical range pass Skip to the index cursor, as Java's plans do: skipped entries no longer count against scan-record or byte limits, and their records are not loaded. Multi-range and residual key-filter scans, and the mapped reads of remote-fetch plans, still skip once above the combined cursor.
 - Range-read shard lookups ask a commit proxy once for the shards a read needs, as libfdb_c does, instead of filling the cache for the whole range first; a reverse read over more uncached shards than one lookup returns no longer repeats the same location request until its deadline, and `GetLocations` with a limit of 0 returns every shard.

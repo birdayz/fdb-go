@@ -66,19 +66,49 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 	// on passthrough alone (the prior behaviour) would drop the widening MAP.
 	isSimpleResult := isSimplePassthroughOf(resultValue, innerQuantifier)
 
+	// Java's matcher requires anyCompensatablePredicate: index-only
+	// predicates must be consumed by an access path, never a residual.
+	if !allPredicatesCompensatable(selectExpr.GetPredicates()) {
+		return
+	}
 	var queryPredicates []predicates.QueryPredicate
 	for _, p := range selectExpr.GetPredicates() {
-		// Java's matcher requires anyCompensatablePredicate: index-only
-		// predicates must be consumed by an access path, never a residual.
-		if predicateContainsUncompensatableValues(p) {
-			return
-		}
 		if !predicates.IsTautology(p) {
 			queryPredicates = append(queryPredicates, p)
 		}
 	}
 
+	// A text access replaces the scan; it cannot also take the FirstOrDefault
+	// or DefaultOnEmpty wrap an existential or null-on-empty input needs.
+	plainInput := innerQuantifier.Kind() == expressions.QuantifierForEach && !innerQuantifier.IsNullOnEmpty()
 	for _, partition := range partitions {
+		for _, innerPlan := range partition.GetPlans() {
+			if !plainInput {
+				break
+			}
+			alternatives, residuals := textAccessAlternatives(call.Context, innerPlan, queryPredicates, innerQuantifier.GetAlias())
+			for i, access := range alternatives {
+				q := expressions.NamedPhysicalQuantifier(innerQuantifier.GetAlias(), call.MemoizeFinalExpression(access))
+				if len(residuals[i]) > 0 {
+					filtered, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(q, residuals[i], innerQuantifier.GetAlias())
+					if err != nil {
+						call.Fail(err)
+						return
+					}
+					access = filtered
+					q = expressions.NamedPhysicalQuantifier(innerQuantifier.GetAlias(), call.MemoizeFinalExpression(access))
+				}
+				if !isSimpleResult {
+					mapped, err := plans.NewRecordQueryMapPlanFromQuantifier(q, resultValue)
+					if err != nil {
+						call.Fail(err)
+						return
+					}
+					access = mapped
+				}
+				call.YieldFinalExpression(access)
+			}
+		}
 		innerExprs := partition.GetExpressions()
 		if len(innerExprs) == 0 {
 			continue

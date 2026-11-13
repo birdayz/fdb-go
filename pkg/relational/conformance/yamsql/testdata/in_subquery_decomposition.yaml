@@ -4,9 +4,8 @@
 # pins the rejection, it does not pin support. Java rejects the same
 # grammar alternative: ExpressionVisitor.visitInPredicate asserts
 # `inList().queryExpressionBody() == null` with UNSUPPORTED_QUERY
-# ("IN predicate does not support nested SELECT"), and the earlier
-# AstNormalizer.visitInPredicate NPEs on it (ParseHelpers.isConstant
-# dereferences a null ExpressionsContext). Per CLAUDE.md principle #10
+# ("IN predicate does not support nested SELECT"), as AstNormalizer.
+# visitInPredicate already does before it. Per CLAUDE.md principle #10
 # Go aligns with that architectural reality and emits a clean error.
 # An earlier Go pre-evaluator decomposed the form into an IN-list
 # pushdown; the shapes it used to handle (PK, secondary index,

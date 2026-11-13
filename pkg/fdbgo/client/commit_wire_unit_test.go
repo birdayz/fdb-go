@@ -17,7 +17,9 @@ func decodeCommit(t *testing.T, body []byte) types.CommitTransactionRequest {
 		t.Fatal(err)
 	}
 	var req types.CommitTransactionRequest
-	req.UnmarshalFromReader(r)
+	if err := req.UnmarshalFromReader(r); err != nil {
+		t.Fatal(err)
+	}
 	return req
 }
 
@@ -255,7 +257,7 @@ func TestSelfConflictShipReads_FrozenReads(t *testing.T) {
 	}
 	// Another read after the self-conflicting range is created.
 	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: []byte("c"), End: []byte("c\x00")})
-	input := tx.captureCommitVectors(nil, true, writeSnap, false, reads, true)
+	input := tx.captureCommitVectors(nil, true, writeSnap, false, reads)
 	defer input.release()
 	got := input.readConflicts
 	if len(got) != 2 || string(got[0].Begin) != "b" || string(got[0].End) != "b\x00" ||

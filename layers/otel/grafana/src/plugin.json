@@ -1,0 +1,31 @@
+{
+  "$schema": "https://raw.githubusercontent.com/grafana/grafana/main/docs/sources/developers/plugins/plugin.schema.json",
+  "type": "datasource",
+  "name": "FoundationDB",
+  "id": "birdayz-foundationdb-datasource",
+  "backend": true,
+  "executable": "gpx_foundationdb",
+  "alerting": true,
+  "logs": true,
+  "tracing": true,
+  "metrics": true,
+  "info": {
+    "description": "SQL, traces and logs from FoundationDB relational and OTEL_V1 stores, read directly from the cluster",
+    "author": {
+      "name": "birdayz"
+    },
+    "keywords": ["datasource", "foundationdb", "fdb", "sql", "opentelemetry", "traces", "logs"],
+    "logos": {
+      "small": "img/logo.svg",
+      "large": "img/logo.svg"
+    },
+    "links": [],
+    "screenshots": [],
+    "version": "%VERSION%",
+    "updated": "%TODAY%"
+  },
+  "dependencies": {
+    "grafanaDependency": ">=12.0.0",
+    "plugins": []
+  }
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/gen"
 	"fdb.dev/gen/demopb"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -26,6 +27,110 @@ func baseBuilder() *RecordMetaDataBuilder {
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 	return b
+}
+
+func TestPrimaryKeyDeclaredVersionColumns(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		key  func() KeyExpression
+		want int
+	}{
+		{"nil", func() KeyExpression { return nil }, 0},
+		{"field", func() KeyExpression { return Field("order_id") }, 0},
+		{"version", func() KeyExpression { return VersionKey() }, 1},
+		{"composite", func() KeyExpression { return Concat(VersionKey(), Field("order_id")) }, 1},
+		{"grouping", func() KeyExpression { return GroupBy(VersionKey(), Field("order_id")) }, 1},
+		{"key with value", func() KeyExpression { return KeyWithValue(Concat(VersionKey(), Field("order_id")), 1) }, 1},
+		{"nesting", func() KeyExpression { return Nest("nested", VersionKey()) }, 1},
+		{"list", func() KeyExpression { return ListExpr(VersionKey(), VersionKey()) }, 2},
+		{"split", func() KeyExpression { return Split(VersionKey(), 1) }, 1},
+		{"dimensions", func() KeyExpression { return Dimensions(VersionKey(), 0, 1) }, 1},
+		{"function", func() KeyExpression { return FunctionExpr(OrderFuncAscNullsFirst, VersionKey()) }, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := countVersionColumns(tc.key()); got != tc.want {
+				t.Fatalf("versionColumns = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMetadataRejectsDeclaredVersionPrimaryKeys(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		key  func() KeyExpression
+	}{
+		{"version", func() KeyExpression { return VersionKey() }},
+		{"composite", func() KeyExpression { return Concat(VersionKey(), Field("order_id")) }},
+		{"list", func() KeyExpression { return ListExpr(VersionKey()) }},
+		{"split", func() KeyExpression { return Split(VersionKey(), 1) }},
+		{"dimensions", func() KeyExpression { return Dimensions(VersionKey(), 0, 1) }},
+	} {
+		for _, direct := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/direct=%t", tc.name, direct), func(t *testing.T) {
+				t.Parallel()
+				b := baseBuilder()
+				if direct {
+					b.GetRecordTypes()["Order"].PrimaryKey = tc.key()
+				} else {
+					previous := b.GetRecordTypes()["Order"].PrimaryKey
+					b.GetRecordType("Order").SetPrimaryKey(tc.key())
+					if b.GetRecordTypes()["Order"].PrimaryKey != previous {
+						t.Fatal("refused primary key replaced the earlier valid key")
+					}
+				}
+				_, err := b.Build()
+				var metadataError *MetaDataError
+				if !errors.As(err, &metadataError) || metadataError.Message != "Version in primary key not supported" {
+					t.Fatalf("Build = %v, want Java's version-primary-key MetaDataException", err)
+				}
+			})
+		}
+	}
+	t.Run("proto refuses the primary key before a later unknown type", func(t *testing.T) {
+		t.Parallel()
+		md, err := baseBuilder().Build()
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := md.ToProto()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, rt := range raw.RecordTypes {
+			if rt.GetName() == "Order" {
+				rt.PrimaryKey = VersionKey().ToKeyExpression()
+			}
+		}
+		laterName := "rfc275_unknown_later_record"
+		raw.RecordTypes = append(raw.RecordTypes, &gen.RecordType{Name: &laterName})
+		_, err = RecordMetaDataFromProto(raw)
+		var metadataError *MetaDataError
+		if !errors.As(err, &metadataError) || metadataError.Message != "Version in primary key not supported" {
+			t.Fatalf("decode = %v, want the earlier primary-key refusal", err)
+		}
+	})
+	t.Run("opaque function declares no version columns", func(t *testing.T) {
+		t.Parallel()
+		b := baseBuilder()
+		b.GetRecordType("Order").SetPrimaryKey(FunctionExpr(OrderFuncAscNullsFirst, VersionKey()))
+		if _, err := b.Build(); err != nil {
+			t.Fatalf("function-wrapped primary key = %v, want accepted metadata as in Java", err)
+		}
+	})
+	t.Run("earlier expression-construction fault wins", func(t *testing.T) {
+		t.Parallel()
+		b := baseBuilder()
+		b.GetRecordType("Order").SetPrimaryKey(FunctionExpr("rfc275_unknown_primary_key_function", VersionKey()))
+		_, err := b.Build()
+		var expressionError *KeyExpressionError
+		if !errors.As(err, &expressionError) || expressionError.Message != "Function not defined" {
+			t.Fatalf("Build = %v, want the earlier function-construction error", err)
+		}
+	})
 }
 
 // requireKeyExpressionError asserts err is a *KeyExpressionError.

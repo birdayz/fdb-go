@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -17,11 +18,8 @@ import (
 // via the go_test `data` attribute.
 const corpusDir = "../yamsql/testdata"
 
-// corpusOnce memoizes one full corpus planning pass. Planning all ~2400
-// queries takes a couple of seconds; the assertion tests below inspect
-// different dimensions of the SAME pass, so there is no reason to redo it
-// per test. TestBaselineIsDeterministic deliberately does NOT use this — it
-// needs two independent passes.
+// corpusOnce memoizes the corpus planning pass the tests share. TestBaselineIsDeterministic's
+// second pass and TestRepeatedPlanningIsStable (through Replan) plan the corpus themselves.
 var (
 	corpusOnce    sync.Once
 	corpusEntries []explaindiff.Entry
@@ -73,6 +71,27 @@ func TestBaselineIsDeterministic(t *testing.T) {
 	if st1.Queries == 0 {
 		t.Fatal("planned 0 queries — the corpus glob or the loader is broken")
 	}
+}
+
+// TestRepeatedPlanningIsStable replans each statement where a tie could pick another winner
+// (join, union, intersection, IN iteration, index read) ten times and requires one EXPLAIN.
+func TestRepeatedPlanningIsStable(t *testing.T) {
+	t.Parallel()
+
+	multiChoice := regexp.MustCompile(`FlatMap\(|NestedLoopJoin|InJoin|InUnion|Intersection|Union|IndexScan|AggregateIndex`)
+	kept, unstable, err := explaindiff.Replan(corpusDir, 10, func(e explaindiff.Entry) bool {
+		return !e.Failed() && multiChoice.MatchString(e.Plan)
+	})
+	if err != nil {
+		t.Fatalf("replan corpus: %v", err)
+	}
+	if kept < 1000 {
+		t.Fatalf("replanned %d statements, want at least 1000: the operator filter or the corpus is broken", kept)
+	}
+	for _, u := range unstable {
+		t.Errorf("%s planned to %d different EXPLAINs:\n  %s", u.Key, len(u.Plans), strings.Join(u.Plans, "\n  "))
+	}
+	t.Logf("replanned %d statements 10 more times each", kept)
 }
 
 // TestBaselineRoundTrips proves Render and Parse are inverses. `diff` parses

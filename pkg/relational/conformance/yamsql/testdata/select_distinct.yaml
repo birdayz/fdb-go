@@ -79,9 +79,8 @@ tests:
       - [~]
       - [0]
       - [1]
-  # Go extension: DISTINCT + positional ORDER BY on an expression.
-  # Java rejects all DISTINCT; Go's Cascades + ImplementDistinctFinalRule
-  # handles this correctly via in-memory sort + hash distinct composition.
+  # Java 4.14.2.0 returns duplicates for SELECT DISTINCT (DocClaimsJavaProbe).
+  # Go deduplicates this positional ORDER BY via in-memory sort + hash distinct.
   # ASC default is NULLS FIRST (Java ParseHelpers.java:167-172) — the
   # old pin put NULL last, contradicting this file's own
   # `SELECT DISTINCT v FROM t ORDER BY v` stanza above, which already

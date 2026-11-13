@@ -274,7 +274,8 @@ func computeDistinctRecordsForMap(w physicalPlanExpression) bool {
 
 func computeStoredRecord(plan plans.RecordQueryPlan) bool {
 	switch plan.(type) {
-	case *plans.RecordQueryScanPlan,
+	case *plans.RecordQueryTextIndexPlan,
+		*plans.RecordQueryScanPlan,
 		*plans.RecordQueryIndexPlan,
 		// Java StoredRecordProperty.visitCoveringIndexPlan returns true, the
 		// same constant as visitIndexPlan. RFC-220 criterion C1 makes the inner

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/fdbgo/wire/types"
 	"github.com/zeebo/xxh3"
 )
@@ -331,6 +332,17 @@ func TestDecodeWireLog(t *testing.T) {
 	}
 	if c, err := DecodeWireLog(wireLogEntry('S', []byte{1, 2})); err != nil || c.Complete {
 		t.Fatal("WIREGOLDEN_WIRELOG: a log of undecodable sends is complete")
+	}
+	// A request whose key lies past the buffer does not decode.
+	body := getBody("p/a")
+	r, err := wire.NewReader(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vtable := r.ObjectPos() - int(int32(binary.LittleEndian.Uint32(body[r.ObjectPos():])))
+	binary.LittleEndian.PutUint16(body[vtable+4+2*types.GetValueRequestSlotKey:], 0xFFF0)
+	if c, err := DecodeWireLog(wireLogEntry('S', body)); err != nil || c.Complete || c.Undecodable != 1 {
+		t.Fatalf("WIREGOLDEN_WIRELOG: a send with its key past the buffer decoded: %v, %+v", err, c)
 	}
 }
 

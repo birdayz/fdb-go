@@ -1,6 +1,6 @@
-# go_extensions_group_by.yaml — Go extensions: GROUP BY (Java rejects)
+# go_extensions_group_by.yaml — Go extensions: GROUP BY over unordered input (Java refuses)
 #
-# Exercises GROUP BY features that Go supports but Java rejects.
+# Exercises GROUP BY over columns no index orders, which Java cannot plan.
 # These are Go-only tests — no Java conformance reference.
 name: go_extensions_group_by
 schema_template: |

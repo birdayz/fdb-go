@@ -202,6 +202,7 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 	}
 	// Template change may affect any schema using it — flush the whole cache.
 	c.sess.ResetSchemaCache()
+	c.schemaWitnesses = nil
 	return 0, nil
 }
 
@@ -530,6 +531,8 @@ func parseIndexDefinition(idxDef antlrgen.IIndexDefinitionContext, b *metadata.B
 		return parseAsSelectIndexDefinition(def, b)
 	case *antlrgen.VectorIndexDefinitionContext:
 		return parseVectorIndexDefinition(def, b)
+	case *antlrgen.TextIndexDefinitionContext:
+		return parseTextIndexDefinition(def, b)
 	default:
 		return api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported index definition type %T", idxDef)
@@ -1085,7 +1088,7 @@ func parseTableDefinition(td antlrgen.ITableDefinitionContext, b *metadata.Build
 		if _, err := recordlayer.ToProtoBufCompliantName(c.Name()); err != nil {
 			var invalid *recordlayer.InvalidNameError
 			if errors.As(err, &invalid) {
-				return nil, nil, api.WrapError(api.ErrCodeInvalidName, invalid.Message, err)
+				return nil, nil, api.WrapStatedError(api.ErrCodeInvalidName, invalid.Message, err)
 			}
 			return nil, nil, err
 		}
@@ -1229,8 +1232,13 @@ func (c *EmbeddedConnection) ensureCatalogInit(ctx context.Context) error {
 		return nil
 	}
 	// Unconfigured: this is the shared catalog's bootstrap, which Java runs at
-	// engine start rather than in any connection's transaction.
-	_, err := c.sess.DB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	// engine start rather than in any connection's transaction. A read-only
+	// connection bootstraps nothing: its transaction is cancelled.
+	run := c.sess.DB.Run
+	if c.readOnly {
+		run = ReadOnlyRunner(c.sess.DB).Run
+	}
+	_, err := run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		txn := catalog.NewFDBTransaction(rctx)
 		// Run commits; a commit in its body is refused (RecordContextNotActiveError).
 		return nil, c.sess.Catalog.Initialize(txn)
@@ -1243,7 +1251,8 @@ func (c *EmbeddedConnection) ensureCatalogInit(ctx context.Context) error {
 }
 
 // Ping implements driver.Pinger. Bootstraps the catalog on first call.
-func (c *EmbeddedConnection) Ping(ctx context.Context) error {
+func (c *EmbeddedConnection) Ping(ctx context.Context) (err error) {
+	defer c.recoverInto(&err)
 	if c.closed.Load() {
 		return driver.ErrBadConn
 	}
@@ -1271,11 +1280,15 @@ func (c *EmbeddedConnection) runDDL(ctx context.Context, action apiddl.ConstantA
 // yaml-tests Command.applyMetadataOperationEmbedded, which the `load schema
 // template` and `set schema state` commands use to reach the catalog without
 // SQL. The catalog is bootstrapped first, as any DDL on the connection is.
-func (c *EmbeddedConnection) ApplyMetadataOperation(ctx context.Context, op func(factory apiddl.MetadataOperationsFactory, txn api.Transaction) error) error {
+func (c *EmbeddedConnection) ApplyMetadataOperation(ctx context.Context, op func(factory apiddl.MetadataOperationsFactory, txn api.Transaction) error) (err error) {
+	defer c.recoverInto(&err)
+	if c.readOnly {
+		return errReadOnlyOperation("a metadata operation")
+	}
 	if err := c.ensureCatalogInit(ctx); err != nil {
 		return err
 	}
-	_, err := c.sess.DB.RunWithMaxAttempts(ctx, 1, configured(c.Options(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	_, err = c.sess.DB.RunWithMaxAttempts(ctx, 1, configured(c.Options(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		return nil, op(c.sess.Factory, catalog.NewFDBTransaction(rctx))
 	}))
 	return translateFDBError(err)

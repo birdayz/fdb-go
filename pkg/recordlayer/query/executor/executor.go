@@ -45,7 +45,6 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/recordlayer/vectorcodec"
-	"fdb.dev/pkg/relational/api"
 )
 
 type RecursiveCTEDepthExceededError struct {
@@ -160,6 +159,8 @@ func executePlanUnwrapped(
 		return executeScan(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryIndexPlan:
 		return executeIndexScan(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQueryTextIndexPlan:
+		return executeTextIndexScan(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryVectorIndexPlan:
 		return executeVectorIndexScan(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryTypeFilterPlan:
@@ -205,8 +206,8 @@ func executePlanUnwrapped(
 		return executeValues(p, evalCtx, continuation, props)
 	case *plans.RecordQueryRecursiveLevelUnionPlan:
 		if p.IsDistinct() {
-			// UNION DISTINCT recursion (a Go extension — Java rejects it:
-			// "only UNION ALL is supported") carries a cross-level
+			// UNION DISTINCT recursion (Java runs it as UNION ALL, a Java
+			// upstream bug in DIVERGENCES.md) carries a cross-level
 			// seen-set that IS the emission history, so it cannot ride a
 			// streaming continuation; it resumes by deterministic replay
 			// (position + boundary-row integrity, loud on drift).
@@ -1508,7 +1509,7 @@ type indexFetchCursor struct {
 // charged the loaded bytes as Java's fetchIndexRecords charges its ExecuteState.
 func newIndexFetchCursor(inner recordlayer.RecordCursor[*recordlayer.IndexEntry], store *recordlayer.FDBRecordStore, scanState *recordlayer.ScanLimiterState) *indexFetchCursor {
 	c := &indexFetchCursor{inner: inner, store: store, scanState: scanState}
-	c.pipeline = recordlayer.MapPipelined(inner, c.load, recordlayer.DefaultPipelineSize)
+	c.pipeline = recordlayer.MapPipelined(inner, c.load, store.GetPipelineSize(recordlayer.PipelineOperationIndexToRecord))
 	return c
 }
 
@@ -2108,7 +2109,7 @@ type fetchFullRecordCursor struct {
 
 func newFetchFullRecordCursor(inner recordlayer.RecordCursor[QueryResult], store *recordlayer.FDBRecordStore, scanState *recordlayer.ScanLimiterState) *fetchFullRecordCursor {
 	c := &fetchFullRecordCursor{store: store, scanState: scanState}
-	c.pipeline = recordlayer.MapPipelined(inner, c.load, recordlayer.DefaultPipelineSize)
+	c.pipeline = recordlayer.MapPipelined(inner, c.load, store.GetPipelineSize(recordlayer.PipelineOperationIndexToRecord))
 	return c
 }
 
@@ -2174,7 +2175,7 @@ func executeDistinct(
 	// adjacent and only the last emitted key need ride the continuation
 	// (gen.DedupContinuation). This is the fix for the fresh-per-page hash-set's
 	// cross-page re-admission (TODO.md C5) — a Go-internal continuation, since
-	// SELECT DISTINCT is a Go-only extension.
+	// Java's SELECT DISTINCT does not deduplicate (DIVERGENCES.md).
 	if p.IsStreaming() {
 		var innerCont []byte
 		var lastKey string
@@ -2221,7 +2222,7 @@ func executeDistinct(
 	// O(pages^2) bytes written and re-parsed across a drain; that encoding
 	// survives only for a scratch-less execution.
 	//
-	// SELECT DISTINCT is a Go-only extension — Java's SQL layer never dedups it,
+	// Java's SQL layer never dedups SELECT DISTINCT (DIVERGENCES.md),
 	// and Java's value-distinct HashSet is likewise un-carried across
 	// continuations — so this continuation is Go-internal
 	// (gen.DistinctHashContinuation) with no Java wire format to match. The set
@@ -3977,7 +3978,7 @@ func executeInsert(
 	// settled before the first write).
 	results := make([]QueryResult, 0, len(built))
 	if !props.DryRun {
-		// Java pipelines INSERT's saves; the rows' existence reads overlap.
+		// INSERT's store pipeline sizer selects the save/read window (Java default: one).
 		saved, serr := store.SaveRecordsPipelined(built, recordlayer.RecordExistenceCheckErrorIfExists)
 		if serr != nil {
 			return nil, fmt.Errorf("executor: inserting record: %w", serr)
@@ -4340,8 +4341,7 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 		elems, elemsOK := v.([]any)
 		if !elemsOK {
 			// Fall to the scalar lanes' verbatim 22000 below.
-			return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
-				"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.")
+			return protoreflect.Value{}, errIncompatibleAssignment()
 		}
 		var list protoreflect.List
 		var result protoreflect.Value
@@ -4472,7 +4472,7 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 			if target, ok := values.FieldTypeForProtoField(fd).(*values.VectorType); ok {
 				_, payload, stride, valid := vectorcodec.Payload(b)
 				if !valid || stride*8 != target.Precision || len(payload) != target.Dimensions*stride {
-					return protoreflect.Value{}, api.NewError(api.ErrCodeCannotConvertType, "Vector precision or dimensions do not match the target column")
+					return protoreflect.Value{}, incompatibleTypef("Vector precision or dimensions do not match the target column")
 				}
 			}
 			return protoreflect.ValueOfBytes(b), nil
@@ -4487,7 +4487,7 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 			// STRING_TO_ENUM does (the INSERT … VALUES converter's rule).
 			num, err := values.StringToEnumNumber(fd.Enum(), n)
 			if err != nil {
-				return protoreflect.Value{}, api.NewError(api.ErrCodeInternalError, err.Error())
+				return protoreflect.Value{}, err
 			}
 			return protoreflect.ValueOfEnum(protoreflect.EnumNumber(num)), nil
 		}
@@ -4507,8 +4507,7 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 			case string:
 				parsed, ok := values.ParseJavaUUID(u)
 				if !ok {
-					invalid := &values.InvalidUUIDValueError{Value: u}
-					return protoreflect.Value{}, api.WrapError(api.ErrCodeInternalError, invalid.Error(), invalid)
+					return protoreflect.Value{}, &values.InvalidUUIDValueError{Value: u}
 				}
 				return uuidBytesToProtoMessage(fd, parsed)
 			}
@@ -4537,7 +4536,7 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 			if err != nil {
 				var nn *values.NonNullableFieldError
 				if errors.As(err, &nn) {
-					return protoreflect.Value{}, api.NewErrorf(api.ErrCodeNotNullViolation, "%s", nn.Error())
+					return protoreflect.Value{}, &ExecutionError{Kind: ExecNotNullViolation, Message: nn.Error()}
 				}
 				return protoreflect.Value{}, err
 			}
@@ -4549,8 +4548,19 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 	// column — DOUBLE→LONG has no edge in Java's promotion lattice). Emit the
 	// verbatim 22000 SemanticException, matching Java's PromoteValue rejection and
 	// the sibling ConvertToProtoValue fallthrough — not a generic Go error.
-	return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
-		"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.")
+	return protoreflect.Value{}, errIncompatibleAssignment()
+}
+
+// incompatibleTypef is an incompatible assignment (22000) with a formatted message.
+func incompatibleTypef(format string, args ...any) error {
+	return &values.ScalarTypeMismatchError{Message: fmt.Sprintf(format, args...)}
+}
+
+// errIncompatibleAssignment is Java's PromoteValue rejection, verbatim (22000).
+func errIncompatibleAssignment() error {
+	return &values.ScalarTypeMismatchError{
+		Message: "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.",
+	}
 }
 
 // uuidBytesToProtoMessage builds a tuple_fields.UUID proto message (msb/lsb,
@@ -4562,8 +4572,10 @@ func uuidBytesToProtoMessage(fd protoreflect.FieldDescriptor, b [16]byte) (proto
 	mostFD := msgDesc.Fields().ByName("most_significant_bits")
 	leastFD := msgDesc.Fields().ByName("least_significant_bits")
 	if mostFD == nil || leastFD == nil {
-		return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInternalError,
-			"UUID message descriptor missing most/least_significant_bits fields")
+		return protoreflect.Value{}, &ExecutionError{
+			Kind:    ExecInternalError,
+			Message: "UUID message descriptor missing most/least_significant_bits fields",
+		}
 	}
 	dyn := dynamicpb.NewMessage(msgDesc)
 	dyn.Set(mostFD, protoreflect.ValueOfInt64(int64(binary.BigEndian.Uint64(b[0:8]))))   //nolint:gosec
@@ -4756,7 +4768,7 @@ type rangeCursor struct {
 func newRangeCursor(rv *values.RangeValue, evalCtx *EvaluationContext, continuation []byte) (*rangeCursor, error) {
 	begin, end, step, err := rv.Bounds(evalCtx)
 	if err != nil {
-		return nil, rangeBoundsError(err)
+		return nil, err
 	}
 	if continuation != nil {
 		var c gen.RangeCursorContinuation
@@ -4765,19 +4777,10 @@ func newRangeCursor(rv *values.RangeValue, evalCtx *EvaluationContext, continuat
 		}
 		begin = c.GetNextPosition()
 		if err := values.CheckRangeBounds(begin, end, step); err != nil {
-			return nil, rangeBoundsError(err)
+			return nil, err
 		}
 	}
 	return &rangeCursor{rowType: rv.Type().(*values.RecordType), next: begin, end: end, step: step}, nil
-}
-
-// rangeBoundsError surfaces Java's RecordCoreException as SQLSTATE XXXXX.
-func rangeBoundsError(err error) error {
-	var rbe *values.RangeBoundsError
-	if errors.As(err, &rbe) {
-		return api.NewError(api.ErrCodeUnknown, rbe.Message)
-	}
-	return err
 }
 
 func (c *rangeCursor) OnNext(context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
@@ -5306,9 +5309,9 @@ func executeRecursiveLevelUnion(
 // and POSTORDER (emit children then parent).
 // Mirrors Java's RecordQueryRecursiveDfsJoinPlan.executePlan: the
 // UNION ALL arm STREAMS through the RecursiveCursor port (per-depth
-// continuation stack, primary-key check values); the DISTINCT arm is a
-// Go extension (Java rejects recursive UNION distinct — "only UNION
-// ALL is supported") and resumes by deterministic replay.
+// continuation stack, primary-key check values); the DISTINCT arm (Java
+// runs recursive UNION DISTINCT as UNION ALL, a Java upstream bug in
+// DIVERGENCES.md) resumes by deterministic replay.
 func executeRecursiveDfsJoin(
 	ctx context.Context,
 	p *plans.RecordQueryRecursiveDfsJoinPlan,
@@ -6152,8 +6155,7 @@ func queryResultKey(qr QueryResult) (string, error) {
 func copyMessageIntoDescriptor(fd protoreflect.FieldDescriptor, src protoreflect.Message) (protoreflect.Value, error) {
 	target := fd.Message()
 	if target == nil {
-		return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
-			"field %s is not a message field", fd.FullName())
+		return protoreflect.Value{}, incompatibleTypef("field %s is not a message field", fd.FullName())
 	}
 	if src.Descriptor() == target {
 		return protoreflect.ValueOfMessage(src), nil
@@ -6178,8 +6180,7 @@ func deepCopyMessageFields(dst, src protoreflect.Message) error {
 			// A field the target does not declare. Java's copy would throw
 			// on the null target field; the assignment is genuinely
 			// incompatible, so it takes the caller's 22000.
-			err = api.NewErrorf(api.ErrCodeCannotConvertType,
-				"source field %s (number %d) has no counterpart in %s",
+			err = incompatibleTypef("source field %s (number %d) has no counterpart in %s",
 				sfd.FullName(), sfd.Number(), dst.Descriptor().FullName())
 			return false
 		}
@@ -6196,8 +6197,7 @@ func deepCopyMessageFields(dst, src protoreflect.Message) error {
 				list.Append(ev)
 			}
 		case sfd.IsMap():
-			err = api.NewErrorf(api.ErrCodeCannotConvertType,
-				"map field %s cannot be assigned", sfd.FullName())
+			err = incompatibleTypef("map field %s cannot be assigned", sfd.FullName())
 			return false
 		default:
 			ev, cerr := copyElement(tfd, sfd, v)
@@ -6221,13 +6221,11 @@ func copyElement(tfd, sfd protoreflect.FieldDescriptor, v protoreflect.Value) (p
 	case protoreflect.EnumKind:
 		srcVal := sfd.Enum().Values().ByNumber(v.Enum())
 		if srcVal == nil {
-			return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
-				"enum field %s carries unknown value %d", sfd.FullName(), v.Enum())
+			return protoreflect.Value{}, incompatibleTypef("enum field %s carries unknown value %d", sfd.FullName(), v.Enum())
 		}
 		tgtVal := tfd.Enum().Values().ByName(srcVal.Name())
 		if tgtVal == nil {
-			return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
-				"enum value %s is not declared by %s", srcVal.Name(), protoscope.JavaFullName(tfd.Enum()))
+			return protoreflect.Value{}, incompatibleTypef("enum value %s is not declared by %s", srcVal.Name(), protoscope.JavaFullName(tfd.Enum()))
 		}
 		return protoreflect.ValueOfEnum(tgtVal.Number()), nil
 	default:

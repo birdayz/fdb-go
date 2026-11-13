@@ -156,11 +156,12 @@ metadata-version bump (`database.go`: `SetVersionstampedValue` with the 14-zero-
 value) is unaffected — it is exactly the one legal case. Pinned by `TestDifferential_MetadataVersionKey`
 (eight cases vs libfdb_c).
 
-codex also flagged (P1) that the cgo `value_too_large`/`key_too_large` `Set` cases might
-`abort()` via libfdb_c `CATCH_AND_DIE`. Not borne out for the Apple Go binding:
-`fdb_transaction_set` buffers, and the size checks fire at *commit* and are returned
-(CATCH_AND_RETURN), not aborted — verified empirically (those cases, and the new
-oversized-key case, run to completion returning 2102/2103).
+Oversized `Set`/`Atomic` operands are checked on the native network thread, where
+`onMainThreadVoid` catches `key_too_large`/`value_too_large` in the transaction's
+`deferredError` slot (ThreadSafeTransaction.cpp:601-617;
+ThreadHelper.actor.h:50-58). Subsequent reads and commit report 2102/2103 without
+aborting the process. The boundary commit cases establish the returned codes;
+the script conformance cases also pin their visibility to later reads.
 
 ### Size-check the committed snapshot, not the live buffer (codex final review)
 

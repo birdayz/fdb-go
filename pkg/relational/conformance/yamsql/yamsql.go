@@ -239,6 +239,23 @@ func (s *Scenario) validate() error {
 	return nil
 }
 
+// Options is the scenario's connection options as an api.Options, nil when it
+// sets none.
+func (s *Scenario) Options() (*api.Options, error) {
+	if len(s.ConnectionOptions) == 0 {
+		return nil, nil
+	}
+	options, err := s.connectionOptions()
+	if err != nil {
+		return nil, err
+	}
+	b := api.NewOptionsBuilder()
+	for name, value := range options {
+		b.Set(name, value)
+	}
+	return b.Build(), nil
+}
+
 // connectionOptions resolves ConnectionOptions as Java's
 // TestBlock.parseConnectionOptions does: a string through the option's string
 // form, any other value as YAML decoded it, each checked against the option's

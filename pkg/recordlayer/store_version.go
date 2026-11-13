@@ -14,7 +14,61 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
-// saveRecordVersion stores the version for a record.
+// VersionstampSaveBehavior is Java's FDBRecordStoreBase.VersionstampSaveBehavior:
+// how a save chooses the version stored with the record.
+type VersionstampSaveBehavior int
+
+const (
+	// VersionstampSaveBehaviorDefault stores the supplied version; without one it
+	// assigns an incomplete version when the metadata stores record versions.
+	VersionstampSaveBehaviorDefault VersionstampSaveBehavior = iota
+	// VersionstampSaveBehaviorNoVersion stores no version; supplying one is an error.
+	VersionstampSaveBehaviorNoVersion
+	// VersionstampSaveBehaviorWithVersion always stores a version, assigning an
+	// incomplete one when none is supplied, even if the metadata stores none.
+	VersionstampSaveBehaviorWithVersion
+	// VersionstampSaveBehaviorIfPresent stores exactly the supplied version, if any.
+	VersionstampSaveBehaviorIfPresent
+)
+
+// String returns the Java enum constant's name.
+func (b VersionstampSaveBehavior) String() string {
+	switch b {
+	case VersionstampSaveBehaviorDefault:
+		return "DEFAULT"
+	case VersionstampSaveBehaviorNoVersion:
+		return "NO_VERSION"
+	case VersionstampSaveBehaviorWithVersion:
+		return "WITH_VERSION"
+	case VersionstampSaveBehaviorIfPresent:
+		return "IF_PRESENT"
+	}
+	return fmt.Sprintf("VersionstampSaveBehavior(%d)", int(b))
+}
+
+// recordVersionForSave is Java's FDBRecordStore.recordVersionForSave
+// (FDBRecordStore.java:621-633).
+func (store *FDBRecordStore) recordVersionForSave(version *FDBRecordVersion, behavior VersionstampSaveBehavior) (*FDBRecordVersion, error) {
+	switch behavior {
+	case VersionstampSaveBehaviorNoVersion:
+		if version != nil {
+			// Java appends FDBRecordVersion.toString(): "FDBRecordVersion(" + printable bytes + ")".
+			return nil, &RecordCoreError{Message: "Nonnull version supplied with a NO_VERSION behavior: FDBRecordVersion(" + fdb.Printable(version.ToBytes()) + ")"}
+		}
+		return nil, nil
+	case VersionstampSaveBehaviorIfPresent:
+		return version, nil
+	case VersionstampSaveBehaviorDefault, VersionstampSaveBehaviorWithVersion:
+	default:
+		return nil, &IllegalArgumentError{Message: "unknown " + behavior.String()}
+	}
+	if version == nil && (behavior == VersionstampSaveBehaviorWithVersion || store.metaData.IsStoreRecordVersions()) {
+		return IncompleteVersion(store.context.ClaimLocalVersion())
+	}
+	return version, nil
+}
+
+// saveRecordVersionAtKey stores a record's inline or legacy-subspace version.
 //
 // In the modern layout (format version >= SAVE_VERSION_WITH_RECORD and the unsplit
 // suffix is not omitted) the version is stored inline adjacent to the record at
@@ -28,9 +82,7 @@ import (
 // offset of 0 (incomplete). This matches Java's saveVersionWithOldFormat(); the legacy
 // version is in a different subspace, so it is NOT counted in the record's sizeInfo and
 // sizeInfo.VersionedInline stays false.
-func (store *FDBRecordStore) saveRecordVersion(primaryKey tuple.Tuple, version *FDBRecordVersion, si *sizeInfo) error {
-	versionKey := store.versionKey(primaryKey)
-
+func (store *FDBRecordStore) saveRecordVersionAtKey(versionKey fdb.Key, version *FDBRecordVersion, si *sizeInfo) error {
 	if store.useOldVersionFormat() {
 		return store.saveVersionWithOldFormat(versionKey, version)
 	}
@@ -136,25 +188,32 @@ func unpackVersion(value []byte) (*FDBRecordVersion, error) {
 	return NewCompleteVersion(vs.TransactionVersion[:], int(vs.UserVersion))
 }
 
-// LoadRecordVersion loads the version associated with a record.
-// Returns nil if no version is stored or versioning is not enabled.
-// Matches Java's FDBRecordStore.loadRecordVersionAsync().
+// LoadRecordVersion returns the stored version, or nil when absent. Modern formats read explicit
+// versions even without automatic versioning; legacy formats return nil when metadata disables it.
 func (store *FDBRecordStore) LoadRecordVersion(primaryKey tuple.Tuple, snapshot bool) (*FDBRecordVersion, error) {
 	return store.loadRecordVersionAsync(primaryKey, snapshot).Get()
+}
+
+// Legacy stores ignore versions when metadata disables automatic versioning.
+func (store *FDBRecordStore) canLoadRecordVersion(oldFormat bool) bool {
+	return !oldFormat || store.metaData.IsStoreRecordVersions()
 }
 
 // loadRecordVersionAsync sends the version read now; the result waits for it.
 func (store *FDBRecordStore) loadRecordVersionAsync(primaryKey tuple.Tuple, snapshot bool) PendingRead[*FDBRecordVersion] {
 	oldFormat := store.useOldVersionFormat()
-
-	// In the legacy layout the version subspace is cleared whenever the store is not
-	// configured to keep versions, so we can answer without any I/O. Matches Java's
-	// loadRecordVersionAsync: `useOldVersionFormat() && !metaData.isStoreRecordVersions()`.
-	if oldFormat && !store.metaData.IsStoreRecordVersions() {
+	if !store.canLoadRecordVersion(oldFormat) {
 		return NewPendingRead(func() (*FDBRecordVersion, error) { return nil, nil }, nil)
 	}
+	return store.loadRecordVersionAtKeyAsync(store.versionKey(primaryKey), snapshot, oldFormat)
+}
 
-	versionKey := store.versionKey(primaryKey)
+func (store *FDBRecordStore) loadRecordVersionAtKeyAsync(versionKey fdb.Key, snapshot, oldFormat bool) PendingRead[*FDBRecordVersion] {
+	// Java ignores legacy version bytes when metadata disables versions, even if an
+	// explicit-version save wrote them (loadRecordVersionAsync).
+	if !store.canLoadRecordVersion(oldFormat) {
+		return NewPendingRead(func() (*FDBRecordVersion, error) { return nil, nil }, nil)
+	}
 
 	// Check local cache first (for versions saved in the current transaction)
 	if localVer, ok := store.context.GetLocalVersion(versionKey); ok {
@@ -168,15 +227,34 @@ func (store *FDBRecordStore) loadRecordVersionAsync(primaryKey tuple.Tuple, snap
 	} else {
 		future = store.context.Transaction().Get(fdb.Key(versionKey))
 	}
-	return NewPendingRead(func() (*FDBRecordVersion, error) { return decodeLoadedVersion(future, oldFormat) }, future.IsReady)
+	read := &recordVersionRead{}
+	read.ready = future.IsReady
+	read.get = func() (*FDBRecordVersion, error) {
+		value, err := future.Get()
+		if err != nil {
+			read.backendErr = fmt.Errorf("failed to load record version: %w", err)
+			return nil, read.backendErr
+		}
+		return decodeLoadedVersionValue(value, oldFormat)
+	}
+	return read
 }
 
-func decodeLoadedVersion(future fdb.FutureByteSlice, oldFormat bool) (*FDBRecordVersion, error) {
-	value, getErr := future.Get()
-	if getErr != nil {
-		return nil, fmt.Errorf("failed to load record version: %w", getErr)
-	}
+// Keep provenance private without changing the error object or its cause chain.
+type recordVersionRead struct {
+	pendingFunc[*FDBRecordVersion]
+	backendErr error
+}
 
+func (read *recordVersionRead) backendFailure() error {
+	_, err := read.Get()
+	if read.backendErr != nil {
+		return err
+	}
+	return nil
+}
+
+func decodeLoadedVersionValue(value []byte, oldFormat bool) (*FDBRecordVersion, error) {
 	if value == nil {
 		return nil, nil
 	}

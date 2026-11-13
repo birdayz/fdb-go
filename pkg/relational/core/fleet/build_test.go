@@ -155,7 +155,7 @@ func TestPartlyBuiltAdviceOffersOnlyWhatTheFleetCanDo(t *testing.T) {
 	}).Error()
 	for _, want := range []string{
 		`"MUTUAL_BY_RECORDS"`, `"BY_RECORDS"`, "(This index was partly built by another method)",
-		"unblock it first", "finish it with the builder that began it", "frl index rebuild",
+		"unblock it first", "finish it with the builder that began it", "fdb rl index rebuild",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("advice missing %q:\n%s", want, msg)

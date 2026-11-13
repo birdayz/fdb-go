@@ -24,16 +24,10 @@ type MutationRef struct {
 	Param2  []byte // slot 2
 }
 
-func (m *MutationRef) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(MutationRefSlotMutType) {
-		m.MutType = r.ReadUint8(MutationRefSlotMutType)
-	}
-	if r.FieldPresent(MutationRefSlotParam1) {
-		m.Param1 = r.ReadBytes(MutationRefSlotParam1)
-	}
-	if r.FieldPresent(MutationRefSlotParam2) {
-		m.Param2 = r.ReadBytes(MutationRefSlotParam2)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *MutationRef) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *MutationRef) UnmarshalFDB(data []byte) error {
@@ -41,6 +35,11 @@ func (m *MutationRef) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *MutationRef) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(MutationRefSlotMutType) {
 		m.MutType = r.ReadUint8(MutationRefSlotMutType)
 	}
@@ -49,6 +48,9 @@ func (m *MutationRef) UnmarshalFDB(data []byte) error {
 	}
 	if r.FieldPresent(MutationRefSlotParam2) {
 		m.Param2 = r.ReadBytes(MutationRefSlotParam2)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "MutationRef", Err: err}
 	}
 	return nil
 }
@@ -90,21 +92,28 @@ func (m *MutationRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmp
 	return selfStart
 }
 
-// ParseMutationRefVectorFromReader reads a FlatBuffers vector of MutationRef.
-func ParseMutationRefVectorFromReader(r *wire.Reader, slot int) []MutationRef {
+// ParseMutationRefVectorFromReader reads a FlatBuffers vector of MutationRef under one decode budget.
+func ParseMutationRefVectorFromReader(r *wire.Reader, slot int) ([]MutationRef, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]MutationRef, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]MutationRef", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]MutationRef, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]MutationRef", Err: err}
 		}
-		var elem MutationRef
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

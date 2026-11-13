@@ -72,11 +72,11 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 	// validateNoIndexOnlyResidual is RETAINED as the catch-all backstop for Go-only
 	// physical-filter builders (ImplementSimpleSelectRule, NLJ, ImplementIndexScanRule)
 	// that this gate does not cover — do not remove it until every such builder is gated.
+	if !allPredicatesCompensatable(f.GetPredicates()) {
+		return
+	}
 	allTautologies := true
 	for _, pred := range f.GetPredicates() {
-		if predicateContainsUncompensatableValues(pred) {
-			return
-		}
 		allTautologies = allTautologies && predicates.IsTautology(pred)
 	}
 
@@ -103,6 +103,24 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 		members := partition.GetPhysicalExpressions()
 		if len(members) == 0 {
 			continue
+		}
+		for _, member := range members {
+			innerPlan, ok := member.(plans.RecordQueryPlan)
+			if !ok {
+				continue
+			}
+			alternatives, residuals := textAccessAlternatives(call.Context, innerPlan, f.GetPredicates(), f.GetInner().GetAlias())
+			for i, access := range alternatives {
+				if len(residuals[i]) > 0 {
+					filtered, err := plans.NewRecordQueryPredicatesFilterPlanWithAlias(access, residuals[i], f.GetInner().GetAlias())
+					if err != nil {
+						call.Fail(err)
+						return
+					}
+					access = filtered
+				}
+				call.Yield(access)
+			}
 		}
 		if allTautologies {
 			for _, member := range members {

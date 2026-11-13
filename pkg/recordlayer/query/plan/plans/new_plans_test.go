@@ -1,10 +1,12 @@
 package plans
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -495,7 +497,7 @@ func TestTextIndexPlan_Construction(t *testing.T) {
 	if len(p.GetChildren()) != 0 {
 		t.Fatal("text index plan should be a leaf")
 	}
-	if p.GetTextScan() != scan {
+	if !reflect.DeepEqual(p.GetTextScan(), scan) {
 		t.Fatal("text scan mismatch")
 	}
 }
@@ -530,6 +532,57 @@ func TestTextIndexPlan_EqualityAndHash(t *testing.T) {
 	}
 	if a.HashCodeWithoutChildren() == c.HashCodeWithoutChildren() {
 		t.Fatal("different reverse should have different hashes")
+	}
+}
+
+// TestTextIndexPlan_TypedFieldsInIdentity: two scans that differ only in a
+// typed field must not share a memo entry or a continuation salt.
+func TestTextIndexPlan_TypedFieldsInIdentity(t *testing.T) {
+	t.Parallel()
+	comparison := func(mutate func(*predicates.Comparison)) *predicates.Comparison {
+		c := predicates.Comparison{Type: predicates.ComparisonTextContainsAllWithin, Operand: values.LiteralValue("red"), TextMaxDistance: 2, TextTokenizerName: "default"}
+		if mutate != nil {
+			mutate(&c)
+		}
+		return &c
+	}
+	rangeOf := func(v int64) []*predicates.ComparisonRange {
+		c := predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, v)
+		return []*predicates.ComparisonRange{predicates.EmptyComparisonRange().Merge(&c).Range}
+	}
+	base := TextScan{Predicate: comparison(nil), Grouping: []values.Value{values.LiteralValue(int64(1))}, Suffix: rangeOf(1), KeyTypes: []values.Type{values.NullableLong, values.NullableString, values.NullableLong}}
+	build := func(scan TextScan) *RecordQueryTextIndexPlan {
+		return mustChecked(t, func() (*RecordQueryTextIndexPlan, error) {
+			return NewRecordQueryTextIndexPlan("idx", scan, exactTestRecordType(), false)
+		})
+	}
+	a := build(base)
+	if !a.EqualsPlanWithoutChildren(build(base)) || a.HashCodeWithoutChildren() != build(base).HashCodeWithoutChildren() {
+		t.Fatal("identical typed scans differ")
+	}
+	for name, mutate := range map[string]func(*TextScan){
+		"operand": func(s *TextScan) {
+			s.Predicate = comparison(func(c *predicates.Comparison) { c.Operand = values.LiteralValue("blue") })
+		},
+		"type": func(s *TextScan) {
+			s.Predicate = comparison(func(c *predicates.Comparison) { c.Type = predicates.ComparisonTextContainsAll })
+		},
+		"distance": func(s *TextScan) { s.Predicate = comparison(func(c *predicates.Comparison) { c.TextMaxDistance = 3 }) },
+		"tokenizer": func(s *TextScan) {
+			s.Predicate = comparison(func(c *predicates.Comparison) { c.TextTokenizerName = "other" })
+		},
+		"grouping": func(s *TextScan) { s.Grouping = []values.Value{values.LiteralValue(int64(2))} },
+		"suffix":   func(s *TextScan) { s.Suffix = rangeOf(2) },
+		"key types": func(s *TextScan) {
+			s.KeyTypes = []values.Type{values.NullableDouble, values.NullableString, values.NullableLong}
+		},
+	} {
+		scan := base
+		mutate(&scan)
+		b := build(scan)
+		if a.EqualsPlanWithoutChildren(b) || a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() {
+			t.Errorf("%s: scans differing only in it share an identity", name)
+		}
 	}
 }
 

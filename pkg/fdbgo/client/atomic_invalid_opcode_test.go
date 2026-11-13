@@ -11,15 +11,8 @@ import (
 	"github.com/onsi/gomega"
 )
 
-// TestAtomic_RejectsNonAtomicOpCode pins the C++ atomicOp op-code gate
-// (ReadYourWrites.actor.cpp:2234: !isValidMutationType || !isAtomicOp → invalid_mutation_type).
-// libfdb_c's fdb_transaction_atomic_op wraps the throw in CATCH_AND_DIE (fdb_c.cpp:1149), aborting
-// the client before any write reaches the cluster — so a non-atomic op-code passed to Atomic() must
-// NOT mutate the shared cluster. The most dangerous case is Atomic(MutClearRange,...), which at
-// commit time is indistinguishable from a real Clear and would silently DELETE a range. Go now
-// rejects every non-atomic op eagerly in Atomic() (without buffering the mutation) and fails the
-// commit with 2018. Revert-proof: backing out the isAtomicOp gate makes the ClearRange subtest
-// delete a,b and the commit succeed.
+// Invalid atomic opcodes defer 2018 to later reads and commit without buffering mutations.
+// A ClearRange opcode must not reach storage (ReadYourWrites.actor.cpp:2234).
 func TestAtomic_RejectsNonAtomicOpCode(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)

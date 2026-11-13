@@ -23,15 +23,16 @@ enforced by the engine:
    (`pkg/relational/core/parser/grammar/RelationalParser.g4:57-81`).
 2. Untrusted SQL must never reach the driver. The scoping controls below are defense-in-depth on
    top of that rule, not a substitute for it.
-3. Every per-statement quota ships effectively unlimited, and none of them is settable from a DSN.
-   Arming them takes code (§3). A tenant fleet run without that code has no per-statement bound
-   other than FDB's own 5-second transaction limit.
+3. Every per-statement quota ships effectively unlimited. The DSN can set the five limits for every
+   connection; the flag that makes the scan limits fail, the statement timeout and the result-byte
+   cap take code (§3). A tenant fleet run without either has no per-statement bound other than
+   FDB's own 5-second transaction limit.
 
 ---
 
 ## 1. Tenancy model
 
-### One database path per tenant, one subspace per database
+### One database path per tenant, one subspace per schema
 
 A tenant is a SQL database path. The DSN is the ordinary one from
 [`operations.md` §1](operations.md#1-connecting-to-a-cluster):
@@ -40,41 +41,36 @@ A tenant is a SQL database path. The DSN is the ordinary one from
 fdbsql:///t/<tenant-id>?cluster_file=/etc/foundationdb/fdb.cluster&schema=MAIN
 ```
 
-`/t/<tenant-id>` is **a convention this guide recommends, not a driver feature.** `ParseDSN`
-accepts any non-empty path and attaches no meaning to any segment
-(`pkg/relational/sqldriver/dsn.go:120`). An empty path or a bare `/` is rejected at
-`sql.Open` time (`pkg/relational/sqldriver/dsn.go:136`), which matters because several fail-closed
-guards below key on "the session has a usable database path".
+`/t/<tenant-id>` is **a convention, not a driver feature**: `t` is the domain and the second
+segment names the database. Register the domain once per process with
+`sqldriver.RegisterDomainIfNotExists("t")` before using it. `ParseDSN` rejects an empty path or a
+bare `/`; store resolution also requires a valid database path under a registered domain
+(`pkg/relational/sqldriver/dsn.go`, `pkg/relational/core/keyspace/domains.go`, `ToDatabasePath`).
+Use the exact path and schema case stored by DDL (unquoted DDL names fold to upper case).
 
 `schema=` has **no default**. Omit it and the session schema stays empty and metadata loading is a
-silent no-op (`pkg/relational/sqldriver/driver.go:174`,
-`pkg/relational/core/embedded/connection.go:507`). Always pass it. `MAIN` is only a convention.
+silent no-op (`Connector.Connect` in `pkg/relational/sqldriver/driver.go`,
+`EmbeddedConnection.ensureMetaData`). Always pass it. `MAIN` is only a convention.
 
-The physical layout is one subspace per (database, schema) pair, and the prefix is the *plain tuple
-encoding of the two strings*:
+The physical layout is one subspace per (database, schema) pair. A user-schema prefix is a tuple
+of **three integer IDs**, matching Java's `RelationalKeyspaceProvider`:
 
-```go
-// pkg/relational/core/keyspace/keyspace.go:50-58
-func (k *RelationalKeyspace) SchemaSubspace(dbPath, schemaName string) (subspace.Subspace, error) {
-	...
-	return k.root.Sub(tuple.Tuple{dbPath, schemaName}), nil
-}
+```text
+(domainID, databaseID, schemaID)
 ```
 
-The root is the empty subspace (`pkg/relational/sqldriver/driver.go:231`), so a tenant's key prefix
-is literally `tuple.Pack(dbPath, schemaName)`.
+`SchemaSubspace` resolves the domain through the global directory layer, then interns the database
+and schema names in the domain's `ScopedInterningLayer` at `(domainID, "IL")`
+(`pkg/relational/core/keyspace/keyspace.go`, `SchemaSubspace`). The SQL driver's root is the empty
+subspace, so those three IDs are the store prefix; a tenant's schema stores share the
+`(domainID, databaseID)` prefix. The system catalog instead uses `(nil, nil, 0)`, and the resolver
+mappings also live outside the schema stores.
 
-**Keep tenant IDs short.** There is no directory layer and no integer interning — the decision is
-explicit at `pkg/relational/core/keyspace/keyspace.go:9-13` ("uses plain tuple keys instead of
-`DirectoryLayerDirectory`"). The tenant ID string is therefore embedded **verbatim in every single
-key** of that tenant's records, index entries and record versions, forever, and the path is not
-renameable. A 40-character tenant ID costs 40 bytes on every key in the tenant's data set.
-
-Nothing in the layer bounds that. `ParseDBPath` validates structure only — leading `/`, no empty
-segments (`pkg/relational/core/keyspace/keyspace.go:63-76`) — and the only length enforcement is
-FDB's 10 000-byte key limit, applied **at commit**, not at write time
-(`pkg/fdbgo/client/sizelimits.go:17`, `:10-12`). An absurd tenant ID therefore fails late, as a
-commit error that does not name the path. Cap the length in your provisioning code.
+The tenant ID is **not repeated verbatim in every record or index key**. Names still occupy
+resolver/catalog keys, so bound their length in provisioning, but do not estimate per-record key
+cost from the tenant ID's string length. This is not the old literal
+`tuple.Pack(dbPath, schemaName)` layout; old Go SQL data is not automatically migrated (see the
+[upgrade guide](upgrade.md#from-v010-sql-storage)).
 
 ### Why native FDB tenants are not used
 
@@ -247,9 +243,9 @@ Two details worth knowing before you deploy it:
   the first `Connect`. To change a connection's configuration, open a new Connector.
 
 There is no options API for this: `OpenConnector` takes a DSN string
-(`pkg/relational/sqldriver/driver.go:123`) and the DSN is the only route through `database/sql`.
+(`Driver.OpenConnector`) and the DSN is the only route through `database/sql`.
 The option can also be set directly on a connection built with `embedded.New`
-(`pkg/relational/core/embedded/connection.go:525`) via `SetOptions` (`:125`,
+via `SetOptions` (`EmbeddedConnection.SetOptions`,
 `api.NoOptions().With(api.OptRestrictDDLToSessionDatabase, true)`) — exported, but it bypasses
 `database/sql` entirely, so treat the DSN as the operator surface.
 
@@ -286,8 +282,8 @@ other way: a 4-second per-page cap is armed unconditionally whether or not the o
 the option can only *narrow* it, never raise it —
 
 ```go
-// pkg/relational/core/embedded/cascades_generator.go:1775-1782
-timeLimit := txPageTimeLimit                                            // 4s, :1256
+// pkg/relational/core/embedded/cascades_generator.go, paginatingRows
+timeLimit := txPageTimeLimit                                            // 4s
 if userMillis := optInt64(opts, api.OptExecutionTimeLimit, 0); userMillis > 0 {
 	if ut := time.Duration(userMillis) * time.Millisecond; ut < timeLimit {
 		timeLimit = ut
@@ -295,33 +291,35 @@ if userMillis := optInt64(opts, api.OptExecutionTimeLimit, 0); userMillis > 0 {
 }
 ```
 
-The cap exists so FDB's 5-second hard wall is never reached (`cascades_generator.go:1252-1256`). It
-is not a tenancy control: a statement that pages will spend 4 seconds *per page*, unbounded in
-total, unless you also set a statement timeout.
+The per-page cap leaves headroom below FDB's 5-second transaction limit (`txPageTimeLimit`),
+not a statement-wide deadline. Auto-commit SELECT pagination creates fresh backend transactions,
+so page and transaction budgets alone do not bound its total duration; use a statement timeout
+or caller-context deadline. Explicit transactions and atomic auto-commit DML instead retain a
+transaction-wide deadline across pages when a transaction timeout is configured.
 
 What happens on breach differs per limit, and two of them do **not** produce an error:
 
 - **`MAX_ROWS` truncates cleanly.** `io.EOF`, JDBC `setMaxRows` semantics, no error
-  (`cascades_generator.go:1594-1600`). It is an egress cap, not a quota — the work is still done.
+  (`paginatingRows.Next`). It is an egress cap, not a quota — the work is still done.
 - **The scanned-rows / scanned-bytes limits paginate by default.** They only raise
   `ScanLimitReachedError` (SQLSTATE `54F01`, `pkg/relational/api/errcode.go:137`) when
-  `SetFailOnScanLimitReached(true)` is also set (`pkg/relational/core/embedded/connection.go:88-91`).
+  `SetFailOnScanLimitReached(true)` is also set (`EmbeddedConnection.failOnScanLimitReached`).
   **Arming a scan limit without that flag is not a quota** — the statement silently pages on
   instead of failing, which is the opposite of what you wanted.
-- **The time and memory limits do error.** Time → `54F01` (`cascades_generator.go:1848`); memory →
-  `*recordlayer.MemoryLimitExceededError` (`pkg/recordlayer/execute_state.go:211`) mapped to
-  `54F01` at `cascades_generator.go:2244-2247`.
+- **The time and memory limits do error.** Time → `54F01`; memory →
+  `*recordlayer.MemoryLimitExceededError` mapped to `54F01` (both in `translateExecError`).
 
-### Setting them: not a DSN, not SQL — `conn.Raw`
+### Setting them: the DSN for every connection, `conn.Raw` per tenant
 
-**None of the five is settable from a DSN.** `ConnectionOptions()` decodes exactly one parameter,
-`restrict_ddl_to_session_database` (`pkg/relational/sqldriver/dsn.go:86-96`); every other query
-parameter is kept in the raw map and ignored (`dsn.go:84-85`). There is no `SET statement_timeout`
-either, and the reason is recorded at `pkg/relational/core/embedded/connection.go:139-141` — the
-grammar has no generic `SET <var> = <val>` rule. The SQL `OPTIONS(...)` clause carries an unrelated
-set (`cascades_generator.go:772`).
+The DSN sets the five options for every connection of a `*sql.DB` (`max_rows`,
+`execution_scanned_rows_limit`, `execution_scanned_bytes_limit`, `execution_time_limit`,
+`max_statement_memory_bytes`; `DSN.ConnectionOptions`). The flag that makes the scan limits fail,
+the statement timeout and the result-byte cap have no DSN parameter, and there is no
+`SET statement_timeout` either (the grammar has no generic `SET <var> = <val>` rule). The SQL
+`OPTIONS(...)` clause carries an unrelated set.
 
-The only route is `database/sql`'s escape hatch down to the driver connection:
+For per-tenant values, or for the three settings above, the route is `database/sql`'s escape hatch
+down to the driver connection:
 
 ```go
 import (
@@ -332,19 +330,24 @@ import (
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
-// configureTenantConn arms the per-statement governors on one pooled connection.
+// configureTenantConn arms the per-statement governors for one borrow of a
+// pooled connection.
 func configureTenantConn(driverConn any) error {
 	ec, ok := driverConn.(*embedded.EmbeddedConnection)
 	if !ok {
 		return fmt.Errorf("not an embedded connection: %T", driverConn)
 	}
-	ec.SetOptions(api.NewOptionsBuilder().
-		Set(api.OptMaxRows, int64(10_000)).                       // egress cap
-		Set(api.OptExecutionScannedRowsLimit, int64(500_000)).    // per page
-		Set(api.OptExecutionScannedBytesLimit, int64(64<<20)).    // per page
-		Set(api.OptExecutionTimeLimit, int64(2_000)).             // millis, narrows the 4s cap
-		Set(api.OptMaxStatementMemoryBytes, int64(256<<20)).      // statement-wide
-		Build())
+	for name, value := range map[api.OptionName]any{
+		api.OptMaxRows:                    int64(10_000),    // egress cap
+		api.OptExecutionScannedRowsLimit:  int64(500_000),   // per page
+		api.OptExecutionScannedBytesLimit: int64(64 << 20),  // per page
+		api.OptExecutionTimeLimit:         int64(2_000),     // millis, narrows the 4s cap
+		api.OptMaxStatementMemoryBytes:    int64(256 << 20), // statement-wide
+	} {
+		if err := ec.SetOption(name, value); err != nil {
+			return err
+		}
+	}
 	ec.SetFailOnScanLimitReached(true) // without this the scan limits only paginate
 	ec.SetStatementTimeout(30 * time.Second)
 	ec.SetMaxResultBytes(32 << 20)
@@ -362,33 +365,48 @@ if err := conn.Raw(configureTenantConn); err != nil {
 // ... use conn (NOT db) for this tenant's statements ...
 ```
 
-The setters are `SetOptions` (`connection.go:125`), `SetFailOnScanLimitReached` (`:132`),
-`SetStatementTimeout` (`:143`), `SetMaxResultBytes` (`:154`).
+The setters are `SetOption`, `SetFailOnScanLimitReached`, `SetStatementTimeout` and
+`SetMaxResultBytes` on `*embedded.EmbeddedConnection`.
 
-**The footgun to design around: this configures ONE pooled connection.** `Connector.Connect`
-installs only the DSN-decoded options (`pkg/relational/sqldriver/driver.go:173`), so a connection
-the pool hands you later has *not* been through `configureTenantConn`. Route tenant work through a
-helper that acquires a `*sql.Conn`, configures it, uses it, and closes it — do not issue queries on
-the `*sql.DB` directly and assume the governors are on. `SetOptions` is also not safe to call
-concurrently with execution on the same connection (`connection.go:121-123`).
+**The footgun to design around: this configures ONE borrow of ONE pooled connection.** Everything
+`configureTenantConn` sets lasts until the connection returns to the pool: `ResetSession` restores
+the connector's configuration (the DSN-decoded options, and the Go-local settings back at their
+defaults) before the next
+borrower gets it. Route tenant work through a helper that acquires a `*sql.Conn`, configures it,
+uses it, and closes it — do not issue queries on the `*sql.DB` directly and assume the governors are
+on. `SetOptions` is different: it replaces the connection's option set *including what
+`ResetSession` restores*, so what it installs reaches every later borrower; do not use it for
+per-tenant settings. None of the setters is safe to call concurrently with execution on the same
+connection.
 
 ### Statement timeout
 
-`SetStatementTimeout` (`pkg/relational/core/embedded/connection.go:143`) takes a `time.Duration`,
-defaults to **off** (`connection.go:96-102`), and bounds one whole `Execute` including all its
-pages. Set it on every tenant connection: it is the only bound that spans pages, and without it the
-4-second per-page cap composes into an unbounded statement. Breach surfaces as `54F01`,
+`SetStatementTimeout` (`EmbeddedConnection.SetStatementTimeout`) takes a `time.Duration`,
+defaults to **off** and lasts one borrow, and bounds one whole `Execute` including all its
+pages. Set it on every tenant connection for a consistent request-wide bound, including
+auto-commit SELECT pagination that creates fresh backend transactions. The 4-second per-page cap
+alone does not bound that statement's total duration; explicit transactions and atomic DML can
+also be bounded across pages by their shared transaction deadline. Breach surfaces as `54F01`,
 distinguished from a caller's own context deadline by a cause tag
-(`cascades_generator.go:1304`, `:2209`).
+(`errStatementTimeout`, `translateExecErrorCtx`).
 
 Note the semantics honestly: it is **per request, not per connection lifetime**. A continuation
-resumed by a new request starts a fresh deadline (`connection.go:98-100`).
+resumed by a new request starts a fresh deadline (`EmbeddedConnection.statementTimeout`).
 
-**Do not use `TRANSACTION_TIMEOUT`.** `api.OptTransactionTimeout`
-(`pkg/relational/api/options.go:56`) is dead code — that declaration is its only occurrence in the
-tree; nothing reads it. (It is unrelated to `ErrCodeTransactionTimeout` / `53F00`,
-`pkg/relational/api/errcode.go:133`, which is live and is the mapping of FDB error 1031.) For
-transaction-level bounds use the record-layer handle's `SetTransactionTimeout`, documented in
+**`TRANSACTION_TIMEOUT` is live and bounds each backend transaction, not a general statement deadline.** Set
+`transaction_timeout=<milliseconds>` in the DSN, or use
+`SetOption(api.OptTransactionTimeout, int64(ms))` on the embedded connection.
+`transactionConfigurer` applies it through the FDB transaction's `SetTimeout` for both auto-commit
+attempts and explicit `BeginTx` transactions (`pkg/relational/core/embedded/connection.go`):
+`-1` inherits the database default, `0` disables the timeout, and a positive value sets a cap.
+FDB error 1031 maps to `ErrCodeTransactionTimeout` / `53F00`. The budget restarts only when a fresh
+backend transaction is created, such as a runner retry or an auto-commit SELECT page after the first.
+An auto-commit SELECT's catalog read, planning and first page share one transaction, and so one
+budget, when the first page starts within 250 ms of the statement's first read
+(`pkg/relational/core/embedded/statement_read.go`); a 1031 there is not retried. Explicit
+transactions share one budget across statements and pages; atomic auto-commit DML also reuses one
+transaction across its pages (`cascades_generator.go`, `paginatingRows.tx`). Retain the statement
+timeout for a bound spanning fresh page transactions. See also
 [`operations.md` §2](operations.md#2-transactions-retries-timeouts-cancellation).
 
 ### Concurrency: one `*sql.DB` per tenant
@@ -525,10 +543,12 @@ Two caveats on reading the numbers:
 
 ### Per-tenant plan logging
 
-`PlanGenerationLogger` (`pkg/relational/core/embedded/plan_logging.go:78`) is installed **per
-connection**, via the same `conn.Raw` route as the quotas — `SetPlanLogger`
-(`pkg/relational/core/embedded/connection.go:165`). There is no DSN parameter, no context value and
-no driver-level registration. That is convenient here: the tenant ID goes in the closure.
+`PlanGenerationLogger` (`pkg/relational/core/embedded/plan_logging.go`) is installed **per
+connection borrow**, via the same `conn.Raw` route as the quotas — `SetPlanLogger` — and, like
+them, lasts until the connection returns to the pool (`ResetSession` removes it and resets the
+slow-query threshold), so install it in the same acquire/configure/use/close helper. There is no DSN
+parameter, no context value and no driver-level registration. That is convenient here: the tenant
+ID goes in the closure.
 
 `PlanGenerationLogger` is an interface with one method and the package ships no func adapter, so
 declare one and close over the tenant ID:
@@ -568,8 +588,8 @@ Sampling and log volume are the handler's problem: the engine always emits
 ### Per-tenant execution statistics
 
 `ExecutionStatsLogger` (`pkg/relational/core/embedded/execution_logging.go`) is the
-post-execution counterpart, installed the same way — per connection, via `conn.Raw` →
-`SetExecutionStatsLogger`. It is a **separate** interface from `PlanGenerationLogger`, not a second
+post-execution counterpart, installed the same way — per connection borrow, via `conn.Raw` →
+`SetExecutionStatsLogger`, removed by `ResetSession`. It is a **separate** interface from `PlanGenerationLogger`, not a second
 method on it, because a cached plan is planned once and executed many times: the two records do not
 pair up 1:1, and `PlanHash` is the join key between them.
 
@@ -656,52 +676,36 @@ deployment configures TLS through exactly two surfaces:
 1. The cluster file's `:tls` coordinator suffix (`pkg/fdbgo/client/database.go:126`). It is
    all-or-nothing — a partially-`:tls` coordinator list is rejected (`database.go:160`).
 2. `FDB_TLS_CERTIFICATE_FILE` / `FDB_TLS_KEY_FILE` / `FDB_TLS_CA_FILE`, falling back to
-   `cert.pem`/`key.pem` under `/etc/foundationdb` (`pkg/fdbgo/client/tls.go:15`, `:33-35`). Setting
-   only one of cert/key is a hard error (`tls.go:40`).
+   `cert.pem`/`key.pem` under `/etc/foundationdb` (`pkg/fdbgo/client/tls.go`); a variable set
+   but empty means no file and no default, as in libfdb_c. `FDB_TLS_PASSWORD` decrypts an
+   encrypted PKCS#8 key, and `FDB_TLS_VERIFY_PEERS` sets the verify-peers policy (RFC-277).
+   Setting only one of cert/key, or an unusable setting, fails the open with `tls_error`.
 
-The precedence rule is at `pkg/fdbgo/client/tls.go:62-68`. `client.WithTLSConfig`
-(`pkg/fdbgo/client/options.go:61`) is the third surface, but it is unreachable from `database/sql` —
+The precedence rule is `openTLSConfig` in `pkg/fdbgo/client/tls.go`. `client.WithTLSConfig`
+(`pkg/fdbgo/client/options.go`) is the third surface, but it is unreachable from `database/sql` —
 another reason a service that needs fine control opens the client itself and uses
 `sqldriver.RegisterBackend`. Note the footgun: `WithTLSConfig(nil)` is a **no-op**, it does not
-force plaintext (`options.go:58`).
+force plaintext (see its doc comment).
 
-### Certificates must be hostname-verifiable — and that means IP SANs
+### Certificates are verified as libfdb_c verifies them
 
-This is the single highest-value warning on this page, because a certificate set that works on
-`libfdb_c` can hard-fail on the pure-Go client.
+On the environment path (`:tls` + `FDB_TLS_*`) the pure-Go client verifies a server as libfdb_c
+7.3.77 does (RFC-277):
 
-The pure-Go client does standard Go TLS verification. `InsecureSkipVerify` is never set anywhere in
-`pkg/fdbgo`, and the dialer fills in `ServerName` from the dialed host when the caller left it
-unset:
+- The chain must verify against the CA file alone; with no CA file nothing is trusted, and the
+  system roots never are.
+- The `FDB_TLS_VERIFY_PEERS` policy (default `Check.Valid=1`) then decides
+  (`pkg/fdbgo/transport/tls_policy.go`).
+- No host name is checked. A server certificate needs no IP SANs, though a host-name coordinator
+  in the cluster file still receives SNI.
 
-```go
-// pkg/fdbgo/transport/conn.go:1159-1166
-func upgradeTLS(conn net.Conn, addr string, cfg *tls.Config) (net.Conn, error) {
-	cfg = cfg.Clone()
-	if cfg.ServerName == "" {
-		if host, _, err := net.SplitHostPort(addr); err == nil {
-			cfg.ServerName = host
-		}
-	}
-```
+`WithTLSConfig` is different: it is a plain Go `*tls.Config`, so Go's own verification applies,
+including a host-name check against every dialed address. After coordination every connection
+is dialed at a numeric address the cluster sent (`pkg/fdbgo/client/endpoint.go`), so such a
+config needs IP SANs for every process address. For libfdb_c's check, set `InsecureSkipVerify`
+and `transport.VerifyPolicy.VerifyConnection`.
 
-**Coordinator hostnames are not enough.** After coordination, every connection to a proxy or storage
-server is dialed at an address the cluster sent over the wire, and that address is always numeric:
-`networkAddressString` builds `host:port` from the raw `types.IPAddress` bytes
-(`pkg/fdbgo/client/endpoint.go:54-58`, `:71-88`), and that string is what gets dialed with the TLS
-config (`pkg/fdbgo/client/database.go:573`). So `ServerName` becomes an IP literal for the majority
-of connections regardless of what the cluster file says.
-
-Consequence: **server certificates must carry IP SANs for every cluster process address.** Without
-them the handshake fails closed at `conn.go:1170-1173` with Go's
-`x509: cannot validate certificate for <ip> because it doesn't contain any IP SANs`.
-
-This is a deliberate divergence from `libfdb_c`, which does not do hostname verification by default
-— recorded at `rfcs/051-tls-wiring.md:140`: "`FDB_TLS_VERIFY_PEERS` rule DSL … Go uses standard CA +
-SNI verification (the C++ `Check.Valid=1` default)." There is no knob to relax it short of supplying
-your own `*tls.Config` with a `VerifyPeerCertificate`, which the SQL driver cannot do.
-
-### Tokens and `verify_peers` are `libfdb_c`-only; tenants are pure-Go-only
+### Tokens and TLS network options are `libfdb_c`-only; tenants are pure-Go-only
 
 Stated plainly, because these two facts together decide your build:
 
@@ -710,9 +714,8 @@ Stated plainly, because these two facts together decide your build:
   (FDB `invalid_option`, 2007), with the rationale at `options.go:67-76` — a silently ignored token
   means the request goes out unauthenticated. `libfdb_c` forwards it 1:1
   (`pkg/fdbgo/libfdbc/options.go:105`).
-- **`tls_verify_peers`.** No implementation in `pkg/fdbgo` at all; out of scope per
-  `rfcs/051-tls-wiring.md:140`. Under `-tags libfdbc` it is reachable through the Apple binding's own
-  network options, not through anything this repo exposes.
+- **`tls_verify_peers`.** Pure-Go reads `FDB_TLS_VERIFY_PEERS` (RFC-277) but has no network
+  option for it. Under `-tags libfdbc` both reach libfdb_c.
 - **Native tenants.** Pure-Go only. `OpenTenant`/`CreateTenant`/`DeleteTenant` each downcast to the
   concrete pure-Go transaction with the comment "tenant ops are pure-Go only (out of RFC-109
   escape-hatch scope)" (`pkg/fdbgo/fdb/database.go:450`, `:479`, `:491`); `fdb.Tenant` embeds the
@@ -721,8 +724,8 @@ Stated plainly, because these two facts together decide your build:
 
 **The mutual exclusion:** native FDB tenants and authorization tokens are the two halves of
 FoundationDB's own tenant-isolation security model, and no single build of this port has both. Build
-pure-Go and you get tenants with no token support and no `verify_peers`; build `-tags libfdbc` and
-you get tokens and `verify_peers` but no tenants. That is a second, independent reason v1 isolates
+pure-Go and you get tenants with no token support; build `-tags libfdbc` and you get tokens but no
+tenants. That is a second, independent reason v1 isolates
 tenants by subspace (§1) rather than by native tenants: subspace isolation works identically on both
 builds and leaves the choice of backend free.
 
@@ -734,17 +737,19 @@ builds and leaves the choice of backend free.
 layer either — see [`operations.md` §7](operations.md#7-backup--restore) for the `fdbbackup` /
 `fdbrestore` commands. The pure-Go client has no `fdbbackup` protocol support: the backup error
 codes exist as a string table (`pkg/fdbgo/fdb/error.go:344`) and nothing else; there is no backup
-agent, no task bucket, no log-ranges handling. `frl` has no `export`, `import`, `backup` or
-`restore` subcommand (the complete set is registered at `cmd/frl/internal/cmd/root.go:51-61`).
+agent, no task bucket, no log-ranges handling. `fdb` has no `export`, `import`, `backup` or
+`restore` subcommand (the complete set is registered at `cmd/fdb/internal/cmd/root.go`).
 
 So a restore is a **whole-cluster** operation. Restoring one tenant to a point in time by restoring
 the cluster means restoring every other tenant to that point in time too.
 
 **Per-tenant restore is not built. It is buildable, and it is a real build — do not scope it as a
-script.** The raw primitives are all exported: a tenant's data is one contiguous subspace,
-`subspace.FDBRangeKeys()` gives its bounds (used exactly that way at
-`cmd/frl/internal/cmd/store_dump.go:129`), `frl keyspace resolve` prints the prefix
-(`cmd/frl/internal/cmd/keyspace.go:26`), and `GetRange`/`Set`/`ClearRange` are ordinary client calls
+script.** The raw primitives are all exported: a tenant's schema stores share a contiguous
+`(domainID, databaseID)` prefix, but the catalog and resolver mappings live outside it (§1).
+A copier must account for those mappings too. `subspace.FDBRangeKeys()` gives a subspace's bounds
+(used exactly that way at
+`cmd/fdb/internal/cmd/store_dump.go:129`), `fdb rl keyspace resolve` prints the prefix
+(`cmd/fdb/internal/cmd/keyspace.go:26`), and `GetRange`/`Set`/`ClearRange` are ordinary client calls
 (`pkg/fdbgo/fdb/transaction.go:100`, `:209`, `:236`). Nothing in the layer copies a range, though —
 the only whole-subspace bulk operation is destructive (`DeleteAllRecords`,
 `pkg/recordlayer/store.go:888`).
@@ -753,14 +758,15 @@ Three things make the naive version wrong, and they are the actual content of th
 
 - **No cross-transaction snapshot.** Each scan is one transaction, bounded by FDB's 5 s / 10 MB
   limits, so a store larger than one transaction is copied at drifting read versions. The only
-  freeze available is `frl store lock forbid-record-update`
-  (`cmd/frl/internal/cmd/store_write.go:52`).
-- **Record versions cannot be restored.** `SaveRecordWithOptions` takes `(record, existenceCheck)`
-  (`pkg/recordlayer/store.go:503`); there is no API to write a record's stored version. A
-  reload mints new versions, which breaks VERSION-keyed indexes and version continuations.
-- **The CLI is not a capture format.** `frl store dump` prints value *lengths*, not bytes
-  (`cmd/frl/internal/cmd/store_dump.go:188`), and `frl record scan` emits three fields —
-  `primary_key`, `record_type`, `record` (`cmd/frl/internal/cmd/record.go:186`) — with no record
+  freeze available is `fdb rl store lock forbid-record-update`
+  (`cmd/fdb/internal/cmd/store_write.go:52`).
+- **Record versions need explicit capture and replay.** A copier can preserve each complete
+  stored version with `SaveRecordWithVersion` and `VersionstampSaveBehaviorIfPresent`
+  (RFC-275). Ordinary `SaveRecordWithOptions` can mint new versions instead; the CLI output
+  below does not capture versions, so a CLI scan/put round trip still loses them.
+- **The CLI is not a capture format.** `fdb rl store dump` prints value *lengths*, not bytes
+  (`cmd/fdb/internal/cmd/store_dump.go:188`), and `fdb rl record scan` emits three fields —
+  `primary_key`, `record_type`, `record` (`cmd/fdb/internal/cmd/record.go:186`) — with no record
   version, no index state and no store header. A scan/put round trip is lossy.
 
 `formatVersionIncarnation` (`pkg/recordlayer/store.go:50`, "Incarnation counter for cross-cluster
@@ -778,9 +784,9 @@ strength of "the data is just a key range".
 
 ### Index builds fan out across a fleet — but not within one tenant
 
-**This gap is now partly closed.** `frl index build --all-schemas --database /FRL/tenants` builds every
+**This gap is now partly closed.** `fdb rl index build --all-schemas --database /FRL/tenants` builds every
 pending index across every schema in a database in one invocation, and
-`frl meta catalog repair --all-schemas --database /FRL/tenants` is the migration equivalent (rebind
+`fdb rl meta catalog repair --all-schemas --database /FRL/tenants` is the migration equivalent (rebind
 every tenant onto the latest template version). Passing an index name narrows the roll-out to that
 one index; omitting it builds whatever each tenant owes. The library primitive is
 `pkg/relational/core/fleet` if you want it in your own control plane rather than via the CLI.
@@ -876,7 +882,7 @@ reaches it (`pkg/relational/sqldriver/evolution_added_index_gate_fdb_test.go:56`
 
 What changed is the fan-out around it. `pkg/relational/core/fleet` iterates `ListSchemasInDatabase`
 and calls `RepairSchema` per tenant in its own transaction, and
-`frl meta catalog repair --all-schemas` exposes that to operators. So the *rebind* half of a
+`fdb rl meta catalog repair --all-schemas` exposes that to operators. So the *rebind* half of a
 migration ships.
 
 The half that still does not ship is **producing the new template version from SQL**. Templates
@@ -888,8 +894,8 @@ would close this — is specified in [`rfc-schema-migration.md`](rfc-schema-migr
 and is not implemented.
 
 So the fleet-migration story today is: bump the template version through the Go metadata builder
-and `fleet.SaveTemplate` → `frl meta catalog repair --database <db> --all-schemas` to rebind every
-tenant → `frl index build --database <db> --all-schemas` to build what the rebind left DISABLED.
+and `fleet.SaveTemplate` → `fdb rl meta catalog repair --database <db> --all-schemas` to rebind every
+tenant → `fdb rl index build --database <db> --all-schemas` to build what the rebind left DISABLED.
 **Both fan-out loops now ship.** What you still write yourself is only the first step — producing
 the new template version — because no SQL DDL reaches it.
 
@@ -900,7 +906,7 @@ Java has `OnlineIndexScrubber` with `scrubDanglingIndexEntries()` and `scrubMiss
 `fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/OnlineIndexScrubber.java:43`,
 `:92`, `:103`) — chunked, throttled, resumable, and repairing. **Go has no equivalent**, and says so
 at `pkg/recordlayer/index_state.go:567` ("the scrubbing subspaces (Go has no index scrubbing)").
-There is no `frl index scrub` (`grep scrub cmd/frl/` is empty) and no repair entry point anywhere.
+There is no `fdb rl index scrub` (`grep scrub cmd/fdb/` is empty) and no repair entry point anywhere.
 
 What Go *does* have is a **detection-only** API: `FDBRecordStore.ValidateIndex`
 (`pkg/recordlayer/index_validation.go:39`, Java's `StandardIndexMaintainer.validateEntries()`),
@@ -922,20 +928,20 @@ index is wrong, the remedy is a full rebuild.
 
 ### Format version: Go's default is not Java's
 
-`SetFormatVersion` now exists on both builders (`pkg/recordlayer/store_builder.go:1219`,
-`pkg/recordlayer/online_indexer.go:339`) and on the store (`pkg/recordlayer/store_api.go:84`). It is
-a **ceiling, never a downgrade**, and it exists for exactly the rolling-upgrade case: pin every
-instance to the OLD version so no upgraded instance starts writing a layout the not-yet-upgraded
-ones cannot read (`store_builder.go:1209-1218`). An explicit `0` is an error, not "give me the
-default" (rationale `:1204-1205`, enforced in `validateBuilder` at `:1337-1339`).
+`StoreBuilder.SetFormatVersion` and `OnlineIndexerBuilder.SetFormatVersion` pin the supported
+open/upgrade target (`pkg/recordlayer/store_builder.go`, `pkg/recordlayer/online_indexer.go`). They
+**never downgrade** an already-higher supported store header. For a rolling upgrade, pin every
+instance and indexer to the OLD version before opening stores, so no upgraded instance starts
+writing a layout the not-yet-upgraded ones cannot read. An explicit `0` or a value outside the
+supported range **1–15** is an error, not "give me the default" (`validateBuilder`).
 
 The defaults differ, and in a mixed Go/Java fleet that matters: **an unpinned Go store opens at
-format version 14** (`store_builder.go:1196` → `formatVersionCurrent`,
-`pkg/recordlayer/store.go:51-52`), **while Java's default for a new store is 7**
-(`FormatVersion.java:215-216`, `CACHEABLE_STATE(7)` at `:133`; Java's *maximum supported* is also
-14). A Go binary opening a tenant store upgrades that store's header in place unless you call
-`SetFormatVersion` explicitly — and `frl index build` exposes no flag for it, so the CLI always runs
-at its binary's newest. This divergence is booked in `DIVERGENCES.md`; treat it as a deployment
+format version 14** (`pkg/recordlayer/store.go`, `formatVersionDefault`), **while Java's default
+for a new store is 7** (`FormatVersion.getDefaultFormatVersion()`, `CACHEABLE_STATE`). Both support
+through **15**. An unpinned Go open can upgrade an older tenant store to 14 when its transaction
+commits; a store already at 15 stays there. Use the builders' `SetFormatVersion` explicitly to
+control upgrades — `fdb rl index build` exposes no flag for it and uses the default target, not the
+maximum supported version. This divergence is booked in `DIVERGENCES.md`; treat it as a deployment
 decision, not an implementation detail.
 
 ---
@@ -959,7 +965,7 @@ These are the dangerous entries, because nothing tells the tenant.
   accepts `RETURNING` (`pkg/relational/core/parser/grammar/RelationalParser.g4:378`, `:455`) and the
   DML executes correctly with the right row count — the values simply never surface. Via `Query` you
   get `0A000 INSERT/UPDATE/DELETE return a row count, not rows — use Exec, not Query`
-  (`pkg/relational/core/embedded/connection.go:653-655`). `INSERT … RETURNING` is `42601` (not in
+  (`EmbeddedConnection.QueryContext`). `INSERT … RETURNING` is `42601` (not in
   the grammar). Pinned: `pkg/relational/sqldriver/returning_clause_probe_test.go:49`, `:61`, `:75`.
 - **`LIKE` does not treat a trailing newline as content.** `WHERE name LIKE 'abc'` matches the
   stored value `"abc\n"` — no DOTALL, and `$` matches before one final line terminator. Deliberate

@@ -597,11 +597,12 @@ func evaluateRankAggregate(
 		if len(trailingValues) == 0 {
 			return nil, nil
 		}
-		rank, ok := trailingValues[0].(int64)
-		if !ok {
-			return nil, fmt.Errorf("evaluate %s: rank must be int64, got %T", fn.Name, trailingValues[0])
+		// Java's (Number) cast and scoreForRank: a null rank answers null.
+		rank, err := javaRank(trailingValues[0])
+		if err != nil || rank == nil {
+			return nil, err
 		}
-		scoreBytes, err := rankedSet.GetNth(rm.tx, rank)
+		scoreBytes, err := rankedSet.GetNth(rm.tx, *rank)
 		if err != nil {
 			return nil, err
 		}

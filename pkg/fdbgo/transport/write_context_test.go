@@ -246,7 +246,7 @@ func TestWriteContextSocketFailureCompletesQueuedRequest(t *testing.T) {
 	writer := &blockingErrorWriter{reached: make(chan struct{}), release: make(chan struct{})}
 	conn := &Conn{
 		conn: network, wbuf: bufio.NewWriter(writer), writeCh: make(chan writeReq, 2),
-		ctx: connCtx, cancel: connCancel, pending: make(map[UID]pendingEntry),
+		ctx: connCtx, cancel: connCancel,
 	}
 	conn.loopWG.Add(1)
 	loopDone := make(chan struct{})
@@ -304,13 +304,10 @@ func TestWriteContextSocketFailureCompletesQueuedRequest(t *testing.T) {
 func TestReplyHandleKeepReadyOrCancel(t *testing.T) {
 	t.Parallel()
 	for _, ready := range []bool{false, true} {
-		conn := &Conn{pending: make(map[UID]pendingEntry)}
+		conn := &Conn{}
 		token, replies, handle := conn.PrepareReply()
 		if ready {
-			conn.pendingMu.Lock()
-			conn.pending[token].ch <- Response{Body: []byte("retained")}
-			delete(conn.pending, token)
-			conn.pendingMu.Unlock()
+			conn.deliverPending(token, Response{Body: []byte("retained")})
 		}
 		if kept := handle.KeepReadyOrCancel(); kept != ready {
 			t.Errorf("ready=%v: kept=%v", ready, kept)
@@ -320,7 +317,7 @@ func TestReplyHandleKeepReadyOrCancel(t *testing.T) {
 				t.Errorf("kept body=%q", response.Body)
 			}
 		}
-		if len(conn.pending) != 0 {
+		if conn.pendingCount() != 0 {
 			t.Error("reply token retained after ownership decision")
 		}
 		handle.Release()
@@ -330,20 +327,17 @@ func TestReplyHandleKeepReadyOrCancel(t *testing.T) {
 func TestReplyHandleTakeReadyOrCancel(t *testing.T) {
 	t.Parallel()
 	for _, ready := range []bool{false, true} {
-		conn := &Conn{pending: make(map[UID]pendingEntry)}
+		conn := &Conn{}
 		token, _, handle := conn.PrepareReply()
 		if ready {
 			// Same publication critical section as the real connection reader.
-			conn.pendingMu.Lock()
-			conn.pending[token].ch <- Response{Body: []byte("retained")}
-			delete(conn.pending, token)
-			conn.pendingMu.Unlock()
+			conn.deliverPending(token, Response{Body: []byte("retained")})
 		}
 		got, took := handle.TakeReadyOrCancel()
 		if took != ready || (ready && string(got.Body) != "retained") {
 			t.Errorf("ready=%v: took=%v body=%q", ready, took, got.Body)
 		}
-		if len(conn.pending) != 0 {
+		if conn.pendingCount() != 0 {
 			t.Error("reply token retained after ownership decision")
 		}
 		handle.Release()

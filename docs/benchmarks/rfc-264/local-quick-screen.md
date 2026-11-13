@@ -148,8 +148,10 @@ P0 required a p50 point ratio below one in **both** get100 cells. Its ratios wer
 **1.00178 [0.99880, 1.00468]** at 32 workers. It failed that condition.
 P2t required p50 point ratios below one in **all six** cells; every point ratio
 was above one. It failed that condition too. Neither qualifies, independent of
-any additional mechanism review. The final owner decision is **reject both**,
-retain the 10/20 µs default and accept a data/tools/docs outcome only.
+any additional mechanism review. The RFC-264 owner decision was **reject both**,
+retaining the 10/20 µs legacy-writer default for that workstream (later
+superseded by [RFC-282](../../../rfcs/282-dng-transport-and-hotpath.md)'s 0/0
+D-NG default) and accepting a data/tools/docs outcome only.
 
 ## Reproduction and evidence integrity
 

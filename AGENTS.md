@@ -15,16 +15,25 @@ reruns exactly the targets your change affects, dependents included, and
 answers the rest from cache; a hand-picked target list misses affected
 dependents and is not the check the hook and CI make.
 
+**Single-target race and repeat runs are allowed** for proving a concurrency fix or a
+deterministic regression: `bazelisk test //pkg/...:foo_test
+--@rules_go//go/config:race --test_filter=TestName --runs_per_test=N
+--nocache_test_results`. They are evidence for that test, not validation of the change:
+`just test` (and `just test-full` where it applies) is still the check.
+
 - `just test`: the standard fast edit/commit loop. Bazel runs nogo, unit tests,
   and bounded integration tests. Targets tagged `test-full`, `conformance_java`,
   or `stress` are excluded; `manual` targets are excluded by Bazel's wildcard.
-- `just test-full`: all Bazel test targets, including manual targets. This adds
+- `just test-full`: all Bazel test targets, including manual targets, except
+  those tagged `realcluster` (they need a real FDB cluster: `just stress-10m`). This adds
   the heavyweight client, Java conformance, chaos, SQL integration/rowdiff,
   planner-sweep, full-corpus, and stress/scale suites. Requires Docker and the
   external data/toolchain dependencies declared by those targets.
-- Full means all targets at their default budgets, not every scheduled execution
-  mode. CI/nightlies retain extended seed, race, and active-fuzz configurations;
-  `just verify` adds the existing race and fuzz-smoke checks to the full lane.
+- Full means all targets at their default budgets, not every execution mode. PR CI
+  adds a `-race` lane (relational, client, cascades) and replays the wire-oracle
+  fuzz seed corpora; no scheduled workflow runs, so active fuzzing and extended
+  seed runs happen only when invoked. `just verify` adds the existing race and
+  fuzz-smoke checks to the full lane.
 - Complete a coherent workstream before running the suite. Do not rerun it after
   every small edit. If a touched regression target is outside the fast lane
   (tagged `test-full`/`conformance_java`/`stress`/`manual`), run `just test-full`,
@@ -39,7 +48,7 @@ dependents and is not the check the hook and CI make.
 - The fast lane uses `--build_tests_only` to avoid unrelated wildcard builds.
   Keep Bazel caching enabled. Do not substitute standalone `go test`, `go vet`,
   or `go get` for this module's just/Bazel validation. Nogo already runs during
-  compilation. Standalone nested modules have their own documented CI commands.
+  compilation.
 - The end-to-end SQL suite lives in `//pkg/relational/sqltest/<area>` packages
   (`just sqltest`), so an edited test reruns only its package.
 - Classify heavyweight targets using the `test-full` BUILD tag, not test skips

@@ -176,7 +176,7 @@ func TestMappedSkipEmptyOrInvertedRangeDoesNotResolve(t *testing.T) {
 			// A nil database makes any accidental location/getKey dispatch fail.
 			tx := &Transaction{}
 			result, err := tx.getMappedRangeWithResolvedSkip(context.Background(), begin, nil, nil, newMappedRangeLimits(1, -1), math.MaxInt32, 0, reverse)
-			if err != nil || len(result.rows) != 0 || result.more || tx.hadRead.Load() || len(tx.readConflicts) != 0 {
+			if err != nil || len(result.rows) != 0 || result.more || tx.hadRead.Load() || len(tx.readConflictRanges()) != 0 {
 				t.Fatalf("empty range issued a read: begin=%q reverse=%v result=%+v error=%v", begin, reverse, result, err)
 			}
 		}
@@ -227,8 +227,8 @@ func TestMappedSkipConflictPreservesWithinRangePrefix(t *testing.T) {
 			tx.ryw.atomic(MutSetVersionstampedValue, []byte("m"), make([]byte, 14))
 		}
 		err := tx.addMappedRangeConflictMustUnmodified(context.Background(), []byte("a"), []byte("z"))
-		if !mappedSkipHasError(err, 2039) || len(tx.readConflicts) != 1 || string(tx.readConflicts[0].Begin) != "a" || string(tx.readConflicts[0].End) != "m" {
-			t.Fatalf("kind=%s error=%v conflicts=%+v; want 2039 with [a,m) retained", kind, err, tx.readConflicts)
+		if !mappedSkipHasError(err, 2039) || len(tx.readConflictRanges()) != 1 || string(tx.readConflictRanges()[0].Begin) != "a" || string(tx.readConflictRanges()[0].End) != "m" {
+			t.Fatalf("kind=%s error=%v conflicts=%+v; want 2039 with [a,m) retained", kind, err, tx.readConflictRanges())
 		}
 	}
 }
@@ -242,12 +242,12 @@ func TestMappedSkipSecondaryFailureKeepsEarlierConflicts(t *testing.T) {
 		{Key: []byte("primary/d"), Kind: MappedResultGetRange, GetRange: MappedGetRange{Begin: mappedSelectorFGE([]byte("secondary/h")), End: mappedSelectorFGE([]byte("secondary/z"))}},
 	}}
 	err := tx.addMappedRangeConflicts(context.Background(), []byte("primary/a"), []byte("primary/z"), false, result.more, result.rows)
-	if !mappedSkipHasError(err, 2039) || len(tx.readConflicts) != 3 {
-		t.Fatalf("secondary failure lost prior conflicts: error=%v conflicts=%+v", err, tx.readConflicts)
+	if !mappedSkipHasError(err, 2039) || len(tx.readConflictRanges()) != 3 {
+		t.Fatalf("secondary failure lost prior conflicts: error=%v conflicts=%+v", err, tx.readConflictRanges())
 	}
 	for i, want := range [][2]string{{"primary/a", "primary/z"}, {"secondary/earlier", "secondary/earlier\x00"}, {"secondary/h", "secondary/m"}} {
-		if string(tx.readConflicts[i].Begin) != want[0] || string(tx.readConflicts[i].End) != want[1] {
-			t.Fatalf("conflict %d = [%q,%q) want [%q,%q)", i, tx.readConflicts[i].Begin, tx.readConflicts[i].End, want[0], want[1])
+		if string(tx.readConflictRanges()[i].Begin) != want[0] || string(tx.readConflictRanges()[i].End) != want[1] {
+			t.Fatalf("conflict %d = [%q,%q) want [%q,%q)", i, tx.readConflictRanges()[i].Begin, tx.readConflictRanges()[i].End, want[0], want[1])
 		}
 	}
 }
@@ -256,11 +256,11 @@ func TestMappedSkipConflictAtBeginInsertsNothing(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{}
 	tx.ryw.addClearedRange([]byte("a"), []byte("n"))
-	if err := tx.addMappedRangeConflictMustUnmodified(context.Background(), []byte("m"), []byte("z")); !mappedSkipHasError(err, 2039) || len(tx.readConflicts) != 0 {
-		t.Fatalf("modified begin inserted conflicts: error=%v conflicts=%+v", err, tx.readConflicts)
+	if err := tx.addMappedRangeConflictMustUnmodified(context.Background(), []byte("m"), []byte("z")); !mappedSkipHasError(err, 2039) || len(tx.readConflictRanges()) != 0 {
+		t.Fatalf("modified begin inserted conflicts: error=%v conflicts=%+v", err, tx.readConflictRanges())
 	}
-	if err := tx.addMappedRangeConflictMustUnmodified(context.Background(), []byte("z"), []byte("z")); err != nil || len(tx.readConflicts) != 0 {
-		t.Fatalf("empty interval inserted conflicts: error=%v conflicts=%+v", err, tx.readConflicts)
+	if err := tx.addMappedRangeConflictMustUnmodified(context.Background(), []byte("z"), []byte("z")); err != nil || len(tx.readConflictRanges()) != 0 {
+		t.Fatalf("empty interval inserted conflicts: error=%v conflicts=%+v", err, tx.readConflictRanges())
 	}
 }
 

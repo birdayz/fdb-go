@@ -186,7 +186,7 @@ func describeSkipped(skipped map[string]string) string {
 	// Decoding is decided ONCE for the whole string, from every name it will
 	// print, and it is suppressed entirely if any decoded spelling would be
 	// another entry's stored name or would collide with another decoded one.
-	// Two separate reasons, both learned the hard way in cmd/frl:
+	// Two separate reasons, both learned the hard way in cmd/fdb:
 	//
 	//   - Bare ToUserIdentifier has no round-trip guard, so a type legitimately
 	//     named __0Order renders as __Order, which re-encodes to __Order and

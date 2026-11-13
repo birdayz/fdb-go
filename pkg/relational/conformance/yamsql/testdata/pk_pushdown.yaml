@@ -34,8 +34,8 @@ tests:
     rows: []
 
   # With ORDER BY on top — trivial on ≤1 row; just verifies pushdown
-  # doesn't bypass that clause. (LIMIT was incidental; rejected at
-  # parse time as of fdb-relational 4.11.1.0.)
+  # doesn't bypass that clause. (LIMIT was incidental; Java rejects
+  # every LIMIT, 0AF00.)
   - query: SELECT name FROM t WHERE id = 2 ORDER BY id
     rows:
       - ['beta']

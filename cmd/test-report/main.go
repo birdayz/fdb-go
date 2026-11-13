@@ -20,12 +20,16 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"flag"
 	"fmt"
 	"html/template"
+	"io"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -195,6 +199,9 @@ type bepTestResult struct {
 	Status           string          `json:"status"` // PASSED, FAILED, TIMEOUT, FLAKY, etc.
 	DurationMillis   string          `json:"testAttemptDurationMillis"`
 	CachedLocally    bool            `json:"cachedLocally"`
+	ExecutionInfo    struct {
+		CachedRemotely bool `json:"cachedRemotely"`
+	} `json:"executionInfo"`
 }
 
 type bepOutputFile struct {
@@ -258,16 +265,21 @@ type TestResult struct {
 }
 
 type TargetResult struct {
-	Target    string // Bazel label, e.g. "//pkg/foo:foo_test"
-	Tests     []TestResult
-	SuiteTime time.Duration
-	Cached    bool      // true if Bazel served this target from cache
-	Tree      *TreeNode // non-nil for Ginkgo targets with hierarchical specs
+	Target          string // Bazel label, e.g. "//pkg/foo:foo_test"
+	Tests           []TestResult
+	SuiteTime       time.Duration
+	Cached          bool // true if every final run/shard result came from cache
+	CachedResults   int
+	ExecutedResults int
+	Tree            *TreeNode // non-nil for Ginkgo targets with hierarchical specs
 }
 
 func (t *TargetResult) CachedLabel() string {
 	if t.Cached {
 		return "cached"
+	}
+	if t.CachedResults > 0 {
+		return "mixed"
 	}
 	return "executed"
 }
@@ -418,7 +430,7 @@ func parseBEP(path string) ([]*TargetResult, error) {
 			info := &targetInfo{
 				label:   id.Label,
 				status:  ev.TestResult.Status,
-				cached:  ev.TestResult.CachedLocally,
+				cached:  ev.TestResult.CachedLocally || ev.TestResult.ExecutionInfo.CachedRemotely,
 				attempt: id.Attempt,
 			}
 			if ms, _ := strconv.ParseInt(ev.TestResult.DurationMillis, 10, 64); ms > 0 {
@@ -471,6 +483,11 @@ func parseBEP(path string) ([]*TargetResult, error) {
 		}
 		tr.SuiteTime += time.Duration(info.durationMs) * time.Millisecond
 		tr.Cached = tr.Cached && info.cached
+		if info.cached {
+			tr.CachedResults++
+		} else {
+			tr.ExecutedResults++
+		}
 
 		// Check for Ginkgo's tree-structured JSON report alongside the standard test.xml.
 		// Ginkgo suites write to $TEST_UNDECLARED_OUTPUTS_DIR/ginkgo-report.json which
@@ -751,15 +768,42 @@ func parseLCOV(path string) (*CoverageReport, error) {
 // ---- HTML template ----
 
 type summaryData struct {
-	Total   int
-	Passed  int
-	Failed  int
-	Skipped int
-	Time    string
+	Total           int
+	Passed          int
+	Failed          int
+	Skipped         int
+	Time            string
+	CachedResults   int
+	ExecutedResults int
+}
+
+type reportProvenance struct {
+	SHA        string
+	RunURL     string
+	Lane       string
+	Exclusions string
+}
+
+func (p reportProvenance) validate() error {
+	if p == (reportProvenance{}) {
+		return nil
+	}
+	if p.SHA == "" || p.RunURL == "" || strings.TrimSpace(p.Lane) == "" || strings.TrimSpace(p.Exclusions) == "" {
+		return fmt.Errorf("report provenance requires sha, run-url, lane and exclusions together")
+	}
+	if _, err := hex.DecodeString(p.SHA); err != nil || len(p.SHA) != 40 && len(p.SHA) != 64 {
+		return fmt.Errorf("report sha must be a full hexadecimal Git object ID")
+	}
+	u, err := url.Parse(p.RunURL)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
+		return fmt.Errorf("report run-url must be an absolute HTTPS URL without user information")
+	}
+	return nil
 }
 
 type templateData struct {
 	GeneratedAt string
+	Provenance  reportProvenance
 	Summary     summaryData
 	Coverage    *CoverageReport // nil if no LCOV file provided
 	Targets     []*TargetResult
@@ -1034,6 +1078,18 @@ footer {
   <span class="timestamp">{{.GeneratedAt}}</span>
 </header>
 
+<section style="padding: 12px 32px; background: #fff; border-bottom: 1px solid #dde1ec">
+{{- if .Provenance.SHA}}
+  <div>Tested commit: <code>{{.Provenance.SHA}}</code></div>
+  <div>Lane: <strong>{{.Provenance.Lane}}</strong> &middot; <a href="{{.Provenance.RunURL}}">CI run</a></div>
+  <div>Excluded / separate coverage: {{.Provenance.Exclusions}}</div>
+{{- else}}
+  <div>Unattributed report: commit, CI run and lane were not supplied.</div>
+{{- end}}
+  <div>Counts cover this report only. Cached results are not fresh test executions.</div>
+  <div>Final run/shard results: {{.Summary.ExecutedResults}} executed, {{.Summary.CachedResults}} cached. These are not case counts.</div>
+</section>
+
 <div class="summary-bar">
   <div class="stat stat-total"><span class="val">{{.Summary.Total}}</span><span class="lbl">Total</span></div>
   <div class="summary-divider"></div>
@@ -1088,7 +1144,7 @@ footer {
   <summary>
     <span class="target-label">{{.Target}}</span>
     <span class="badge {{.BadgeClass}}">{{.BadgeText}}</span>
-    {{if .Cached}}<span class="badge badge-cached">cached</span>{{end}}
+    <span class="badge badge-cached">{{.CachedLabel}}: {{.ExecutedResults}} executed, {{.CachedResults}} cached run/shard results</span>
     <span class="chevron">&#9654;</span>
   </summary>
   {{- if .Tree}}
@@ -1149,8 +1205,23 @@ footer {
 // ---- main ----
 
 func run() error {
-	coveragePath := flag.String("coverage", "", "path to LCOV coverage file (optional)")
-	flag.Parse()
+	return runReport(os.Args[1:], os.Stdout)
+}
+
+func runReport(args []string, output io.Writer) error {
+	flags := flag.NewFlagSet("test-report", flag.ContinueOnError)
+	coveragePath := flags.String("coverage", "", "path to LCOV coverage file (optional)")
+	var provenance reportProvenance
+	flags.StringVar(&provenance.SHA, "sha", "", "full tested Git object ID")
+	flags.StringVar(&provenance.RunURL, "run-url", "", "HTTPS URL of the CI run")
+	flags.StringVar(&provenance.Lane, "lane", "", "validation lane represented by this report")
+	flags.StringVar(&provenance.Exclusions, "exclusions", "", "excluded targets and separately reported execution modes")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if err := provenance.validate(); err != nil {
+		return err
+	}
 
 	// Accept one or more BEP file paths. Each `bazelisk test`
 	// invocation writes its own BEP, and the global
@@ -1163,8 +1234,8 @@ func run() error {
 	// outcome is visible. Default path stays `.bazel-bep.jsonl` so
 	// local single-invocation use is unchanged.
 	bepPaths := []string{".bazel-bep.jsonl"}
-	if flag.NArg() > 0 {
-		bepPaths = flag.Args()
+	if flags.NArg() > 0 {
+		bepPaths = flags.Args()
 	}
 
 	var targets []*TargetResult
@@ -1192,12 +1263,14 @@ func run() error {
 	})
 
 	// Build summary.
-	var sumPassed, sumFailed, sumSkipped int
+	var sumPassed, sumFailed, sumSkipped, cachedResults, executedResults int
 	var totalTime time.Duration
 	for _, t := range targets {
 		sumPassed += t.Passed()
 		sumFailed += t.Failed()
 		sumSkipped += t.Skipped()
+		cachedResults += t.CachedResults
+		executedResults += t.ExecutedResults
 		if t.SuiteTime > 0 {
 			totalTime += t.SuiteTime
 		} else {
@@ -1225,12 +1298,15 @@ func run() error {
 
 	data := templateData{
 		GeneratedAt: time.Now().Format("2006-01-02 15:04:05"),
+		Provenance:  provenance,
 		Summary: summaryData{
-			Total:   sumPassed + sumFailed + sumSkipped,
-			Passed:  sumPassed,
-			Failed:  sumFailed,
-			Skipped: sumSkipped,
-			Time:    formatDuration(displayTime),
+			Total:           sumPassed + sumFailed + sumSkipped,
+			Passed:          sumPassed,
+			Failed:          sumFailed,
+			Skipped:         sumSkipped,
+			Time:            formatDuration(displayTime),
+			CachedResults:   cachedResults,
+			ExecutedResults: executedResults,
 		},
 		Coverage: coverageReport,
 		Targets:  targets,
@@ -1246,12 +1322,12 @@ func run() error {
 		return fmt.Errorf("executing template: %w", err)
 	}
 
-	_, err = os.Stdout.Write(buf.Bytes())
+	_, err = output.Write(buf.Bytes())
 	return err
 }
 
 func main() {
-	if err := run(); err != nil {
+	if err := run(); err != nil && !errors.Is(err, flag.ErrHelp) {
 		fmt.Fprintf(os.Stderr, "test-report: %v\n", err)
 		os.Exit(1)
 	}

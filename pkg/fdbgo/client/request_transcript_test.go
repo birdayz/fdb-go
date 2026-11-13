@@ -399,11 +399,11 @@ func (g *transcriptGate) seed(fn func(tx *Transaction)) {
 
 // layout is the cluster's shard map, read with a cold location cache. It also
 // pins each shard's replica: load balancing picks a replica at random
-// (loadbalance.go:242-250), and which replica answers decides how far a getKey
+// (QueueModel.chooseTopTwo), and which replica answers decides how far a getKey
 // resolves before it must cross a shard, so the two runs would otherwise send
 // different requests for a reason neither path controls. With every storage
 // address marked failed until a distinct time, each request goes to the
-// replica that is eligible soonest (soonestEligible, loadbalance.go:166-182).
+// replica that is eligible soonest (QueueModel.soonestEligible).
 func (g *transcriptGate) layout(t *testing.T) string {
 	t.Helper()
 	all := []byte{0xff, 0xff}
@@ -429,11 +429,9 @@ func (g *transcriptGate) layout(t *testing.T) string {
 	}
 	sort.Strings(sorted)
 	q := g.db.db.queueModel
-	q.mu.Lock()
 	for i, a := range sorted {
-		q.getOrCreate(a).failedUntil = nowSeconds() + 3600 + float64(i)
+		withServer(q, a, func(d *queueData) { d.failedUntil = nowSeconds() + 3600 + float64(i) })
 	}
-	q.mu.Unlock()
 	return b.String()
 }
 
@@ -620,6 +618,9 @@ func (g *transcriptGate) negativeControls(prefix []byte) {
 		}, "undecodable frame"},
 		{"malformed-field", func(_ *Transaction, rc *recordingConn) {
 			rc.observe(recorderFrame(transport.UID{First: 7}, malformedGetKeyValues()))
+		}, "decode GetKeyValuesRequest.Begin"},
+		{"noncanonical-body", func(_ *Transaction, rc *recordingConn) {
+			rc.observe(recorderFrame(transport.UID{First: 7}, nonCanonicalGetKeyValues()))
 		}, "does not re-encode"},
 		{"unexpected-kind", func(_ *Transaction, rc *recordingConn) {
 			rc.observe(recorderFrame(transport.UID{First: 7}, commit))

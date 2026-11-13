@@ -1,7 +1,11 @@
 package tuple
 
 import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
 	"math"
+	"math/rand/v2"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -97,6 +101,23 @@ func TestPack1WithPrefix(t *testing.T) {
 	}
 }
 
+// AppendString is Pack of the string element, NUL bytes escaped, appended in place.
+func TestAppendString(t *testing.T) {
+	t.Parallel()
+	g := NewGomegaWithT(t)
+	for _, s := range []string{"", "token", "\x00", "a\x00b", "\x00lead", "trail\x00", "a\x00\x00b\x00", "\xff\x00\xff"} {
+		prefix := []byte("pre")
+		dst := append(make([]byte, 0, 64), prefix...)
+		got := AppendString(dst, s)
+		g.Expect(got).To(Equal(append([]byte("pre"), Tuple{s}.Pack()...)), "%q", s)
+		g.Expect(&got[0]).To(BeIdenticalTo(&dst[0]), "%q: reallocated a buffer with room", s)
+		decoded, err := Unpack(got[len(prefix):])
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(decoded).To(Equal(Tuple{s}))
+	}
+	g.Expect(AppendString(nil, "a\x00b\x00")).To(Equal([]byte{0x02, 'a', 0x00, 0xff, 'b', 0x00, 0xff, 0x00}))
+}
+
 // TestPack1ConcatWithPrefix verifies single element + suffix tuple.
 func TestPack1ConcatWithPrefix(t *testing.T) {
 	t.Parallel()
@@ -164,4 +185,70 @@ func TestPack1_IncompleteVersionstampPanics(t *testing.T) {
 	complete := Versionstamp{TransactionVersion: tv, UserVersion: 9}
 	expected := append(append([]byte{}, prefix...), Tuple{complete}.Pack()...)
 	g.Expect(Pack1WithPrefix(prefix, complete)).To(Equal(expected), "complete versionstamp must encode")
+}
+
+// decodeIntBinaryRead is decodeInt as it decoded before the stack array:
+// binary.Read of the right-aligned bytes.
+func decodeIntBinaryRead(b []byte) (any, int, error) {
+	if b[0] == intZeroCode {
+		return int64(0), 1, nil
+	}
+	var neg bool
+	n := int(b[0]) - intZeroCode
+	if n < 0 {
+		n = -n
+		neg = true
+	}
+	if n+1 > len(b) {
+		return nil, 0, fmt.Errorf("insufficient bytes to decode %d-byte integer", n)
+	}
+	bp := make([]byte, 8)
+	copy(bp[8-n:], b[1:n+1])
+	var ret int64
+	binary.Read(bytes.NewBuffer(bp), binary.BigEndian, &ret)
+	if neg {
+		return ret - int64(sizeLimits[n]), n + 1, nil
+	}
+	if ret > 0 {
+		return ret, n + 1, nil
+	}
+	return uint64(ret), n + 1, nil
+}
+
+// decodeInt decodes every integer type code and length exactly as the
+// binary.Read version did, including truncated input, zero bytes, the
+// sign bit and non-minimal encodings.
+func TestDecodeIntMatchesBinaryRead(t *testing.T) {
+	t.Parallel()
+	rng := rand.New(rand.NewPCG(283, 7))
+	patterns := [][]byte{{}, {0}, {0xff}, {0x80}, {0x7f}, {0, 0, 0, 0, 0, 0, 0, 0}, {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, {0x80, 0, 0, 0, 0, 0, 0, 1}, {1, 2, 3, 4, 5, 6, 7, 8}}
+	for range 2000 {
+		p := make([]byte, rng.IntN(10))
+		for i := range p {
+			p[i] = byte(rng.UintN(256))
+		}
+		patterns = append(patterns, p)
+	}
+	for code := negIntStart + 1; code < posIntEnd; code++ {
+		for _, p := range patterns {
+			b := append([]byte{byte(code)}, p...)
+			got, goff, gerr := decodeInt(b)
+			want, woff, werr := decodeIntBinaryRead(b)
+			if goff != woff || (gerr == nil) != (werr == nil) || fmt.Sprintf("%T %v", got, got) != fmt.Sprintf("%T %v", want, want) {
+				t.Fatalf("%x: decodeInt = %T %v, %d, %v; binary.Read = %T %v, %d, %v", b, got, got, goff, gerr, want, want, woff, werr)
+			}
+		}
+	}
+}
+
+// decodeInt allocates at most the boxing. Not parallel: testing.AllocsPerRun
+// panics while a parallel test runs.
+func TestDecodeIntAllocations(t *testing.T) {
+	b := Tuple{int64(1) << 40}.Pack()
+	allocs := testing.AllocsPerRun(100, func() { _, _, _ = decodeInt(b) })
+	before := testing.AllocsPerRun(100, func() { _, _, _ = decodeIntBinaryRead(b) })
+	t.Logf("decodeInt allocations: %v, with binary.Read %v", allocs, before)
+	if allocs > 1 {
+		t.Fatalf("decodeInt allocates %v times", allocs)
+	}
 }

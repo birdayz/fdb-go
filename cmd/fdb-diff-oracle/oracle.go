@@ -260,8 +260,8 @@ func (o *Oracle) writeUID(v [16]byte) error {
 	return err
 }
 
-// readResponse reads a length-prefixed response from the oracle.
-// Returns nil if the oracle returned an error response (length=0).
+// readResponse reads a length-prefixed response from the oracle; an error
+// response (length 0) is returned as an error, never as nil bytes.
 func (o *Oracle) readResponse() ([]byte, error) {
 	var lenBuf [4]byte
 	if _, err := io.ReadFull(o.stdout, lenBuf[:]); err != nil {

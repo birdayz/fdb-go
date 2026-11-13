@@ -15,6 +15,10 @@ on:
       - "**/go.mod"
       - "scripts/gen-vanity-modules.sh"
       - "scripts/sync-website-benchmarks.py"
+      - "scripts/sync-website-cli-example.py"
+      - "proto/apple/**"
+      - "LICENSE"
+      - "NOTICE"
   # The site carries master's test report (fdb.dev/reports/latest.html, the README badge),
   # so each finished master CI run redeploys it.
   workflow_run:
@@ -49,7 +53,7 @@ jobs:
     steps:
       - name: Install Hugo CLI (extended)
         run: |
-          wget -O "${{ runner.temp }}/hugo.deb" \
+          curl -fsSL --retry 8 --retry-max-time 600 --connect-timeout 15 --speed-limit 1024 --speed-time 60 -o "${{ runner.temp }}/hugo.deb" \
             "https://github.com/gohugoio/hugo/releases/download/v${HUGO_VERSION}/hugo_extended_${HUGO_VERSION}_linux-amd64.deb"
           sudo dpkg -i "${{ runner.temp }}/hugo.deb"
       - name: Checkout
@@ -62,6 +66,10 @@ jobs:
           } > website/content/changelog.md
       - name: Sync benchmark campaign pages (single source of truth)
         run: python3 scripts/sync-website-benchmarks.py
+      - name: Verify runnable CLI example bundle
+        run: |
+          python3 scripts/sync-website-cli-example.py
+          git diff --exit-code -- website/static/examples/record-layer
       - name: Derive vanity-import module roots (single source of truth)
         # Via `bash`, not as an executable — core.fileMode=false in this repo means a
         # chmod +x silently never reaches the index. See the same note in ci.yml.

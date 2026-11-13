@@ -24,23 +24,10 @@ type MappedKeyValueRef struct {
 	ReqAndResultAlt1 GetRangeReqAndResult // tag=2
 }
 
-func (m *MappedKeyValueRef) UnmarshalFromReader(r *wire.Reader) {
-	if nr, err := r.ReadNestedReader(MappedKeyValueRefSlotKeyValue); err == nil {
-		m.KeyValue.UnmarshalFromReader(nr)
-	}
-	if r.FieldPresent(MappedKeyValueRefSlotReqAndResult) {
-		m.ReqAndResultTag = r.ReadUint8(MappedKeyValueRefSlotReqAndResult)
-		switch m.ReqAndResultTag {
-		case 1:
-			if nr, err := r.ReadNestedReader(MappedKeyValueRefSlotReqAndResult + 1); err == nil {
-				m.ReqAndResultAlt0.UnmarshalFromReader(nr)
-			}
-		case 2:
-			if nr, err := r.ReadNestedReader(MappedKeyValueRefSlotReqAndResult + 1); err == nil {
-				m.ReqAndResultAlt1.UnmarshalFromReader(nr)
-			}
-		}
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *MappedKeyValueRef) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *MappedKeyValueRef) UnmarshalFDB(data []byte) error {
@@ -48,21 +35,47 @@ func (m *MappedKeyValueRef) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if nr, err := r.ReadNestedReader(MappedKeyValueRefSlotKeyValue); err == nil {
-		m.KeyValue.UnmarshalFromReader(nr)
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *MappedKeyValueRef) decode(r *wire.Reader, b *wire.DecodeBudget) error {
+	if r.FieldPresent(MappedKeyValueRefSlotKeyValue) {
+		nr, err := r.ReadNestedReader(MappedKeyValueRefSlotKeyValue)
+		if err != nil {
+			return &wire.DecodeError{Type: "MappedKeyValueRef", Field: "KeyValue", Err: err}
+		}
+		if err := m.KeyValue.decode(nr, b); err != nil {
+			return err
+		}
 	}
 	if r.FieldPresent(MappedKeyValueRefSlotReqAndResult) {
-		m.ReqAndResultTag = r.ReadUint8(MappedKeyValueRefSlotReqAndResult)
-		switch m.ReqAndResultTag {
-		case 1:
-			if nr, err := r.ReadNestedReader(MappedKeyValueRefSlotReqAndResult + 1); err == nil {
-				m.ReqAndResultAlt0.UnmarshalFromReader(nr)
-			}
-		case 2:
-			if nr, err := r.ReadNestedReader(MappedKeyValueRefSlotReqAndResult + 1); err == nil {
-				m.ReqAndResultAlt1.UnmarshalFromReader(nr)
+		tag := r.ReadUint8(MappedKeyValueRefSlotReqAndResult)
+		if r.FieldPresent(MappedKeyValueRefSlotReqAndResult + 1) {
+			switch tag {
+			case 1:
+				m.ReqAndResultTag = 1
+				nr, err := r.ReadNestedReader(MappedKeyValueRefSlotReqAndResult + 1)
+				if err != nil {
+					return &wire.DecodeError{Type: "MappedKeyValueRef", Field: "ReqAndResult", Err: err}
+				}
+				if err := m.ReqAndResultAlt0.decode(nr, b); err != nil {
+					return err
+				}
+			case 2:
+				m.ReqAndResultTag = 2
+				nr, err := r.ReadNestedReader(MappedKeyValueRefSlotReqAndResult + 1)
+				if err != nil {
+					return &wire.DecodeError{Type: "MappedKeyValueRef", Field: "ReqAndResult", Err: err}
+				}
+				if err := m.ReqAndResultAlt1.decode(nr, b); err != nil {
+					return err
+				}
 			}
 		}
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "MappedKeyValueRef", Err: err}
 	}
 	return nil
 }
@@ -116,21 +129,28 @@ func (m *MappedKeyValueRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart in
 	return selfStart
 }
 
-// ParseMappedKeyValueRefVectorFromReader reads a FlatBuffers vector of MappedKeyValueRef.
-func ParseMappedKeyValueRefVectorFromReader(r *wire.Reader, slot int) []MappedKeyValueRef {
+// ParseMappedKeyValueRefVectorFromReader reads a FlatBuffers vector of MappedKeyValueRef under one decode budget.
+func ParseMappedKeyValueRefVectorFromReader(r *wire.Reader, slot int) ([]MappedKeyValueRef, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]MappedKeyValueRef, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]MappedKeyValueRef", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]MappedKeyValueRef, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]MappedKeyValueRef", Err: err}
 		}
-		var elem MappedKeyValueRef
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

@@ -2,9 +2,23 @@ package client
 
 import (
 	"math"
+	"math/rand/v2"
 	"sort"
 	"sync"
 )
+
+const numSketchStripes = 16
+
+type latencySketchStripe struct {
+	mu             sync.Mutex
+	buckets        map[int]uint64 // signed bucket index -> count; lazily created
+	populationSize uint64
+	zeroPopulation uint64 // samples <= ddSketchEPS (count as 0, per C++)
+	sum            float64
+	minValue       float64
+	maxValue       float64
+	_              [8]byte // pad to 64B cache line
+}
 
 // latencySketch is a faithful port of C++ DDSketch<double> (fdbrpc/include/
 // fdbrpc/DDSketch.h), the type behind DatabaseContext's read/commit/GRV latency
@@ -32,17 +46,23 @@ import (
 //     natural map keys — no offset bookkeeping. percentile() sorts the occupied
 //     indices, but only at snapshot time, never on the sampling hot path.
 //
-// The zero value is ready to use (the bucket map is created lazily under the
-// lock), so a latencySketch can be embedded directly in ClientMetrics with no
-// constructor.
+// The zero value is ready to use: each stripe creates its bucket map lazily
+// under its own lock. No constructor is needed for ClientMetrics.
 type latencySketch struct {
-	mu             sync.Mutex
-	buckets        map[int]uint64 // signed bucket index -> count; lazily created
-	populationSize uint64
-	zeroPopulation uint64 // samples <= ddSketchEPS (count as 0, per C++)
-	sum            float64
-	minValue       float64
-	maxValue       float64
+	stripes      [numSketchStripes]latencySketchStripe
+	onStripeRead func(int) // optional test hook run during stats() aggregation
+}
+
+func (s *latencySketch) lockAll() {
+	for i := range s.stripes {
+		s.stripes[i].mu.Lock()
+	}
+}
+
+func (s *latencySketch) unlockAll() {
+	for i := len(s.stripes) - 1; i >= 0; i-- {
+		s.stripes[i].mu.Unlock()
+	}
 }
 
 const (
@@ -74,89 +94,136 @@ func bucketValue(index int) float64 {
 // (a clock-skew artifact; latencies are non-negative) are dropped rather than
 // bucketed into a bogus index.
 func (s *latencySketch) addSample(v float64) {
+	s.addSampleAt(int(rand.Uint64()&(numSketchStripes-1)), v)
+}
+
+func (s *latencySketch) addSampleAt(stripe int, v float64) {
 	if v < 0 || math.IsNaN(v) || math.IsInf(v, 0) {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.buckets == nil {
-		s.buckets = make(map[int]uint64)
+	var idx int
+	isZero := v <= ddSketchEPS
+	if !isZero {
+		idx = bucketIndex(v)
 	}
-	if s.populationSize == 0 {
-		s.minValue, s.maxValue = v, v
+	st := &s.stripes[stripe]
+	st.mu.Lock()
+	if st.populationSize == 0 {
+		st.minValue, st.maxValue = v, v
 	}
-	if v <= ddSketchEPS {
-		s.zeroPopulation++
+	if isZero {
+		st.zeroPopulation++
 	} else {
-		s.buckets[bucketIndex(v)]++
+		if st.buckets == nil {
+			st.buckets = make(map[int]uint64, 32)
+		}
+		st.buckets[idx]++
 	}
-	s.populationSize++
-	s.sum += v
-	if v > s.maxValue {
-		s.maxValue = v
+	st.populationSize++
+	st.sum += v
+	if v > st.maxValue {
+		st.maxValue = v
 	}
-	if v < s.minValue {
-		s.minValue = v
+	if v < st.minValue {
+		st.minValue = v
 	}
+	st.mu.Unlock()
 }
 
 // stats returns a point-in-time snapshot. Sorts the occupied bucket indices once
 // and answers all requested percentiles from that single sorted slice (vs the
 // C++ per-call vector walk) — snapshot is not the hot path.
 func (s *latencySketch) stats() LatencyStats {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	st := LatencyStats{Count: int64(s.populationSize)}
-	if s.populationSize == 0 {
+	s.lockAll()
+	defer s.unlockAll()
+	var (
+		populationSize uint64
+		zeroPopulation uint64
+		sum            float64
+		minValue       float64
+		maxValue       float64
+		buckets        map[int]uint64
+	)
+	for i := range s.stripes {
+		st := &s.stripes[i]
+		if st.populationSize > 0 {
+			if populationSize == 0 {
+				minValue, maxValue = st.minValue, st.maxValue
+			} else {
+				if st.minValue < minValue {
+					minValue = st.minValue
+				}
+				if st.maxValue > maxValue {
+					maxValue = st.maxValue
+				}
+			}
+			populationSize += st.populationSize
+			zeroPopulation += st.zeroPopulation
+			sum += st.sum
+			if len(st.buckets) > 0 {
+				if buckets == nil {
+					buckets = make(map[int]uint64, len(st.buckets))
+				}
+				for k, c := range st.buckets {
+					buckets[k] += c
+				}
+			}
+		}
+		if s.onStripeRead != nil {
+			s.onStripeRead(i)
+		}
+	}
+	st := LatencyStats{Count: int64(populationSize)}
+	if populationSize == 0 {
 		return st
 	}
-	st.Sum = s.sum
-	st.Mean = s.sum / float64(s.populationSize)
-	st.Min = s.minValue
-	st.Max = s.maxValue
+	st.Sum = sum
+	st.Mean = sum / float64(populationSize)
+	st.Min = minValue
+	st.Max = maxValue
 
-	idxs := make([]int, 0, len(s.buckets))
-	for k := range s.buckets {
+	idxs := make([]int, 0, len(buckets))
+	for k := range buckets {
 		idxs = append(idxs, k)
 	}
 	sort.Ints(idxs)
 
-	st.Median = s.percentileLocked(0.50, idxs)
-	st.P90 = s.percentileLocked(0.90, idxs)
-	st.P99 = s.percentileLocked(0.99, idxs)
+	st.Median = percentileMerged(0.50, idxs, buckets, populationSize, zeroPopulation, maxValue)
+	st.P90 = percentileMerged(0.90, idxs, buckets, populationSize, zeroPopulation, maxValue)
+	st.P99 = percentileMerged(0.99, idxs, buckets, populationSize, zeroPopulation, maxValue)
 	return st
 }
 
-// percentileLocked ports DDSketchBase::percentile (DDSketch.h:123) over the
-// pre-sorted occupied indices. Caller holds s.mu and supplies ascending idxs.
-func (s *latencySketch) percentileLocked(p float64, idxs []int) float64 {
-	if s.populationSize == 0 {
+// percentileMerged ports DDSketchBase::percentile (DDSketch.h:123) over the
+// pre-sorted occupied indices.
+func percentileMerged(p float64, idxs []int, buckets map[int]uint64, populationSize, zeroPopulation uint64, maxValue float64) float64 {
+	if populationSize == 0 {
 		return 0
 	}
 	// C++ truncates p*(pop-1) to uint64 (the 0-indexed target rank).
-	target := uint64(p * float64(s.populationSize-1))
-	if target < s.zeroPopulation {
+	target := uint64(p * float64(populationSize-1))
+	if target < zeroPopulation {
 		return 0
 	}
 	if p <= 0.5 { // count up from the smallest bucket (incl. the zero population)
-		count := s.zeroPopulation
+		count := zeroPopulation
 		for _, i := range idxs {
-			if target < count+s.buckets[i] {
+			if target < count+buckets[i] {
 				return bucketValue(i)
 			}
-			count += s.buckets[i]
+			count += buckets[i]
 		}
 	} else { // count down from the largest bucket
 		var count uint64
 		for j := len(idxs) - 1; j >= 0; j-- {
 			i := idxs[j]
-			if target+count+s.buckets[i] >= s.populationSize {
+			if target+count+buckets[i] >= populationSize {
 				return bucketValue(i)
 			}
-			count += s.buckets[i]
+			count += buckets[i]
 		}
 	}
 	// Unreachable for a non-empty sketch (target >= zeroPopulation is always in
 	// some bucket); fall back to max rather than the C++ -1 sentinel.
-	return s.maxValue
+	return maxValue
 }

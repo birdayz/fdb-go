@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -1324,6 +1325,126 @@ func TestIntersector_UsesTranslatedRequestedOrdering(t *testing.T) {
 	keys := intersection.GetComparisonKeyValues()
 	if len(keys) != 1 || values.ColumnNameValue(keys[0]) != "ID" {
 		t.Fatalf("translated comparison keys = %#v, want [ID]", keys)
+	}
+}
+
+func TestIntersector_ResidualFanOutEqualityDoesNotExposePK(t *testing.T) {
+	t.Parallel()
+	element := values.NewRecordType("Attr", false, []values.Field{{Name: "K", FieldType: values.NotNullLong, Ordinal: 0}})
+	row := values.NewRecordType("T", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "A", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "B", FieldType: values.NotNullLong, Ordinal: 2},
+		{Name: "ATTRS", FieldType: values.NewArrayType(true, element), Ordinal: 3},
+	})
+	attrs := "ATTRS"
+	fanRoot := &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{
+		candidateTestKeyField("A", gen.Field_SCALAR),
+		{Nesting: &gen.Nesting{
+			Parent: &gen.Field{FieldName: &attrs, FanType: gen.Field_FAN_OUT.Enum()},
+			Child:  candidateTestKeyField("K", gen.Field_SCALAR),
+		}},
+	}}}
+	rangeComparison := predicates.NewLiteralComparison(predicates.ComparisonGreaterThanEq, int64(0))
+	rangeResult := predicates.EmptyComparisonRange().Merge(&rangeComparison)
+	if !rangeResult.Complete() {
+		t.Fatal("failed to construct A range")
+	}
+	for _, tc := range []struct {
+		name       string
+		first      *predicates.ComparisonRange
+		wantPrefix int
+		viable     bool
+	}{
+		{"preceding range", rangeResult.Range, 1, false},
+		{"prefix gap", nil, 0, false},
+		{"consumed equality control", equalityRange(t, int64(1)), 2, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, reverse := range []bool{false, true} {
+				makeAccess := func(name string, columns []string, ranges []*predicates.ComparisonRange, root *gen.KeyExpression, position int) Vectored[*SingleMatchedAccess] {
+					aliases := []values.CorrelationIdentifier{values.UniqueCorrelationIdentifier(), values.UniqueCorrelationIdentifier()}
+					candidate := newKnownDistinctValueIndexCandidate(name, []string{"T"}, columns, aliases, row, false, []string{"ID"}).
+						WithCommonPrimaryKey([]values.Value{pkSuffixField(t, row, "ID")})
+					if root != nil {
+						candidate.WithRootKeyExpression(root)
+					}
+					bindings := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange)
+					for i, comparison := range ranges {
+						if comparison != nil {
+							bindings[aliases[i]] = comparison
+						}
+					}
+					match := NewRegularMatchInfo(bindings, nil, nil, nil, nil, nil, nil, nil)
+					// Matches describe the forward candidate; the access selects scan direction.
+					parts := candidate.ComputeMatchedOrderingParts(match, aliases, false)
+					if root != nil {
+						prefix := candidate.ComputeBoundParameterPrefixMap(bindings)
+						if len(prefix) != tc.wantPrefix {
+							t.Fatalf("consumed prefix has %d entries, want %d", len(prefix), tc.wantPrefix)
+						}
+						wantParts := 1
+						if tc.viable {
+							wantParts = 2
+						}
+						if len(parts) != wantParts || values.ColumnNameValue(parts[0].GetValue()) != "A" {
+							t.Fatalf("fan-out candidate ordering = %v, want %d parts starting at A", parts, wantParts)
+						}
+						fetch := candidate.ToScanPlan(EmptyPlanContext(), prefix, reverse).(*plans.RecordQueryFetchFromPartialRecordPlan)
+						index := fetch.GetInner().(*plans.RecordQueryIndexPlan)
+						rich := index.HintRichOrdering()
+						if len(rich.GetKeys()) != len(parts) {
+							t.Fatalf("candidate/physical rich ordering disagree: %v / %v", parts, rich.GetKeys())
+						}
+						for i, part := range parts {
+							if !orderingValuesEqualIn(part.GetValue(), rich.GetKeys()[i]) {
+								t.Fatalf("candidate/physical ordering disagree at %d", i)
+							}
+						}
+						plain := index.HintOrdering()
+						wantColumn := "A"
+						if tc.viable {
+							wantColumn = "ID"
+						}
+						if !plain.IsKnown || len(plain.Keys) != 1 || values.ColumnNameValue(plain.Keys[0]) != wantColumn {
+							t.Fatalf("physical plain ordering = %#v, want %s", plain, wantColumn)
+						}
+					}
+					match = NewRegularMatchInfo(bindings, nil, nil, parts, nil, nil, nil, nil)
+					partial := NewPartialMatch(nil, candidate, nil, nil, nil, match)
+					return NewVectored(NewSingleMatchedAccess(partial, NoCompensation, values.UniqueCorrelationIdentifier(), reverse, EmptyTranslationMap(), nil), position)
+				}
+				peerRange := rangeResult.Range
+				if tc.viable {
+					// Keep A fixed in both control legs so ID alone is a merge key.
+					peerRange = tc.first
+				}
+				accesses := []Vectored[*SingleMatchedAccess]{
+					makeAccess("FAN", []string{"A", "K"}, []*predicates.ComparisonRange{tc.first, equalityRange(t, int64(7))}, fanRoot, 0),
+					makeAccess("BB", []string{"B", "A"}, []*predicates.ComparisonRange{equalityRange(t, int64(1)), peerRange}, nil, 1),
+				}
+				direction := properties.RequestedSortOrderAscending
+				if reverse {
+					direction = properties.RequestedSortOrderDescending
+				}
+				requested := properties.NewRequestedOrdering(requestedParts(t, row,
+					map[string]properties.RequestedSortOrder{"A": direction, "ID": direction}, []string{"A", "ID"}), properties.DistinctnessPreserveDistinctness, false)
+				realizations := make(accessRealizations)
+				for _, access := range accesses {
+					if realizations.realize(EmptyPlanContext(), access.Value).expression == nil {
+						t.Fatalf("cannot realize %s scan", access.Value.GetPartialMatch().GetMatchCandidate().CandidateName())
+					}
+				}
+				if len(commonPrimaryKeyValuesForPartition(accesses, EmptyPlanContext())) != 1 || intersectionKeyLayout(accesses) == nil {
+					t.Fatal("intersection fixture has no common primary key or row layout")
+				}
+				built := createPrimaryKeyIntersection(compensationTestMemoizer(), accesses, []*properties.RequestedOrdering{requested},
+					EmptyPlanContext(), realizations)
+				if got := len(built.expressions) > 0; got != tc.viable {
+					t.Fatalf("reverse=%t: intersection alternatives = %d, want viable=%t", reverse, len(built.expressions), tc.viable)
+				}
+			}
+		})
 	}
 }
 

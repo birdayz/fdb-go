@@ -2,4 +2,5 @@ exports_files([
     "fdb-go-native-cdeps.patch",
     "fdb-go-range-iterator-done.patch",
     "fdb-go-string-array-alignment.patch",
+    "testcontainers-session-per-bazel-test.patch",
 ])

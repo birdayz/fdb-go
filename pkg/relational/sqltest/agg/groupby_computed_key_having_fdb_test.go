@@ -98,11 +98,10 @@ import (
 // equality), so that interlock is measured rather than structural.
 //
 // SO IS THE COMPUTED ONE, and saying otherwise was this file's own mistake for
-// two revisions. The computed gate arm is nominally semantic, but it runs only
-// when both keys resolve through a walk WEAKER than the one that mints them, and
-// it returns false on `(c1 + 1)` vs `c1 + 1` even when it does run. NEITHER route
-// has a structural guarantee; they differ only in how easy the counterexample is
-// to write.
+// two revisions. The computed gate is semantic and resolves keys with the walk
+// that mints them, but it returns false on `(c1 + 1)` vs `c1 + 1`: the wrapper
+// mismatch. NEITHER route has a structural guarantee; they differ only in how
+// easy the counterexample is to write.
 //
 // TWO ARMS ONCE PINNED DIVERGENCES THIS FILE'S FIX DID NOT CAUSE; ONE OF THEM IS
 // NOW CLOSED AND THE OTHER IS NOT, and the difference is worth stating because
@@ -320,13 +319,10 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// matches with, so two keys that could both match are semantically equal
 		// and already refused. That is an impossibility proof, and it is invalid.
 		//
-		// The gate is a three-arm switch and its semantic arm needs BOTH keys to
-		// resolve through Resolver.WalkExpression, which is weaker than the
-		// WalkExpressionForProjection that mints the key Value — it will not fold
-		// a comparison. And even when the semantic arm DOES run it can return
-		// false for one expression written two ways: `(c1 + 1)` resolves to a
-		// RecordConstructorValue wrapping what `c1 + 1` resolves to bare. Both
-		// holes are measured and pinned by
+		// The gate's semantic comparison resolves both keys with the walk that
+		// mints them, but it returns false for one expression written two ways:
+		// `(c1 + 1)` resolves to a RecordConstructorValue wrapping what `c1 + 1`
+		// resolves to bare. That hole is measured and pinned by
 		// a_parenthesised_computed_key_twin_is_NOT_refused_either.
 		//
 		// What survives is the OBSERVATION, which is what this arm asserts: these
@@ -473,9 +469,7 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// NAME-BASED comparison over the normalized (Bare, Qualifier) pair plus
 		// the Qualified flag (plan_visitor.go). Meanwhile the SIBLING walk that
 		// binds it matches with SemanticEqualsUnderAliasMap. The computed route's
-		// gate arm is nominally semantic, but it is reached only when both keys
-		// resolve through a weaker walk than the one that mints them, and it
-		// returns false on `(c1 + 1)` vs `c1 + 1` even when reached. So on BOTH
+		// gate is semantic but returns false on `(c1 + 1)` vs `c1 + 1`. So on BOTH
 		// routes the two sites decide identity by different means, and both
 		// interlocks are MEASURED facts rather than structural ones.
 		//
@@ -540,9 +534,8 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// and it still returns false, because `(c1 + 1)` resolves to a
 		// one-element RecordConstructorValue WRAPPING the arithmetic while
 		// `c1 + 1` resolves to the bare ArithmeticValue. Semantically the same
-		// expression, structurally two different Value types. So the gate is not
-		// defeated by falling back to a weaker predicate here; it is defeated
-		// while running its STRONGEST one.
+		// expression, structurally two different Value types: the gate is
+		// defeated while running its semantic comparison.
 		//
 		// THE NON-UNWRAP IS CORRECT — do not "fix" it, and do not read this arm
 		// as asking for that. Java's visitRecordConstructor does not unwrap a
@@ -564,18 +557,11 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// makes this a divergence rather than conformance, and it is pinned
 		// there in both directions.
 		//
-		// THE COMPARISON SPELLING FAILS DIFFERENTLY, and is worth pinning beside
-		// it because it is a second, independent route to the same place:
-		//
-		//   GROUP BY (c1 = 1), c1 = 1
-		//     walk[0] err=unsupported shape: *antlrgen.BinaryComparisonPredicateContext
-		//     walk[1] err=unsupported shape: *antlrgen.BinaryComparisonPredicateContext
-		//
-		// The gate resolves with WalkExpression (posPredicate), which refuses to
-		// fold a comparison to a Value, while the grouping key is MINTED with
-		// WalkExpressionForProjection (posProjection), which folds it happily.
-		// Both gate walks fail, so identity falls to the GetText token-stream
-		// compare, where "(c1=1)" and "c1=1" differ and nothing is refused.
+		// THE COMPARISON SPELLING takes the same route: the gate resolves both
+		// keys in value context with WalkExpressionForProjection, the walk that
+		// mints the grouping key, so `GROUP BY (c1 = 1), c1 = 1` compares a
+		// record-wrapped comparison with a bare one, exactly as the arithmetic
+		// pair does, and nothing is refused.
 		//
 		// NO MULTI-MATCH REACHES THE REBASE, and that is measured, not assumed.
 		// Instrumenting the first-match loop to count matching keys reports
@@ -585,24 +571,10 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// loop, so it binds the one correct slot. The loop's CONCLUSION holds;
 		// what does not hold is the reason previously given for it.
 		//
-		// WHICH SPELLING CAN ARM THE LOOP, stated precisely because the obvious
-		// reading is backwards. For the ARITHMETIC pair the loop can never be
-		// armed by normalizing: walkAtom dispatches RecordConstructor the same
-		// way in both positions, so any unwrap makes the GATE see AV vs AV and
-		// refuse 42702 BEFORE the loop. It is the COMPARISON pair that carries
-		// the hazard — its gate failure (posPredicate will not fold a comparison
-		// at all) is independent of the wrapper, so it survives any unwrap.
-		//
-		// And the danger is DIRECTION-ASYMMETRIC, with the naive fix landing on
-		// the wrong side:
-		//   unwrap in WalkExpressionForProjection ONLY -> gate still compares
-		//     RCV vs AV and does not refuse, while GroupKeys becomes [AV, AV] and
-		//     a reference matches BOTH — ARMED;
-		//   unwrap in WalkExpression ONLY (the gate's walk) -> gate sees AV vs AV
-		//     -> 42702 — safe;
-		//   unwrap in both, or beneath both -> safe.
-		// The projection walk is the one that mints the planner's value, so it is
-		// where someone would naturally change it. Do the loop guard first.
+		// NEITHER SPELLING CAN ARM THE LOOP by normalizing: the gate resolves
+		// each key with the walk that mints it, so an unwrap that makes the two
+		// keys equal makes the gate see them equal and refuse 42702 before the
+		// loop. Do the loop guard first all the same.
 		//
 		// BOUND AND OWNERSHIP: identical to the join divergence below. The rows
 		// are arithmetically correct, so this is conformance-only — Go answers
@@ -656,7 +628,7 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		eq(t, "SELECT max(c2) FROM (SELECT id, c1, c2 FROM flat) t "+
 			"GROUP BY (c1 + 1), c1 + 1 HAVING c1 + 1 > 120", 1, "[[330]]", why)
 		// THE CONTROL that keeps this arm honest: with the parentheses removed
-		// the texts coincide and the refusal DOES fire, so what is pinned above
+		// the keys coincide and the refusal DOES fire, so what is pinned above
 		// is the normalization hole and not a claim that the gate never works.
 		for _, q := range []string{
 			"SELECT max(c2) FROM flat GROUP BY c1 = 1, c1 = 1",

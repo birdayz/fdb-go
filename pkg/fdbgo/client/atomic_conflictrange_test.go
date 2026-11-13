@@ -30,7 +30,7 @@ func buildAndParseWriteConflicts(t *testing.T, op MutationType, key, operand []b
 
 	tx.Atomic(op, key, operand)
 
-	body, _ := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations, tx.writeConflicts)
+	body, _ := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations, tx.writeConflictRanges())
 	// Do NOT return bufp to marshalBufPool: UnmarshalFDB's WriteConflictRanges ALIAS `body` (the pooled
 	// buffer), and this helper returns those ranges to the caller, which reads them after we return.
 	// Pooling the buffer here (the old `defer marshalBufPool.Put(bufp)`) let a concurrent parallel
@@ -118,13 +118,13 @@ func TestAtomic_SetVersionstampedKey_ConsumesNextWriteNoConflictFlag(t *testing.
 	if tx.nextWriteNoConflict {
 		t.Fatal("SetVersionstampedKey did not consume nextWriteNoConflict flag (C++ getAndReset, :2220)")
 	}
-	if len(tx.writeConflicts) != 0 {
-		t.Fatalf("SetVersionstampedKey added %d write-conflict ranges, want 0", len(tx.writeConflicts))
+	if n := len(tx.writeConflictRanges()); n != 0 {
+		t.Fatalf("SetVersionstampedKey added %d write-conflict ranges, want 0", n)
 	}
 
 	// The next non-VSK atomic must add its range (flag was consumed, not leaked).
 	tx.Atomic(MutAddValue, []byte("k2"), []byte("v"))
-	if len(tx.writeConflicts) != 1 {
-		t.Fatalf("follow-up Add: got %d write-conflict ranges, want 1 (flag should not have leaked)", len(tx.writeConflicts))
+	if n := len(tx.writeConflictRanges()); n != 1 {
+		t.Fatalf("follow-up Add: got %d write-conflict ranges, want 1 (flag should not have leaked)", n)
 	}
 }

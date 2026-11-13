@@ -210,6 +210,7 @@ go_test(
         # measured target outcome of every run derived from it.
         "testdata/rfc257/java_index_templates.json",
         "testdata/rfc257/wsj_go_classes.json",
+        "testdata/rfc257/wsj_java_legacy_pins.json",
         "testdata/rfc257/wsj_java_pins.json",
     ],
     tags = [
@@ -245,6 +246,7 @@ go_test(
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_ginkgo_v2//types",
         "@com_github_onsi_gomega//:gomega",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//encoding/prototext",
         "@org_golang_google_protobuf//proto",
@@ -309,6 +311,7 @@ go_test(
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_ginkgo_v2//types",
         "@com_github_onsi_gomega//:gomega",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protoreflect",
@@ -352,6 +355,45 @@ go_test(
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_ginkgo_v2//types",
         "@com_github_onsi_gomega//:gomega",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+        "@rules_go//go/runfiles",
+    ],
+)
+
+# Go client vs libfdb_c transaction scripts; engine-free suite files only, so engine changes don't rerun it.
+# Its own container raises FUTURE_VERSION_DELAY to hold reads at future versions open. Hand-maintained (# keep).
+# gazelle:exclude ryw_script_conformance_test.go
+
+# keep
+go_test(
+    name = "ryw_script_conformance_test",
+    size = "large",
+    srcs = [
+        "conformance_suite_test.go",
+        "fdb_env_test.go",
+        "java_invoker_test.go",
+        "ryw_script_conformance_test.go",
+    ],
+    data = [
+        ":conformance_server",
+    ],
+    env = {"CONFORMANCE_FDB_KNOBS": "future_version_delay=3600"},
+    tags = [
+        "conformance_java",
+        "resources:memory:500",
+    ],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_google_uuid//:uuid",
+        "@com_github_onsi_ginkgo_v2//:ginkgo",
+        "@com_github_onsi_ginkgo_v2//types",
+        "@com_github_onsi_gomega//:gomega",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
         "@rules_go//go/runfiles",
@@ -423,6 +465,7 @@ go_test(
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_ginkgo_v2//types",
         "@com_github_onsi_gomega//:gomega",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//encoding/prototext",
         "@org_golang_google_protobuf//encoding/protowire",
@@ -500,6 +543,7 @@ go_test(
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_ginkgo_v2//types",
         "@com_github_onsi_gomega//:gomega",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//encoding/prototext",
         "@org_golang_google_protobuf//proto",
@@ -523,6 +567,24 @@ go_test(
 # gazelle:exclude *_java_probe_test.go
 # gazelle:exclude libfdbc_pin_test.go
 
+# The documents' citations of DocClaimsJavaProbe cases, checked in the fast lane.
+# keep
+go_test(
+    name = "doc_claims_cited_test",
+    srcs = [
+        "doc_claims_cases_java_probe_test.go",
+        "doc_claims_cited_java_probe_test.go",
+    ],
+    data = [
+        "//:DIVERGENCES.md",
+        "//:SQL_CONFORMANCE.md",
+    ],
+    deps = [
+        "//pkg/relational/conformance/javacorpus",
+        "//pkg/relational/conformance/plandiff/seedcorpus",
+    ],
+)
+
 # keep
 go_test(
     name = "conformance_probes_test",
@@ -537,6 +599,8 @@ go_test(
         "conformance_suite_test.go",
         "container_test.go",
         "correlated_having_exists_java_probe_test.go",
+        "doc_claims_cases_java_probe_test.go",
+        "doc_claims_java_probe_test.go",
         "dotted_and_recursive_seed_java_probe_test.go",
         "duplicate_alias_java_probe_test.go",
         "duplicate_groupby_java_probe_test.go",
@@ -559,6 +623,8 @@ go_test(
         "nlj_orientation_java_probe_test.go",
         "or_union_dedup_java_probe_test.go",
         "or_union_merge_java_probe_test.go",
+        "otel_sql_shapes_java_probe_test.go",
+        "otel_template_overlay_java_probe_test.go",
         "outer_join_canonical_java_probe_test.go",
         "paren_flatten_java_probe_test.go",
         "paren_star_java_probe_test.go",
@@ -571,6 +637,7 @@ go_test(
         "select_where_precedence_java_probe_test.go",
         "star_scope_java_probe_test.go",
         "sum_overflow_join_leg_java_probe_test.go",
+        "three_way_join_sarg_java_probe_test.go",
         "union_trailing_orderby_java_probe_test.go",
         "unknown_reference_text_java_probe_test.go",
         "whole_struct_comparison_java_probe_test.go",
@@ -585,6 +652,7 @@ go_test(
     deps = [
         "//gen",
         "//gen/demopb",
+        "//layers/otel/otelsql",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
@@ -602,6 +670,7 @@ go_test(
         "//pkg/relational/conformance/plandiff",
         "//pkg/relational/conformance/yamsql",
         "//pkg/relational/core/catalog",
+        "//pkg/relational/core/ddl",
         "//pkg/relational/core/embedded",
         "//pkg/relational/core/keyspace",
         "//pkg/relational/core/metadata",
@@ -610,6 +679,11 @@ go_test(
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_ginkgo_v2//types",
         "@com_github_onsi_gomega//:gomega",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
+        "@io_opentelemetry_go_proto_otlp//common/v1:common",
+        "@io_opentelemetry_go_proto_otlp//logs/v1:logs",
+        "@io_opentelemetry_go_proto_otlp//resource/v1:resource",
+        "@io_opentelemetry_go_proto_otlp//trace/v1:trace",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//encoding/prototext",
         "@org_golang_google_protobuf//proto",
@@ -682,6 +756,7 @@ go_test(
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_ginkgo_v2//types",
         "@com_github_onsi_gomega//:gomega",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//encoding/prototext",
         "@org_golang_google_protobuf//proto",
@@ -709,6 +784,7 @@ go_test(
         "benchmark_comparison_test.go",
         "bitmap_value_index_conformance_test.go",
         "bound_exists_source_conformance_test.go",
+        "bunched_map_conformance_test.go",
         "clear_when_zero_conformance_test.go",
         "clustered_cte_scope_conformance_test.go",
         "composite_index_conformance_test.go",
@@ -751,8 +827,10 @@ go_test(
         "java_facts_conformance_test.go",
         "java_invoker_test.go",
         "java_planner_warmth_proof_test.go",
+        "keyspace_conformance_test.go",
         "keyspace_domains_test.go",
         "keyspace_interop_conformance_test.go",
+        "legacy_pending_version_divergence_test.go",
         "lifecycle_error_test.go",
         "mapped_range_conformance_test.go",
         "mapped_range_skip_conformance_test.go",
@@ -770,6 +848,7 @@ go_test(
         "orphan_jvm_regression_test.go",
         "permuted_min_max_index_conformance_test.go",
         "plan_diff_conformance_test.go",
+        "probable_typed_keys_conformance_test.go",
         "probe_zerokey_allnull_java_test.go",
         "rangeset_conformance_test.go",
         "rank_index_conformance_test.go",
@@ -793,15 +872,20 @@ go_test(
         "sum_index_conformance_test.go",
         "testdata_test.go",
         "text_index_conformance_test.go",
+        "text_index_pipeline_conformance_test.go",
+        "text_query_boundary_conformance_test.go",
+        "text_query_conformance_test.go",
         "time_window_leaderboard_conformance_test.go",
         "transformed_serializer_conformance_test.go",
         "transient_fdb_error_test.go",
         "tuple_ordering_conformance_test.go",
+        "tuple_range_probe_conformance_test.go",
         "typed_record_conformance_test.go",
         "unique_violation_conformance_test.go",
         "vector_index_conformance_test.go",
         "version_conformance_test.go",
         "version_index_conformance_test.go",
+        "version_save_conformance_test.go",
         "ws_f_join_unnest_conformance_test.go",
         "ws_f_table_qualifier_conformance_test.go",
         "ws_j_enum_conformance_test.go",
@@ -830,6 +914,7 @@ go_test(
     deps = [
         "//gen",
         "//gen/demopb",
+        "//layers/otel/otelsql",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
@@ -838,6 +923,7 @@ go_test(
         "//pkg/rabitq",
         "//pkg/recordlayer",
         "//pkg/recordlayer/indexfetch",
+        "//pkg/recordlayer/keyspace",
         "//pkg/recordlayer/query/executor",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
@@ -856,6 +942,7 @@ go_test(
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_ginkgo_v2//types",
         "@com_github_onsi_gomega//:gomega",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//encoding/prototext",
         "@org_golang_google_protobuf//proto",

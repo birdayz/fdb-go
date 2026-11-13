@@ -51,6 +51,9 @@ func WithDialFunc(fn DialFunc) Option {
 // WithTLSConfig connects to the cluster over TLS using the given standard
 // *crypto/tls.Config — bring any config: in-memory certs, rotation via
 // GetClientCertificate, custom VerifyPeerCertificate, cipher/version policy.
+// The config keeps Go's verification, including a host-name check against each
+// dialed address, which libfdb_c does not make; for libfdb_c's check set
+// InsecureSkipVerify and transport.VerifyPolicy's VerifyConnection.
 //
 // It takes precedence over the FDB_TLS_* environment / cluster-file ":tls"
 // resolution and enables TLS even when the cluster string lacks ":tls". When not
@@ -132,18 +135,19 @@ func WithAPIVersion(v int) Option {
 	return func(o *openOptions) { o.apiVersion = v }
 }
 
-// WithCoalesceDelay sets how long each connection waits before writing a batch, so
-// requests sent meanwhile share it: max(minDelay, maxDelay - time since the last
-// write), jittered by 0.9-1.1. The default is libfdb_c's MIN_COALESCE_DELAY and
-// MAX_COALESCE_DELAY, 10 and 20 µs (transport.DefaultMinCoalesceDelay and
-// DefaultMaxCoalesceDelay). The last setting wins. Fewer, larger writes cost the
-// servers less per request;
-// the wait adds to each request's latency. Zero for both writes a request at
-// once when its connection has nothing queued. The wait needs a sub-millisecond
-// timer: off Linux, or if the timer cannot be created, requests are written at once.
+// WithCoalesceDelay sets each connection's timer-based batch delay bounds (default
+// 0, 0 on D-NG; 10/20 µs on WithLegacyWriter(); the last linger/coalesce option wins).
 func WithCoalesceDelay(minDelay, maxDelay time.Duration) Option {
 	return func(o *openOptions) {
 		o.dialOpts = append(o.dialOpts, transport.WithCoalesceDelay(minDelay, maxDelay))
+	}
+}
+
+// WithAdaptiveLinger configures Nagle-style adaptive linger on the D-NG writer
+// (0 disables; the last linger/coalesce option wins; RFC-282).
+func WithAdaptiveLinger(d time.Duration) Option {
+	return func(o *openOptions) {
+		o.dialOpts = append(o.dialOpts, transport.WithAdaptiveLinger(d))
 	}
 }
 

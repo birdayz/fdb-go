@@ -25,7 +25,7 @@ func codeOf(err error) int {
 //
 // The client reaches 1025 on the range and version paths through ensureReadVersion, whose first
 // act is checkCancelled (client/transaction.go:662-665); the two metrics paths never fetch a read
-// version, so libfdb_c gates them explicitly at op entry (client/metrics.go:29-38, :177-187). A
+// version, so libfdb_c gates them explicitly at op entry (client/metrics.go getEstimatedRangeSizeBytesImpl, getRangeSplitPointsImpl). A
 // sim that keeps answering reads on a cancelled handle lets a test "verify" post-cancel behaviour
 // that no real client exhibits — and SimFDB exists to stand in for a real client.
 func TestCancelledTransactionReadEntryPoints(t *testing.T) {
@@ -107,7 +107,7 @@ func TestCancelledTransactionReadEntryPoints(t *testing.T) {
 // TestCancelledTransactionMetricsReportInvertedRangeFirst pins the ORDER the two metrics entry
 // points report their two errors in. libfdb_c constructs a KeyRangeRef from the C arguments
 // before the op runs and that constructor throws inverted_range(2005), so an inverted range on a
-// CANCELLED transaction is 2005 — not 1025 (client/metrics.go:29-38, :177-187). Gating on cancel
+// CANCELLED transaction is 2005 — not 1025 (client/metrics.go getEstimatedRangeSizeBytesImpl, getRangeSplitPointsImpl). Gating on cancel
 // first would invert the order the client reports, which is exactly the kind of divergence that
 // makes a sim-certified error-handling path wrong against the real thing.
 func TestCancelledTransactionMetricsReportInvertedRangeFirst(t *testing.T) {
@@ -308,6 +308,87 @@ func TestOversizedConflictRangeEndpointClamped(t *testing.T) {
 			"range collapses to empty under the endpoint clamp and must record nothing. "+
 			"Unclamped, [k*10100, k*10050+z*) overlaps the reader's [k, l) and aborts it 1020",
 			err, codeOf(err))
+	}
+}
+
+// TestOversizedConflictKeyDropped: a key form over the size limit clamps [k, keyAfter(k)) to empty and
+// records nothing, as in the client; at the limit it still conflicts.
+func TestOversizedConflictKeyDropped(t *testing.T) {
+	t.Parallel()
+	key := func(prefix string, n int) []byte {
+		k := make([]byte, n)
+		copy(k, prefix)
+		for i := len(prefix); i < n; i++ {
+			k[i] = 'k'
+		}
+		return k
+	}
+	for _, c := range []struct {
+		name     string
+		key      []byte
+		conflict bool
+	}{
+		{"user_at_limit", key("k", 10_008), true}, // keySizeLimit+tenantPrefixSize
+		{"user_over_limit", key("k", 10_009), false},
+		{"system_at_limit", key("\xff\x05k", 30_000), true}, // systemKeySizeLimit
+		{"system_over_limit", key("\xff\x05k", 30_001), false},
+	} {
+		// The other side's range covers the key.
+		begin, end := []byte("k"), []byte("l")
+		if c.key[0] == 0xff {
+			begin, end = []byte("\xff\x05"), []byte("\xff\x06")
+		}
+		for _, write := range []bool{false, true} {
+			name := c.name + "/read"
+			if write {
+				name = c.name + "/write"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				db := simfdb.New(nil)
+				reader, err := db.CreateWritableTransaction()
+				if err != nil {
+					t.Fatalf("create reader: %v", err)
+				}
+				// Pinned before the writer commits, as in TestOversizedConflictRangeEndpointClamped.
+				if _, err := reader.GetReadVersion().Get(); err != nil {
+					t.Fatalf("reader GetReadVersion: %v", err)
+				}
+				writer, err := db.CreateWritableTransaction()
+				if err != nil {
+					t.Fatalf("create writer: %v", err)
+				}
+				span := fdb.KeyRange{Begin: fdb.Key(begin), End: fdb.Key(end)}
+				if write {
+					if err := reader.AddReadConflictRange(span); err != nil {
+						t.Fatalf("reader AddReadConflictRange: %v", err)
+					}
+					if err := writer.AddWriteConflictKey(fdb.Key(c.key)); err != nil {
+						t.Fatalf("AddWriteConflictKey: %v", err)
+					}
+				} else {
+					if err := reader.AddReadConflictKey(fdb.Key(c.key)); err != nil {
+						t.Fatalf("AddReadConflictKey: %v", err)
+					}
+					if err := writer.AddWriteConflictRange(span); err != nil {
+						t.Fatalf("writer AddWriteConflictRange: %v", err)
+					}
+				}
+				// Disjoint mutations make both commits real ones (see the note above).
+				writer.Set(fdb.Key("zzz/disjoint"), []byte("x"))
+				if err := writer.Commit().Get(); err != nil {
+					t.Fatalf("writer commit: %v", err)
+				}
+				reader.Set(fdb.Key("reader/own"), []byte("y"))
+				want := 0
+				if c.conflict {
+					want = 1020 // not_committed
+				}
+				if err := reader.Commit().Get(); codeOf(err) != want {
+					t.Fatalf("reader commit: got %v (code %d), want code %d", err, codeOf(err), want)
+				}
+			})
+		}
 	}
 }
 

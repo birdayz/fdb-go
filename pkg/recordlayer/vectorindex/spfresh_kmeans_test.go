@@ -687,7 +687,7 @@ func TestSPFreshPruneLowerBoundIsConservative(t *testing.T) {
 	}
 
 	// The exact originally-reported case (1-D): q=3000, c=13000, f=3000.0001.
-	check([]float64{3000}, []float64{13000}, []float64{3000.0001}, "codex-1d")
+	check([]float64{3000}, []float64{13000}, []float64{3000.0001}, "near-tie-1d")
 
 	naiveOvershoots := 0 // how often the NAIVE bound (no error term) would wrong-skip
 	for trial := 0; trial < 400000; trial++ {
@@ -786,7 +786,7 @@ func TestSPFreshGatherTopKExactSubnormal(t *testing.T) {
 	}
 	cdx.precomputePrune()
 	for pool := 1; pool <= 2; pool++ {
-		assertExact(t, cdx, []float64{0x1.97f627152fc28p-487}, pool, "codex-subnormal-1d")
+		assertExact(t, cdx, []float64{0x1.97f627152fc28p-487}, pool, "subnormal-1d")
 	}
 
 	// Subnormal-scale sweep: coords ~1e-160 so squared distances are subnormal.

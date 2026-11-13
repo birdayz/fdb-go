@@ -12,7 +12,7 @@ import (
 // corpus is the curated set of characterization scenarios. Data is literal (not random) so the
 // baseline is stable and human-reviewable. Queries span the read surface: point/range filters,
 // aggregates, GROUP BY, ORDER BY, LIMIT, IN, NULL semantics, DISTINCT, index-eligible predicates,
-// and boolean/string columns. Add scenarios/queries here, then GOLDEN_UPDATE=1 to record them.
+// and boolean/string columns. Add scenarios/queries here, then `just golden-update` to record them.
 func corpus() []Scenario {
 	orders := Scenario{
 		Name: "orders",
@@ -341,7 +341,7 @@ func corpus() []Scenario {
 }
 
 // TestGolden captures each scenario over SimFDB and diffs it against the committed baseline in
-// testdata/. A mismatch fails with a reviewable diff. GOLDEN_UPDATE=1 regenerates the baselines
+// testdata/. A mismatch fails with a reviewable diff. `just golden-update` regenerates the baselines
 // (review the diff before committing). The capture is asserted deterministic first — a golden is
 // only meaningful if the same scenario yields identical bytes every run.
 //
@@ -424,6 +424,10 @@ func corpus() []Scenario {
 func TestGolden(t *testing.T) {
 	t.Parallel()
 	update := os.Getenv("GOLDEN_UPDATE") != ""
+	dir, err := goldenDir(update, os.Getenv("BUILD_WORKSPACE_DIRECTORY"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, s := range corpus() {
 		s := s
 		t.Run(s.Name, func(t *testing.T) {
@@ -439,9 +443,9 @@ func TestGolden(t *testing.T) {
 				t.Fatalf("NONDETERMINISTIC capture for %q:\n%s", s.Name, firstDiff(got, again))
 			}
 
-			path := filepath.Join("testdata", s.Name+".golden")
+			path := filepath.Join(dir, s.Name+".golden")
 			if update {
-				if err := os.MkdirAll("testdata", 0o755); err != nil {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
 					t.Fatal(err)
 				}
 				if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
@@ -452,19 +456,57 @@ func TestGolden(t *testing.T) {
 			}
 			want, err := os.ReadFile(path)
 			if err != nil {
-				t.Fatalf("read golden %s (run GOLDEN_UPDATE=1 to create): %v", path, err)
+				t.Fatalf("read golden %s (run `just golden-update` to create): %v", path, err)
 			}
 			if got != string(want) {
 				t.Fatalf("GOLDEN MISMATCH for %q — behavior changed (result and/or plan). "+
-					"If intended, GOLDEN_UPDATE=1 and review the diff:\n%s", s.Name, firstDiff(string(want), got))
+					"If intended, run `just golden-update` and review the diff:\n%s", s.Name, firstDiff(string(want), got))
 			}
 		})
 	}
 }
 
+// goldenPkg is this package's directory relative to the workspace root.
+const goldenPkg = "pkg/simfdb/hunt/golden"
+
+// goldenDir is where baselines are read, or written under GOLDEN_UPDATE. An update
+// writes into the source tree, which only `bazel run` names (BUILD_WORKSPACE_DIRECTORY);
+// `bazel test` runs in a sandbox whose writes are discarded.
+func goldenDir(update bool, workspace string) (string, error) {
+	switch {
+	case !update:
+		return "testdata", nil
+	case workspace == "":
+		return "", errors.New("GOLDEN_UPDATE writes the source tree: run it through `just golden-update` " +
+			"(bazel run), which sets BUILD_WORKSPACE_DIRECTORY")
+	default:
+		return filepath.Join(workspace, filepath.FromSlash(goldenPkg), "testdata"), nil
+	}
+}
+
+func TestGoldenDir(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		update    bool
+		workspace string
+		want      string
+		wantErr   bool
+	}{
+		{update: false, workspace: "", want: "testdata"},
+		{update: false, workspace: "/ws", want: "testdata"},
+		{update: true, workspace: "/ws", want: "/ws/pkg/simfdb/hunt/golden/testdata"},
+		{update: true, workspace: "", wantErr: true},
+	} {
+		got, err := goldenDir(tc.update, tc.workspace)
+		if got != tc.want || (err != nil) != tc.wantErr {
+			t.Errorf("goldenDir(%t, %q) = (%q, %v), want (%q, error %t)", tc.update, tc.workspace, got, err, tc.want, tc.wantErr)
+		}
+	}
+}
+
 // firstDiff renders an LCS line diff (baseline "-" vs current "+"), so an inserted/removed line
 // doesn't smear every following line into a spurious mismatch (a positional diff's flaw). The
-// authoritative review artifact is still `git diff testdata/*.golden` after GOLDEN_UPDATE=1; this
+// authoritative review artifact is still `git diff testdata/*.golden` after `just golden-update`; this
 // is the in-test convenience. Golden files are small, so the O(n·m) table is fine.
 func firstDiff(want, got string) string {
 	a := strings.Split(want, "\n")

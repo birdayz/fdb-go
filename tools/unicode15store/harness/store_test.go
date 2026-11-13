@@ -16,8 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/testcontainers/testcontainers-go"
-
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -37,25 +35,14 @@ func TestPersistedUnicode15(t *testing.T) {
 	t.Logf("compiler=%s", runtime.Version())
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	cli, err := testcontainers.NewDockerClientWithOpts(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cli.Close()
-	if _, err := cli.Ping(ctx); err != nil {
-		t.Skipf("FDB not available (no Docker): %v", err)
-	}
 	container, err := foundationdbtc.Run(ctx, "", foundationdbtc.WithAPIVersion(730))
 	if err != nil {
+		if foundationdbtc.SkipWithoutDocker(err) {
+			t.Skipf("FDB not available (no Docker): %v", err)
+		}
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := foundationdbtc.Terminate(ctx, container); err != nil {
-			t.Error(err)
-		}
-	})
+	t.Cleanup(func() { foundationdbtc.TeardownT(t, container) })
 	cluster, err := container.ClusterFile(ctx)
 	if err != nil {
 		t.Fatal(err)

@@ -1,0 +1,44 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "sqlbackend",
+    srcs = [
+        "backend.go",
+        "direct.go",
+    ],
+    importpath = "fdb.dev/layers/otel/sqlbackend",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//layers/otel",
+        "//layers/otel/otelsql",
+        "//pkg/fdbgo/client",
+        "//pkg/fdbgo/fdb",
+        "//pkg/recordlayer",
+        "//pkg/relational/api",
+        "//pkg/relational/sqldriver",
+        "@io_opentelemetry_go_proto_otlp//trace/v1:trace",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "sqlbackend_test",
+    size = "large",
+    srcs = [
+        "backend_fdb_test.go",
+        "backend_test.go",
+        "span_reader_fdb_test.go",
+    ],
+    embed = [":sqlbackend"],
+    deps = [
+        "//layers/otel",
+        "//layers/otel/otelsql",
+        "//pkg/fdbgo/fdb",
+        "//pkg/recordlayer",
+        "//pkg/testcontainers/foundationdb",
+        "@io_opentelemetry_go_proto_otlp//common/v1:common",
+        "@io_opentelemetry_go_proto_otlp//resource/v1:resource",
+        "@io_opentelemetry_go_proto_otlp//trace/v1:trace",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

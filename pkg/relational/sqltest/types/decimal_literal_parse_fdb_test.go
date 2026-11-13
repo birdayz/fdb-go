@@ -43,7 +43,8 @@ func TestFDB_DecimalLiteralParsesAsJava(t *testing.T) {
 	} {
 		err := runStatement(ctx, db, c.sql)
 		var apiErr *api.Error
-		if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnknown || apiErr.Message != `For input string: "`+c.input+`"` {
+		if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnknown || apiErr.Message != `For input string: "`+c.input+`"` ||
+			err.Error() != `XXXXX: For input string: "`+c.input+`"` {
 			t.Fatalf("%s: error %v, want XXXXX For input string: %q", c.sql, err, c.input)
 		}
 	}

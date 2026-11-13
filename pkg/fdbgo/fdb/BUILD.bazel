@@ -51,11 +51,13 @@ go_test(
         "fdb_test.go",
         "future_cancel_test.go",
         "future_pending_internal_test.go",
+        "invalid_defaults_retry_fdb_test.go",
         "key_test.go",
         "mapped_range_skip_test.go",
         "mapped_range_test.go",
         "mapped_range_truncated_test.go",
         "modebytes_test.go",
+        "nonpersistent_defaults_retry_fdb_test.go",
         "options_dbdefault_race_test.go",
         "options_dbdefault_test.go",
         "options_internal_test.go",
@@ -64,6 +66,7 @@ go_test(
         "ownership_internal_test.go",
         "panic_test.go",
         "parity_test.go",
+        "persistent_defaults_fdb_test.go",
         "range_byte_division_conflict_test.go",
         "range_byte_division_test.go",
         "range_issue_bench_test.go",
@@ -73,6 +76,7 @@ go_test(
         "range_owned_internal_test.go",
         "range_owned_test.go",
         "range_result_internal_test.go",
+        "range_selector_test.go",
         "range_test.go",
         "retry_predicate_pin_test.go",
         "ryw_test.go",
@@ -83,6 +87,8 @@ go_test(
         "transact_ctx_fdb_test.go",
         "unbounded_default_pin_test.go",
         "versionstamp_lifetime_test.go",
+        "watch_lifecycle_fdb_test.go",
+        "wrapped_defaults_retry_fdb_test.go",
     ],
     embed = [":fdb"],
     embedsrcs = [
@@ -100,6 +106,14 @@ go_test(
         "//pkg/testcontainers/foundationdb",
         "@com_github_onsi_gomega//:gomega",
     ],
+)
+
+# gazelle:exclude get_issue_unit_test.go
+go_test(
+    name = "get_issue_unit_test",
+    srcs = ["get_issue_unit_test.go"],
+    embed = [":fdb"],
+    deps = ["//pkg/fdbgo/client"],
 )
 
 # gazelle:exclude range_result_alloc_unit_test.go

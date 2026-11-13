@@ -1,7 +1,7 @@
 # offset.yaml — LIMIT / OFFSET (Go extension)
 #
 # Go supports LIMIT/OFFSET as SQL syntax (most-requested feature).
-# Java's fdb-relational 4.11.1.0 rejects them at parse time.
+# Java's fdb-relational rejects every LIMIT and OFFSET (0AF00, AstNormalizer).
 name: offset
 schema_template: |
   CREATE TABLE t (id BIGINT, PRIMARY KEY (id))

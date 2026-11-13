@@ -11,7 +11,7 @@ import (
 )
 
 // The read path imposes a per-RPC reply timeout (DefaultRPCTimeout) that
-// libfdb_c does NOT have: loadBalance re-sends a slow-but-alive storage
+// libfdb_c does NOT have: loadBalance waits on a slow-but-alive storage
 // server until it replies or the transaction's read version ages out and the
 // server itself returns transaction_too_old. The bug these tests pin: on a
 // reply timeout the client must NOT leak a terminal error to the application

@@ -565,8 +565,10 @@ func (m *StandardIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Me
 	kwv, isKeyWithValue := m.index.RootExpression.(*KeyWithValueExpression)
 
 	// Fast path: EvaluateFlat for simple non-KeyWithValue, non-fan-out indexes.
-	// Avoids the [][]any allocation from Evaluate.
-	if !isKeyWithValue {
+	// Avoids the [][]any allocation from Evaluate. A root that can fan out
+	// skips it: its flat evaluation would fail only after evaluating the
+	// fan-out, which Evaluate then repeats.
+	if !isKeyWithValue && !createsDuplicatesRec(m.index.RootExpression, true) {
 		if fe, ok := m.index.RootExpression.(FlatEvaluator); ok {
 			values, err := fe.EvaluateFlat(record, record.Record)
 			if err == nil {
@@ -613,27 +615,23 @@ func (m *StandardIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Me
 }
 
 // checkUniqueness verifies no other record has the same index value.
-// Scans the FULL prefix range (no limit) so FDB's read-conflict tracking
-// covers the entire range, preventing concurrent inserts of conflicting entries.
+// Scans the value's whole tuple range (no limit) so FDB's read-conflict
+// tracking covers it, preventing concurrent inserts of conflicting entries.
 // Java reads the full range too (no limit) and registers the scan as a
 // commit check via addIndexUniquenessCommitCheck().
 // Matches Java's standardIndexMaintainer.checkUniqueness().
 func (m *StandardIndexMaintainer) checkUniqueness(entry EvaluatedIndexEntry) error {
-	prefixKey := m.indexSubspace.Pack(entry.key)
-	r, err := fdb.PrefixRange(prefixKey)
-	if err != nil {
-		return fmt.Errorf("prefix range for uniqueness check on index %q: %w", m.index.Name, err)
-	}
+	// Java's indexSubspace.range(valueKey), [pack+00, pack+ff): a byte prefix
+	// range would also cover values whose packing extends this one ("a" and "a\x00b").
+	r := m.indexSubspace.Sub(entry.key...)
 
 	// No Limit — read the full range so FDB records a read conflict on the
-	// entire prefix. With Limit:1, FDB only tracks conflict up to the first
+	// whole range r. With Limit:1, FDB only tracks conflict up to the first
 	// key found, allowing concurrent inserts at higher keys to go undetected.
 	kvs, err := m.tx.GetRange(r, fdb.RangeOptions{}).GetSliceWithError()
 	if err != nil {
 		return fmt.Errorf("uniqueness scan for index %q: %w", m.index.Name, err)
 	}
-
-	indexColCount := len(entry.key)
 
 	for _, kv := range kvs {
 		existingTuple, err := tuplefast.SubspaceUnpack(kv.Key, len(m.indexSubspace.Bytes()))
@@ -641,12 +639,8 @@ func (m *StandardIndexMaintainer) checkUniqueness(entry EvaluatedIndexEntry) err
 			return fmt.Errorf("unpack existing index entry: %w", err)
 		}
 
-		if len(existingTuple) <= indexColCount {
-			continue
-		}
-
 		// Reconstruct full PK from the FDB entry key using getEntryPrimaryKey.
-		// The raw existingTuple[indexColCount:] is the TRIMMED PK (deduped
+		// The raw suffix after the value columns is the TRIMMED PK (deduped
 		// components removed). Must use getEntryPrimaryKey to get full PK
 		// for correct comparison and violation entries.
 		// Matches Java's Index.getEntryPrimaryKey(indexEntry).

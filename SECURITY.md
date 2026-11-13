@@ -35,21 +35,23 @@ This project is **pre-1.0 and not yet declared production-ready** (see
 ## Supported versions
 
 See **`RELEASE.md`** for the full versioning & support-window policy. In short: the latest tagged
-minor is supported — currently **v0.1.0** — and `master` is supported as the development ref.
+minor is supported — currently **v0.2.0** — and `master` is supported as the development ref.
 Older minors are best-effort until `v1`. Security fixes land on the latest supported ref.
 
 ## Dependencies
 
-`govulncheck` runs in CI (the **Vulnerability scan** job) over the shipped
-packages. Dependencies are pinned in `go.mod` / `MODULE.bazel`; report any
-known-vulnerable dependency you spot.
+`govulncheck` runs in CI (the **Vulnerability scan** job) with library
+(`./pkg/...`) and released CLI (`./cmd/fdb/...`) entrypoints. Dependencies are
+pinned in `go.mod` / `MODULE.bazel`; report any known-vulnerable dependency you spot.
 
-The CI scan excludes `pkg/testcontainers` and `pkg/relational/sqltest`, whose
-shared `testkit` imports the container helpers. These helpers wrap Docker's
-client SDK for tests and developer/stress tools (including `factory-run`,
-`factory-migrate`, `fdb-binding-stress`, and `sql-diff-stress`); neither the
-production library nor the released `frl` CLI imports them. The exclusion is
-not a clean bill of health for the dependency graph or developer workloads.
+The scan excludes `pkg/testcontainers`, `pkg/testutil/benchcluster` and
+`pkg/relational/sqltest` as entrypoints. These helpers wrap Docker's client SDK
+for tests and developer/stress tools (including `factory-run`, `factory-migrate`,
+`fdb-binding-stress`, and `sql-diff-stress`). An excluded entrypoint is not a
+suppressed dependency: if a scanned library or CLI package imports one, its
+reachable calls are still scanned. The scan does not cover every developer tool,
+test-only call path or build-tag configuration, and is not a clean bill of health
+for the dependency graph or developer workloads.
 
 The legacy `github.com/docker/docker` module has open advisories concerning
 Docker **daemon** archive/mount handling and plugin privilege validation, not

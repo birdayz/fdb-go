@@ -22,13 +22,10 @@ type TransactionTagThrottle struct {
 	Limits ClientTagThrottleLimits // slot 1, nested
 }
 
-func (m *TransactionTagThrottle) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(TransactionTagThrottleSlotTag) {
-		m.Tag = r.ReadBytes(TransactionTagThrottleSlotTag)
-	}
-	if nr, err := r.ReadNestedReader(TransactionTagThrottleSlotLimits); err == nil {
-		m.Limits.UnmarshalFromReader(nr)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *TransactionTagThrottle) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *TransactionTagThrottle) UnmarshalFDB(data []byte) error {
@@ -36,11 +33,25 @@ func (m *TransactionTagThrottle) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *TransactionTagThrottle) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(TransactionTagThrottleSlotTag) {
 		m.Tag = r.ReadBytes(TransactionTagThrottleSlotTag)
 	}
-	if nr, err := r.ReadNestedReader(TransactionTagThrottleSlotLimits); err == nil {
-		m.Limits.UnmarshalFromReader(nr)
+	if r.FieldPresent(TransactionTagThrottleSlotLimits) {
+		nr, err := r.ReadNestedReader(TransactionTagThrottleSlotLimits)
+		if err != nil {
+			return &wire.DecodeError{Type: "TransactionTagThrottle", Field: "Limits", Err: err}
+		}
+		if err := m.Limits.decode(nr, b); err != nil {
+			return err
+		}
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "TransactionTagThrottle", Err: err}
 	}
 	return nil
 }
@@ -81,21 +92,28 @@ func (m *TransactionTagThrottle) writeToBuffer(wb *wire.WriteToBuffer, vtableSta
 	return selfStart
 }
 
-// ParseTransactionTagThrottleVectorFromReader reads a FlatBuffers vector of TransactionTagThrottle.
-func ParseTransactionTagThrottleVectorFromReader(r *wire.Reader, slot int) []TransactionTagThrottle {
+// ParseTransactionTagThrottleVectorFromReader reads a FlatBuffers vector of TransactionTagThrottle under one decode budget.
+func ParseTransactionTagThrottleVectorFromReader(r *wire.Reader, slot int) ([]TransactionTagThrottle, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]TransactionTagThrottle, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]TransactionTagThrottle", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]TransactionTagThrottle, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]TransactionTagThrottle", Err: err}
 		}
-		var elem TransactionTagThrottle
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

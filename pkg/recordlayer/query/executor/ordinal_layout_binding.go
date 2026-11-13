@@ -128,7 +128,7 @@ func initEdgeObjectBinder(
 		var whole any
 		switch flowed.Code() {
 		case values.TypeCodeRecord:
-			if !row.Type.Equals(flowed) {
+			if flowedRecord, ok := flowed.(*values.RecordType); ok && !recordTypesEqual(row.Type, flowedRecord) || !ok && !row.Type.Equals(flowed) {
 				return nil, layoutBindingError(values.LayoutTypeMismatch, fmt.Sprintf("edge %d record type disagrees with runtime row", edgeIndex))
 			}
 			whole = wholeRow
@@ -346,7 +346,7 @@ func providedRecordOutputLayout(
 // its own rows, and it exists to make the output boundary below a pointer check
 // instead of a per-row row copy.
 //
-// AttachOrdinalLayout must copy a row whose layout differs, because a row
+// attachCheckedLayout must copy a row whose layout differs, because a row
 // arriving at a boundary may still be held by whoever produced it — a join
 // re-emitting one outer row, a sort keeping its buffer. A row the plan is
 // building right now has exactly one owner, so stamping the handle it is about
@@ -388,16 +388,27 @@ func attachProvidedOutputLayout(
 	if !ok {
 		return cursor, nil
 	}
+	// matched is a row type checkLayoutAttachable accepted for this layout
+	// without widening. Types are immutable and a cursor's rows share one
+	// type object, so later rows of that exact object skip the structural
+	// comparison, per-field work that would otherwise repeat for every row.
+	var matched *values.RecordType
 	return recordlayer.MapErrCursor(cursor, func(result QueryResult) (QueryResult, error) {
 		if result.Positional == nil {
 			return QueryResult{}, layoutBindingError(values.LayoutRuntimeShape, "record plan emitted no positional row")
 		}
-		row, attachErr := result.Positional.AttachOrdinalLayout(layout, carrierType)
-		if attachErr != nil {
-			return QueryResult{}, fmt.Errorf("executor: %T emitted row type %s outside provided layout carrier %T: %w",
-				plan, result.Positional.Type, layout.Carrier(), attachErr)
+		var widenTo *values.RecordType
+		if p := result.Positional; p.Type == nil || p.Type != matched {
+			var attachErr error
+			if widenTo, attachErr = p.checkLayoutAttachable(layout, carrierType); attachErr != nil {
+				return QueryResult{}, fmt.Errorf("executor: %T emitted row type %s outside provided layout carrier %T: %w",
+					plan, p.Type, layout.Carrier(), attachErr)
+			}
+			if widenTo == nil {
+				matched = p.Type
+			}
 		}
-		result.Positional = row
+		result.Positional = result.Positional.attachCheckedLayout(layout, widenTo)
 		return result, nil
 	}), nil
 }

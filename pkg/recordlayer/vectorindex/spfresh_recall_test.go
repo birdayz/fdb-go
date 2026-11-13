@@ -427,13 +427,13 @@ var _ = Describe("SPFresh recall monitor (RFC-156 ground-truth)", func() {
 			if serr != nil {
 				return nil, serr
 			}
-			Expect(rep.CorpusSize).To(Equal(n), "serialized-vector corpus must populate (codex P1)")
+			Expect(rep.CorpusSize).To(Equal(n), "serialized-vector corpus must populate")
 			Expect(rep.QueriesRun).To(Equal(30))
 			Expect(rep.MeanRecall).To(BeNumerically(">=", 0.90))
 
 			// A wrong-dimensional query returns an error, not a panic.
 			_, derr := SearchSPFreshIndex(store, "spf_recall_serialized", []float64{1, 2, 3}, 5)
-			Expect(derr).To(HaveOccurred(), "wrong-dim query must error, not panic (codex P2)")
+			Expect(derr).To(HaveOccurred(), "wrong-dim query must error, not panic")
 			Expect(derr.Error()).To(ContainSubstring("dimensions"))
 
 			// The integrity sample never exceeds the requested cap.
@@ -442,7 +442,7 @@ var _ = Describe("SPFresh recall monitor (RFC-156 ground-truth)", func() {
 				return nil, serr
 			}
 			Expect(irep.Members).To(Equal(n))
-			Expect(irep.Sampled).To(BeNumerically("<=", 10), "integrity sample must honor the cap (codex P3)")
+			Expect(irep.Sampled).To(BeNumerically("<=", 10), "integrity sample must honor the cap")
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

@@ -33,12 +33,11 @@ func makeServers(addrs ...string) []ServerInfo {
 // early-returns and the settled estimate stays put. Production is unaffected — real
 // requests are milliseconds apart, far above the clock's resolution.
 func (q *QueueModel) settleSmoothers() {
-	q.mu.Lock()
-	defer q.mu.Unlock()
 	future := nowSeconds() + 100
-	for _, d := range q.servers {
-		d.smoothOutstanding.smoothTotal(future)
-	}
+	q.servers.Range(func(_, v any) bool {
+		v.(*queueData).smoothTotal(future)
+		return true
+	})
 }
 
 func TestQueueModelSingleServer(t *testing.T) {
@@ -85,10 +84,7 @@ func TestQueueModelSkipsFailedServers(t *testing.T) {
 	servers := makeServers("s1:4500", "s2:4500")
 
 	// Mark s1 as failed by setting failedUntil far in the future.
-	qm.mu.Lock()
-	d := qm.getOrCreate("s1:4500")
-	d.failedUntil = nowSeconds() + 60 // 60s in the future
-	qm.mu.Unlock()
+	withServer(qm, "s1:4500", func(d *queueData) { d.failedUntil = nowSeconds() + 60 })
 
 	s, _ := qm.chooseServer(servers)
 	if s.Address != "s2:4500" {
@@ -102,14 +98,9 @@ func TestQueueModelAllFailedPicksEarliestExpiry(t *testing.T) {
 	servers := makeServers("s1:4500", "s2:4500")
 
 	now := nowSeconds()
-	qm.mu.Lock()
 	// s1 fails until now+1s, s2 fails until now+10s.
-	d1 := qm.getOrCreate("s1:4500")
-	d1.failedUntil = now + 1.0
-
-	d2 := qm.getOrCreate("s2:4500")
-	d2.failedUntil = now + 10.0
-	qm.mu.Unlock()
+	withServer(qm, "s1:4500", func(d *queueData) { d.failedUntil = now + 1.0 })
+	withServer(qm, "s2:4500", func(d *queueData) { d.failedUntil = now + 10.0 })
 
 	s, _ := qm.chooseServer(servers)
 	// Both failed, pick s1 (expires sooner).
@@ -152,17 +143,18 @@ func TestQueueModelStartEndRequest(t *testing.T) {
 	delta := qm.startRequest("s1:4500")
 
 	// smoothOutstanding.total should be ~2.0 (2 * penalty=1.0).
-	qm.mu.Lock()
-	d := qm.servers["s1:4500"]
+	v, _ := qm.servers.Load("s1:4500")
+	d := v.(*queueData)
+	d.mu.Lock()
 	if d.smoothOutstanding.total < 1.5 {
 		t.Fatalf("expected outstanding total ~2.0, got %.2f", d.smoothOutstanding.total)
 	}
-	qm.mu.Unlock()
+	d.mu.Unlock()
 
 	// End one request with a distinct latency (2ms, not 1ms which matches initial).
 	qm.endRequest("s1:4500", delta, 2*time.Millisecond, true)
 
-	qm.mu.Lock()
+	d.mu.Lock()
 	if d.smoothOutstanding.total < 0.5 {
 		t.Fatalf("expected outstanding total ~1.0, got %.2f", d.smoothOutstanding.total)
 	}
@@ -170,7 +162,7 @@ func TestQueueModelStartEndRequest(t *testing.T) {
 	if d.latency != 0.002 {
 		t.Fatalf("expected latency=0.002 after endRequest(2ms), got %f", d.latency)
 	}
-	qm.mu.Unlock()
+	d.mu.Unlock()
 }
 
 func TestQueueModelFutureVersionBackoff(t *testing.T) {
@@ -181,8 +173,9 @@ func TestQueueModelFutureVersionBackoff(t *testing.T) {
 	d1 := qm.startRequest("s1:4500")
 	qm.endRequestFull("s1:4500", d1, time.Millisecond, false, true, -1.0)
 
-	qm.mu.Lock()
-	d := qm.servers["s1:4500"]
+	v, _ := qm.servers.Load("s1:4500")
+	d := v.(*queueData)
+	d.mu.Lock()
 	if d.failedUntil <= nowSeconds()-1 { // allow 1s margin
 		t.Error("expected failedUntil > now after future_version")
 	}
@@ -191,14 +184,14 @@ func TestQueueModelFutureVersionBackoff(t *testing.T) {
 		t.Errorf("expected backoff=%.1f after 1st future_version, got %f",
 			futureVersionInitialBackoff*futureVersionBackoffGrowth, d.futureVersionBackoff)
 	}
-	qm.mu.Unlock()
+	d.mu.Unlock()
 
 	// Second future_version: increaseBackoffTime was set to now+backoff,
 	// so now <= increaseBackoffTime → backoff does NOT grow (C++ guard).
 	d2 := qm.startRequest("s1:4500")
 	qm.endRequestFull("s1:4500", d2, time.Millisecond, false, true, -1.0)
 
-	qm.mu.Lock()
+	d.mu.Lock()
 	// Backoff should NOT have grown (still 2.0) because increaseBackoffTime hasn't elapsed.
 	if d.futureVersionBackoff != futureVersionInitialBackoff*futureVersionBackoffGrowth {
 		t.Errorf("expected backoff=%.1f (guard prevents growth), got %f",
@@ -207,18 +200,18 @@ func TestQueueModelFutureVersionBackoff(t *testing.T) {
 
 	// Manually expire the guard to allow growth.
 	d.increaseBackoffTime = 0
-	qm.mu.Unlock()
+	d.mu.Unlock()
 
 	// Third future_version: guard expired → backoff doubles: 2.0→4.0.
 	d3 := qm.startRequest("s1:4500")
 	qm.endRequestFull("s1:4500", d3, time.Millisecond, false, true, -1.0)
 
-	qm.mu.Lock()
+	d.mu.Lock()
 	expectedBackoff := futureVersionInitialBackoff * futureVersionBackoffGrowth * futureVersionBackoffGrowth
 	if d.futureVersionBackoff != expectedBackoff {
 		t.Errorf("expected backoff=%.1f after growth, got %f", expectedBackoff, d.futureVersionBackoff)
 	}
-	qm.mu.Unlock()
+	d.mu.Unlock()
 }
 
 func TestQueueModelPenaltyFromServer(t *testing.T) {
@@ -226,22 +219,22 @@ func TestQueueModelPenaltyFromServer(t *testing.T) {
 	qm := newQueueModel()
 
 	// Default penalty is 1.0.
-	qm.mu.Lock()
 	d := qm.getOrCreate("s1:4500")
+	d.mu.Lock()
 	if d.penalty != queueDataInitialPenalty {
 		t.Fatalf("expected initial penalty=%f, got %f", queueDataInitialPenalty, d.penalty)
 	}
-	qm.mu.Unlock()
+	d.mu.Unlock()
 
 	// Server reports penalty=2.5 in response.
 	dp := qm.startRequest("s1:4500")
 	qm.endRequestFull("s1:4500", dp, time.Millisecond, true, false, 2.5)
 
-	qm.mu.Lock()
+	d.mu.Lock()
 	if d.penalty != 2.5 {
 		t.Fatalf("expected penalty=2.5 after server report, got %f", d.penalty)
 	}
-	qm.mu.Unlock()
+	d.mu.Unlock()
 }
 
 func TestQueueModelConcurrentSafe(t *testing.T) {
@@ -349,28 +342,34 @@ func TestSmootherDecay(t *testing.T) {
 	}
 }
 
+// Pin the second-latency formula and instant arm against literal C++ knobs
+// (LoadBalance.actor.h:554-561).
 func TestSecondDelay(t *testing.T) {
 	t.Parallel()
 	q := newQueueModel()
-
-	// Default latency is 1ms. secondDelay = max(10ms, 2.0 × 1ms) = 10ms.
-	delay := q.secondDelay("server-a")
-	if delay < 10*time.Millisecond || delay > 11*time.Millisecond {
-		t.Fatalf("default secondDelay: got %v, want ~10ms", delay)
-	}
-
-	// Simulate a slow server (50ms latency). secondDelay = max(10ms, 2.0 × 50ms) = 100ms.
-	q.endRequestFull("server-b", 1.0, 50*time.Millisecond, true, false, -1.0)
-	delay = q.secondDelay("server-b")
-	if delay < 90*time.Millisecond || delay > 110*time.Millisecond {
-		t.Fatalf("slow server secondDelay: got %v, want ~100ms", delay)
-	}
-
-	// Very fast server (0.1ms latency). secondDelay = max(10ms, 2.0 × 0.1ms) = 10ms (clamped).
-	q.endRequestFull("server-c", 1.0, 100*time.Microsecond, true, false, -1.0)
-	delay = q.secondDelay("server-c")
-	if delay < 9*time.Millisecond || delay > 11*time.Millisecond {
-		t.Fatalf("fast server secondDelay: got %v, want ~10ms (clamped)", delay)
+	q.endRequestFull("slow", 1.0, 50*time.Millisecond, true, false, -1.0)
+	q.endRequestFull("fast", 1.0, 100*time.Microsecond, true, false, -1.0)
+	q.endRequestFull("edge", 1.0, 3*time.Millisecond, true, false, -1.0) // exactly 2 × (1 × 1 ms + 0.5 ms)
+	for _, tc := range []struct {
+		name        string
+		best, next  string
+		multiplier  float64
+		wantSeconds float64
+	}{
+		{"fresh", "a", "b", 1, 0.0015},                   // 1 × the initial 1 ms + 0.5 ms
+		{"slow-next", "a", "slow", 1, 0.0505},            // never clamped to a floor
+		{"fast-next", "a", "fast", 1, 0.0006},            // 0.1 ms + 0.5 ms
+		{"multiplier", "a", "slow", 1.5, 0.0755},         // 1.5 × 50 ms + 0.5 ms
+		{"instant", "slow", "b", 1, 0},                   // 50 ms > 2 × 1.5 ms
+		{"instant-multiplier", "slow", "fast", 2, 0},     // 50 ms > 2 × (2 × 0.1 ms + 0.5 ms)
+		{"not-instant-at-bound", "edge", "b", 1, 0.0015}, // 3 ms is not > 3 ms
+	} {
+		setSecondState(q, tc.multiplier, 0)
+		got := q.secondDelay(tc.best, tc.next)
+		want := time.Duration(tc.wantSeconds * float64(time.Second))
+		if diff := got - want; diff < -time.Nanosecond || diff > time.Nanosecond {
+			t.Errorf("%s: secondDelay(%s, %s) = %v, want %v", tc.name, tc.best, tc.next, got, want)
+		}
 	}
 }
 

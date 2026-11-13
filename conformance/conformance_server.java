@@ -67,6 +67,8 @@ class ConformanceServer {
         new IndexBuildStateSteps(),
         new AggregateSteps(),
         new UniqueViolationSteps(),
+        new VersionSaveSteps(),
+        new TupleRangeProbeSteps(),
         new TupleOrderingSteps(),
         new MappedRangeSteps(),
         new RecordLoadChargeProbeSteps(),
@@ -76,6 +78,10 @@ class ConformanceServer {
         new IndexFetchPlanSteps(),
         new BitmapValueIndexSteps(),
         new TextIndexSteps(),
+        new TextQuerySteps(),
+        new BunchedMapSteps(),
+        new TupleCompareSteps(),
+        new KeySpaceSteps(),
         new TimeWindowLeaderboardSteps(),
         new MultidimensionalIndexSteps(),
         new VectorIndexSteps(),
@@ -86,6 +92,7 @@ class ConformanceServer {
         new SqlPlanSteps(),
         new WsfRecordLayerSteps(),
         new TransformedSerializerSteps(),
+        new RywScriptSteps(),
     };
 
     private static class StepEntry {

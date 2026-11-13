@@ -80,11 +80,12 @@ func TestOnError_ClusterVersionChanged_RetriesSelfConflicting(t *testing.T) {
 	}
 	// Self-conflicting: the write range is deep-copied into readConflicts so the
 	// retry detects whether the (maybe-committed) prior commit actually landed.
-	if len(tx.readConflicts) != 1 {
-		t.Fatalf("expected 1 self-conflicting read range, got %d", len(tx.readConflicts))
+	reads := tx.readConflictRanges()
+	if len(reads) != 1 {
+		t.Fatalf("expected 1 self-conflicting read range, got %d", len(reads))
 	}
-	if string(tx.readConflicts[0].Begin) != "a" || string(tx.readConflicts[0].End) != "b" {
-		t.Errorf("readConflicts[0] = [%q,%q), want [a,b)", tx.readConflicts[0].Begin, tx.readConflicts[0].End)
+	if string(reads[0].Begin) != "a" || string(reads[0].End) != "b" {
+		t.Errorf("readConflicts[0] = [%q,%q), want [a,b)", reads[0].Begin, reads[0].End)
 	}
 }
 

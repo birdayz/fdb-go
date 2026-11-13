@@ -1,0 +1,248 @@
+// Portions derived from the FoundationDB Java bindings (TupleUtil.java,
+// IterableComparator.java, Versionstamp.java),
+// Copyright 2013-2018 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
+package recordlayer
+
+import (
+	"bytes"
+	"cmp"
+	"fmt"
+	"math"
+	"math/big"
+	"strings"
+
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+)
+
+// TupleComparisonError identifies an unsupported public comparator argument.
+type TupleComparisonError struct {
+	Side        string
+	ElementPath string
+	ElementType string
+}
+
+func (e *TupleComparisonError) Error() string {
+	return fmt.Sprintf("tuple comparison %s%s: unsupported element type %s", e.Side, e.ElementPath, e.ElementType)
+}
+
+// CompareTuples orders valid tuples as Java's Tuple.compareTo does: -1, 0 or 1.
+// Unsupported elements return contextual errors rather than panicking.
+func CompareTuples(a, b tuple.Tuple) (int, error) {
+	for _, input := range []struct {
+		side  string
+		value tuple.Tuple
+	}{{"left", a}, {"right", b}} {
+		if err := validateComparisonTuple(input.value, input.side, ""); err != nil {
+			return 0, err
+		}
+	}
+	return compareTuples(a, b), nil
+}
+
+func validateComparisonTuple(t tuple.Tuple, side, path string) error {
+	for i, item := range t {
+		at := fmt.Sprintf("%s[%d]", path, i)
+		switch v := item.(type) {
+		case tuple.Tuple:
+			if err := validateComparisonTuple(v, side, at); err != nil {
+				return err
+			}
+		case *big.Int:
+			if v == nil {
+				return &TupleComparisonError{Side: side, ElementPath: at, ElementType: "nil *big.Int"}
+			}
+		case nil, []byte, string, int, int64, uint, uint64, big.Int, float32, float64, bool, tuple.UUID, tuple.Versionstamp, fdb.KeyConvertible:
+		default:
+			return &TupleComparisonError{Side: side, ElementPath: at, ElementType: fmt.Sprintf("%T", item)}
+		}
+	}
+	return nil
+}
+
+// compareTuples returns -1/0/1 using Java’s uncached element-wise tuple order without packing.
+// It also orders values Pack rejects, including incomplete versionstamps and oversized integers.
+func compareTuples(a, b tuple.Tuple) int {
+	for i := 0; i < len(a) && i < len(b); i++ {
+		if c := compareTupleItems(a[i], b[i]); c != 0 {
+			return c
+		}
+	}
+	return cmp.Compare(len(a), len(b))
+}
+
+// tupleItemCode matches Java TupleUtil.getCodeFor; integers share zero’s type code
+// and booleans share false’s.
+func tupleItemCode(item tuple.TupleElement) int {
+	switch item.(type) {
+	case nil:
+		return 0x00
+	case []byte:
+		return 0x01
+	case string:
+		return 0x02
+	case tuple.Tuple:
+		return 0x05
+	case int, int64, uint, uint64, *big.Int, big.Int:
+		return 0x14
+	case float32:
+		return 0x20
+	case float64:
+		return 0x21
+	case bool:
+		return 0x26
+	case tuple.UUID:
+		return 0x30
+	case tuple.Versionstamp:
+		return 0x33
+	case fdb.KeyConvertible:
+		// Packed as bytes (tuple.go encodeElement); a Tuple matched above.
+		return 0x01
+	}
+	panic(fmt.Sprintf("unsupported tuple element type %T", item))
+}
+
+// compareTupleItems is TupleUtil.compareItems (TupleUtil.java:592-668).
+func compareTupleItems(a, b tuple.TupleElement) int {
+	codeA, codeB := tupleItemCode(a), tupleItemCode(b)
+	if codeA != codeB {
+		return cmp.Compare(codeA, codeB)
+	}
+	switch codeA {
+	case 0x00:
+		return 0
+	case 0x01:
+		return bytes.Compare(tupleItemBytes(a), tupleItemBytes(b))
+	case 0x02:
+		// StringUtil.compareUtf8: the order of the UTF-8 encodings.
+		return strings.Compare(a.(string), b.(string))
+	case 0x05:
+		return compareTuples(a.(tuple.Tuple), b.(tuple.Tuple))
+	case 0x14:
+		return compareTupleIntegers(a, b)
+	case 0x20:
+		return cmp.Compare(tupleFloatBits(a.(float32)), tupleFloatBits(b.(float32)))
+	case 0x21:
+		return cmp.Compare(tupleDoubleBits(a.(float64)), tupleDoubleBits(b.(float64)))
+	case 0x26:
+		// Boolean.compare: false before true.
+		x, y := a.(bool), b.(bool)
+		switch {
+		case x == y:
+			return 0
+		case !x:
+			return -1
+		default:
+			return 1
+		}
+	case 0x30:
+		// Unsigned most then least significant bits: the bytes in order.
+		x, y := a.(tuple.UUID), b.(tuple.UUID)
+		return bytes.Compare(x[:], y[:])
+	default:
+		return compareVersionstamps(a.(tuple.Versionstamp), b.(tuple.Versionstamp))
+	}
+}
+
+func tupleItemBytes(item tuple.TupleElement) []byte {
+	if b, ok := item.([]byte); ok {
+		return b
+	}
+	return item.(fdb.KeyConvertible).FDBKey()
+}
+
+// tupleFloatBits/tupleDoubleBits compare Java TupleUtil encoded bits unsigned
+// so NaNs follow encoded ordering (TupleUtil.java:179-187).
+func tupleFloatBits(f float32) uint32 {
+	bits := math.Float32bits(f)
+	if bits&(1<<31) != 0 {
+		return ^bits
+	}
+	return bits ^ (1 << 31)
+}
+
+func tupleDoubleBits(d float64) uint64 {
+	bits := math.Float64bits(d)
+	if bits&(1<<63) != 0 {
+		return ^bits
+	}
+	return bits ^ (1 << 63)
+}
+
+// compareTupleIntegers orders integers of any width by value: Long.compare
+// when both fit a long, BigInteger.compareTo otherwise.
+func compareTupleIntegers(a, b tuple.TupleElement) int {
+	x, xSmall := tupleSmallInt(a)
+	y, ySmall := tupleSmallInt(b)
+	if xSmall && ySmall {
+		return cmp.Compare(x, y)
+	}
+	return tupleBigInt(a).Cmp(tupleBigInt(b))
+}
+
+// tupleSmallInt is the value of an integer element that fits an int64.
+func tupleSmallInt(item tuple.TupleElement) (int64, bool) {
+	switch v := item.(type) {
+	case int:
+		return int64(v), true
+	case int64:
+		return v, true
+	case uint:
+		return int64(v), uint64(v) <= math.MaxInt64
+	case uint64:
+		return int64(v), v <= math.MaxInt64
+	case *big.Int:
+		return v.Int64(), v.IsInt64()
+	case big.Int:
+		return v.Int64(), v.IsInt64()
+	}
+	return 0, false
+}
+
+func tupleBigInt(item tuple.TupleElement) *big.Int {
+	switch v := item.(type) {
+	case int:
+		return big.NewInt(int64(v))
+	case int64:
+		return big.NewInt(v)
+	case uint:
+		return new(big.Int).SetUint64(uint64(v))
+	case uint64:
+		return new(big.Int).SetUint64(v)
+	case *big.Int:
+		return v
+	default:
+		bi := item.(big.Int)
+		return &bi
+	}
+}
+
+// compareVersionstamps orders complete versions by bytes, then incomplete ones by user version.
+// Go marks incomplete versions with an all-0xFF transaction version (Versionstamp.java:306-318).
+func compareVersionstamps(a, b tuple.Versionstamp) int {
+	incompleteA, incompleteB := versionstampIncomplete(a), versionstampIncomplete(b)
+	switch {
+	case !incompleteA && !incompleteB:
+		if c := bytes.Compare(a.TransactionVersion[:], b.TransactionVersion[:]); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.UserVersion, b.UserVersion)
+	case !incompleteA:
+		return -1
+	case !incompleteB:
+		return 1
+	default:
+		return cmp.Compare(a.UserVersion, b.UserVersion)
+	}
+}
+
+func versionstampIncomplete(v tuple.Versionstamp) bool {
+	for _, b := range v.TransactionVersion {
+		if b != 0xFF {
+			return false
+		}
+	}
+	return true
+}

@@ -39,22 +39,10 @@ type StorageMetrics struct {
 	OpsReadPerKSecond      int64 // slot 4
 }
 
-func (m *StorageMetrics) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(StorageMetricsSlotBytes) {
-		m.Bytes = r.ReadInt64(StorageMetricsSlotBytes)
-	}
-	if r.FieldPresent(StorageMetricsSlotBytesWrittenPerKSecond) {
-		m.BytesWrittenPerKSecond = r.ReadInt64(StorageMetricsSlotBytesWrittenPerKSecond)
-	}
-	if r.FieldPresent(StorageMetricsSlotIosPerKSecond) {
-		m.IosPerKSecond = r.ReadInt64(StorageMetricsSlotIosPerKSecond)
-	}
-	if r.FieldPresent(StorageMetricsSlotBytesReadPerKSecond) {
-		m.BytesReadPerKSecond = r.ReadInt64(StorageMetricsSlotBytesReadPerKSecond)
-	}
-	if r.FieldPresent(StorageMetricsSlotOpsReadPerKSecond) {
-		m.OpsReadPerKSecond = r.ReadInt64(StorageMetricsSlotOpsReadPerKSecond)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *StorageMetrics) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *StorageMetrics) UnmarshalFDB(data []byte) error {
@@ -62,6 +50,11 @@ func (m *StorageMetrics) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *StorageMetrics) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(StorageMetricsSlotBytes) {
 		m.Bytes = r.ReadInt64(StorageMetricsSlotBytes)
 	}
@@ -76,6 +69,9 @@ func (m *StorageMetrics) UnmarshalFDB(data []byte) error {
 	}
 	if r.FieldPresent(StorageMetricsSlotOpsReadPerKSecond) {
 		m.OpsReadPerKSecond = r.ReadInt64(StorageMetricsSlotOpsReadPerKSecond)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "StorageMetrics", Err: err}
 	}
 	return nil
 }
@@ -246,21 +242,28 @@ func (m *StorageMetrics) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseStorageMetricsVectorFromReader reads a FlatBuffers vector of StorageMetrics.
-func ParseStorageMetricsVectorFromReader(r *wire.Reader, slot int) []StorageMetrics {
+// ParseStorageMetricsVectorFromReader reads a FlatBuffers vector of StorageMetrics under one decode budget.
+func ParseStorageMetricsVectorFromReader(r *wire.Reader, slot int) ([]StorageMetrics, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]StorageMetrics, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]StorageMetrics", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]StorageMetrics, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]StorageMetrics", Err: err}
 		}
-		var elem StorageMetrics
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

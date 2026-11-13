@@ -60,41 +60,6 @@ func varIntSize(val int) int {
 	return (bits.Len(uint(val)) + 6) / 7
 }
 
-// serializeVarInt writes val as a base-128 variable-length integer.
-// MSB of each byte is 1 if more bytes follow, 0 for the last byte.
-// Matches Java's serializeVarInt().
-func serializeVarInt(buf *bytes.Buffer, val int) {
-	if val == 0 {
-		buf.WriteByte(0x00)
-		return
-	}
-	numBytes := varIntSize(val)
-	for i := numBytes - 1; i >= 0; i-- {
-		b := byte((val >> (7 * i)) & 0x7f)
-		if i != 0 {
-			b |= 0x80
-		}
-		buf.WriteByte(b)
-	}
-}
-
-// deserializeVarInt reads a base-128 varint from the buffer.
-// Returns the decoded value and any error.
-func deserializeVarInt(buf *bytes.Reader) (int, error) {
-	val := 0
-	for {
-		b, err := buf.ReadByte()
-		if err != nil {
-			return 0, fmt.Errorf("unexpected end of varint data: %w", err)
-		}
-		val = (val << 7) | int(b&0x7f)
-		if b&0x80 == 0 {
-			break
-		}
-	}
-	return val, nil
-}
-
 // positionListSize returns the serialized size of a delta-compressed position list
 // (not including the list size prefix). Validates monotonic non-negative.
 func positionListSize(list []int) (int, error) {
@@ -110,41 +75,264 @@ func positionListSize(list []int) (int, error) {
 	return sum, nil
 }
 
-// serializePositionList writes the list size (varint) followed by delta-compressed entries.
-func serializePositionList(buf *bytes.Buffer, list []int, serializedSize int) {
-	serializeVarInt(buf, serializedSize)
-	last := 0
-	for _, val := range list {
-		serializeVarInt(buf, val-last)
-		last = val
+// appendVarInt appends Java's most-significant-group-first base-128 varint.
+func appendVarInt(dst []byte, val int) []byte {
+	if val == 0 {
+		return append(dst, 0x00)
 	}
+	for i := varIntSize(val) - 1; i >= 0; i-- {
+		b := byte((val >> (7 * i)) & 0x7f)
+		if i != 0 {
+			b |= 0x80
+		}
+		dst = append(dst, b)
+	}
+	return dst
 }
 
-// deserializePositionList reads a delta-compressed position list from the buffer.
-func deserializePositionList(buf *bytes.Reader) ([]int, error) {
-	serializedSize, err := deserializeVarInt(buf)
+// appendPositionList appends the byte size followed by delta-compressed positions.
+func appendPositionList(dst []byte, list []int, serializedSize int) []byte {
+	dst = appendVarInt(dst, serializedSize)
+	last := 0
+	for _, val := range list {
+		dst = appendVarInt(dst, val-last)
+		last = val
+	}
+	return dst
+}
+
+var errVarIntEOF = fmt.Errorf("unexpected end of varint data: EOF")
+
+// readVarInt reads a varint from data[pos:]: the value, the offset after
+// it, and whether its encoding is the one appendVarInt writes.
+func readVarInt(data []byte, pos int) (val, next int, canonical bool, err error) {
+	start := pos
+	for pos < len(data) {
+		b := data[pos]
+		pos++
+		val = (val << 7) | int(b&0x7f)
+		if b&0x80 == 0 {
+			return val, pos, pos-start == varIntSize(val), nil
+		}
+	}
+	return 0, pos, false, errVarIntEOF
+}
+
+// walkPositionList optionally appends decoded positions and returns end offset, count and canonicality.
+// Canonical bytes are exactly what appendPositionList would write.
+func walkPositionList(data []byte, pos int, out *[]int) (next, count int, canonical bool, err error) {
+	serializedSize, pos, canonical, err := readVarInt(data, pos)
 	if err != nil {
-		return nil, fmt.Errorf("reading list size: %w", err)
+		return 0, 0, false, fmt.Errorf("reading list size: %w", err)
 	}
 	if serializedSize == 0 {
-		return []int{}, nil // empty list (non-nil, matching Java's Collections.emptyList())
+		return pos, 0, canonical, nil
 	}
-	if serializedSize < 0 || serializedSize > buf.Len() {
-		return nil, fmt.Errorf("position list size %d exceeds remaining data %d", serializedSize, buf.Len())
+	if serializedSize < 0 || serializedSize > len(data)-pos {
+		return 0, 0, false, fmt.Errorf("position list size %d exceeds remaining data %d", serializedSize, len(data)-pos)
 	}
-	// serializedSize is an upper bound on the number of entries (exact if all varints are 1 byte).
-	result := make([]int, 0, serializedSize)
-	startPos := buf.Len()
-	last := 0
-	for startPos-buf.Len() < serializedSize {
-		delta, err := deserializeVarInt(buf)
+	start, last := pos, 0
+	for pos-start < serializedSize {
+		delta, next, minimal, err := readVarInt(data, pos)
 		if err != nil {
-			return nil, fmt.Errorf("reading position delta: %w", err)
+			return 0, 0, false, fmt.Errorf("reading position delta: %w", err)
 		}
+		pos, canonical = next, canonical && minimal
 		last += delta
-		result = append(result, last)
+		count++
+		if out != nil {
+			*out = append(*out, last)
+		}
 	}
-	return result, nil
+	// A last delta read past the declared size is re-encoded with the size of
+	// its deltas.
+	return pos, count, canonical && pos-start == serializedSize, nil
+}
+
+// countBunch counts entries/positions using deserializeBunch framing, stopping
+// at the first malformed byte for deserializeBunch to report.
+func countBunch(data []byte, values bool) (entries, positions int) {
+	pos := len(textIndexBunchedSerializerPrefix)
+	for first := true; pos < len(data); first = false {
+		if !first {
+			tupleSize, next, _, err := readVarInt(data, pos)
+			if err != nil || tupleSize < 0 || tupleSize > len(data)-next {
+				return entries, positions
+			}
+			pos = next + tupleSize
+		}
+		if values {
+			next, count, _, err := walkPositionList(data, pos, nil)
+			if err != nil {
+				return entries, positions
+			}
+			pos, positions = next, positions+count
+		} else {
+			listSize, next, _, err := readVarInt(data, pos)
+			if err != nil || listSize < 0 || listSize > len(data)-next {
+				return entries, positions
+			}
+			pos = next + listSize
+		}
+		entries++
+	}
+	return entries, positions
+}
+
+// bunchItem is one entry of a bunch as BunchedMap's put and remove handle it.
+//
+// key retains validated packed bytes, matching Java Tuple.fromBytes/pack preservation
+// and cached-byte Tuple.compareTo ordering without decoding unused elements.
+//
+// list retains canonical stored position bytes including the size varint.
+// Noncanonical/new entries use positions instead, matching Java decode/re-encode behavior.
+type bunchItem struct {
+	key       []byte
+	list      []byte
+	positions []int
+}
+
+// itemListSize is the serialized size of the item's position list.
+func itemListSize(item *bunchItem) (int, error) {
+	if item.list != nil {
+		return len(item.list), nil
+	}
+	ls, err := positionListSize(item.positions)
+	if err != nil {
+		return 0, err
+	}
+	return varIntSize(ls) + ls, nil
+}
+
+func appendItemList(dst []byte, item *bunchItem) []byte {
+	if item.list != nil {
+		return append(dst, item.list...)
+	}
+	ls, _ := positionListSize(item.positions) // checked by itemListSize
+	return appendPositionList(dst, item.positions, ls)
+}
+
+// itemPositions is the item's position list.
+func itemPositions(item *bunchItem) ([]int, error) {
+	if item.list == nil {
+		return item.positions, nil
+	}
+	positions := []int{} // Java's Collections.emptyList() for an empty list
+	if _, _, _, err := walkPositionList(item.list, 0, &positions); err != nil {
+		return nil, err
+	}
+	return positions, nil
+}
+
+// bunchItemsSize matches serializeEntries validation: nonempty items and
+// monotonically increasing nonnegative positions.
+func bunchItemsSize(items []bunchItem) (int, error) {
+	if len(items) == 0 {
+		return 0, fmt.Errorf("text index serializer: cannot serialize empty entry list")
+	}
+	size := len(textIndexBunchedSerializerPrefix)
+	for i := range items {
+		if i != 0 {
+			size += varIntSize(len(items[i].key)) + len(items[i].key)
+		}
+		ls, err := itemListSize(&items[i])
+		if err != nil {
+			return 0, fmt.Errorf("text index serializer: serialize entries: %w", err)
+		}
+		size += ls
+	}
+	return size, nil
+}
+
+// encodeBunchItems is serializeEntries over items, into one allocation of
+// the size bunchItemsSize returned.
+func encodeBunchItems(items []bunchItem, size int) []byte {
+	out := make([]byte, 0, size)
+	out = append(out, textIndexBunchedSerializerPrefix...)
+	for i := range items {
+		if i != 0 {
+			out = appendVarInt(out, len(items[i].key))
+			out = append(out, items[i].key...)
+		}
+		out = appendItemList(out, &items[i])
+	}
+	return out
+}
+
+// serializeBunchItems is serializeEntries over items.
+func serializeBunchItems(items []bunchItem) ([]byte, error) {
+	size, err := bunchItemsSize(items)
+	if err != nil {
+		return nil, err
+	}
+	return encodeBunchItems(items, size), nil
+}
+
+// serializeBunchItem is serializeEntry: the bytes that append item to a bunch.
+func serializeBunchItem(item *bunchItem) ([]byte, error) {
+	ls, err := itemListSize(item)
+	if err != nil {
+		return nil, fmt.Errorf("text index serializer: serialize entry: %w", err)
+	}
+	out := make([]byte, 0, varIntSize(len(item.key))+len(item.key)+ls)
+	out = appendVarInt(out, len(item.key))
+	out = append(out, item.key...)
+	return appendItemList(out, item), nil
+}
+
+// decodeBunchItems appends borrowed packed keys and canonical lists from firstKey/data.
+// It validates signpost and entry keys where Java deserializeKey/deserializeEntries would decode them.
+func decodeBunchItems(firstKey, data []byte, items []bunchItem) ([]bunchItem, error) {
+	if err := tuplefast.Validate(firstKey); err != nil {
+		return items, &BunchedSerializationError{Message: fmt.Sprintf("unable to deserialize key: %v", err), Data: firstKey}
+	}
+	if !bytes.HasPrefix(data, textIndexBunchedSerializerPrefix) {
+		return items, &BunchedSerializationError{
+			Message: fmt.Sprintf("data begins with incorrect prefix: %x", data[:min(len(data), 4)]),
+			Data:    data,
+		}
+	}
+	fail := func(format string, args ...any) error {
+		return &BunchedSerializationError{Message: fmt.Sprintf(format, args...), Data: data}
+	}
+	pos := len(textIndexBunchedSerializerPrefix)
+	first := true
+	for pos < len(data) {
+		var item bunchItem
+		if first {
+			item.key = firstKey[:len(firstKey):len(firstKey)]
+			first = false
+		} else {
+			tupleSize, next, _, err := readVarInt(data, pos)
+			if err != nil {
+				return items, fail("reading tuple size: %v", err)
+			}
+			pos = next
+			if tupleSize < 0 || tupleSize > len(data)-pos {
+				return items, fail("tuple size %d exceeds remaining data %d", tupleSize, len(data)-pos)
+			}
+			item.key = data[pos : pos+tupleSize : pos+tupleSize]
+			if err := tuplefast.Validate(item.key); err != nil {
+				return items, fail("unpacking key: %v", err)
+			}
+			pos += tupleSize
+		}
+		next, _, canonical, err := walkPositionList(data, pos, nil)
+		if err != nil {
+			return items, fail("deserializing position list: %v", err)
+		}
+		if canonical {
+			item.list = data[pos:next:next]
+		} else {
+			item.positions = []int{}
+			if _, _, _, err := walkPositionList(data, pos, &item.positions); err != nil {
+				return items, fail("deserializing position list: %v", err)
+			}
+		}
+		pos = next
+		items = append(items, item)
+	}
+	return items, nil
 }
 
 // SerializeKey packs a key using standard Tuple encoding.
@@ -157,18 +345,17 @@ func (s *TextIndexBunchedSerializer) SerializeKey(key tuple.Tuple) []byte {
 // Format: varInt(keyLen) + keyBytes + varInt(listSize) + deltaCompressedList
 // Matches Java's TextIndexBunchedSerializer.serializeEntry().
 func (s *TextIndexBunchedSerializer) SerializeEntry(key tuple.Tuple, value []int) ([]byte, error) {
-	serializedKey := key.Pack()
+	serializedKey := key.PackWithPrefix(nil)
 	listSize, err := positionListSize(value)
 	if err != nil {
 		return nil, fmt.Errorf("text index serializer: serialize entry: %w", err)
 	}
 
 	totalSize := varIntSize(len(serializedKey)) + len(serializedKey) + varIntSize(listSize) + listSize
-	buf := bytes.NewBuffer(make([]byte, 0, totalSize))
-	serializeVarInt(buf, len(serializedKey))
-	buf.Write(serializedKey)
-	serializePositionList(buf, value, listSize)
-	return buf.Bytes(), nil
+	out := make([]byte, 0, totalSize)
+	out = appendVarInt(out, len(serializedKey))
+	out = append(out, serializedKey...)
+	return appendPositionList(out, value, listSize), nil
 }
 
 // SerializeEntries packs an entry list into a single byte array.
@@ -179,16 +366,22 @@ func (s *TextIndexBunchedSerializer) SerializeEntries(entries []BunchedEntry[tup
 		return nil, fmt.Errorf("text index serializer: cannot serialize empty entry list")
 	}
 
-	// Calculate total size.
+	// Calculate total size. The keys after the first are packed once, one
+	// after another into a scratch buffer; ends[i] is where key i ends in it.
 	size := len(textIndexBunchedSerializerPrefix)
-	serializedKeys := make([][]byte, 0, len(entries)-1)
-	listSizes := make([]int, len(entries))
+	pk := tuple.GetPacker()
+	defer tuple.PutPacker(pk)
+	var keys []byte
+	sizes := make([]int, 2*len(entries))
+	ends, listSizes := sizes[:len(entries)], sizes[len(entries):]
 
 	for i, entry := range entries {
 		if i != 0 {
-			sk := entry.Key.Pack()
+			pk.Reset()
+			pk.EncodeTuple(entry.Key)
+			sk := pk.AppendInto(&keys, nil)
+			ends[i] = len(keys)
 			size += varIntSize(len(sk)) + len(sk)
-			serializedKeys = append(serializedKeys, sk)
 		}
 		ls, err := positionListSize(entry.Value)
 		if err != nil {
@@ -198,17 +391,17 @@ func (s *TextIndexBunchedSerializer) SerializeEntries(entries []BunchedEntry[tup
 		size += varIntSize(ls) + ls
 	}
 
-	buf := bytes.NewBuffer(make([]byte, 0, size))
-	buf.Write(textIndexBunchedSerializerPrefix)
+	out := make([]byte, 0, size)
+	out = append(out, textIndexBunchedSerializerPrefix...)
 	for i, entry := range entries {
 		if i != 0 {
-			sk := serializedKeys[i-1]
-			serializeVarInt(buf, len(sk))
-			buf.Write(sk)
+			sk := keys[ends[i-1]:ends[i]]
+			out = appendVarInt(out, len(sk))
+			out = append(out, sk...)
 		}
-		serializePositionList(buf, entry.Value, listSizes[i])
+		out = appendPositionList(out, entry.Value, listSizes[i])
 	}
-	return buf.Bytes(), nil
+	return out, nil
 }
 
 // DeserializeKey unpacks a Tuple key from data[offset:offset+length].
@@ -264,44 +457,39 @@ func (s *TextIndexBunchedSerializer) deserializeBunch(key tuple.Tuple, data []by
 		}
 	}
 
-	buf := bytes.NewReader(data[len(textIndexBunchedSerializerPrefix):])
-	var entries []BunchedEntry[tuple.Tuple, []int]
+	fail := func(format string, args ...any) error {
+		return &BunchedSerializationError{Message: fmt.Sprintf(format, args...), Data: data}
+	}
+	// The entries and all their positions take one allocation each. Keys are
+	// unpacked from data in place; Unpack copies what it keeps.
+	nEntries, nPositions := countBunch(data, deserializeValues)
+	entries := make([]BunchedEntry[tuple.Tuple, []int], 0, nEntries)
+	var arena []int
+	if deserializeValues {
+		arena = make([]int, 0, nPositions)
+	}
+	pos := len(textIndexBunchedSerializerPrefix)
 	first := true
-
-	for buf.Len() > 0 {
+	for pos < len(data) {
 		var entryKey tuple.Tuple
 		if !first {
-			tupleSize, err := deserializeVarInt(buf)
+			tupleSize, next, _, err := readVarInt(data, pos)
 			if err != nil {
-				return nil, &BunchedSerializationError{
-					Message: fmt.Sprintf("reading tuple size: %v", err),
-					Data:    data,
-				}
+				return nil, fail("reading tuple size: %v", err)
 			}
-			if tupleSize < 0 || tupleSize > buf.Len() {
-				return nil, &BunchedSerializationError{
-					Message: fmt.Sprintf("tuple size %d exceeds remaining data %d", tupleSize, buf.Len()),
-					Data:    data,
-				}
+			pos = next
+			if tupleSize < 0 || tupleSize > len(data)-pos {
+				return nil, fail("tuple size %d exceeds remaining data %d", tupleSize, len(data)-pos)
 			}
 			if tupleSize == 0 {
 				entryKey = tuple.Tuple{}
 			} else {
-				keyBytes := make([]byte, tupleSize)
-				if _, err := buf.Read(keyBytes); err != nil {
-					return nil, &BunchedSerializationError{
-						Message: fmt.Sprintf("reading key bytes: %v", err),
-						Data:    data,
-					}
-				}
-				entryKey, err = tuplefast.Unpack(keyBytes)
+				entryKey, err = tuplefast.Unpack(data[pos : pos+tupleSize])
 				if err != nil {
-					return nil, &BunchedSerializationError{
-						Message: fmt.Sprintf("unpacking key: %v", err),
-						Data:    data,
-					}
+					return nil, fail("unpacking key: %v", err)
 				}
 			}
+			pos += tupleSize
 		} else {
 			entryKey = key
 			first = false
@@ -309,36 +497,26 @@ func (s *TextIndexBunchedSerializer) deserializeBunch(key tuple.Tuple, data []by
 
 		var entryValue []int
 		if deserializeValues {
-			var err error
-			entryValue, err = deserializePositionList(buf)
+			start := len(arena)
+			next, _, _, err := walkPositionList(data, pos, &arena)
 			if err != nil {
-				return nil, &BunchedSerializationError{
-					Message: fmt.Sprintf("deserializing position list: %v", err),
-					Data:    data,
-				}
+				return nil, fail("deserializing position list: %v", err)
 			}
+			pos = next
+			// A full slice expression, so appending to one entry's list
+			// cannot overwrite the next one's.
+			entryValue = arena[start:len(arena):len(arena)]
 		} else {
 			// Skip value: read list size, then skip that many bytes.
-			listSize, err := deserializeVarInt(buf)
+			listSize, next, _, err := readVarInt(data, pos)
 			if err != nil {
-				return nil, &BunchedSerializationError{
-					Message: fmt.Sprintf("reading list size for skip: %v", err),
-					Data:    data,
-				}
+				return nil, fail("reading list size for skip: %v", err)
 			}
-			if listSize < 0 || listSize > buf.Len() {
-				return nil, &BunchedSerializationError{
-					Message: fmt.Sprintf("list size %d exceeds remaining data %d", listSize, buf.Len()),
-					Data:    data,
-				}
+			pos = next
+			if listSize < 0 || listSize > len(data)-pos {
+				return nil, fail("list size %d exceeds remaining data %d", listSize, len(data)-pos)
 			}
-			skipBytes := make([]byte, listSize)
-			if _, err := buf.Read(skipBytes); err != nil {
-				return nil, &BunchedSerializationError{
-					Message: fmt.Sprintf("skipping value bytes: %v", err),
-					Data:    data,
-				}
-			}
+			pos += listSize
 		}
 
 		entries = append(entries, BunchedEntry[tuple.Tuple, []int]{Key: entryKey, Value: entryValue})

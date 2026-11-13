@@ -112,7 +112,10 @@ func TestCoordOpenDatabaseRequest_MatchesLibfdbc(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			coords := ParseNetworkAddressVectorFromReader(r, OpenDatabaseCoordRequestSlotCoordinators)
+			coords, err := ParseNetworkAddressVectorFromReader(r, OpenDatabaseCoordRequestSlotCoordinators)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if len(coords) != len(tc.coordinators) {
 				t.Fatalf("decoded %d coordinators, want %d", len(coords), len(tc.coordinators))
 			}

@@ -110,13 +110,31 @@ const (
 	IsolationLevelSnapshotParam = "isolation_level_snapshot"
 )
 
+// ReadOnlyParam makes every connection the DSN opens read-only
+// (EmbeddedConnection.SetReadOnly): it runs only SELECT and EXPLAIN of a
+// SELECT, refusing everything else with 0A000, and cancels every transaction
+// it makes instead of committing it, so nothing a read does persists. Go-only;
+// it is not an api.Option, because SetOption could then clear it.
+const ReadOnlyParam = "read_only"
+
 // acceptedDSNParams is every query parameter the driver reads. cluster_file
 // and schema are read from the same map as the options.
 var acceptedDSNParams = append(append([]string{
 	"cluster_file",
 	"schema",
 	TransactionTagsParam,
+	ReadOnlyParam,
 }, dsnParams(boolDSNOptions)...), dsnParams(contractDSNOptions)...)
+
+// ReadOnly reports the DSN's read_only parameter, false when it is absent.
+// Like the boolean options, only true and false (any case) are accepted.
+func (d *DSN) ReadOnly() (bool, error) {
+	raw, present := d.Options[ReadOnlyParam]
+	if !present {
+		return false, nil
+	}
+	return parseDSNBool(ReadOnlyParam, raw)
+}
 
 // boolDSNOptions are parsed strictly (parseDSNBool): Java's Boolean.parseBoolean
 // would read a misspelled value as false.

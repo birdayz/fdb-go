@@ -50,7 +50,7 @@ read-path dimensions unprobed:
 2. **They have no frame targeting and no rewrite.** `wrongShardConn` replaces "the next non-PING
    frame"; it cannot skip to the *N*-th frame, and it cannot rewrite a reply (e.g. set `More=true`
    to force a continuation). That blocks any *mid-scan* fault (**Gap 3**). There is also no
-   write-side fault to drive `PendingGet.Resolve`'s `conn.Flush()` error arm (**Gap 2**), and no
+   write-side fault to drive `PendingGet.Resolve`'s `conn.FlushContext()` error arm (**Gap 2**), and no
    test drives an inline `future_version`/`process_behind` reply to assert the QueueModel records
    the backoff (**Gap 4**).
 
@@ -60,7 +60,7 @@ These are not production bugs — the wiring exists:
   (`readpath.go:948`), `parseGetValueReply` (`readpath.go:1007`) each call
   `wire.ReadInlineReplyError(&r, types.GetXxxReplySlotError)`. Decode is correct and unit-pinned
   (`wire/types/{inline_error,erroror}_test.go`); the *integration* dimension is unprobed.
-- **Gap 2 (flush arm):** `PendingGet.resolve` (`transaction.go:858-869`): on `p.conn.Flush()`
+- **Gap 2 (flush arm):** `PendingGet.resolve` (`pending_get.go:234-249`, formerly `transaction.go:858-869`): on `p.conn.FlushContext(ctx)`
   error → `handleConnError(p.addr)` + cancel/release + `resolveFull()` (relocate+retry). Live
   code, zero coverage — existing pipelined tests set `flushed:true` to skip it
   (`readpath_unit_test.go:363`).
@@ -195,10 +195,11 @@ Each is **revert-proven**: back out the production arm (or the faithful-channel 
    correct value/key/range. Revert-prove by deleting the `ReadInlineReplyError` call in the parser
    → the inline 1001 is missed → no retry → wrong/garbage result.
 2. **Gap 2 — `PendingGet.Resolve` flush-error.** Pipeline a `GetPipelined`/deferred `GetValue` on a
-   `writeFaultConn` armed one-shot; `Resolve()` → `conn.Flush()` errors → `handleConnError` +
+   real storage connection that is `Close()`d before `Resolve()` (or a `writeFaultConn` under
+   `WithLegacyWriter()`); `Resolve()` → `conn.FlushContext(ctx)` errors (`errConnClosed`) → `handleConnError` +
    `resolveFull()` re-dials a clean conn → returns the correct value. Assert: correct value, and
    (via QueueModel/metrics) the faulted address was marked bad. Revert-prove by removing the
-   `if err := p.conn.Flush(); err != nil` arm → the flush error surfaces / the request is lost.
+   `if err := p.conn.FlushContext(ctx); err != nil` arm (`pending_get.go:234-249`) → the flush error surfaces / the request is lost.
 3. **Gap 3 — range wrong-shard mid-scan (`more=true`), forward + reverse.** Seed ≥3 keys in one
    shard; warm cache + RV; arm `simConn` with a two-step intercept: frame 1 → flip `More=true`
    (rewriter); frame 2 (the continuation) → replace with `inlineErrorReply(GetKeyValuesReply,

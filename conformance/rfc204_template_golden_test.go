@@ -7,33 +7,8 @@ package conformance_test
 //
 //	live Java catalog bytes == committed golden bytes == Go catalog bytes
 //
-// For every representative template (each §1.2 construct: structs,
-// struct-of-struct sharing, forward references, arrays flat and wrapped,
-// nested primary keys, name escaping, UUID/VECTOR struct fields, deep
-// nesting, nullability variants — and explicitly the NULLABLE
-// ARRAY-OF-STRUCT column, the NullableArrayWrapper emission shape), Java
-// (fdb-relational 4.12.11.0 over JDBC) persists the template into the shared
-// catalog and the raw META_DATA blob is read back; Go builds the IDENTICAL
-// DDL through its own front end, persists it through its own template
-// catalog, and ITS raw stored blob is read back. Both are compared — as
-// BYTES — against each other and against the committed golden under
-// testdata/rfc204/, so the pin survives (and diffs meaningfully) without a
-// live JVM in the loop. Deliberately no clearProto2Defaults-style
-// normalization: explicitly-set defaults (nullInterpretation NOT_UNIQUE,
-// explicit_key 0) ARE the stored bytes and stay under test.
-//
-// The ONE token canonicalized before comparison is the NullableArrayWrapper
-// message name: Java names it ProtoUtils.uniqueTypeName() = "__type__" +
-// UUID.randomUUID() — RANDOM per serialization (two identical templates get
-// different names; every reader is structural,
-// NullableArrayUtils.isWrappedArrayDescriptor). Both sides' wrapper names
-// are rewritten in encounter order; everything else — placement, order,
-// labels, numbers, type_name references, union shape, options, record
-// types, primary keys, flags — is compared exactly.
-//
-// Re-blessing (only with a Java-verified behaviour change): run with
-// --test_env=RFC204_GOLDEN_OUT=<abs path to conformance/testdata/rfc204>
-// --sandbox_writable_path=<same path>, then commit the diff.
+// Java fdb-relational 4.14.2.0 and Go independently persist each template;
+// compare their raw bytes, canonicalizing only random wrapper names/runs.
 
 import (
 	"bytes"
@@ -41,6 +16,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"testing"
 
 	"github.com/bazelbuild/rules_go/go/runfiles"
 	"github.com/google/uuid"
@@ -51,6 +28,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"fdb.dev/gen"
+	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/catalog"
@@ -149,6 +127,14 @@ var rfc204Goldens = []rfc204Golden{
 		wantMetaDataVersion: 3,
 	},
 	{
+		// The public OTel template includes typed fan-out, BYTES and UNIQUE
+		// keys, a scalar-array unnest and base-column-led fan-out, without
+		// the Go-only TEXT overlay: template version 1 plus 20 indexes.
+		name:                "otel_v1",
+		body:                otelsql.TemplateBody,
+		wantMetaDataVersion: 21,
+	},
+	{
 		name: "struct_nullable_field_variants",
 		body: `CREATE TYPE AS STRUCT S1 (a BIGINT) ` +
 			`CREATE TYPE AS STRUCT S3 (x S1, y S1 NULL, arr S1 ARRAY) ` +
@@ -172,10 +158,35 @@ func isWrapperShape(m *descriptorpb.DescriptorProto) bool {
 		f.GetLabel() == descriptorpb.FieldDescriptorProto_LABEL_REPEATED
 }
 
-// normalizeWrapperNames canonicalizes every wrapper-SHAPED message name
-// (and the field type_name references to it) in encounter order. Mutates
-// fdp.
+// wrapperElementKey is a wrapper's element type: its values field's message
+// type name, else its scalar type.
+func wrapperElementKey(m *descriptorpb.DescriptorProto) string {
+	f := m.GetField()[0]
+	if f.GetTypeName() != "" {
+		return f.GetTypeName()
+	}
+	return f.GetType().String()
+}
+
+// normalizeWrapperNames mutates fdp to canonicalize random wrapper names and
+// each contiguous wrapper run's element-type order (Java sorts random names).
 func normalizeWrapperNames(fdp *descriptorpb.FileDescriptorProto) {
+	messages := fdp.GetMessageType()
+	for start := 0; start < len(messages); {
+		if !isWrapperShape(messages[start]) {
+			start++
+			continue
+		}
+		end := start
+		for end < len(messages) && isWrapperShape(messages[end]) {
+			end++
+		}
+		run := messages[start:end]
+		sort.SliceStable(run, func(i, j int) bool {
+			return wrapperElementKey(run[i]) < wrapperElementKey(run[j])
+		})
+		start = end
+	}
 	rename := map[string]string{}
 	for _, m := range fdp.GetMessageType() {
 		if isWrapperShape(m) {
@@ -196,8 +207,46 @@ func normalizeWrapperNames(fdp *descriptorpb.FileDescriptorProto) {
 	}
 }
 
+func TestNormalizeWrapperNames(t *testing.T) {
+	t.Parallel()
+	fixture := func(strName, intName string, reverse bool) *descriptorpb.FileDescriptorProto {
+		wrapper := func(name string, typ descriptorpb.FieldDescriptorProto_Type) *descriptorpb.DescriptorProto {
+			return &descriptorpb.DescriptorProto{Name: proto.String(name), Field: []*descriptorpb.FieldDescriptorProto{{
+				Name: proto.String("values"), Number: proto.Int32(1),
+				Label: descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum(), Type: typ.Enum(),
+			}}}
+		}
+		row := &descriptorpb.DescriptorProto{Name: proto.String("ROW"), Field: []*descriptorpb.FieldDescriptorProto{
+			{Name: proto.String("strings"), Number: proto.Int32(1), TypeName: proto.String(strName)},
+			{Name: proto.String("ints"), Number: proto.Int32(2), TypeName: proto.String(intName)},
+		}}
+		wrappers := []*descriptorpb.DescriptorProto{wrapper(strName, descriptorpb.FieldDescriptorProto_TYPE_STRING), wrapper(intName, descriptorpb.FieldDescriptorProto_TYPE_INT64)}
+		if reverse {
+			wrappers[0], wrappers[1] = wrappers[1], wrappers[0]
+		}
+		return &descriptorpb.FileDescriptorProto{MessageType: append([]*descriptorpb.DescriptorProto{row}, wrappers...)}
+	}
+	left, right := fixture("randomA", "randomB", false), fixture("randomD", "randomC", true)
+	normalizeWrapperNames(left)
+	normalizeWrapperNames(right)
+	if !proto.Equal(left, right) {
+		t.Fatal("equivalent wrapper names/order did not normalize identically")
+	}
+	if left.GetMessageType()[0].GetName() != "ROW" || left.GetMessageType()[1].GetField()[0].GetType() != descriptorpb.FieldDescriptorProto_TYPE_INT64 ||
+		left.GetMessageType()[0].GetField()[0].GetTypeName() != "__wrapper_1__" || left.GetMessageType()[0].GetField()[1].GetTypeName() != "__wrapper_0__" {
+		t.Fatal("normalization changed message placement, element type or references")
+	}
+	changed := fixture("x", "y", true)
+	changed.MessageType[1].Field[0].Type = descriptorpb.FieldDescriptorProto_TYPE_DOUBLE.Enum()
+	normalizeWrapperNames(changed)
+	if proto.Equal(left, changed) {
+		t.Fatal("normalization concealed an element-type difference")
+	}
+}
+
 // normalizeStoredTemplate parses raw stored MetaData bytes, canonicalizes
-// wrapper names, and re-marshals deterministically — the byte form all
+// wrapper names/references and order within contiguous wrapper runs, and
+// re-marshals deterministically — the byte form all
 // three sides (Java catalog, committed golden, Go catalog) compare in.
 func normalizeStoredTemplate(raw []byte) ([]byte, *gen.MetaData, error) {
 	md := &gen.MetaData{}
@@ -334,6 +383,9 @@ var _ = Describe("RFC-204 schema-template byte-goldens (Java catalog == committe
 			// name), and read back as stored bytes.
 			goTmpl, buildErr := embedded.BuildSchemaTemplateFromDDLNamed(g.body, templateName)
 			Expect(buildErr).NotTo(HaveOccurred(), "Go DDL front end for %s", g.name)
+			if g.name == "otel_v1" {
+				Expect(goTmpl.Version()).To(Equal(otelsql.TemplateVersion))
+			}
 			goCat, err := catalog.NewRecordLayerStoreCatalog(
 				subspace.Sub("rfc204golden", g.name, uuid.NewString()))
 			Expect(err).NotTo(HaveOccurred())

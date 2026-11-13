@@ -269,13 +269,13 @@ func TestStartGetRange_IssueTimeWriteView(t *testing.T) {
 			// A key written after the issue keeps its read conflict, as the
 			// issue-time iterator saw an unmodified range there.
 			found := false
-			for _, r := range tx.readConflicts {
+			for _, r := range tx.readConflictRanges() {
 				if bytes.Compare(r.Begin, rangeIssueKey(prefix, 7)) <= 0 && bytes.Compare(rangeIssueKey(prefix, 7), r.End) < 0 {
 					found = true
 				}
 			}
 			if !found {
-				t.Fatalf("read conflicts %v lost the key written after issue", tx.readConflicts)
+				t.Fatalf("read conflicts %v lost the key written after issue", tx.readConflictRanges())
 			}
 		})
 	}

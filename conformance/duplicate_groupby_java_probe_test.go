@@ -61,6 +61,8 @@ var _ = Describe("DuplicateGroupByJavaProbe", func() {
 		//                   AMBIGUOUS_COLUMN (Java's message carries a
 		//                   correlation-prefixed rendering; the shared
 		//                   "Ambiguous columns for" wording is asserted).
+		//   "both_42703"  — a key that does not resolve: both engines report
+		//                   UNDEFINED_COLUMN, not AMBIGUOUS_COLUMN.
 		//   "go_extends"  — the duplicate-free CONTROL: live Java's Cascades
 		//                   DECLINES a GROUP BY with no matching aggregate
 		//                   index ("Cascades planner could not plan query"),
@@ -107,16 +109,24 @@ var _ = Describe("DuplicateGroupByJavaProbe", func() {
 			{"paren_twin_aggonly", "SELECT COUNT(*) FROM T_G1 GROUP BY (amount+1), amount+1", "java_42702_go_plans"},
 			{"paren_twin_proj", "SELECT amount+1, COUNT(*) FROM T_G1 GROUP BY (amount+1), amount+1", "java_42702_go_plans"},
 			{"paren_twin_having", "SELECT COUNT(*) FROM T_G1 GROUP BY (amount+1), amount+1 HAVING amount+1 > 11", "java_42702_go_plans"},
-			// The COMPARISON spelling diverges the same way, by a second and
-			// independent route: Go's gate resolves with WalkExpression
-			// (posPredicate), which will not fold a comparison to a Value at all,
-			// so identity falls to a GetText compare the parentheses defeat.
+			// The COMPARISON spelling diverges the same way: the gate resolves
+			// both keys in value context, and the parenthesised one comes back
+			// wrapped in a record constructor, as `(amount+1)` does above.
 			{"cmp_twin", "SELECT COUNT(*) FROM T_G1 GROUP BY (amount=1), amount=1", "java_42702_go_plans"},
 			// THE CONTROLS that keep the three above honest: with the spellings
 			// made to coincide, Go's gate DOES refuse, so what is pinned is the
 			// mixed-spelling hole and not a claim that the gate never fires.
 			{"paren_both_sides", "SELECT COUNT(*) FROM T_G1 GROUP BY (amount+1), (amount+1)", "both_42702"},
 			{"cmp_same_text", "SELECT COUNT(*) FROM T_G1 GROUP BY amount=1, amount=1", "both_42702"},
+			// Comparison keys compare by resolved value (RFC-272): another
+			// spelling of the same comparison is still a duplicate, literals
+			// that differ only in case are two keys (Java then declines in the
+			// planner like any other duplicate-free GROUP BY), and a key that
+			// does not resolve reports its own 42703 rather than 42702.
+			{"cmp_ne_spellings", "SELECT COUNT(*) FROM T_G1 GROUP BY amount <> 1, amount != 1", "both_42702"},
+			{"cmp_literal_spellings", "SELECT COUNT(*) FROM T_G1 GROUP BY amount = 1, amount = 01", "both_42702"},
+			{"cmp_literal_case", "SELECT COUNT(*) FROM T_G1 GROUP BY category = 'a', category = 'A'", "go_extends"},
+			{"undefined_key_twice", "SELECT COUNT(*) FROM T_G1 GROUP BY nosuch + 1, nosuch + 1", "both_42703"},
 			// THE JOIN SPELLING — the OTHER route (name-keyed, plain FieldValue
 			// keys), measured here rather than inferred from the single-source
 			// `dup_qualified_vs_bare` analogue. Go's duplicate GATE strips a
@@ -208,6 +218,17 @@ var _ = Describe("DuplicateGroupByJavaProbe", func() {
 				if gr.Err == nil || !errors.As(gr.Err, &ge) || ge.Code != api.ErrCodeAmbiguousColumn ||
 					!strings.Contains(ge.Message, "Ambiguous columns for") {
 					divergences = append(divergences, fmt.Sprintf("probe %s: Go does not reject 42702\n  go: %s",
+						p.name, render("GO  ", gr)))
+				}
+			case "both_42703":
+				var ge *api.Error
+				var je *plandiff.JavaError
+				if jr.Err == nil || !errors.As(jr.Err, &je) || je.SQLState != string(api.ErrCodeUndefinedColumn) {
+					divergences = append(divergences, fmt.Sprintf("probe %s: Java does not report 42703\n  java: %s",
+						p.name, render("JAVA", jr)))
+				}
+				if gr.Err == nil || !errors.As(gr.Err, &ge) || ge.Code != api.ErrCodeUndefinedColumn {
+					divergences = append(divergences, fmt.Sprintf("probe %s: Go does not report 42703\n  go: %s",
 						p.name, render("GO  ", gr)))
 				}
 			case "go_extends":

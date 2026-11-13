@@ -14,7 +14,7 @@ automatically migrated.
 **Running this as a multi-tenant SaaS?** Read [`mt-saas.md`](mt-saas.md) alongside this page. It
 covers only what changes when one database path is one tenant — the tenancy model, the trust
 boundary and `RESTRICT_DDL_TO_SESSION_DATABASE`, per-statement quotas (none of which is on by
-default), per-tenant observability, the TLS certificate requirement, and the tenant-facing SQL
+default), per-tenant observability, TLS verification, and the tenant-facing SQL
 contract. It links back here rather than repeating the basics below.
 
 ---
@@ -32,8 +32,9 @@ fdbsql:///<database-path>?cluster_file=/etc/foundationdb/fdb.cluster&schema=<nam
 ```
 
 ```go
-import _ "fdb.dev/pkg/relational/sqldriver"
+import "fdb.dev/pkg/relational/sqldriver"
 
+sqldriver.RegisterDomainIfNotExists("FRL") // once per process
 db, err := sql.Open("fdbsql", "fdbsql:///FRL/MYAPP?cluster_file=/etc/foundationdb/fdb.cluster&schema=APP")
 ```
 
@@ -45,6 +46,32 @@ Cluster-file resolution order: the DSN `cluster_file` param → the `FDB_CLUSTER
 variable → FDB's default file. The remote form `fdbsql://host:port/...` is **not implemented**
 (returns an unsupported-operation error) — the driver is in-process. Opened clients are cached
 per cluster-file path for the process lifetime.
+
+An application that already has a `*recordlayer.FDBDatabase` passes it to
+`sqldriver.NewConnector(db, dsn)` and hands the connector to `sql.OpenDB`. The DSN takes no
+`cluster_file`; the connector opens and caches no database and changes no process-wide state
+(`RegisterBackend` is the test seam, not this). The domain must still be registered.
+
+`read_only=true` makes every connection of the DSN read-only:
+
+- Only `SELECT` and `EXPLAIN`/`DESCRIBE` of a `SELECT` run. Anything else, `SHOW`, transaction
+  statements and any multi-statement batch included, fails at planning with SQLSTATE `0A000`
+  (`read-only connection: only SELECT and EXPLAIN of a SELECT are allowed`). The Go APIs that write
+  (direct-access insert and delete, statistics collect and clear, `ApplyMetadataOperation`) refuse
+  with `0A000` too.
+- Every transaction the connection makes is cancelled, never committed: the statement's shared
+  transaction, each page, the catalog reads and bootstrap, and an explicit transaction's `Commit`.
+  The header upgrade an open makes on a store an older version wrote stays in memory.
+- `BeginTx` accepts `sql.TxOptions{ReadOnly: true}`, which it refuses (`0A000`) without
+  `read_only`.
+- It is not a tenant boundary. A connection bound to schema `T1` reads only `T1`'s rows (a table
+  qualifier names the schema template and resolves in the connection's schema), but
+  `INFORMATION_SCHEMA` lists every schema of the connection's database with its tables and
+  columns. Other databases are not visible.
+
+`isolation_level_snapshot=true` also refuses everything but `SELECT` and `EXPLAIN` of a `SELECT`
+(transaction statements excepted), but it commits, so a read can still persist a store-header
+upgrade.
 
 ### Record-store API
 
@@ -72,14 +99,15 @@ rdb, _ := recordlayer.NewFDBDatabaseFactory().GetDatabase(clusterFile) // pure-G
 ```
 
 ```sh
-go build ./cmd/frl ./pkg/...         # default: pure-Go
+go build ./cmd/fdb ./pkg/...         # default: pure-Go
 CGO_ENABLED=1 go build -tags libfdbc ./...   # libfdb_c
 ```
 
 The plain `fdb.OpenDatabase` form is always the pure-Go client; the backend switch lives in the
 internal seam the factory uses, not in a public package. This is a **build-time** choice (the
 libfdb_c network thread is once-per-process), not a runtime switch. Both backends are wire-compatible;
-a cross-client byte-identical differential gates every PR (`nightly-libfdbc.yml`). The SQL driver
+a cross-client byte-identical differential gates every PR (the `libfdbc-differential` job in
+`.github/workflows/ci.yml`). The SQL driver
 routes through the same seam, so `-tags libfdbc` switches it as well.
 
 ---
@@ -94,23 +122,30 @@ _, err := rdb.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) { ..
 // read-only: rdb.RunRead(ctx, func(rtx fdb.ReadTransaction) (any, error) { ... })
 ```
 
-(`Run`/`RunRead` dispatch to the lower-level `fdb.Database` methods `Transact`/`ReadTransact` and the
-ctx-bounded `TransactCtx`/`ReadTransactCtx`, which live on the `fdb.Database` handle, not on `rdb`.)
+`Run`/`RunRead` own the record-layer retry loop, using a fresh backend transaction for each attempt
+with the backend's own retries disabled. The lower-level `Transact`/`ReadTransact` and
+`TransactCtx`/`ReadTransactCtx` methods live on the `fdb.Database` handle, not on `rdb`, and have a
+separate retry policy.
 
 - **The `ctx` deadline bounds the retry loop and backoff.** A cancelled/expired ctx aborts retries
   promptly — this is the cancellation mechanism.
-- **The default retry limit is unlimited**, matching `libfdb_c` (`RETRY_LIMIT = -1`). The `ctx`
-  deadline is the bound; set one for any unattended work.
+- **The record-layer default is 10 counted attempts**, including the initial attempt, matching
+  Java's transaction runner. Configure it with `rdb.SetMaxAttempts(n)` (`n >= 1`), or use
+  `RunWithMaxAttempts` for one call. Internal SPFresh split-window retries do not consume that
+  count; set a `ctx` deadline for unattended work.
+- The native client's **`Transact`/`ReadTransact` default is unlimited retries**, matching
+  `libfdb_c` (`RETRY_LIMIT = -1`). That is not the record-layer runner's default.
 - The commit RPC itself runs detached from late ctx cancellation, so a cancel mid-commit can't tear
   a write in half (ambiguous-write safety, RFC-090).
 
-Tune transaction defaults on the underlying `fdb.Database` handle (`db.Options()`), applied to every
-transaction it runs:
+Tune transaction defaults on the underlying `fdb.Database` handle (`db.Options()`), applied to each
+transaction it creates. For record-layer work, the timeout is per attempt; the runner overrides the
+native retry limit to `0` and uses `SetMaxAttempts` for its own budget:
 
 | Option | Effect |
 |---|---|
 | `SetTransactionTimeout(ms)` | hard per-tx wall-clock cap (`0` = disabled, the libfdb_c default) |
-| `SetTransactionRetryLimit(n)` | cap retries (`-1` unlimited, `0` no retries) |
+| `SetTransactionRetryLimit(n)` | cap native-client retries (`-1` unlimited, `0` no retries); not the record-layer attempt budget |
 | `SetTransactionMaxRetryDelay(ms)` | cap exponential backoff |
 | `SetTransactionSizeLimit(bytes)` | fail a tx that exceeds the byte budget |
 
@@ -199,9 +234,15 @@ writes maintain a new index *during* backfill instead, opt into `WriteOnlyIfTooL
 
 ## 6. Schema-evolution safety
 
-The store header records a **format version** (current `14`); it is upgraded automatically on open
-and rejects a future version it doesn't understand (`UnsupportedFormatVersionError`). There is no
-manual format-version setter — it tracks the code.
+The store header records a **format version**. Go's default open target is **14**, and this binary
+supports versions **1–15**; unsupported headers are rejected with `UnsupportedFormatVersionError`.
+An unpinned open upgrades an older store to the default target when its transaction commits.
+
+Use `StoreBuilder.SetFormatVersion(version)` to pin a supported open/upgrade target during a rolling
+upgrade, and pin `OnlineIndexerBuilder.SetFormatVersion(version)` too if it opens the same stores.
+The pin prevents an automatic upgrade past that target; it never downgrades a store already at a
+higher supported version. Explicit `0` and out-of-range pins are errors. Check the
+[upgrade guide](upgrade.md#sharing-a-java-store--changing-store-format) before sharing or rolling back binaries.
 
 Governed by the wire-compat hard line:
 

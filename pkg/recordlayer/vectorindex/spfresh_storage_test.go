@@ -163,7 +163,7 @@ var _ = Describe("SPFresh storage primitives", func() {
 			Expect(fine).To(Equal(int64(5)))
 			cell, cerr := spfreshCounterReadSnapshot(tx, s, spfreshCounterCell, 9)
 			Expect(cerr).NotTo(HaveOccurred())
-			Expect(cell).To(Equal(int64(7)), "kind tags must prevent aliasing (codex r4 #6)")
+			Expect(cell).To(Equal(int64(7)), "kind tags must prevent aliasing")
 			spfreshCounterSet(tx, s, spfreshCounterFine, 9, 100)
 			fine, cerr = spfreshCounterReadSnapshot(tx, s, spfreshCounterFine, 9)
 			Expect(cerr).NotTo(HaveOccurred())

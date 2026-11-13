@@ -3,7 +3,8 @@
 **Status:** Implemented (PR #323)
 **Item:** TODO.md C3 ("Ride their test designs"), increment 6 — the **ConflictRange** workload
 
-> **Reviews.** FDB-C-dev **ACK** (anchored on /tmp/fdbsrc @ 7.3.75): citations accurate; pushed hard on
+> **Original PR #323 reviews (historical, before RFC-262 D10's selector conversion).**
+> FDB-C-dev **ACK** (anchored on /tmp/fdbsrc @ 7.3.75): citations accurate; pushed hard on
 > the trivial-selector fast paths incl. trivial-begin-reverse-`more` and found **no under-conflict
 > hole** (Go's getKey-then-range union ⊇ C++'s combined `addConflictRange` range across the
 > offset/orEqual/reverse/limit/`more` cross-product); oracle asymmetry (under=fatal / over=safe)
@@ -119,43 +120,29 @@ exactly the conditions under which this range is conservatively wider than the v
 
 ## 3. Go's architecture — and why this is a genuine oracle, not a foregone pass
 
-**Go does not resolve a selector range server-side.** C++ ships both `KeySelector`s in one
-`GetKeyValuesRequest`; the storage server resolves them atomically and the client adds the single
-combined `[rangeBegin, rangeEnd)` above. **Go's facade** (`fdb/range_result.go:resolveRange` →
-`resolveSelector`) resolves each non-trivial selector with a separate `GetKey` round-trip, then issues
-`getRange` over the **resolved** `[begin, end)` (whose request always carries trivial
-`firstGreaterOrEqual` selectors, `readpath.go:935-936`). So Go's read-conflict coverage for a selector
-getRange is the **union of three** independently-generated conflicts:
+**The current facade sends nontrivial selectors through one selector-range read**, rather than
+resolving each bound with a separate `GetKey` and then reading an exact range. That union-of-three
+architecture was replaced by [RFC-262 D10](262-ryw-storage-read-sizing.md#d10-selector-ranges-ryw-disabled-routing-facade-limits-phase-4).
+`fdb/range_result.go` dispatches through `startSelectors` / `StartGetRangeOwnedSelectors`; selector
+continuations retain the unresolved bound and advance the consumed bound.
 
-| Source | Conflict added | Cited port |
-|--------|----------------|------------|
-| `GetKey(beginSel)` (non-trivial) | resolution span around the begin selector | `addGetKeyConflictRange`, `transaction.go:973` ← C++ `addConflictRange(GetKeyReq)` :230 |
-| `GetKey(endSel)` (non-trivial) | resolution span around the end selector | same |
-| `getRange(resolvedBegin, resolvedEnd)` | `[resolvedBegin, resolvedEnd)` clamped to returned data + RYW-filtered | `rangeConflictExtent`, `transaction.go:1059` (RFC-121) |
+| Route | Resolution and conflict |
+|-------|-------------------------|
+| RYW enabled | The walk reduces selectors against the write map and snapshot cache, requests unknown data with selectors, then applies `addConflictRange(GetRangeReq)` and the write-map filter (`ReadYourWrites.actor.cpp:245-351,592-813,896-1123`). |
+| RYW disabled | NativeAPI resolves selectors in the range request and uses `getRangeFinished` (`NativeAPI.actor.cpp:4558-4586`); a reverse read with positive end offset first resolves that end under the caller's snapshot flag (`ReadYourWrites.actor.cpp:186-213`). |
+| Both offsets are 1 | The facade keeps the exact byte-key fast path; no separate `GetKey` is needed. |
 
-Two facts make the union's correctness **non-obvious** — i.e. worth an empirical oracle:
-
-1. **Trivial-selector fast paths skip `GetKey`** (`resolveSelector`, `range_result.go:299-322`):
-   `firstGreaterOrEqual(k)` (offset 1, !orEqual) and `firstGreaterThan(k)` (offset 1, orEqual) resolve
-   client-side with **no `GetKey` and therefore no getKey conflict** — only the getRange conflict on
-   the resolved key covers them. With `offset ∈ [-maxOffset, maxOffset-1]` uniform (`2·maxOffset`
-   values), `offset==1` lands ~`1/(2·maxOffset)` ≈ 10% (maxOffset=5) of selectors on this path; the
-   rest take the `GetKey` path. The workload exercises both — and the FDB-C-dev review confirmed the
-   trivial paths have no under-conflict hole (incl. the closest-to-a-hole trivial-begin-reverse-`more`
-   shape, pinned by a deterministic regression, §5).
-2. **The union vs the combined range.** Heuristically the union ⊇ C++'s combined `[rangeBegin,
-   rangeEnd)` (the getKey resolution-span conflicts cover the offset-spill zones C++ folds into
-   `rangeBegin/rangeEnd`), so Go is expected to be **safe (over-, never under-conflict)** — consistent
-   with RFC-121's finding ("SAFE over-conflicts — Go aborted where C/Java committed, never the
-   reverse"). But ⊇-by-inspection is not proof across the full offset/orEqual/reverse/limit/`more`
-   cross-product. **The workload is the proof.** If it surfaces an under-conflict, Go's selector-range
-   conflict composition has a real hole (see §6).
+The workload exercises the production routes across offset/orEqual/reverse/limit/`more` combinations.
+Selector conflicts protect resolution dependencies, including keys outside returned rows; a byte-range
+clamp alone is not sufficient. The resolver-side oracle checks these dependencies against an actual
+concurrent writer rather than assuming that a conflict-vector implementation is correct by inspection.
+Exact conflict parity against libfdb_c is separately pinned by `TestSelectorRangeConformance`.
 
 ## 4. Proposed Go change (test-only) — `pkg/fdbgo/fdb/conflictrange_workload_test.go`
 
-A faithful port of the **non-RYW** variant (`testReadYourWrites = false` — the default and the core
-read-conflict-range oracle), driven through the real `fdb` facade (§4.2). The RYW variant is a noted
-follow-up (§7).
+The original port used the **non-RYW** variant (`testReadYourWrites = false` — the C++ default).
+The current workload runs both the default Go RYW route and an explicitly RYW-disabled NativeAPI
+route through the real `fdb` facade (§4.2); C++'s same-transaction-clear variant remains a follow-up (§7).
 
 ### 4.1 Isolation: guard keys (the one faithful deviation, forced by `t.Parallel`)
 
@@ -200,19 +187,18 @@ sentinel: a result touching the guard band is "drifted to the boundary, can't ev
 
 **The test drives the production `fdb` facade directly** (`pkg/fdbgo/fdb`, `package fdb_test`), not the
 internal `client` package. The facade is the real selector-range path: `fdb.Transaction.GetRange(
-SelectorRange{Begin, End}, RangeOptions{Limit, Reverse})` → `range_result.go:resolveRange` →
-`resolveSelector` (the two trivial fast paths + `GetKey` for the rest) → the union-of-three conflict
-generation under test. The facade exposes the full manual lifecycle the workload needs —
+SelectorRange{Begin, End}, RangeOptions{Limit, Reverse})` → `startSelectors` →
+`StartGetRangeOwnedSelectors` → the RYW walk or NativeAPI selector read described in §3.
+Both-offset-1 selectors retain the exact-key path. The facade exposes the full manual lifecycle —
 `db.CreateTransaction()` (raw, not the auto-retry `Transact`), `tr.SetReadVersion(v)` /
 `tr.GetReadVersion()`, explicit `tr.Commit()` / `tr.OnError(e)`, `tr.Set`/`tr.Clear` — so the
 tr1/tr2/tr3/tr4 choreography, the read-version pin, and the `not_committed` (1020) catch are exact.
 
 This is a deliberate, justified deviation from the `client`-package location of the other C3 workloads:
-the behavior under test (resolve-each-selector-then-range and its conflict union) **is** a facade-layer
-behavior, and **Hole 3 (drift) is eliminated by construction** — there is no parallel re-implementation
-of `resolveSelector` to drift from; the test calls the one true production path. (A `package client`
-test *cannot* reach the facade anyway — `fdb` imports `client`, so the cycle forbids it; a client-level
-port would have to mirror `resolveSelector` by hand, which Torvalds correctly rejected as drift-prone.)
+the behavior under test includes the facade's route selection and batch continuation, and
+**Hole 3 (drift) is eliminated by construction** — there is no parallel re-implementation of those
+rules to drift from. A `package client` test cannot reach the facade because `fdb` imports `client`;
+the external `fdb_test` package exercises the production path without that import cycle.
 
 Each iteration:
 
@@ -243,9 +229,10 @@ visible result MUST have caused a conflict.**
   expected conservative conflict. If **none** applies, this is a pure-precision **over-conflict** —
   **safe for Go** (aborted where it could have committed; never a correctness defect, per RFC-121).
   The port **logs** it with full selector detail and **counts** it (`overConflictUnexplained`) but does
-  **not** fail: Go's getKey-then-range union is *architecturally* wider than C++'s combined resolution,
-  so asserting C++-precision parity would assert a property Go deliberately does not have (and RFC-121
-  explicitly accepted). A surprising count is a signal to investigate precision, not a red test.
+  **not** fail: the four exceptions describe NativeAPI conflicts, not every RYW conflict, and a
+  version-pinned commit on the shared cluster can see environmental `not_committed`. This is not a
+  claim that the current selector architecture deliberately widens conflicts; exact range equality
+  has its own libfdb_c conformance gate. A surprising count is a signal to investigate precision.
 - **Anti-vacuity — the teeth must be *loaded* (Torvalds Hole 1).** `withConflicts > 0 &&
   withoutConflicts > 0` proves both verdicts occur, but **not** that the under-conflict check ever ran
   with a result-changing write (it could pass vacuously if every non-conflicting commit had a writer

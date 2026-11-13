@@ -2,13 +2,12 @@
 
 // Heavy 10K / 100K / 1M-row stress benchmarks. They run only when the `stress`
 // build tag is set: Bazel's //pkg/relational/sqldriver/stress target sets it via
-// .bazelrc, and the nightly stress workflow invokes that (manual) target. A
-// plain `go test ./...` does NOT set the tag, so these are excluded — keeping
-// the default Go test run fast and clean. See README.md in this dir.
+// .bazelrc, and `just stress` / `just test-full` invoke that (manual) target.
+// Ordinary CI excludes it; the opt-in full workflow dispatch includes it.
+// See README.md in this dir.
 //
-// The 10M scales need a second tag (`realcluster`) and live in
-// stress_10m_test.go: a single-node testcontainer cannot sustain them, so
-// registering them here would advertise coverage this file never delivers.
+// The 10M scales live in stress_10m_test.go, compiled only into the
+// stress_10m_test target: a single-node testcontainer cannot sustain them.
 
 package stress_test
 
@@ -33,13 +32,13 @@ import (
 
 var clusterFilePath string
 
-// clusterFileEnv points the suite at an EXISTING FoundationDB cluster instead
-// of a single-node testcontainer. It is what makes "run against a real cluster"
-// an instruction rather than an aspiration: the 10M scales in
-// stress_10m_test.go exceed what one Docker node sustains, and without this
-// there was no way to run them anywhere, because TestMain always started a
-// container. Unset (the normal case) keeps the testcontainer path unchanged.
+// clusterFileEnv selects a provisioned FDB cluster. Without it, ordinary tests
+// use a container; the 10M binary refuses to run because it requires a real cluster.
 const clusterFileEnv = "FDB_STRESS_CLUSTER_FILE"
+
+// realClusterOnly is set by the 10M scales: their binary must never fall back
+// to a container, which cannot sustain them.
+var realClusterOnly bool
 
 func TestMain(m *testing.M) { os.Exit(runTests(m)) }
 
@@ -64,19 +63,23 @@ func runTests(m *testing.M) (code int) {
 		clusterFilePath = external
 		return m.Run()
 	}
+	if realClusterOnly {
+		// tenmguard asserts this refusal and its message.
+		fmt.Fprintf(os.Stderr, "stress: the 10M scales need a real cluster: set %s (`just stress-10m <cluster file>`)\n", clusterFileEnv)
+		return 1
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	container, err := foundationdbtc.Run(ctx, "", foundationdbtc.WithStorageEngine("ssd"))
 	if err != nil {
-		var terminationErr *foundationdbtc.TerminationError
-		if errors.As(err, &terminationErr) {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
-			return 1
+		if foundationdbtc.SkipWithoutDocker(err) {
+			fmt.Fprintf(os.Stderr, "stress: skipping: %v\n", err)
+			return 0
 		}
-		fmt.Fprintf(os.Stderr, "stress: no Docker, skipping\n")
-		return 0
+		fmt.Fprintf(os.Stderr, "stress: FDB container startup failed: %v\n", err)
+		return 1
 	}
 	defer func() {
 		if err := foundationdbtc.Terminate(context.Background(), container); err != nil {
@@ -411,8 +414,8 @@ func TestFDB_Stress_1M(t *testing.T) {
 }
 
 // The 10M scales (TestFDB_Stress_10M, TestFDB_Ingest_10M) live in
-// stress_10m_test.go behind the additional `realcluster` build tag, so this
-// package advertises exactly the scales it runs. See that file for why.
+// stress_10m_test.go, compiled only into the stress_10m_test target, so
+// stress_test advertises exactly the scales it runs. See that file for why.
 
 func TestFDB_Ingest_Parallelism(t *testing.T) {
 	type config struct {
@@ -440,7 +443,7 @@ func TestFDB_Ingest_Parallelism(t *testing.T) {
 			// transaction timeout) retried the now-unreachable cluster forever, hanging the
 			// whole suite to the 1h test deadline (nightly-stress, every night). Same
 			// single-node-Docker ceiling that keeps TestFDB_Ingest_10M / TestFDB_Stress_10M
-			// behind the `realcluster` build tag (stress_10m_test.go). 1M total keeps every
+			// on a real cluster only (stress_10m_test.go). 1M total keeps every
 			// parallelism config meaningful while staying inside what one Docker node
 			// sustains.
 			n := 200_000

@@ -41,19 +41,10 @@ type GetKeyReply struct {
 	Cached bool // slot 4
 }
 
-func (m *GetKeyReply) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(GetKeyReplySlotPenalty) {
-		m.Penalty = r.ReadFloat64(GetKeyReplySlotPenalty)
-	}
-	if r.FieldPresent(GetKeyReplySlotError) && r.ReadUint8(GetKeyReplySlotError) > 0 {
-		if nr, err := r.ReadNestedReader(GetKeyReplySlotError + 1); err == nil {
-			m.Error.UnmarshalFromReader(nr)
-		}
-		m.HasError = true
-	}
-	if r.FieldPresent(GetKeyReplySlotCached) {
-		m.Cached = r.ReadBool(GetKeyReplySlotCached)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *GetKeyReply) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *GetKeyReply) UnmarshalFDB(data []byte) error {
@@ -61,17 +52,29 @@ func (m *GetKeyReply) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *GetKeyReply) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(GetKeyReplySlotPenalty) {
 		m.Penalty = r.ReadFloat64(GetKeyReplySlotPenalty)
 	}
-	if r.FieldPresent(GetKeyReplySlotError) && r.ReadUint8(GetKeyReplySlotError) > 0 {
-		if nr, err := r.ReadNestedReader(GetKeyReplySlotError + 1); err == nil {
-			m.Error.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetKeyReplySlotError) && r.ReadUint8(GetKeyReplySlotError) == 1 && r.FieldPresent(GetKeyReplySlotError+1) {
+		nr, err := r.ReadNestedReader(GetKeyReplySlotError + 1)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetKeyReply", Field: "Error", Err: err}
+		}
+		if err := m.Error.decode(nr, b); err != nil {
+			return err
 		}
 		m.HasError = true
 	}
 	if r.FieldPresent(GetKeyReplySlotCached) {
 		m.Cached = r.ReadBool(GetKeyReplySlotCached)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "GetKeyReply", Err: err}
 	}
 	return nil
 }
@@ -236,21 +239,28 @@ func (m *GetKeyReply) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseGetKeyReplyVectorFromReader reads a FlatBuffers vector of GetKeyReply.
-func ParseGetKeyReplyVectorFromReader(r *wire.Reader, slot int) []GetKeyReply {
+// ParseGetKeyReplyVectorFromReader reads a FlatBuffers vector of GetKeyReply under one decode budget.
+func ParseGetKeyReplyVectorFromReader(r *wire.Reader, slot int) ([]GetKeyReply, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]GetKeyReply, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]GetKeyReply", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]GetKeyReply, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]GetKeyReply", Err: err}
 		}
-		var elem GetKeyReply
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

@@ -10,6 +10,7 @@ go_library(
         "parameters.go",
         "parse_decimal.go",
         "resolver_iface.go",
+        "text_search.go",
         "walk.go",
     ],
     importpath = "fdb.dev/pkg/relational/core/query/expr",

@@ -4,7 +4,24 @@ load("@rules_go//go:def.bzl", "nogo")
 exports_files([
     "buf.yaml",
     "justfile",
+    "sift_repo.bzl",
+    "website/content/docs/cli/_index.md",
+    "website/content/docs/cli/metadata.md",
+    "website/content/docs/cli/protobuf.md",
+    "website/content/docs/cli/reference.md",
+    "website/content/docs/cli/sql.md",
+    "website/content/docs/getting-started.md",
+    "website/static/install.sh",
 ])
+
+filegroup(
+    name = "cli_example_licenses",
+    srcs = [
+        "LICENSE",
+        "NOTICE",
+    ],
+    visibility = ["//cmd/fdb:__subpackages__"],
+)
 
 # The workflow definitions, staged as data for //infra:infra_test's
 # TestPushFanOutVersusTheRunnerPool — the instrument that reports one push's
@@ -25,6 +42,7 @@ exports_files([".bazelrc"])
 # Root files staged as test data. MODULE.bazel is the version source of truth.
 exports_files([
     "MODULE.bazel",
+    "README.md",
     "go.mod",
     # Generated SQL feature inventory; staged for the TestFeatureMatrixUpToDate
     # drift guard in //pkg/relational/conformance/yamsql:yamsql_test.
@@ -33,6 +51,10 @@ exports_files([
     # TestSQLCoverageUpToDate / TestAnsiLedger* drift guards in the same target.
     "SQL_COVERAGE.md",
     "SQL_ANSI_CONFORMANCE.md",
+    # Hand-written; read by TestSQLConformanceStatesTheLedger (javacorpus) and
+    # TestDocClaimsCited (//conformance:doc_claims_cited_test).
+    "DIVERGENCES.md",
+    "SQL_CONFORMANCE.md",
 ])
 
 # gazelle:prefix fdb.dev
@@ -49,6 +71,8 @@ exports_files([
 # a `//go:build !stress` / `!bazelrunfiles` / `!factorycorpus` file would be silently
 # dropped from every Bazel build — don't introduce one.
 # gazelle:build_tags bazelrunfiles,stress,factorycorpus
+# The Grafana plugin is a nested Go module built with go/mage, not Bazel (.bazelignore).
+# gazelle:exclude layers/otel/grafana
 gazelle(name = "gazelle")
 
 nogo(
@@ -90,9 +114,11 @@ nogo(
         "@org_golang_x_tools//go/analysis/passes/unusedresult:go_default_library",
         "@org_golang_x_tools//go/analysis/passes/waitgroup:go_default_library",
         # project-specific analyzers
+        "//pkg/linters/dockerskip",
         "//pkg/linters/gofumpt",
         "//pkg/linters/noemptyiface",
         "//pkg/linters/norecover",
+        "//pkg/linters/recordlayerdeps",
         "//pkg/linters/typeimmutable",
         "//pkg/linters/unicodepin",
         # staticcheck SA analyzers

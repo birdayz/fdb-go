@@ -22,13 +22,10 @@ type KeyValueRef struct {
 	Value []byte // slot 1
 }
 
-func (m *KeyValueRef) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(KeyValueRefSlotKey) {
-		m.Key = r.ReadBytes(KeyValueRefSlotKey)
-	}
-	if r.FieldPresent(KeyValueRefSlotValue) {
-		m.Value = r.ReadBytes(KeyValueRefSlotValue)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *KeyValueRef) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *KeyValueRef) UnmarshalFDB(data []byte) error {
@@ -36,11 +33,19 @@ func (m *KeyValueRef) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *KeyValueRef) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(KeyValueRefSlotKey) {
 		m.Key = r.ReadBytes(KeyValueRefSlotKey)
 	}
 	if r.FieldPresent(KeyValueRefSlotValue) {
 		m.Value = r.ReadBytes(KeyValueRefSlotValue)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "KeyValueRef", Err: err}
 	}
 	return nil
 }
@@ -81,74 +86,81 @@ func (m *KeyValueRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmp
 	return selfStart
 }
 
-// ParseKeyValueRefVectorFromReader reads a FlatBuffers vector of KeyValueRef.
-func ParseKeyValueRefVectorFromReader(r *wire.Reader, slot int) []KeyValueRef {
+// ParseKeyValueRefVectorFromReader reads a FlatBuffers vector of KeyValueRef under one decode budget.
+func ParseKeyValueRefVectorFromReader(r *wire.Reader, slot int) ([]KeyValueRef, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]KeyValueRef, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]KeyValueRef", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]KeyValueRef, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]KeyValueRef", Err: err}
 		}
-		var elem KeyValueRef
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }
 
 // ParseKeyValueRefStringVector decodes a VectorRef<KeyValueRef, VecSerStrategy::String>.
-// Each element's DynamicSize fields are inline: [len(4)][data] per field.
-func ParseKeyValueRefStringVector(data []byte) []KeyValueRef {
-	if len(data) < 4 {
-		return nil
+// Each element's DynamicSize fields are inline: [len(4)][data] per field, and the
+// elements must fill the blob exactly. An empty blob is an empty vector.
+func ParseKeyValueRefStringVector(data []byte) ([]KeyValueRef, error) {
+	if len(data) == 0 {
+		return nil, nil
 	}
-	count := binary.LittleEndian.Uint32(data[0:4])
-	if count == 0 {
-		return nil
+	var count uint32
+	if len(data) >= 4 {
+		count = binary.LittleEndian.Uint32(data[0:4])
 	}
-	// Cap allocation to prevent OOM from crafted count values.
-	// Minimum 8 bytes per element (4-byte length prefix per field).
-	maxCount := uint32((len(data) - 4) / 8)
-	if maxCount == 0 {
-		maxCount = 1
+	// Each element holds at least one 4-byte length per field.
+	if len(data) < 4 || uint64(count) > uint64((len(data)-4)/8) {
+		return nil, &wire.DecodeError{Type: "[]KeyValueRef", Err: &wire.StringVectorError{Count: count, Len: len(data)}}
 	}
-	allocCount := count
-	if allocCount > maxCount {
-		allocCount = maxCount
+	var result []KeyValueRef
+	if count > 0 {
+		result = make([]KeyValueRef, count)
 	}
 	pos := 4
-	result := make([]KeyValueRef, 0, allocCount)
-	for i := uint32(0); i < count; i++ {
-		var elem KeyValueRef
+	for i := range result {
+		elem := &result[i]
 		if pos+4 > len(data) {
-			break
+			return nil, &wire.DecodeError{Type: "[]KeyValueRef", Err: &wire.StringVectorError{Count: count, Len: len(data)}}
 		}
 		{
 			n := int(binary.LittleEndian.Uint32(data[pos:]))
 			pos += 4
-			if n < 0 || pos+n > len(data) {
-				break
+			if n < 0 || n > len(data)-pos {
+				return nil, &wire.DecodeError{Type: "[]KeyValueRef", Err: &wire.StringVectorError{Count: count, Len: len(data)}}
 			}
 			elem.Key = data[pos : pos+n : pos+n]
 			pos += n
 		}
 		if pos+4 > len(data) {
-			break
+			return nil, &wire.DecodeError{Type: "[]KeyValueRef", Err: &wire.StringVectorError{Count: count, Len: len(data)}}
 		}
 		{
 			n := int(binary.LittleEndian.Uint32(data[pos:]))
 			pos += 4
-			if n < 0 || pos+n > len(data) {
-				break
+			if n < 0 || n > len(data)-pos {
+				return nil, &wire.DecodeError{Type: "[]KeyValueRef", Err: &wire.StringVectorError{Count: count, Len: len(data)}}
 			}
 			elem.Value = data[pos : pos+n : pos+n]
 			pos += n
 		}
-		result = append(result, elem)
 	}
-	return result
+	if pos != len(data) {
+		return nil, &wire.DecodeError{Type: "[]KeyValueRef", Err: &wire.StringVectorError{Count: count, Len: len(data)}}
+	}
+	return result, nil
 }

@@ -26,8 +26,8 @@ tests:
   - query: SELECT fname FROM emp WHERE NOT EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id) ORDER BY id
     rows:
       - ['Carol']
-  # Correlated IN — rejected (Java NPEs in
-  # AstNormalizer.visitInPredicate; CLAUDE.md #10 alignment).
+  # Correlated IN — rejected, as by Java (0AF00 "IN predicate does not
+  # support nested SELECT"; CLAUDE.md #10 alignment).
   - query: SELECT fname FROM emp WHERE id IN (SELECT emp_id FROM project WHERE emp_id = emp.id) ORDER BY id
     error_code: "0AF00"
   # Correlated scalar subquery in the projection — a Go extension

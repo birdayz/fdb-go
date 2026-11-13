@@ -3,7 +3,6 @@ package javacorpus_test
 import (
 	"context"
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,19 +28,15 @@ func runTests(m *testing.M) (code int) {
 
 	container, err := foundationdbtc.Run(ctx, "")
 	if err != nil {
-		var terminationErr *foundationdbtc.TerminationError
-		if errors.As(err, &terminationErr) {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
-			return 1
+		// A container failure must be fatal, never a silent all-skip: the
+		// ledger would otherwise report a perfectly clean run of nothing, which
+		// is the exact failure mode counted skips exist to prevent.
+		if foundationdbtc.SkipWithoutDocker(err) {
+			fmt.Fprintf(os.Stderr, "FDB tests skip: %v\n", err)
+			return m.Run()
 		}
-		// A container failure in CI must be fatal, never a silent all-skip:
-		// the ledger would otherwise report a perfectly clean run of nothing,
-		// which is the exact failure mode counted skips exist to prevent.
-		if os.Getenv("CI") != "" {
-			fmt.Fprintf(os.Stderr, "FATAL: FDB container startup failed in CI — the java corpus would silently skip: %v\n", err)
-			return 1
-		}
-		return m.Run()
+		fmt.Fprintf(os.Stderr, "FATAL: FDB container startup failed — the java corpus would silently skip: %v\n", err)
+		return 1
 	}
 	defer func() {
 		if err := foundationdbtc.Terminate(context.Background(), container); err != nil {
@@ -384,30 +379,14 @@ func TestSkipClassesAreAllReachable(t *testing.T) {
 // such accidents rather than arguing that today's names happen to avoid them.
 func producedClasses(t *testing.T, census string) map[string]bool {
 	t.Helper()
+	parsed, err := parseLedgerLine(census)
+	if err != nil {
+		t.Fatal(err)
+	}
 	out := map[string]bool{}
-	for _, group := range []string{"file_skips{", "inner_skips{"} {
-		i := strings.Index(census, group)
-		if i < 0 {
-			t.Fatalf("pinned census has no %s group", group)
-		}
-		rest := census[i+len(group):]
-		j := strings.Index(rest, "}")
-		if j < 0 {
-			t.Fatalf("pinned census group %s is unterminated", group)
-		}
-		body := rest[:j]
-		if body == "" {
-			continue
-		}
-		for _, kv := range strings.Split(body, ",") {
-			name, count, ok := strings.Cut(kv, "=")
-			if !ok {
-				t.Fatalf("pinned census entry %q is not name=count", kv)
-			}
-			if count == "0" {
-				continue
-			}
-			out[name] = true
+	for _, c := range append(parsed.fileSkips, parsed.innerSkips...) {
+		if c.n != 0 {
+			out[c.class] = true
 		}
 	}
 	return out

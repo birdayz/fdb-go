@@ -33,12 +33,6 @@ var timerPool = sync.Pool{New: func() any { return time.NewTimer(0) }}
 
 func getTimer(d time.Duration) *time.Timer {
 	t := timerPool.Get().(*time.Timer)
-	if !t.Stop() {
-		select {
-		case <-t.C:
-		default:
-		}
-	}
 	t.Reset(d)
 	return t
 }
@@ -51,6 +45,11 @@ func putTimer(t *time.Timer) {
 // waitReply waits for an RPC response with timeout, avoiding context.WithTimeout allocation.
 // Returns (response, nil) on success, or (zero, error) on timeout/cancellation.
 func waitReply(replyCh <-chan transport.Response, ctx context.Context, timeout time.Duration) (transport.Response, error) {
+	select {
+	case resp := <-replyCh:
+		return resp, nil
+	default:
+	}
 	timer := getTimer(timeout)
 	select {
 	case resp := <-replyCh:

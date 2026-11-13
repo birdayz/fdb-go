@@ -42,13 +42,15 @@ func TestCommit_NoProxies_WaitsForContext(t *testing.T) {
 	const wait = 100 * time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
+	// The deadline, not the commit's own start, bounds the wait: the context starts first.
+	deadline, _ := ctx.Deadline()
 
 	elapsed, err := commitWithNoProxies(t, ctx, db)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("dropped native wait = %v, want context.DeadlineExceeded", err)
 	}
-	if elapsed < wait {
-		t.Fatalf("commit with no proxies returned after %v; it must wait for a proxy change or the context (%v)", elapsed, wait)
+	if early := time.Until(deadline); early > 0 {
+		t.Fatalf("commit with no proxies returned after %v, %v before the context's deadline; it must wait for a proxy change or the context", elapsed, early)
 	}
 }
 

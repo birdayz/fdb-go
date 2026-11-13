@@ -251,6 +251,87 @@ func TestPacedRateValidation(t *testing.T) {
 			t.Errorf("schedule rate %v accepted", rate)
 		}
 	}
+	cfg := base
+	cfg.AdaptiveLinger = 20 * time.Microsecond
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("valid adaptive-linger rejected: %v", err)
+	}
+	cfg.CoalesceDelay = "10us,20us"
+	if cfg.Validate() == nil {
+		t.Error("mutually exclusive coalesce-delay and adaptive-linger accepted")
+	}
+	cfg.CoalesceDelay = ""
+	cfg.AdaptiveLinger = -time.Microsecond
+	if cfg.Validate() == nil {
+		t.Error("negative adaptive-linger accepted")
+	}
+}
+
+type getSetProbeDB struct {
+	pointVal []byte
+	pointErr error
+	readOnly []bool
+	ops      []string
+	written  map[string][]byte
+}
+
+func (db *getSetProbeDB) Transact(readOnly bool, fn func(Transaction) error) error {
+	db.readOnly = append(db.readOnly, readOnly)
+	return fn(db)
+}
+
+func (db *getSetProbeDB) Local(fn func(Transaction) error) error { return fn(db) }
+func (db *getSetProbeDB) Close()                                 {}
+func (db *getSetProbeDB) Counters() ClientCounters               { return ClientCounters{} }
+
+func (db *getSetProbeDB) Get(key []byte) ([]byte, error) {
+	db.ops = append(db.ops, "get:"+string(key))
+	if db.pointErr != nil {
+		return nil, db.pointErr
+	}
+	if val, ok := db.written[string(key)]; ok {
+		return val, nil
+	}
+	return db.pointVal, nil
+}
+
+func (db *getSetProbeDB) Set(key, value []byte) {
+	db.ops = append(db.ops, "set:"+string(key))
+	if db.written == nil {
+		db.written = make(map[string][]byte)
+	}
+	db.written[string(key)] = bytes.Clone(value)
+}
+
+func (db *getSetProbeDB) ReadVersion() (int64, error)             { return 1, nil }
+func (db *getSetProbeDB) Range([]byte, []byte, int) ([]KV, error) { return nil, nil }
+
+func TestGetSet100OperationShapeAndReadFailure(t *testing.T) {
+	t.Parallel()
+	d := Prepare("clientbench/test/", 2, 1, 1)
+	probe := &getSetProbeDB{pointVal: d.Points[100].Value}
+	attempts, err := d.Operation(probe, "getset100", 0, d.Measure[0])
+	if err != nil || attempts != 1 {
+		t.Fatalf("getset100 operation = (%d, %v), want (1, nil)", attempts, err)
+	}
+	wantOps := []string{"get:" + string(d.Points[100].Key), "set:" + string(d.Writes[0])}
+	if len(probe.readOnly) != 1 || probe.readOnly[0] || !slices.Equal(probe.ops, wantOps) {
+		t.Fatalf("getset100 shape: readOnly=%v ops=%v, want [false] and %v", probe.readOnly, probe.ops, wantOps)
+	}
+	if !bytes.Equal(probe.written[string(d.Writes[0])], d.Measure[0]) {
+		t.Fatal("getset100 did not write payload to worker key")
+	}
+
+	// Corrupted point read value or read error must fail before Set.
+	badValProbe := &getSetProbeDB{pointVal: []byte("corrupted")}
+	if _, err := d.Operation(badValProbe, "getset100", 0, d.Measure[0]); err == nil || len(badValProbe.written) != 0 {
+		t.Fatalf("corrupted point read: err=%v written=%v, want error without Set", err, badValProbe.written)
+	}
+	readErr := errors.New("read failed")
+	errProbe := &getSetProbeDB{pointErr: readErr}
+	if _, err := d.Operation(errProbe, "getset100", 0, d.Measure[0]); !errors.Is(err, readErr) || len(errProbe.written) != 0 {
+		t.Fatalf("failed point read: err=%v written=%v, want %v without Set", err, errProbe.written, readErr)
+	}
 }
 
 // A failure ends a paced phase at once: workers already waiting for later

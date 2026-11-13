@@ -13,21 +13,21 @@ go get fdb.dev@master
 ```
 
 Or run the examples from a clone, against a disposable cluster in Docker.
-Install the `frl` CLI:
+Build the `fdb` CLI from the checkout:
 
 ```sh
-curl -fsSL https://fdb.dev/install.sh | sh
-```
-
-Then:
-
-```sh
-export FDB_CLUSTER_FILE=$(frl fdb up)
-go run ./example/sql
+go build -o .tmpbuild/fdb ./cmd/fdb &&
+export PATH="$PWD/.tmpbuild:$PATH" &&
+FDB_CLUSTER_FILE=$(fdb dev up) &&
+export FDB_CLUSTER_FILE &&
+go run ./example/sql &&
 go run ./example
 ```
 
-`frl fdb down` removes the cluster.
+`fdb dev down` removes the cluster. To install the latest released CLI instead, run
+`curl -fsSL https://fdb.dev/install.sh | sh` (Linux and macOS) or
+`go install fdb.dev/cmd/fdb@latest`; the checkout build includes unreleased changes
+on `master`. See the [CLI guide](https://fdb.dev/docs/cli/) for configuration and commands.
 
 Pre-1.0; expect API changes. [Status and known gaps](STATUS.md). Independent project,
 not affiliated with Apple or the FoundationDB project.
@@ -92,7 +92,7 @@ func TestThing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { c.Terminate(context.Background()) })
+	t.Cleanup(func() { foundationdbtc.TeardownT(t, c) })
 
 	clusterFile, err := c.ClusterFilePath(ctx)
 	if err != nil {

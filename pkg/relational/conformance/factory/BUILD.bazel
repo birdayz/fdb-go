@@ -49,6 +49,7 @@ go_test(
         "nested_corpus_collision_fdb_test.go",
         "nested_outer_multileg_fdb_test.go",
         "oracle_detectors_test.go",
+        "pin_conn_borrow_fdb_test.go",
         "pipeline_test.go",
         "plan_diversity_hunt_fdb_test.go",
         "pr_summary_test.go",

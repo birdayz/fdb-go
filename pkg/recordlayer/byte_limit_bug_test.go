@@ -86,31 +86,6 @@ var _ = Describe("BUG1_ByteScanLimit_OffByOne", func() {
 	})
 })
 
-// BUG #2: SUM index negation overflow when sumValue is math.MinInt64.
-// In SumIndexMaintainer.Update(), when deleting a record (oldRecord != nil,
-// newRecord == nil), the old entries' values are negated via `-e.sumValue`.
-// In two's complement, -math.MinInt64 == math.MinInt64 (overflow, stays negative).
-// This means deleting a record with a field value of math.MinInt64 ADDS
-// math.MinInt64 instead of subtracting it, corrupting the aggregate.
-//
-// File: sum_index_maintainer.go, line 74
-var _ = Describe("BUG2_SumIndex_NegationOverflow", func() {
-	It("negation of math.MinInt64 overflows to itself", func() {
-		// Pure arithmetic test — demonstrates the overflow.
-		v := int64(math.MinInt64)
-		negated := -v
-
-		// In two's complement, -MinInt64 == MinInt64 (overflow).
-		// The SUM index would ADD MinInt64 to the aggregate instead of subtracting.
-		// For correctness, -MinInt64 should be MaxInt64+1, but that can't
-		// be represented in int64. At minimum the code should detect and error.
-		Expect(negated).To(Equal(v),
-			"this proves -math.MinInt64 == math.MinInt64 in two's complement; SUM index will corrupt data")
-		Expect(negated).To(BeNumerically("<", int64(0)),
-			"negation of MinInt64 is still negative — SUM index adds instead of subtracting")
-	})
-})
-
 // BUG #3 (FIXED): FDB limit overflow when ReturnedRowLimit is math.MaxInt.
 // Both keyValueCursor.initIterator and indexCursor.initIterator now guard
 // against overflow when computing limit + 1. If limit == math.MaxInt,

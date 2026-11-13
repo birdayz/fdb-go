@@ -138,7 +138,7 @@ func ReadInTransaction(rctx *FDBRecordContext, r LocatableResolver, name string)
 // or NoSuchElementException "reverse lookup of <value>".
 func ReverseLookup(rctx *FDBRecordContext, r LocatableResolver, value int64) (string, error) {
 	db := rctx.GetDatabase()
-	key := fmt.Sprintf("%s\x00%d", r.scopeKey(), value)
+	key := reverseCacheKey(r, value)
 	if db != nil {
 		c := db.resolvers()
 		c.mu.RLock()
@@ -164,6 +164,12 @@ func ReverseLookup(rctx *FDBRecordContext, r LocatableResolver, value int64) (st
 		})
 	}
 	return name, nil
+}
+
+// reverseCacheKey is the in-memory reverse cache's key for a scope's value,
+// Java's scope.wrap(value).
+func reverseCacheKey(r LocatableResolver, value int64) string {
+	return fmt.Sprintf("%s\x00%d", r.scopeKey(), value)
 }
 
 // NoSuchElementError is Java's NoSuchElementException.
@@ -449,7 +455,7 @@ func (g GlobalDirectoryLayer) read(rctx *FDBRecordContext, name string) (*Resolv
 	if err != nil {
 		return nil, err
 	}
-	if err := g.putReverseIfNotExists(rctx, name, v); err != nil {
+	if err := putReverseIfNotExists(rctx, g, name, v); err != nil {
 		return nil, err
 	}
 	return &ResolverResult{Value: v}, nil
@@ -467,7 +473,7 @@ func (g GlobalDirectoryLayer) create(rctx *FDBRecordContext, name string, metada
 	if err != nil {
 		return ResolverResult{}, err
 	}
-	if err := g.putReverseIfNotExists(rctx, name, v); err != nil {
+	if err := putReverseIfNotExists(rctx, g, name, v); err != nil {
 		return ResolverResult{}, err
 	}
 	return ResolverResult{Value: v}, nil
@@ -490,9 +496,21 @@ func (g GlobalDirectoryLayer) readReverse(rctx *FDBRecordContext, value int64) (
 	return name, ok, nil
 }
 
-// putReverseIfNotExists is FDBReverseDirectoryCache.putIfNotExists: a stored
-// entry must name the same string; an absent one is written.
-func (g GlobalDirectoryLayer) putReverseIfNotExists(rctx *FDBRecordContext, name string, value int64) error {
+// putReverseIfNotExists retries conflicting in-memory mappings, checks stored names,
+// and creates absent reverse entries (FDBReverseDirectoryCache.java:349-400).
+func putReverseIfNotExists(rctx *FDBRecordContext, scope LocatableResolver, name string, value int64) error {
+	if db := rctx.GetDatabase(); db != nil {
+		c := db.resolvers()
+		c.mu.RLock()
+		cached, ok := c.reverse[reverseCacheKey(scope, value)]
+		c.mu.RUnlock()
+		if ok {
+			if cached != name {
+				return &RecordCoreRetriableTransactionError{Message: "Provided value for path key does not match existing value in reverse directory layer in-memory cache"}
+			}
+			return nil
+		}
+	}
 	ss, err := reverseCacheSubspace(rctx)
 	if err != nil {
 		return err
@@ -549,7 +567,7 @@ func reverseCacheEntry(rctx *FDBRecordContext) (int64, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	out, err := db.Run(ctx, func(child *FDBRecordContext) (any, error) { return create(child) })
+	out, err := rctx.runChild(ctx, func(child *FDBRecordContext) (any, error) { return create(child) })
 	if err != nil {
 		return 0, err
 	}

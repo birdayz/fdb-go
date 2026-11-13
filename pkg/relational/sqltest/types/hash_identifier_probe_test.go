@@ -54,6 +54,7 @@ func TestFDB_QuotedHashIdentifier(t *testing.T) {
 		var apiErr *api.Error
 		g.Expect(errors.As(queryErr, &apiErr)).To(gomega.BeTrue(), "query: %s; error: %v", query, queryErr)
 		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeInvalidName))
+		g.Expect(queryErr.Error()).To(gomega.Equal("42602: X#0 it not a valid protobuf identifier"))
 		var cause *protoname.InvalidNameError
 		g.Expect(errors.As(queryErr, &cause)).To(gomega.BeTrue(), "invalid-name cause was lost: %v", queryErr)
 	}

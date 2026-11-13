@@ -336,3 +336,93 @@ func TestRYWCacheHitsDoNotScaleStorageRequestBytes(t *testing.T) {
 		}
 	}
 }
+
+// Completed PendingRange futures and narrowed skipKnownEmpty bounds answered from
+// small-cache point entries retain immutable bytes across reset, which detaches old storage.
+func TestPendingRangeRetainsPointCachedKeyAcrossReset(t *testing.T) {
+	t.Parallel()
+	for _, reverse := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reverse=%v", reverse), func(t *testing.T) {
+			t.Parallel()
+			tx := &Transaction{}
+			tx.ryw.set([]byte("b"), []byte("vb"))
+			ready := make(chan struct{})
+			tx.beforeRangeGoroutine = func() { <-ready }
+			pr := tx.StartGetRange(context.Background(), []byte("a"), []byte("b\x00"), 0, 0, reverse)
+			tx.ryw.mu.Lock()
+			tx.ryw.serverCache.insertPoint([]byte("a"), []byte("v1"))
+			tx.ryw.serverCache.insert([]byte("a\x00"), []byte("b\x00"), nil)
+			tx.ryw.mu.Unlock()
+			close(ready)
+
+			kvs1, more1, err1 := pr.Get()
+			if err1 != nil || more1 || len(kvs1) != 2 {
+				t.Fatalf("initial PendingRange.Get = (%v, %t, %v), want 2 rows", kvs1, more1, err1)
+			}
+			if tx.ryw.serverCache.kvsTouched != 1 {
+				t.Fatalf("walker positive control: kvsTouched = %d, want 1", tx.ryw.serverCache.kvsTouched)
+			}
+			wantFirstKey := "a"
+			if reverse {
+				wantFirstKey = "b"
+			}
+			if string(kvs1[0].Key) != wantFirstKey {
+				t.Fatalf("initial first key = %q, want %q", kvs1[0].Key, wantFirstKey)
+			}
+
+			tx.Reset()
+			tx.ryw.serverCache.insertPoint([]byte("x"), []byte("v2"))
+			kvs2, more2, err2 := pr.Get()
+			if err2 != nil || more2 || len(kvs2) != 2 {
+				t.Fatalf("post-Reset PendingRange.Get = (%v, %t, %v), want 2 rows", kvs2, more2, err2)
+			}
+			idxA := 0
+			if reverse {
+				idxA = 1
+			}
+			if string(kvs2[idxA].Key) != "a" || string(kvs2[idxA].Value) != "v1" {
+				t.Fatalf("post-Reset cached row = (%q=%q), want (a=v1)", kvs2[idxA].Key, kvs2[idxA].Value)
+			}
+
+			// Narrowed skipKnownEmpty bounds from an inline absent point remain immutable
+			// after fetchServer releases c.mu and Reset+insertPoint reuses sc.keyBuf.
+			var c rywCache
+			if reverse {
+				c.serverCache.insertPoint([]byte("y"), nil)
+			} else {
+				c.serverCache.insertPoint([]byte("a"), nil)
+			}
+			var gotBegin, gotEnd string
+			_, _, err := c.fetchServer(context.Background(), []byte("a"), []byte("y\x00"), 0, 1000, reverse,
+				func(_ context.Context, b, e []byte, _, _ int, _ bool) ([]KeyValue, bool, []byte, error) {
+					c.reset()
+					c.serverCache.insertPoint([]byte("x"), []byte("vx"))
+					gotBegin, gotEnd = string(b), string(e)
+					return nil, false, nil, nil
+				})
+			if err != nil {
+				t.Fatalf("fetchServer: %v", err)
+			}
+			wantBegin, wantEnd := "a\x00", "y\x00"
+			if reverse {
+				wantBegin, wantEnd = "a", "y"
+			}
+			if gotBegin != wantBegin || gotEnd != wantEnd {
+				t.Fatalf("narrowed bounds after reset+insertPoint = [%q, %q), want [%q, %q)", gotBegin, gotEnd, wantBegin, wantEnd)
+			}
+		})
+	}
+
+	// Growing past the small-cache node capacity must not retain that storage after reset.
+	var sc snapshotCache
+	sc.insertPoint([]byte("a"), []byte("va"))
+	sc.insert([]byte("m"), []byte("n"), []KeyValue{{Key: []byte("m1"), Value: []byte("vm")}})
+	sc.insert([]byte("x"), []byte("y"), []KeyValue{{Key: []byte("x1"), Value: []byte("vx")}})
+	if sc.node0[0].item.begin == nil || sc.node0[1].item.begin == nil {
+		t.Fatalf("positive control: the first entries did not use node0: %+v", sc.node0)
+	}
+	sc.reset()
+	if sc.snapshotCacheStorage != nil || sc.entries.Len() != 0 {
+		t.Fatal("reset retained the old cache storage")
+	}
+}

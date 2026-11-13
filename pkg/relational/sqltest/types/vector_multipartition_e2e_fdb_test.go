@@ -319,7 +319,7 @@ func TestFDB_VectorSearch_MultiPartition_DimensionValidation(t *testing.T) {
 		t.Fatalf("run: %v", runErr)
 	}
 	if scanErr == nil {
-		t.Fatal("partial-prefix scan with a wrong-dimension query vector over an empty partition range did not error (codex P2 regression)")
+		t.Fatal("partial-prefix scan with a wrong-dimension query vector over an empty partition range did not error")
 	}
 	if !strings.Contains(scanErr.Error(), "dimension") {
 		t.Fatalf("expected a dimension error, got: %v", scanErr)

@@ -549,6 +549,9 @@ func stampIndexMetadata(cand MatchCandidate, idxPlan *plans.RecordQueryIndexPlan
 		if keyPaths, valuePaths := valueCandidate.columnPaths(); keyPaths != nil || valuePaths != nil {
 			stamped = stamped.WithColumnPaths(keyPaths, valuePaths)
 		}
+		if valueCandidate.CreatesDuplicates() {
+			stamped = stamped.WithKeyColumnDuplicates(valueCandidate.duplicateProducingColumns())
+		}
 		if valueCols := valueCandidate.GetValueColumnNames(); len(valueCols) > 0 {
 			// The KeyWithValue VALUE part rides onto the plan so the covering
 			// rules can extend the covered surface and the executor knows to
@@ -571,11 +574,8 @@ func stampIndexMetadata(cand MatchCandidate, idxPlan *plans.RecordQueryIndexPlan
 	if sig := candidateDistinctSignal(cand); sig != nil {
 		stamped = stamped.WithDistinctRecordsSignal(*sig)
 	}
-	// RFC-189 B3: the STRUCTURAL common PK for PrimaryKeyProperty — stamped
-	// REGARDLESS of fan-out (index entries always carry the PK). PK coverage
-	// names likewise remain available for fan-out indexes; ordering synthesis
-	// is suppressed independently by the duplicate-producing signal. nil
-	// (candidate/def supplied none) leaves the property abstaining.
+	// Index entries carry the structural PK even with fan-out; missing metadata
+	// leaves PrimaryKeyProperty abstaining, independently of ordering claims.
 	if pk := candidateCommonPrimaryKey(cand); pk != nil {
 		stamped = stamped.WithCommonPrimaryKey(pk)
 	}
@@ -606,8 +606,8 @@ func candidateDistinctSignal(cand MatchCandidate) *bool {
 }
 
 // candidatePKColumns returns the coordinate-safe visible PK list used by both
-// covering reconstruction and ordering. Fan-out retains coverage; the plan's
-// duplicate-producing signal independently suppresses suffix ordering.
+// covering reconstruction and ordering. Fan-out retains coverage; suffix
+// ordering additionally requires physically equality-pinned element columns.
 func candidatePKColumns(cand MatchCandidate) []string {
 	if c, ok := cand.(interface{ GetPKColumnNames() []string }); ok {
 		return c.GetPKColumnNames()

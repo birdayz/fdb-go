@@ -78,7 +78,7 @@ if err != nil {
 }
 fmt.Println(string(value.([]byte)))
 {{< /highlight >}}
-      <p class="code-footnote"><a href="https://github.com/birdayz/fdb-go#fdb-client">Client connection setup →</a></p>
+      <p class="code-footnote"><a href="https://github.com/birdayz/fdb-go#native-go-client">Client connection setup →</a></p>
     </div>
     <div class="launch-code">
       <div class="code-caption"><span>SQL query</span><span>fdb.dev/pkg/relational/sqldriver</span></div>
@@ -110,7 +110,7 @@ defer rows.Close()
 </section>
 
 <section class="launch-section launch-next" aria-labelledby="next-heading">
-  <div><h2 id="next-heading">Resources</h2><p>The docs cover the development branch (v0.2.0 candidate).</p><a class="launch-button" href="/docs/getting-started/">Build and run locally <span aria-hidden="true">→</span></a></div>
+  <div><h2 id="next-heading">Resources</h2><p>The docs cover the development branch (<code>master</code>), which can be ahead of the <a href="https://github.com/birdayz/fdb-go/releases/latest">latest release</a>.</p><a class="launch-button" href="/docs/getting-started/">Build and run locally <span aria-hidden="true">→</span></a></div>
   <div class="launch-reading"><a href="https://github.com/birdayz/fdb-go/blob/master/STATUS.md"><span>Project status</span><span>Readiness and test-lane scope ↗</span></a><a href="https://github.com/birdayz/fdb-go/blob/master/docs/operations.md"><span>Operator guide</span><span>Transactions, index builds, backups, observability ↗</span></a><a href="https://github.com/birdayz/fdb-go/issues"><span>Issues</span><span>Bug reports and open work ↗</span></a></div>
 </section>
 

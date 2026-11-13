@@ -56,9 +56,10 @@ singleton). Runs its seed corpus under `just test`; fuzzes longer on demand
   differs per client/txn → not byte-comparable without masking, and the key
   variant isn't even known until commit. Covered by RFC-053's dedicated SVV test;
   excluded from the byte-compare fuzzer rather than fudged.
-- **Oversized keys/values:** the C binding *aborts* the process on these
-  (`CATCH_AND_DIE`), so they can't run in-process. The thresholds are pinned by
-  RFC-053's L1 + boundary differential. The fuzzer keeps operands within limits.
+- **Oversized keys/values:** this persisted-state workload keeps operands legal;
+  illegal writes instead exercise the deferred-error contract on subsequent reads
+  and commit. Those error paths and thresholds have dedicated boundary/script
+  differentials; they are safe to probe in-process.
 - **Deliberate conflicts / control-plane:** versions, reply tokens, conflict
   ordering — per the C2 data-plane rule.
 

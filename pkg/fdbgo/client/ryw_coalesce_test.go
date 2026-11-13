@@ -16,6 +16,37 @@ func le8(n uint64) []byte {
 	return b
 }
 
+// coalesceShared folds onto a stack another version may share.
+func coalesceShared(stack []rywMutation, newMut rywMutation) []rywMutation {
+	return coalesceOverAtomics(stack, newMut, false)
+}
+
+// A shared stack is never written; an owned one folds and pushes into its own
+// backing array, to the same chain.
+func TestCoalesceOverAtomicsInPlace(t *testing.T) {
+	t.Parallel()
+	m := func(op MutationType, p []byte) rywMutation { return rywMutation{typ: op, param: p} }
+	for _, next := range []rywMutation{m(MutAddValue, le8(2)), m(MutOr, le8(4))} {
+		shared := make([]rywMutation, 1, 4)
+		shared[0] = m(MutAddValue, le8(1))
+		copied := coalesceShared(shared, next)
+		if !bytes.Equal(shared[0].param, le8(1)) || &copied[0] == &shared[0] {
+			t.Fatalf("type %d: a shared fold wrote the stack: %v", next.typ, shared[0].param)
+		}
+		owned := make([]rywMutation, 1, 4)
+		owned[0] = m(MutAddValue, le8(1))
+		inPlace := coalesceOverAtomics(owned, next, true)
+		if &inPlace[0] != &owned[0] || len(inPlace) != len(copied) {
+			t.Fatalf("type %d: an owned fold reallocated (len %d, want %d)", next.typ, len(inPlace), len(copied))
+		}
+		for i := range copied {
+			if inPlace[i].typ != copied[i].typ || !bytes.Equal(inPlace[i].param, copied[i].param) {
+				t.Fatalf("type %d: in-place chain %v, copied %v", next.typ, inPlace, copied)
+			}
+		}
+	}
+}
+
 // TestCoalesceOverAtomics_FoldTable pins the #28 write-map fold against C++ WriteMap::coalesceOver
 // (WriteMap.cpp:480-494) + coalesce (:357) / NON_ASSOCIATIVE_MASK (CommitTransaction.h:576-578). Each row
 // asserts the resulting stack length AND, for a fold, the combined operand.
@@ -25,7 +56,7 @@ func TestCoalesceOverAtomics_FoldTable(t *testing.T) {
 
 	t.Run("empty stack pushes", func(t *testing.T) {
 		t.Parallel()
-		got := coalesceOverAtomics(nil, m(MutAddValue, le8(1)))
+		got := coalesceShared(nil, m(MutAddValue, le8(1)))
 		if len(got) != 1 {
 			t.Fatalf("empty+ADD: len=%d, want 1", len(got))
 		}
@@ -34,8 +65,8 @@ func TestCoalesceOverAtomics_FoldTable(t *testing.T) {
 	t.Run("same-type non-associative equal length folds", func(t *testing.T) {
 		t.Parallel()
 		// ADD 1 then ADD 1 (both 8-byte) → one ADD 2.
-		s := coalesceOverAtomics(nil, m(MutAddValue, le8(1)))
-		s = coalesceOverAtomics(s, m(MutAddValue, le8(1)))
+		s := coalesceShared(nil, m(MutAddValue, le8(1)))
+		s = coalesceShared(s, m(MutAddValue, le8(1)))
 		if len(s) != 1 {
 			t.Fatalf("ADD+ADD(equal len): len=%d, want 1 (fold)", len(s))
 		}
@@ -50,8 +81,8 @@ func TestCoalesceOverAtomics_FoldTable(t *testing.T) {
 	t.Run("same-type non-associative DIFFERENT length pushes", func(t *testing.T) {
 		t.Parallel()
 		// ADD 8-byte then ADD 4-byte → keep both (non-associative, size mismatch).
-		s := coalesceOverAtomics(nil, m(MutAddValue, le8(1)))
-		s = coalesceOverAtomics(s, m(MutAddValue, []byte{1, 0, 0, 0}))
+		s := coalesceShared(nil, m(MutAddValue, le8(1)))
+		s = coalesceShared(s, m(MutAddValue, []byte{1, 0, 0, 0}))
 		if len(s) != 2 {
 			t.Fatalf("ADD(8)+ADD(4): len=%d, want 2 (non-associative size mismatch pushes)", len(s))
 		}
@@ -60,8 +91,8 @@ func TestCoalesceOverAtomics_FoldTable(t *testing.T) {
 	t.Run("same-type associative folds regardless of length", func(t *testing.T) {
 		t.Parallel()
 		// AND is associative (not in NON_ASSOCIATIVE_MASK): fold even on different operand length.
-		s := coalesceOverAtomics(nil, m(MutAnd, []byte{0xff, 0xff}))
-		s = coalesceOverAtomics(s, m(MutAnd, []byte{0x0f}))
+		s := coalesceShared(nil, m(MutAnd, []byte{0xff, 0xff}))
+		s = coalesceShared(s, m(MutAnd, []byte{0x0f}))
 		if len(s) != 1 {
 			t.Fatalf("AND+AND(diff len): len=%d, want 1 (associative folds regardless of length)", len(s))
 		}
@@ -69,8 +100,8 @@ func TestCoalesceOverAtomics_FoldTable(t *testing.T) {
 
 	t.Run("different type pushes", func(t *testing.T) {
 		t.Parallel()
-		s := coalesceOverAtomics(nil, m(MutAddValue, le8(1)))
-		s = coalesceOverAtomics(s, m(MutOr, le8(1)))
+		s := coalesceShared(nil, m(MutAddValue, le8(1)))
+		s = coalesceShared(s, m(MutOr, le8(1)))
 		if len(s) != 2 {
 			t.Fatalf("ADD+OR: len=%d, want 2 (different atomic types keep both)", len(s))
 		}
@@ -78,8 +109,8 @@ func TestCoalesceOverAtomics_FoldTable(t *testing.T) {
 
 	t.Run("CompareAndClear pushes", func(t *testing.T) {
 		t.Parallel()
-		s := coalesceOverAtomics(nil, m(MutAddValue, le8(1)))
-		s = coalesceOverAtomics(s, m(MutCompareAndClear, le8(1)))
+		s := coalesceShared(nil, m(MutAddValue, le8(1)))
+		s = coalesceShared(s, m(MutCompareAndClear, le8(1)))
 		if len(s) != 2 {
 			t.Fatalf("ADD+CompareAndClear: len=%d, want 2 (CAC excluded from same-type fold, pushes)", len(s))
 		}
@@ -87,8 +118,8 @@ func TestCoalesceOverAtomics_FoldTable(t *testing.T) {
 
 	t.Run("versionstamp pushes and never merges into a prior versionstamp", func(t *testing.T) {
 		t.Parallel()
-		s := coalesceOverAtomics(nil, m(MutSetVersionstampedValue, make([]byte, 14)))
-		s = coalesceOverAtomics(s, m(MutSetVersionstampedValue, make([]byte, 14)))
+		s := coalesceShared(nil, m(MutSetVersionstampedValue, make([]byte, 14)))
+		s = coalesceShared(s, m(MutSetVersionstampedValue, make([]byte, 14)))
 		if len(s) != 2 {
 			t.Fatalf("VSV+VSV: len=%d, want 2 (versionstamps kept intact, never folded)", len(s))
 		}
@@ -114,8 +145,8 @@ func TestCoalesceOverAtomics_FoldTable(t *testing.T) {
 			{"AppendIfFits", MutAppendIfFits, []byte("a"), []byte("b"), []byte("ab")},   // concat
 		}
 		for _, r := range rows {
-			s := coalesceOverAtomics(nil, m(r.op, r.a))
-			s = coalesceOverAtomics(s, m(r.op, r.b))
+			s := coalesceShared(nil, m(r.op, r.a))
+			s = coalesceShared(s, m(r.op, r.b))
 			if len(s) != 1 {
 				t.Errorf("%s: stack len=%d, want 1 (fold)", r.name, len(s))
 				continue
@@ -238,9 +269,9 @@ func TestCommit_ShipsSelfConflictRange_Wire(t *testing.T) {
 	// SAME pre-SC snapshot. Feeding the pre-SC snapshot (NOT live tx.writeConflicts, which maybeMakeSelf-
 	// Conflicting mutates to contain the SC) makes SC enter ONLY via the `sc` param — so this test reds if
 	// the P1 sc-append is reverted.
-	_, _, coalesced := coalesceCommitVectors(tx.mutations, tx.writeConflicts, tx.rywDisabled)
-	writeSnap := append([]KeyRange(nil), tx.writeConflicts...)
-	sc, _, scAdded := tx.maybeMakeSelfConflicting(writeSnap, tx.readConflicts)
+	writeSnap := tx.writeConflictRanges() // a new vector
+	_, _, coalesced := coalesceCommitVectors(tx.mutations, writeSnap, tx.rywDisabled)
+	sc, _, scAdded := tx.maybeMakeSelfConflicting(writeSnap, tx.readConflictRanges())
 	shipConflicts := finalizeShipConflicts(writeSnap, sc, scAdded, coalesced)
 
 	body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations, shipConflicts)
@@ -278,7 +309,7 @@ func TestMaybeMakeSelfConflicting_DecidesOnFrozenSnapshot(t *testing.T) {
 		{Begin: []byte("a"), End: []byte("a\x00")},
 		{Begin: []byte("b"), End: []byte("b\x00")},
 	}
-	if _, _, scAdded := tx.maybeMakeSelfConflicting(writeSnap, tx.readConflicts); !scAdded {
+	if _, _, scAdded := tx.maybeMakeSelfConflicting(writeSnap, tx.readConflictRanges()); !scAdded {
 		t.Fatal("#28 round-3: SC decision must use the frozen write snapshot [a] (which ships), not live " +
 			"tx.writeConflicts — a racing Set on read key \"b\" wrongly suppressed the self-conflict range")
 	}
@@ -297,7 +328,7 @@ func TestRywAtomic_ChainFolds(t *testing.T) {
 		c.atomic(MutAddValue, key, le8(1))
 	}
 	c.mu.Lock()
-	entry := c.liveLocked().writes[string(key)]
+	entry, _ := c.liveLocked().entry(string(key))
 	c.mu.Unlock()
 	if !entry.hasAtomics {
 		t.Fatal("expected a pending atomic chain on an unread key")
@@ -355,8 +386,8 @@ func TestCoalesceOverAtomics_EmptyOperandStaysPresent(t *testing.T) {
 		{"And empty then operand", MutAnd, []byte{}, []byte{0x30}, []byte{0x00}},
 	}
 	for _, r := range rows {
-		s := coalesceOverAtomics(nil, m(r.op, r.a))
-		s = coalesceOverAtomics(s, m(r.op, r.b))
+		s := coalesceShared(nil, m(r.op, r.a))
+		s = coalesceShared(s, m(r.op, r.b))
 		if len(s) != 1 {
 			t.Errorf("%s: stack len=%d, want 1 (associative fold)", r.name, len(s))
 			continue
@@ -369,27 +400,24 @@ func TestCoalesceOverAtomics_EmptyOperandStaysPresent(t *testing.T) {
 	// A fold whose RESULT is empty must stay present for the NEXT fold: ByteMin(0x30) then
 	// ByteMin("") resolves to the empty operand, and a third ByteMin(0x20) must still see
 	// present-empty and keep it.
-	s := coalesceOverAtomics(nil, m(MutByteMin, []byte{0x30}))
-	s = coalesceOverAtomics(s, m(MutByteMin, []byte{}))
-	s = coalesceOverAtomics(s, m(MutByteMin, []byte{0x20}))
+	s := coalesceShared(nil, m(MutByteMin, []byte{0x30}))
+	s = coalesceShared(s, m(MutByteMin, []byte{}))
+	s = coalesceShared(s, m(MutByteMin, []byte{0x20}))
 	if len(s) != 1 || !bytes.Equal(s[0].param, []byte{}) {
 		t.Errorf("ByteMin(0x30)+ByteMin(\"\")+ByteMin(0x20): stack=%d operand=%x, want 1 fold with an empty operand (a folded-to-empty result is PRESENT)", len(s), s[len(s)-1].param)
 	}
 }
 
-// TestRywAtomic_EmptyOperandFirstInTxn drives the same defect through the PRODUCTION path
-// rather than the fold helper directly: rywCache.atomic copies the operand out of the shared
-// byteBuf via allocBytes, and allocBytes(0) on a still-unallocated buffer returns a NIL slice.
-// So the divergence is armed exactly when a zero-length atomic operand is the first one in the
-// transaction — the shape FuzzDifferential minimised to.
+// TestRywAtomic_EmptyOperandFirstInTxn drives the same defect through the PRODUCTION path:
+// a zero-length operand that is the transaction's first, the shape FuzzDifferential minimised to.
 func TestRywAtomic_EmptyOperandFirstInTxn(t *testing.T) {
 	t.Parallel()
 	c := &rywCache{}
 	key := []byte("c")
-	c.atomic(MutAndV2, key, []byte{})     // empty operand, first in the txn -> allocBytes(0)
+	c.atomic(MutAndV2, key, []byte{})     // empty operand, first in the txn
 	c.atomic(MutAndV2, key, []byte{0x30}) // folds onto it
 	c.mu.Lock()
-	entry := c.liveLocked().writes[string(key)]
+	entry, _ := c.liveLocked().entry(string(key))
 	c.mu.Unlock()
 	if len(entry.atomics) != 1 {
 		t.Fatalf("chain length = %d, want 1 (AndV2 is associative and always folds)", len(entry.atomics))

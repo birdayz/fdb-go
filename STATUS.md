@@ -1,8 +1,9 @@
 # Project status
 
 **Pre-1.0; not declared production-ready.** This readiness statement covers
-the v0.2.0 release candidate. No v0.2.0 tag or deployment certification is
-asserted here. Pin a revision and evaluate it against your workload.
+v0.2.0, published 2026-11-07 as tag `v0.2.0`; later `master` changes are listed as
+Unreleased in the changelog. No deployment certification is asserted here. Pin a
+revision and evaluate it against your workload.
 
 The project contains three independently useful layers:
 
@@ -21,12 +22,19 @@ compatibility with every feature or every server release. See
 
 ## Known gaps in v0.2.0
 
-These five launch gaps remain open in the release candidate. Further work is
+These five launch gaps remain open for v0.2.0. Further work is
 planned for v0.3.0; each has a mitigation where one exists.
 
 - **Per-RPC 5 s read timeouts, which libfdb_c does not have.** A read reply
   slower than 5 s is abandoned and re-sent, to another replica first; libfdb_c
-  keeps waiting. Commits have no such timeout (#882).
+  keeps waiting. get, getKey, getRange and getMappedRange (a positive skip
+  included) fail with a retryable `transaction_too_old` (1007) at the eleventh
+  timed-out send, after 10 re-sends; the `fdb` facade's Get sends a pipelined
+  request first, so it fails at the twelfth. Range-size and split-point estimates
+  have no reply timeout and retry until the transaction times out, as libfdb_c
+  does (RFC-280). Location lookups have the same 5 s cap per attempt, where
+  libfdb_c waits for the reply or a proxy change. Commits have no such timeout
+  (#882).
 - **Read-only transaction allocation remains a launch concern.** The historical
   observation was about 38 KB per transaction before allocation cuts; there is
   no current-cut allocation measurement here. Go heap counters exclude the
@@ -48,7 +56,7 @@ planned for v0.3.0; each has a mitigation where one exists.
 
 - `just test` is the **fast lane**: unit tests, nogo and bounded integration
   tests. It excludes `test-full`, `conformance_java`, `stress` and manual targets.
-- `just test-full` includes all Bazel test targets, including the heavyweight
+- `just test-full` includes all Bazel test targets except `realcluster` ones, including the heavyweight
   Java conformance, client differential, SQL and stress suites at their default
   budgets. It requires Docker and the declared external dependencies. It is not
   every extended seed, race or active-fuzz configuration.

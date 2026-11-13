@@ -7,10 +7,11 @@ RFC-262 (native reads and fallback ordering), RFC-263 (transaction lifecycle).
 
 ## Decision
 
-Retain the C++-parity **10/20 µs connection-coalescing default** introduced by
-#954. The owner accepts the historical latency-versus-CPU/allocation trade-off.
-Neither the historical bisects nor the local candidate screen justifies lowering
-or disabling that default.
+At the close of RFC-264, the owner retained the C++-parity **10/20 µs
+legacy-writer default** introduced by #954 (later superseded by
+[RFC-282](282-dng-transport-and-hotpath.md)'s 0/0 D-NG default, with 10/20 µs
+and adaptive linger as explicit options). Neither the historical bisects nor the
+local candidate screen justified lowering or disabling the legacy-writer default.
 
 The completed local screen compared baseline, P0 and P2t in 72 processes. Both
 candidates passed the throughput/CPU noninferiority bounds, but neither met its

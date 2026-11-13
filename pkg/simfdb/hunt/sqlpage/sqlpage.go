@@ -146,15 +146,15 @@ func (w Workload) run(seed uint64) *Result {
 	return res
 }
 
-// setPageLimit configures the pinned connection's execution scanned-rows limit.
+// setPageLimit sets the pinned connection's execution scanned-rows limit for
+// this borrow, keeping the connector's other options.
 func setPageLimit(conn *sql.Conn, limit int) error {
 	return conn.Raw(func(dc any) error {
 		ec, ok := dc.(*embedded.EmbeddedConnection)
 		if !ok {
 			return fmt.Errorf("driver conn is %T, want *embedded.EmbeddedConnection", dc)
 		}
-		ec.SetOptions(api.NewOptionsBuilder().Set(api.OptExecutionScannedRowsLimit, limit).Build())
-		return nil
+		return ec.SetOption(api.OptExecutionScannedRowsLimit, limit)
 	})
 }
 

@@ -106,6 +106,9 @@ type RelationalParserListener interface {
 	// EnterVectorIndexDefinition is called when entering the vectorIndexDefinition production.
 	EnterVectorIndexDefinition(c *VectorIndexDefinitionContext)
 
+	// EnterTextIndexDefinition is called when entering the textIndexDefinition production.
+	EnterTextIndexDefinition(c *TextIndexDefinitionContext)
+
 	// EnterVectorEngine is called when entering the vectorEngine production.
 	EnterVectorEngine(c *VectorEngineContext)
 
@@ -132,6 +135,12 @@ type RelationalParserListener interface {
 
 	// EnterVectorIndexOptions is called when entering the vectorIndexOptions production.
 	EnterVectorIndexOptions(c *VectorIndexOptionsContext)
+
+	// EnterTextIndexOptions is called when entering the textIndexOptions production.
+	EnterTextIndexOptions(c *TextIndexOptionsContext)
+
+	// EnterTextIndexOption is called when entering the textIndexOption production.
+	EnterTextIndexOption(c *TextIndexOptionContext)
 
 	// EnterVectorIndexOption is called when entering the vectorIndexOption production.
 	EnterVectorIndexOption(c *VectorIndexOptionContext)
@@ -955,6 +964,9 @@ type RelationalParserListener interface {
 	// ExitVectorIndexDefinition is called when exiting the vectorIndexDefinition production.
 	ExitVectorIndexDefinition(c *VectorIndexDefinitionContext)
 
+	// ExitTextIndexDefinition is called when exiting the textIndexDefinition production.
+	ExitTextIndexDefinition(c *TextIndexDefinitionContext)
+
 	// ExitVectorEngine is called when exiting the vectorEngine production.
 	ExitVectorEngine(c *VectorEngineContext)
 
@@ -981,6 +993,12 @@ type RelationalParserListener interface {
 
 	// ExitVectorIndexOptions is called when exiting the vectorIndexOptions production.
 	ExitVectorIndexOptions(c *VectorIndexOptionsContext)
+
+	// ExitTextIndexOptions is called when exiting the textIndexOptions production.
+	ExitTextIndexOptions(c *TextIndexOptionsContext)
+
+	// ExitTextIndexOption is called when exiting the textIndexOption production.
+	ExitTextIndexOption(c *TextIndexOptionContext)
 
 	// ExitVectorIndexOption is called when exiting the vectorIndexOption production.
 	ExitVectorIndexOption(c *VectorIndexOptionContext)

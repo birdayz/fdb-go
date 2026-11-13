@@ -1,6 +1,6 @@
 // Package fdbgo is the root of the pure-Go FoundationDB client. It contains no
 // code; the importable packages are the subdirectories — [fdb.dev/pkg/fdbgo/fdb]
-// (the Apple-Go-binding-compatible surface most callers want), fdbgo/client (the
+// (the API modeled on Apple's Go binding, which most callers want), fdbgo/client (the
 // lower-level client), fdbgo/transport, fdbgo/wire and fdbgo/tuple.
 //
 // This doc exists to put one operational fact where a migrator will find it.
@@ -60,8 +60,8 @@
 // migrator who set nothing there was already unbounded there, and is equally
 // unbounded here.
 //
-// The no-context [fdb.Database.Transact] runs on context.Background() to stay
-// drop-in compatible with the Apple Go binding, so a context deadline is not
+// The no-context [fdb.Database.Transact] runs on context.Background(), as the
+// Apple Go binding has no context, so a context deadline is not
 // available to it — bound it with a timeout or retry limit, or switch to
 // TransactCtx.
 package fdbgo

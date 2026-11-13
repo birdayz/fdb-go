@@ -27,9 +27,9 @@ func TestFDBVersionstampSelectionBeforeMetrics(t *testing.T) {
 
 	// Freeze the first post-reply consumer, not the native completion. A stamp
 	// selected at facade return or after metrics cannot pass this gate.
-	db.db.metrics.commitLatency.mu.Lock()
+	db.db.metrics.commitLatency.lockAll()
 	var unlocked sync.Once
-	unlock := func() { unlocked.Do(db.db.metrics.commitLatency.mu.Unlock) }
+	unlock := func() { unlocked.Do(db.db.metrics.commitLatency.unlockAll) }
 	defer unlock()
 	done := make(chan error, 1)
 	go func() { done <- tx.Commit(ctx) }()
@@ -351,10 +351,10 @@ func TestFDBVersionstampOlderSuccessRetainsLatestProducer(t *testing.T) {
 					pause := installOneShotCommitPause(t, db)
 					reached, unblock = pause.reached, pause.unblock
 				} else {
-					db.db.metrics.commitLatency.mu.Lock()
+					db.db.metrics.commitLatency.lockAll()
 					var once sync.Once
 					reached = first.done
-					unblock = func() { once.Do(db.db.metrics.commitLatency.mu.Unlock) }
+					unblock = func() { once.Do(db.db.metrics.commitLatency.unlockAll) }
 				}
 				defer unblock()
 				firstDone := make(chan error, 1)

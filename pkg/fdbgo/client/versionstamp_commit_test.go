@@ -53,8 +53,8 @@ func TestAtomic_SVKCommitsMinBoundTransformedKey(t *testing.T) {
 
 // TestAtomic_SVKSystemKeyPlaceholderStaysRawForValidation pins an edge of the #26 fix: a
 // SetVersionstampedKey whose placeholder is at offset 0 and whose raw placeholder bytes are \xff (a
-// raw system key) must NOT be transformed for a non-system txn — it stays RAW so the commit-path
-// validateMutation checks the raw key and reports key_outside_legal_range (2004). Transforming first
+// raw system key) must NOT be transformed for a non-system txn — it stays RAW so validateMutation
+// (at the call, deferIllegalLocked) checks the raw key and defers key_outside_legal_range (2004). Transforming first
 // would hide the leading \xff behind the read-version/zero stamp and let the mutation commit without
 // system-key access. Revert-proof: drop the `key < maxWriteKey` guard and the transformed key's
 // leading byte is the stamp (not \xff), so validateMutation passes and the check is bypassed.
@@ -80,7 +80,7 @@ func TestAtomic_SVKSystemKeyPlaceholderStaysRawForValidation(t *testing.T) {
 	}
 	if got := tx.mutations[0].Key; got[0] != 0xff {
 		t.Fatalf("out-of-range \\xff-placeholder SVK was transformed (leading byte %#x, not 0xff) — the "+
-			"legal-range check on the raw key is bypassed (codex #17)", got[0])
+			"legal-range check on the raw key is bypassed", got[0])
 	}
 	if err := tx.validateMutation(tx.mutations[0], tx.maxWriteKey()); fdbCodeOf(err) != 2004 {
 		t.Fatalf("a \\xff-placeholder SVK on a non-system txn must be key_outside_legal_range (2004), got %v", err)

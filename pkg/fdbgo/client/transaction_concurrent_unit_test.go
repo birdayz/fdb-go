@@ -69,7 +69,7 @@ func TestConcurrent_ConflictReaders_NoRace(t *testing.T) {
 }
 
 // TestConcurrent_NextWriteNoConflict_NoRace pins Fix #6: nextWriteNoConflict is
-// read AND cleared on the Set path (addWriteConflict*), so two concurrent Sets
+// read AND cleared on the Set path (takeWriteConflictLocked), so two concurrent Sets
 // race on it once the one-shot flag is armed. The flag is armed single-threaded
 // BEFORE the goroutines launch (it is configure-before-use, out of the operation
 // contract), so only the op-vs-op read+write is exercised here.

@@ -1,0 +1,13 @@
+syntax = "proto2";
+
+package fdb.cli.meta.testdata.other;
+
+import "record_metadata_options.proto";
+
+message OtherRecord {
+  optional int64 id = 1 [(com.apple.foundationdb.record.field).primary_key = true];
+}
+
+message RecordTypeUnion {
+  optional OtherRecord _OtherRecord = 1;
+}

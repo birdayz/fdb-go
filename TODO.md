@@ -1,6 +1,6 @@
 # Java 4.14.2.0 migration
 
-Active branch: `upgrade/java-4.14.2.0` · PR #786. FDB/C++ remains **7.3.77**.
+Merged: `upgrade/java-4.14.2.0` (PR #786, 2026-10-09). FDB/C++ remains **7.3.77**.
 
 ## Execution contract
 
@@ -27,6 +27,62 @@ git show 13d5a3d1e:rfcs/257-java-upgrade-audit/ws-e-design.md
 Verify remaining audit claims against current Go and Java before changing code.
 Never mark a whole workstream complete because one of its subitems passed.
 
+## Pending acceptance: ingest-20k conformance gate corrections
+
+- [ ] Run the supported full stacked-tree acceptance lane and fresh native review
+  after the coherent gate-fix commit. The source corrections cover pre-init native
+  CC address registration followed by strict postconfiguration class/locality/role
+  and storage-team checks; valid record-type-prefixed legacy delete metadata;
+  structural Java byte-key continuation oracles with separate array/NaN contrasts;
+  and logical bounded TEXT results versus native physical bunch results, including
+  reverse-seek predecessor preservation. A standard `just test` pass does not
+  execute the heavyweight connrefused or live-Java conformance targets and does
+  not close this acceptance item. Do not infer the twelve network refusal
+  client/read instances, watch recovery, or live-Java population from inline
+  controls or source audits.
+
+### Pending source-repair acceptance (post-v0.2.0, PR #1023)
+
+- [ ] Validate and obtain native acceptance for the eight confirmed findings on
+  d56fa699: encoded covering-value admission; raw TEXT role-discovery accounting;
+  depth-one pipeline and partial-write replay documentation; public late-log-cost
+  propagation; live queue reference release; full-capacity marker eviction/replay;
+  and attempt-local retry fixtures. Source regressions remain unexecuted until
+  owner release of the coherent tree. The prepared eviction-removal mutation
+  likewise has no execution/compilation/failure proof yet. The fresh native result
+  remains NAK (8 confirmed, 2 duplicates, 58 unverified), with incomplete review
+  coverage and failed summary posting; source repairs cannot close those blockers
+  or authorize a review/post retry. Preserve all earlier strict regression oracles.
+
+- [ ] Audit and validate the coherent repairs for the 19 confirmed native findings
+  F1/F2/F4/F5/F7/F9/F10/F11/F12/F13/F14/F15/F19/F21/F22/F23/F24/F25/F26,
+  plus disjoint literal-TEXT fixture isolation and independently logged pure-Go /
+  libfdb_c watch commit/change/fire completion. Source changes and unexecuted
+  regression assertions are not a passing lane or a native re-rating. Preserve
+  the prior a62 fast/full/Java failure evidence; the native NAK population remains
+  19 confirmed, 7 duplicate and 55 unverified. The prior full lane failed before
+  166 TEXT comparisons on fixture keyspace pollution; it did not establish those
+  comparisons' logical parity. Run no acceptance gates until the owner releases
+  the audited source tree. New regressions cover ambiguous commits, initially
+  multipart size fallback after committed tails, short-normalized huge words,
+  small-integer log posting/native-clear budgets, live commit-check registration,
+  direct commit-conflict handle cleanup, configurable INSERT depth, typed TEXT
+  comparisons/bounds and versions-enabled format-5 orphan V0 contrast.
+- [ ] **Collector → same catalog/tenant SQL migration remains incomplete.** Wire
+  the actual upstream Collector ingestion path into the same relational catalog,
+  tenant and SQL table identity, then prove native Go/Java catalog visibility,
+  fidelity, tenant isolation, SQL query behavior and budget/continuation contracts.
+  Existing ExportLogs/ConsumeLogs adapters, typed OTel joined queries, custom-index
+  candidacy/maintenance seams and upper-stack planner foundations are prerequisites,
+  not this migration. No upper source changes or migration execution is included
+  in the lower readiness-repair workstream; hand off this still-open requirement
+  after owner-controlled restacking.
+- [ ] Historical benchmark plan objects are not all durably published/fresh-clone
+  inspectable. Preserve their measured identities/numbers and disclose the limit;
+  do not fabricate reachability or relabel newer trees as measured. The separate
+  500k-token fixture can regenerate from committed frozen inputs without the old
+  Git object; this does not reconstruct or rerun a historical benchmark campaign.
+
 ## 0. `pkg/fdbgo` CPU under concurrency — TOP PRIORITY
 
 Set as the top priority by the owner on 2026-10-15, ahead of the active workstream.
@@ -48,16 +104,17 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   noninferiority bounds but failed their intended p50 improvement conditions; neither
   is promoted. The [Rejected RFC](rfcs/264-send-wait-cost-and-ordering.md) retains the
   historical bisect results, common harness and reproduction inputs, not production
-  prototype changes. Keep #954's C++-parity 10/20 µs default; the owner accepts its
-  latency-versus-CPU/allocation trade-off. Remaining unbuilt ideas are not pursued
-  under this RFC; no further prototype or measurement is authorized.
+  prototype changes. At the time, RFC-264 retained #954's 10/20 µs legacy-writer
+  default; RFC-282 (#1019) supersedes that default with D-NG's 0/0 immediate flush
+  (10/20 µs and adaptive linger remain explicit options). Remaining unbuilt ideas are
+  not pursued under this RFC; no further prototype or measurement is authorized.
 - [ ] **Deferred — zero-delay option comparison; owner rescheduling required.** The
   previously assigned `WithCoalesceDelay(0, 0)` versus 10/20 µs comparison for
   get100/get1000 at 8/64 workers remains deferred, not an active RFC-264 workstream.
   If separately authorized, report latency p50/p99, successful ops/s, errors/retries
   per 1k completed operations with raw counts, and cores busy plus CPU/op. Add other
   metrics only to explain an outlier. The [option godoc](pkg/fdbgo/client/options.go) documents the
-  explicit option and unchanged default; update the measured trade-off only if
+  explicit options and RFC-282's 0/0 D-NG default; update the measured trade-off only if
   warranted by those separately authorized results. No run is currently authorized.
 
 - [x] **Timeout delivery parity (C++ C4).** Done: the eager `checkTimeout` is gone; read,
@@ -175,7 +232,11 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     workers, 0.88 at 32 (1.34 without); `grv` 0.76 at 8; 1-worker 0.93–0.99. The wait
     raises 1-worker `get100` latency 26% (221 → 279 µs; libfdb_c 404 µs). OWNER
     DECISION (2026-10-17): the wait is on by default, as in libfdb_c;
-    `WithCoalesceDelay(0, 0)` restores immediate writes.
+    `WithCoalesceDelay(0, 0)` restores immediate writes. SUPERSEDED by RFC-282
+    (#1019): under the enqueue-only `D-NG` writer (`naWriter`), connections default
+    to immediate flush on wakeup (`0, 0`); `WithCoalesceDelay(transport.DefaultMinCoalesceDelay, transport.DefaultMaxCoalesceDelay)`
+    opts into libfdb_c's 10/20 µs timer wait and `WithAdaptiveLinger(window)` opts
+    into Nagle-style adaptive linger.
     A [closed-loop sweep](docs/benchmarks/rfc-259/wire-capture-20261018.md) of all four
     workloads at 1/8/32/64 workers on `e5209b8c6`: server cycles ≤ 1.03× libfdb_c
     everywhere except `range100` at 32–64 (1.12–1.15×, outside the criterion) and
@@ -260,6 +321,18 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     `getRangeValue` with `GetRangeLimits(1)` (`ReadYourWrites.actor.cpp:140-160`); the
     offset beyond the first row becomes `additionalRows` (`:731-749`), which
     `setRequestLimits` adds to the one-row limit (`:569-575`).
+  - [x] Selector ranges (RFC-262 phase 4, D10, plain ranges): a range read with a selector
+    of offset other than 1 is one getRange, not a `GetKey` per selector and then a range.
+    The client's `StartGetRangeSelectors`/`GetRangeSelectors` (`pkg/fdbgo/client/range_selector_issue.go`)
+    run the ported walk over `nativeGetRange`, or `readThrough` with RYW disabled, and add
+    `addConflictRange(GetRangeReq)` / `getRangeFinished` conflicts (`ReadYourWrites.actor.cpp:187-215,
+    245-319, 1711-1769`; `NativeAPI.actor.cpp:4558-4586`). Pinned by
+    `//pkg/fdbgo/client:selector_range_conformance_test` (test-full, rows and read conflicts
+    against libfdb_c on small shards), `//pkg/fdbgo/client:range_selector_unit_test`,
+    `TestSelectorRangeReadSendsOneStorageRequest` (`storage_plumbing_fdb_test`),
+    `TestGetRange_SelectorRangeIsOneStorageRead` and `TestConflictRange_SelectorGetRange_Native`
+    (`//pkg/fdbgo/fdb:fdb_test`), and `TestDifferential_GetRangeSelectorRYW` (bench, test-full).
+    Remaining work: "Selector ranges: offset-1 merge path and a wire golden" (section 0).
   - [x] `clear_range_then_set`: libfdb_c sends a clear split around a later set in it,
     as `writeRangeToNativeTransaction` emits one clear per cleared stretch of the write map
     (`ReadYourWrites.actor.cpp:2001-2018`); Go sends the whole clear. The stored data is the
@@ -287,32 +360,48 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     `read_tags_unit_test`, `TestReadTagSamplingRequestKinds` (storage_plumbing_fdb_test)
     and `TestReadTagSamplingOneDrawPerRequest` (client_test). The goldens leave these
     fields out of the read requests.
-  - [ ] `Reset` or `OnError` after a commit cancels that commit's watches: Go's
-    `cancelWatches` cancels every registered watch context, while C++ `setupWatches`
-    empties `watches` once the commit hands them off (`NativeAPI.actor.cpp:6435`), so
-    `Transaction::reset`'s `cancelWatches` (`:6173`) no longer reaches them. Observed:
-    WatchSetup, commit, WatchPoll, then `Reset` ends the poll with context canceled.
+  - [x] Committed watches survive subsequent transaction teardown. Successful commit
+    detaches their cancellation registrations, matching C++ `setupWatches`
+    (`NativeAPI.actor.cpp:6435`); pending successor watches still cancel. Real-FDB
+    `TestCommittedWatchPollSurvivesTransactionReuse` observes the watch request before
+    Reset/OnError and verifies completion without leaked slots. Facade lifecycle tests
+    cover write/read-only commits and Reset/retry/terminal OnError/Cancel; native tests
+    also pin scoped and parent cancellation after handoff.
   - [ ] The sample rate can be overridden through the cluster's global configuration
     (`transactionTagSampleRate`); Go has no global configuration (libfdb_c refreshes it at
     startup with `GlobalConfigRefreshRequest`).
   - [x] `clear_key`: libfdb_c serializes a single-key clear `[k, k\x00)` as `(k\x00, '')`
     (`MutationRef::serialize`, `CommitTransaction.h:318-334`); Go sends `(k, k\x00)`.
   - [ ] Mapped range continuation selector: inside one native call a forward mapped read
-    continues at `FGE(keyAfter(last))` (`pkg/fdbgo/client/mappedrange_selectors.go:179`);
+    continues at `FGE(keyAfter(last))` (`getMappedRangeSelectors`, `pkg/fdbgo/client/mappedrange_selectors.go`);
     NativeAPI `getRange` sends `firstGreaterThan(last)` (`NativeAPI.actor.cpp:4850`). Same
     rows, different `Begin` bytes. RFC-262 D4 leaves mapped reads on their sender; port the
     selector-capable sender for them and add a mapped multi-request golden scenario.
-- [ ] **Explicit write-conflict-range errors are immediate.** `AddWriteConflictRange`
+- [x] **Explicit write-conflict-range errors are immediate.** `AddWriteConflictRange`
   returns `key_outside_legal_range` (2004) from the call, while the C binding runs RYW
   `addWriteConflictRange` on the network thread and records the error as the
   transaction's deferred error (`ThreadSafeTransaction.cpp:659-663`, check at
   `ReadYourWrites.actor.cpp:2466-2468`), surfacing it on the next operation.
   `AddWriteConflictKey` already defers it. Align the range form (the facade's return
   value then only carries synchronous errors such as inverted ranges) with a test.
+  Fixed in RFC-267: the range form defers 2004 through the key form's path and returns
+  only inverted_range; pinned by fast-lane tests and a libfdb_c differential.
+- [x] **Explicit read-conflict-range errors are immediate or missing.** libfdb_c runs RYW
+  `addReadConflictRange` on the network thread too (`ThreadSafeTransaction.cpp:589-594`):
+  an endpoint past `getMaxReadKey()`, other than the exact metadataVersionKey range
+  (`ReadYourWrites.actor.cpp:1950-1955`), becomes the deferred error (2004) and surfaces
+  on the next operation. Go's `AddReadConflictRange` returns 2004 from the call
+  (`stateAddReadConflictRange` in `pkg/fdbgo/client/transaction.go`), and
+  `AddReadConflictKey` (`stateAddReadConflictKey`) has no legal-range check, so a system-key read conflict is recorded without error; the
+  Apple binding's key form calls the same C function as the range form. Defer both as
+  RFC-267 does for the write form, pinned by a libfdb_c differential.
+  Fixed in RFC-268: both forms defer 2004 through RFC-267's deferred-error path; the
+  range form returns only inverted_range, and the key form also drops an oversized key as
+  the range clamp does. Pinned by fast-lane tests and a libfdb_c differential.
 - [ ] **Panic-safe locks outside the GetKey walk.** Scoped recovery now unwinds GetKey
   walk locks, but older paths still pair bare Lock/Unlock around fallible work:
   `ryw.go:620-632` (`get` / `localPointLocked`), `ryw.go:643-645` (`getSnapshot`),
-  and `transaction.go:3223-3225` (`stateAddReadConflictRange` / `conflictRanges`).
+  and `transaction.go:3220-3222` (`addReadConflictRangeRYW` / `conflictRanges`).
   Scope deferred unlocks there and pin a panic inside each locked operation; do not
   treat a panic after a reply outside the lock as proof. Also audit transport
   `writer_turn.go:52-99`: `NotifySuspend` and the coalescing wait run with `writeMu`
@@ -325,15 +414,21 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
 - [ ] **Panic-safe QueueModel accounting in read senders.** Reply registration
   cleanup does not release a delta when a recovered panic occurs after
   `startRequest`: `readpath.go:313` (getKey), `:561` (getValue), `:636` (single-server
-  getValue), `:1077` (range family), and `:1719` (watch). Add a separately owned
+  getValue), and `:1077` (range family). RFC-281 (#1017) removes watch accounting.
+  Add a separately owned
   accounting guard through sender-to-RPC ownership transfer and pin a panic after
   each increment. C++ `ModelHolder::~ModelHolder` removes the delta without a
   latency sample (`LoadBalance.actor.h:53-67`); `replyGuard` only owns the endpoint.
-- [ ] **Join monitor reply waiters on connection close.** `sendPingWithReply`
+- [x] **Join monitor reply waiters on connection close.** `sendPingWithReply`
   launches its reply-wait goroutine outside `Conn.loopWG` (`transport/conn.go`).
   Connection cancellation wakes it, but `Close` can return before it releases
   its reply handle. Track that owner through shutdown and pin zero live waiters
   on return; the cold-control outbox worker is tracked separately.
+  Fixed in RFC-269: the waiter is gone. `connectionMonitor` owns the PING reply
+  handle, as C++ holds `state PingRequest` in the monitor actor, and releases it
+  on every exit before `loopWG.Done` and before any teardown it causes. Five tests,
+  each failing on the reverted code, pin the reply, Close, cancellation, frozen-ping
+  and panic exits; a unit test pins pooling a teardown reply published after the wait.
 - [ ] **Control packets must not be dropped behind FIFO gaps or full queues.**
   Transport `tryEnqueue` drops monitor pings and ping replies when the ordinary
   or held sender FIFO is pending, even if its channel has a free slot; it also
@@ -346,12 +441,17 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   RFC-262 sender with follow-ups under concurrent same-peer and independent-peer
   traffic, reporting throughput, client CPU, allocations and mutex/block profiles.
   Single-thread loopback RPC measurements do not establish contention cost.
-- [ ] **Reads after an illegal Set precede its deferred verdict.** `stateSet`
-  (`transaction.go:1268-1284`) buffers illegal keys/values until commit validation;
-  C++ RYW set throws before modifying WriteMap (`ReadYourWrites.actor.cpp:2344-2353`)
-  and the thread-safe wrapper defers that error. A later GetKey/conflict filter can
-  therefore observe a Go write that C++ never installed. Align mutation admission
-  and first-error ordering, with an illegal-Set-then-read/conflict regression.
+- [x] **Reads after an illegal Set precede its deferred verdict.** `stateSet`
+  buffered illegal keys/values until commit validation; C++ RYW set throws before
+  modifying WriteMap (`ReadYourWrites.actor.cpp:2344-2353`) and the thread-safe
+  wrapper defers that error. A later GetKey/conflict filter could therefore observe
+  a Go write that C++ never installed.
+  Fixed: Set/Clear/ClearRange/Atomic make an illegal write's error the deferred
+  error in the call (`deferIllegalLocked`), so every later read, GetKey and Commit
+  fails with it; an illegal ClearRange endpoint buffers nothing. An illegal
+  Set/Clear/Atomic still enters the write map, which no operation can then
+  observe. Pinned by `TestIllegalWriteIsDeferred` (Get, GetRange, Commit; RYW on
+  and off) and `//conformance:ryw_script_conformance_test` against libfdb_c.
 - [ ] **Transaction options during in-flight operations.** Option setters (`SetLockAware`,
   `SetReadLockAware`, GRV cache, tags, priority, `SetAutoThrottleTag`) write plain
   `Transaction` fields under a shared state lease, while in-flight operations read them:
@@ -437,6 +537,139 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   saturation. Throughput counts successful operations in a fixed post-warmup window,
   checked against workers ÷ mean latency and, for writes, the servers' commit counts.
   Needs those checks in `tools/clientbench` and owner approval of the cloud budget.
+
+- [x] **Read hedging second-request budget.** RFC-281 (#1017) ports C++ 7.3.77's
+  database-wide budget (initial 0, +0.05 per lone reply, cap 100, cost 1 per hedge),
+  adaptive multiplier (initial/floor 1, +0.01 per spend, −0.00025 per lone reply)
+  and second-alternative delay/instant arm (`LoadBalance.actor.h:554-563,694-716`,
+  `QueueModel.h:121`, `flow/Knobs.cpp:278-283`). Deterministic timer tests pin each
+  accrual/spend arm; real-FDB transcripts cover value, selector, range and mapped
+  requests, disabled/re-enabled hedging, the unhedged backup fallback and watches.
+  Existing hedge tests seed the budget they need.
+
+- [ ] **Connection monitor has no `resetPing` arm.** C++ `connectionMonitor` also
+  ends a PING wait on `peer->resetPing.onTrigger()` (`FlowTransport.actor.cpp:696-698`),
+  triggered when packets arrive from an incompatible peer (`:1596`) and when the last
+  peer reference drops with nothing outstanding (`:1892-1896`). Go's `monitorPing`
+  waits only on the reply, the timeout and cancellation. The second trigger depends on
+  the peer-reference count Go does not track (see the idle-connection divergence in
+  `connectionMonitor`); port both with the unreferenced-close knobs, pinned by tests.
+
+- [x] **A commit reply that does not decode is not `commit_unknown_result`.** Fixed in #1004
+  (RFC-276): malformed post-send replies route through `unknownResult`, returning 1021
+  only after the dummy-transaction fence succeeds. A corrupted real-FDB commit reply
+  pins the applied mutation, the synchronization fence and the unknown-result error.
+
+- [ ] **Endpoints ignore their secondary address.** C++ `Endpoint::serialize` calls
+  `choosePrimaryAddress` on deserialization (`FlowTransport.h:62-68,97-103`): a client,
+  whose local address list is plaintext with no secondary, swaps to the secondary when
+  the primary's TLS flag differs. Go dials `NetworkAddressList.Address` as written
+  (`client/endpoint.go`); RFC-276 decodes `SecondaryAddress` as a `NetworkAddress`
+  (vector `GetKeyServerLocationsReply_secondary_address`), so the choice can be
+  ported and pinned against that vector.
+- [ ] **Presence-only Optional tables still encode as byte strings.** RFC-276 decodes
+  `ClientDBInfo.EncryptKeyProxy`, `CommitTransactionRequest.CommitCostEstimation` and
+  `TenantInfo.Token` as presence only (`optTable` in `cmd/fdb-schema-extract`), but their
+  encoders write `VisitDynamicSize` behind the union offset. Give the types Go
+  equivalents, or make the encoder refuse a presence-only field, before the client sets one.
+  The registered table encoders for `NetworkAddressList.SecondaryAddress` and
+  `CommitTransactionRef.spanContext` are pinned byte-exactly by C++ request fixtures
+  in #1004.
+
+- [ ] **Read replica selection is best-of-two random.** C++ `loadBalance` sends the
+  first request to the alternative with the lowest `smoothOutstanding` (ties to the
+  lowest index) and the second to the next-lowest (`LoadBalance.actor.h:469-552`).
+  Go's `chooseTopTwo` picks the primary by two random choices and the backup by the
+  lowest metric among the rest (`client/loadbalance.go`). Port the C++ selection,
+  including its local-DC `countBest` cut-off, with a unit test per arm.
+
+- [ ] **A hedge race ends on the first reply.** Go's `raceReplies` returns whichever
+  reply arrives first, even a failure C++ retries in `loadBalance` (`process_behind`,
+  `server_overloaded`, a transport failure). C++ discards it, keeps waiting for the
+  other request, and sends further second requests to the remaining alternatives
+  while the first is outstanding (`LoadBalance.actor.h:648-686`,
+  `checkAndProcessResultImpl` `:325-378`). Lone inline retryable errors also bypass
+  `primaryReplied` because decoding happens after the hedge helper returns; the
+  transport-error unit cases do not cover server error bodies. Port both reply
+  paths with encoded-response integration regressions and a synctest per arm.
+- [ ] **RYW CPU in TEXT-maintenance-shaped transactions** (GenAI exporter
+  profile, 128 messages per transaction, about 7000 BunchedMap postings).
+  `BenchmarkRYWTextMaintenance` (one transaction: 7000 BunchedMap postings
+  over a warmed cached range under a 64-byte prefix, serial snapshot selector
+  reads with deferred consumption of up to 128 completed futures, not active
+  concurrent reads or write-map pins; each posting adds the entry list's read
+  conflict, an AppendIfFits to its bunch or every fourth a Set plus a split-off
+  Clear, a write conflict key and the gap's write conflict range) in an **intermediate-tree experiment**:
+  314 -> 90 ms, 65.8 -> 21.5 MB, 433k -> 117k allocs per transaction.
+  These are not a before/after measurement of the PR: the required equivalent
+  workload comparison against merge-base a7349ff65 remains outstanding.
+  Baseline e71d2b44c, the PR's first
+  commit with the selector-range API the benchmark uses (the merge-base
+  a7349ff65 has neither it nor the test target), with only this benchmark
+  copied in; candidate 14b5dd156 (`pkg/fdbgo` tree 79198abcd). Go 1.27.3,
+  `//pkg/fdbgo/client:range_selector_unit_test` fastbuild binaries,
+  `-test.benchtime 10x`, five interleaved rounds per binary, medians shown
+  (base 294-376 ms, change 77-98 ms); 24 threads at host load about 36, so
+  wall times are noisy; bytes and allocs are stable to 0.01%.
+  The write map keeps its bytes in a never-reused arena shared by the op-log
+  for Set/Clear/ClearRange (the op-log no longer copies each Set beside the
+  write map); WriteMap::addConflictRange inserts by iterator position; the
+  read-conflict map merges with one search; the mutators and short scans
+  iterate with PTreeFinger-style fingers; walks classify written segments
+  without their entry, skip from the current position and insert replies with
+  C++'s two searches; atomics skip no-op node mutates; QueueModel keeps
+  per-server locks. Conformance against libfdb_c
+  (`//conformance:ryw_script_conformance_test`) found and pinned three fixes:
+  a snapshot Get, and a Get that falls back from the pipelined path (a key
+  with pending atomics), issued before a later write no longer sees it
+  (StartGet, issued in the call; Commit waits for it), an explicit write
+  conflict no longer consumes NEXT_WRITE_NO_WRITE_CONFLICT_RANGE, and an
+  illegal write is the deferred error for later operations, as libfdb_c's
+  eager throw is.
+  Open: every server read still derives a merged cancellable context
+  (`readOperation.merged`, propagateCancel contention); a written key's entry
+  is still found by a root search per walk (C++ keeps the operation stack in
+  the WriteMap node); inserts after a pin still copy about half the path;
+  RYW selector reads served from the cache cost about 10 µs each.
+- [ ] **Option errors are deferred in libfdb_c.** libfdb_c runs `setOption` on the
+  network thread and records its throw as the deferred error
+  (`ThreadSafeTransaction.cpp:730-743`), so `SetAccessSystemKeys`/`SetReadSystemKeys`
+  on a tenant transaction return success and the next Get/Commit fails with 2007
+  (`NativeAPI.actor.cpp:7159-7171`). The Go facade returns `TenantOptionError` (2007)
+  from the option call (`pkg/fdbgo/fdb/options.go`), and later operations succeed.
+  Found by `//conformance:ryw_script_conformance_test`, which leaves the scenario out
+  until this is aligned; audit the other option errors the same way.
+- [ ] **Serve the read_conflict_range/ and write_conflict_range/ special keys.** Go fails
+  reads of `\xff\xff/transaction/read_conflict_range/` and `.../write_conflict_range/` with
+  2108 (DIVERGENCES.md, special key space). C++ renders the RYW read-conflict map and the
+  write map's conflict flags (`ReadYourWrites.actor.cpp:2121-2215`), after waiting on
+  pending reads (`SpecialKeySpace.actor.cpp:690-699`). Go now has both maps
+  (`conflict_map.go`); serve the modules from them, with a libfdb_c conformance case.
+- [ ] **Selector ranges: offset-1 merge path and a wire golden.** Ranges whose selectors
+  both have offset 1 still take the exact-range merge path (RFC-262 phase 3), not the
+  ported selector walk, and there is no selector-range wire-golden scenario. Route them
+  through the walk where C++ does, and add the golden.
+
+- [ ] **Deferred — SimFDB selector-cache overfetch precision.** The simulator keeps
+  conservative logical knowledge from successful point/GetKey reads and consumed range
+  batches; it does not reproduce every extra offset/lookahead row cached by the native
+  RYW storage replies. A later crossed-selector read warmed only by those extra rows can
+  therefore still over-conflict. Before claiming complete cache-history parity, model
+  `knownKeyRange` / `knownKeyRangeBack` from the effective storage request and reply
+  (`ReadYourWrites.actor.cpp:487-508,816-839`, Go `client/ryw_walk.go`), with differential
+  warmup/continuation regressions. The point/exact-range warm-cache cases are covered by
+  `TestSelectorRange_KnownReadReduction`; this is not an authorization for a new campaign.
+
+- [ ] **Special key space beyond `conflicting_keys/`.** The pure-Go client serves
+  `\xff\xff/transaction/conflicting_keys/` (`client/specialkeys.go`, conformance
+  `//pkg/fdbgo/libfdbc:conflicting_keys_conformance_test`); every other read impl fails
+  with `unsupported_operation` (DIVERGENCES.md, "Special key space reads"). Next, after
+  the RYW rewrite lands: `read_conflict_range/` and `write_conflict_range/`
+  (`ReadYourWrites.actor.cpp:2121-2215`, waiting on pending reads first, `SpecialKeySpace.actor.cpp:690-699`),
+  which would let the Go differentials read Go's conflict ranges the way the libfdb_c arms
+  do. Then `status/json`, `connection_string`, `cluster_file_path` and `cluster_id`
+  (`NativeAPI.actor.cpp:1763-1834`), and special-key writes with
+  `SPECIAL_KEY_SPACE_ENABLE_WRITES` (2114-2116). Each with a libfdb_c conformance case.
 
 ## 1. WS-E — scalar/SQL semantics and statement execution — ACTIVE
 
@@ -1406,6 +1639,10 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   script probe has a search op, and the bits-9 script searches once
   untrained (both engines answer the same keys) and once trained (both
   refuse); an unchecked search fails it.
+- [ ] `guardiann_peel_timing_test` exceeded its CPU margin under load: 2.59 s against 2.5 s
+  in a `just test-full` run at load average 58 on the 24-thread dev box (2026-10-24, PR #998);
+  the rerun at load 27 measured 1.67 s. Process CPU time should not grow with load, so find
+  what does (GC or scheduler contention counted as CPU) before touching the margin.
 - [x] HNSW/engine: general fetch/cardinality/layer scans, ordered retrieval,
   covering/rank results, search-free continuation replay, operation-local caches,
   partition locks, cosine zero/clamp, sample-UUID closure, option catalog/identity.
@@ -1640,7 +1877,7 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   `Boolean.parseBoolean`), and the corpus runner routes a string option through
   it, as Java's `TestBlockOptions.parseConnectionOptions`.
 - [x] Recursive result metadata in the corpus runner (CQ-74 closed). A result
-  column carries its planned type (`executor.ColumnDef.DataType`, from
+  column carries its planned type (`resultset.ColumnDef.DataType`, from
   `rowstruct.DataTypeOf`); `api.WithResultSetMetaDataObserver` hands a query's
   metadata to the caller, and the runner ports `extractDescriptors` over it.
   An array column's `DatabaseTypeName` is Java's `ARRAY` (was the element
@@ -1905,17 +2142,33 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 
 ## Follow-ups after the 4.14.2.0 migration (not blocking)
 
+- [ ] Leaderboard SCORE_FOR_TIME_WINDOW_RANK out of range. Java's `scoreForRank` answers null,
+  and COMPARISON_SKIPPED_SCORE for the ELSE_SKIP form (`TimeWindowLeaderboardIndexMaintainer.java:480-488`).
+  Go returns an error, and nil for ELSE_SKIP (`time_window_leaderboard_maintainer.go`); the RANK
+  maintainer already answers nil and `("*")`.
+
+- [ ] Online indexer: one scan-and-mark loop. `buildRangeInTransaction`, the mutual
+  `buildFragmentRange` and `buildRangeByIndex` each scan with the limits and mark the built
+  range; a fix to one has to be copied to the others (RFC-279 copied the transaction-limit check).
+  Retained from #1009's final ACK review F1 (Low/unverified), not resolved by that PR.
+
+- [ ] `keyspace`: resolved paths with logical names. A resolver directory's `Path` holds only the
+  resolved `int64`, and `PathFromTuple` makes no reverse lookup. Java's `ResolvedKeySpacePath`
+  carries both (`DirectoryLayerDirectory.pathFromKey`). See DIVERGENCES.md, "Key-space paths hold
+  the stored value" (RFC-275).
+
 - [ ] **Decide which nightly nets to bring back (all deleted 2026-10-09).** The seven nightly
   workflows (coverage, factory, fuzz, oracles, reconcile, rowdiff, stress), `cmd/verify-pr-checks`
   (used only by reconcile) and the `census_test` target were removed: a late nightly could hold
   both CI runners, and nobody could say what they still caught. The libfdb_c cross-client
   differential moved into ci.yml as its own per-PR job. Each one is in git history
   (`git show 8d3f8c4ad:.github/workflows/<file>`). Bring one back only with a stated catch rate.
-  What no longer runs anywhere:
+  Coverage removed at that point (not a current CI inventory):
   - the `-race` runs of `//pkg/relational/conformance/...` and of the client, record-layer and
     chaos container suites;
   - active fuzzing;
-  - the 10K/100K/1M stress suite;
+  - the 10K/100K/1M stress suite (now included at default budgets in the explicit
+    full release dispatch; still excluded from ordinary PR/push CI, with no schedule);
   - coverage reporting;
   - the self-checking oracles and the nightly rowdiff and factory batches.
 
@@ -1928,12 +2181,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   allocation (GC is ~39% of planner CPU); split 2, vector indexes out of
   `pkg/recordlayer` behind a maintainer registry (58 -> ~38 test targets per
   vector change); a Bazel cache shared by both CI runners.
-- [ ] `pkg/fdbgo`: bound GetRange selector resolution by the range end. The facade
-  resolves a non-trivial selector with an unbounded `GetKey` first
-  (`pkg/fdbgo/fdb/range_result.go:413-470`, `pkg/fdbgo/client/ryw_getkey.go`), so an
-  overshooting index-scan Skip reads, and in serializable mode conflicts on, keys past the
-  range. libfdb_c resolves within the read (ReadYourWrites.actor.cpp:725-760) and conflicts
-  on the requested range (:246-282). Client team.
+- [x] `pkg/fdbgo`: bound GetRange selector resolution by the range end. The facade used to
+  resolve a non-trivial selector with an unbounded `GetKey` first, so an overshooting
+  index-scan Skip read, and in serializable mode conflicted on, keys past the range. A
+  selector range is now one read, resolved inside it as in libfdb_c (RFC-262 phase 4, see
+  the wire-divergence entry); mapped reads are unchanged.
 - [ ] `pkg/fdbgo`: make `GetAddressesForKey` transactional. Go answers from the location
   cache (`pkg/fdbgo/client/transaction.go:2698`); libfdb_c 7.3.77 starts the transaction and
   reads `\xff/serverTag`, the key's `\xff/keyServers` entry and the server interfaces at the
@@ -1944,7 +2196,12 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   job runs them with a standalone `go test -tags libfdbc` over `pkg/fdbgo/libfdbc/...`
   and `pkg/internal/fdbclient/...`; only `network_lifecycle_test` and
   `mapped_skip_regression_test` have Bazel targets, so `just test-full` skips
-  `differential_test.go` and the other cross-client differentials.
+  `differential_test.go` and the other cross-client differentials. Blocker (2026-10-24):
+  every remaining file uses `startCluster` from `differential_test.go`, which imports
+  `pkg/recordlayer`; under the `libfdbc` gotag Bazel compiles `pkg/internal/fdbclient`
+  without its only source (`open_purego.go` is `!libfdbc`), and `open_libfdbc.go` needs
+  `libfdbc_native`, which shares the stub's import path. The fix is a tag-aware select
+  across both libraries.
 - [ ] Java/Go raw key-value parity for shared TEXT indexes: plain, grouped and
   no-position variants over the Unicode-delta inputs, comparing sorted relative keys,
   values and positions; force bunch splitting with 25 common postings; cross-engine
@@ -1953,10 +2210,32 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 - [ ] Java proto rules: fail the build if a `java_proto_library` regenerates protobuf
   well-known types other than `any` and `descriptor`, and test that the failing fallback
   toolchain is selected on a non-Linux platform.
-- [ ] `tools/lanes/run-verified-lane.sh`: a cancelled lane leaves its Bazel server holding
+- [x] `tools/lanes/run-verified-lane.sh`: a cancelled lane leaves its Bazel server holding
   the lane lock until the server is shut down. Shut the server down on exit, or keep the
-  lock descriptor out of the server.
+  lock descriptor out of the server. Done: `flock -o` holds the lock for the
+  lane's lifetime and keeps it out of the server (`TestVerifiedLaneLock` in `//infra:infra_test`).
 - [ ] Update Buf from 1.67.0 to 1.74 (`BUF_VERSION` in `justfile`).
+- [ ] SQL: the ANSI forms `POSITION(x IN s)` and `EXTRACT(<field> FROM x)` fail with 0AF00
+  "projection slot 0 has no resolved Value", and `YEAR` over a BIGINT answers NULL rather than
+  refusing the type. `DocClaimsJavaProbe` pins them as they are (`position_in`, `extract_year`,
+  `date_part_of_integer`); Java answers the operand unchanged for both ANSI forms and refuses
+  `YEAR` (0AF00).
+- [ ] `SQL_ANSI_CONFORMANCE.md`'s `Java?` column is still pinned against 4.12.11.0
+  (`pkg/relational/conformance/yamsql/ansi_roster.go`, the notice in `ansiledger.go`). Re-verify
+  it on 4.14.2.0, as RFC-278 did for SQL_CONFORMANCE.md.
+- [ ] **TLS settings without a network option.** RFC-277 reads `FDB_TLS_*` only. libfdb_c
+  also takes the `TLS_*` network options (`fdb.options:70-105`) and
+  `FDB_NETWORK_OPTION_TLS_*` variables (`MultiVersionTransaction.actor.cpp:3484-3536`). It
+  re-reads certificate files on change every 12 h (`Knobs.cpp:128`), and its handshake
+  timeout is 2 s (`Net2.actor.cpp:1101-1106`) where Go's is 10 s. The `fdb` facade first
+  needs network options.
+- [ ] **TLS differential.** RFC-277's verify-peers cases are pinned against the C++ source,
+  not measured: run libfdb_c and the Go client with the same `FDB_TLS_*` against one TLS
+  listener per `TestVerifyPolicyMatching` case (OpenSSL's Latin-1 widening, SAN
+  fall-throughs, `ssl_server` purpose), and open a TLS testcontainer fdbserver (test-full).
+- [ ] **One PBES2 decryptor.** `pkg/fdbgo/client/tls_key.go` (RFC-277) and
+  `pkg/recordlayer/keystore_key_manager.go` each decrypt PBES2/PBKDF2/CBC; move both onto
+  one package under `pkg/fdbgo` so a bound or a new PRF lands once.
 
 ## Test lanes and test-speed work (committed with the temporal change)
 
@@ -1987,6 +2266,10 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   the fast lane. The test-suite speed investigation owns this now.
   - The race lane's timeout (1h0m16s, run 37669344266) is fixed by the split:
     it runs `sqldriver` (the driver's own tests) in about 11 min, green.
+- [x] Flake: `TestNativeReadTagSampling/fallback-two-nontrivial-selectors/hedge=true`.
+  RFC-281 (#1017) funds both concurrent selectors, then seeds a separate budget
+  for the exact read after both selectors complete. An incidental selector hedge
+  cannot consume the exact read's planned hedge; live replies keep generous timeouts.
 
 ## Row-limit lookahead at an exact page boundary
 
@@ -2025,7 +2308,7 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   terms with Java differentials. Widen the direct-caller Unicode guard to
   identifier/name callers and helper indirection; route or explicitly exclude
   the remaining `strings.EqualFold`/`strings.ToUpper` uses in
-  `pkg/internal/querycensus` and `cmd/frl`, which are outside the RFC-265 pin.
+  `pkg/internal/querycensus` and `cmd/fdb`, which are outside the RFC-265 pin.
   Evidence: [RFC-265](rfcs/265-unicode15-compatibility-pin.md#java-fidelity-and-deliberately-retained-divergences),
   `conformance/testdata/unicode15_java.json`, immutable
   `tools/unicode15baseline/testdata/go1.26.10.json` and the raw write/update/delete
@@ -2036,7 +2319,1608 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 - [ ] Restore the dereference-then-later-nil-check coverage when an upstream-supported
   SA5011 replacement is available. Staticcheck 2026.2 retired SA5011 in `5161aaa18`;
   nogo's enabled x/tools `nilness` checks proven-nil uses but not that pattern.
-  See CHANGELOG.md, Unreleased.
+  See CHANGELOG.md, v0.2.0, Changed.
+
+## GROUP BY duplicate-key check: follow-ups found by RFC-272
+
+- [ ] Found while removing the `GetText` fallback (RFC-272 item 6); each predates it and needs a
+  JVM probe before Go changes. (1) The 42702 check runs at aggregate build time, before WHERE and
+  SELECT-list resolution and before 42803: `WHERE nosuch = 1 GROUP BY amount+1, amount+1` and
+  `SELECT nosuch, COUNT(*) … GROUP BY amount+1, amount+1` are 42702 (Java 42703), and
+  `SELECT category, COUNT(*) … GROUP BY amount+1, amount+1` is 42702 (Java 42803)
+  (`QueryVisitor.java:274-305`, `LogicalOperator.java:436-455`). (2) An unknown function or a
+  scalar subquery as a GROUP BY key returns a raw `*expr.UnsupportedExpressionShapeError`, not an
+  `api.Error` (Java 0AF00 / 42601). (3) `category || 'a'` as a key is 42804; Java is 0AF00
+  "Unsupported operator ||". Parameter keys (`amount = ?, amount = ?`) are value-dependent:
+  probe equal and different values against live Java using the existing prepared-statement
+  steps (`runPreparedExtended` / `runPreparedSequence`), then pin the result (DIVERGENCES.md;
+  #999 final review F6, Low/unverified).
+
+## Java-corpus plan comparison (quality review 2026-10-24, RFC-273)
+
+The javacorpus runner books every plan directive as a counted skip
+(`pkg/relational/conformance/javacorpus/testblock.go:436-437`, RFC-201 ruling 2:
+no Java-format plan renderer, so no verbatim compare). Measured on the vendored
+4.14.2.0 corpus (255 `*.yamsql`, YAML-parsed `test_block.tests` query configs;
+grep positive control agrees): 1,266 directives, 1,214 `explain` and 52
+`explainContains`, on 1,266 queries in 141 test blocks of 87 files; `planHash`
+appears in no file. 8 are runner meta-tests, 11 are UPDATE/DELETE (Go's EXPLAIN
+renders logical DML). Go's EXPLAIN is a different format (nested calls,
+predicates as `[N preds]`, no AISCAN bounds, folded MAP layers), but every Java
+operator has a Go counterpart. `wsfAccessPath`
+(`conformance/ws_f_access_path_test.go`) already reduces both formats to an
+access-path tree for 775 of the 1,211 non-meta `explain` strings; the other 436
+need AISCAN (178), AGG (161), TFILTER (39), DEFAULT (33), union/intersection
+(32), RUNION/TEMP SCAN (22), TF (14), DISTINCT BY PK (9) — each count is the
+strings containing that operator, and a string can need several, so the counts
+sum to 488. On 28 queries whose
+Go schema matches Java's and whose Go plan is in `plan_shape.golden`: 0 exact
+string matches, 28/28 same access leaves, 26/28 same operator skeleton (a
+biased sample: those Go scenarios were ported from Java's; WS-F already books
+12 DIFF-PATH plans).
+
+1. [ ] **Capture.** At the skip site, run `EXPLAIN` for the same query on the
+   same connection and record `{file, line, kind, java, go | go-error}`; the
+   directive stays a skip. Exit: census rows == reached directives, per-kind
+   totals pinned in `pinned_ledger_test.go`, the existing ledger line unchanged.
+2. [ ] **Shared normalizer.** Move `wsfAccessPath` into a library package
+   (e.g. `pkg/relational/conformance/accesspath`) with the WS-F probe as its
+   first consumer. Exit: WS-F verdicts byte-identical; per-operator table tests
+   for both syntaxes.
+3. [ ] **Operator coverage.** Add the operators above and vector BY_DISTANCE.
+   Compare leaf kind, index or table, comparison kinds, covering/fetch and the
+   filter/sort/agg/on-empty/join/union/IN operators; drop MAP, predicate text,
+   `@cN` literals and quantifier names. Exit: no unknown node over the 1,211
+   strings; the 47 non-meta `explainContains` reduce to leaf assertions.
+4. [ ] **Classify and pin.** One verdict per row: SAME-PATH, SAME-CLASS,
+   DIFF-PATH(reason), GO-ERROR or NOT-COMPARABLE (DML, meta-tests). Exit:
+   per-verdict counts and a per-row digest pinned, so a plan flip fails a test.
+5. [ ] **Triage DIFF-PATH.** Each distinct reason becomes a DIVERGENCES.md entry
+   with reversal criteria or a planner bug item (first suspect: an ungrouped
+   StreamingAgg without DefaultOnEmpty, `select sum(col1) from T2 where col1 =
+   0`). Exit: no undeclared DIFF-PATH row; SAME-PATH only ratchets up.
+6. [ ] **Fidelity gaps.** `AggregateIndex.Explain` omits scan bounds (93 AISCAN
+   directives carry them) and filters render as `[N preds]` (450): render the
+   comparison kinds or compare those rows at SAME-CLASS. Exit: the decision
+   recorded as an RFC-201 amendment, the explaindiff golden regenerated if any
+   `Explain()` changes.
+
+Out of scope: `planHash` (no corpus use; Go's `PlanHash` is FNV-64a, Java's an
+int, and RFC-024 makes hash compatibility a non-goal).
+
+## Quality review 2026-10-24
+
+A six-area read-only review; line numbers are from master `12e2a8fe2`. ✔ marks a finding
+re-verified by reading the code; the rest are reviewer reports to verify against current Go
+and Java (or C++ 7.3.77) before changing anything. Owner scope: work every item except the
+owner-deferred public API restructuring and multi-page auto-commit SELECT, which stays
+tracked only.
+
+### Record layer
+
+- [x] **High ✔ Unique index reports false violations.** `checkUniqueness`
+  (`pkg/recordlayer/index_maintainer.go:623`) scans `fdb.PrefixRange(Pack(value))`; Java
+  scans `indexSubspace.range(valueKey)`, `[pack+00, pack+ff)` (`StandardIndexMaintainer.java:490`).
+  A value whose packing extends another's (bytes or strings with NUL, nested tuples:
+  `b"\x01"` vs `b"\x01\x00\x05"`) collides; WRITE_ONLY indexes persist violation entries
+  Java would not write. Fixed in #995 (RFC-270).
+- [x] **High ✔ RANK remove keeps orphaned scores.** The non-duplicate-counting remove
+  (`pkg/recordlayer/rank_index_maintainer.go:279`) checks for other holders of a score with
+  `fdb.PrefixRange(Pack(score))` instead of Java's tuple range, so a remaining score
+  `X ++ \x00…` keeps `X` in the ranked set. Fixed in #995 (RFC-270), with six more sites of the same range bug.
+- [x] **Medium ✔ SUM index cannot remove `math.MinInt64`.** `pkg/recordlayer/atomic_mutation.go:285`
+  returns an error; Java adds `-lval`, which wraps to MinInt64 and is correct mod 2^64. The
+  test that introduced the guard (`byte_limit_bug_test.go:89-111`) only asserts Go arithmetic. Fixed in #995 (RFC-270).
+- [x] **Medium:** mutual-indexing fragment edges are raw shard keys
+  (`pkg/recordlayer/indexing_mutual.go:105-118`), not Java's `getPrimaryKeyBoundaries` (first
+  record key at or after the boundary, split suffix dropped); a non-tuple boundary fails the
+  `Unpack` at `:368` or `:377`. Fixed in #1009 (RFC-279).
+- [x] **Medium:** the mutual build loop (`buildFragmentRange`, `pkg/recordlayer/indexing_mutual.go:359-425`)
+  never calls `transactionReachedLimits`; `buildRange` does (`online_indexer.go:2106`). Fixed in
+  #1009 (RFC-279).
+- [x] **Medium:** the mutual FULL phase builds one chunk and stays on the fragment
+  (`pkg/recordlayer/indexing_mutual.go:283-294`), then skips any partly built fragment
+  (`:344-350`), so every peer falls into ANY: partitioning is lost and 1020s follow. Fixed in
+  #1009 (RFC-279).
+- [x] **Medium:** no backoff between lessen-work retries (`buildRangeWithRetries`,
+  `pkg/recordlayer/online_indexer.go:1605-1631`; Java waits in `IndexingThrottle.java:394`).
+  Fixed in #1009 (RFC-279).
+- [x] **Medium:** no explicit-version save or `VersionstampSaveBehavior`
+  (`pkg/recordlayer/store.go:682`, "Phase 2"); not listed in DIVERGENCES.md or
+  docs/compatibility.md. Fixed in #1003 (RFC-275).
+- [x] **Low:** `TransactionSizeWarningError` comes back through the error result after the
+  write (`pkg/recordlayer/database.go:925`, via `CheckTransactionSize` at `store.go:644,1032`).
+  Fixed in #1003 (RFC-275).
+- [x] **Low:** keyspace accepts sibling directories with the same key type
+  (`pkg/recordlayer/keyspace/keyspace.go:166`; Java `KeySpaceDirectory.java:356-368`) and
+  `PathFromTuple` (`:338`) picks the first match; the resolver uses `context.Background()`
+  (`keyspace/resolver.go:111`). Fixed in #1003 (RFC-275).
+- [x] **Low:** `%v` drops error chains (`pkg/recordlayer/store_builder.go:1037`,
+  `store_state_cache.go:305`); `buildRange` adds a record read conflict
+  (`online_indexer.go:2085`) before the per-index record-type filter (`:2093`). Fixed in #1003
+  (RFC-275).
+- [x] **Low:** rank and text edges: `GetNth` returns a key where Java returns null; a
+  non-int64 rank bound becomes an unbounded scan (`extractRankValue`); TEXT silently skips
+  non-string columns. Fixed in #1003 (RFC-275).
+- [ ] **Low:** the generic merge cursors (`Union`, `UnorderedUnion`, `ProbableIntersection`,
+  `pkg/recordlayer/union_cursor.go`, `probable_intersection_cursor.go`) and the executor's
+  QueryResult-typed `mergeSortCursor`/`unorderedUnionCursor`
+  (`query/executor/executor_new_plans.go`) are two ports of the same Java cursors; the executor
+  should use the generic ones. Neither records Java's `QUERY_INTERSECTION*`/`QUERY_UNION*`
+  timer counts, and `TextScan` does not record `QUERY_TEXT_FILTER*`.
+
+### Go FDB client
+
+- [ ] **Default-snapshot boundary:** the facade's immutable `txDefaults` snapshot does
+  not include the native-owned conflict-reporting default. Concurrent construction or
+  Reset can observe different generations across those two layers; no atomic snapshot
+  across them is promised. Consolidation needs a separate design and gated construction/
+  Reset regression alongside a persistent default; it is not part of the retry-override fix.
+
+- [x] **High ✔ `handleConnError` closes the pooled connection, not the failed one**
+  (`pkg/fdbgo/client/topology.go:239`). Its 35 non-test call sites pass only an address (4
+  direct in `commitpath.go` and `pending_get.go`, 20 through `handleReadConnError`, 11 through
+  `handleDialError`), so a late handler can close a fresh connection `getOrDialConnFor` pooled
+  after the failure and fail its RPCs (a commit becomes 1021). Only the dial-panic path
+  compares identity (`pkg/fdbgo/client/database.go:582`). Fixed in #997 (RFC-271).
+- [x] **Medium:** the location cache keeps overlapping stale ranges. `insertSorted` replaces
+  only an equal `begin` (`pkg/fdbgo/client/locality.go:64-80`) where C++
+  `CoalescedKeyRangeMap::insert` overwrites the range, and `lookupLocked` (`:139`) checks
+  only `idx-1`. Fixed in #997 (RFC-271).
+- [x] **Medium:** decoding can allocate quadratically: vector element offsets may alias one
+  inner vector (`pkg/fdbgo/wire/reader.go:415`, reachable through `GetMappedKeyValuesReply`).
+  Add a per-decode element budget in the generator and a raw-bytes `UnmarshalFDB` fuzzer.
+  Fixed in #1004 (RFC-276): a `len/4` element budget per decode, `FuzzUnmarshalFDB`, and
+  decoders that fail malformed input.
+- [x] **Medium:** TLS sets `ServerName` to the dialed host (`upgradeTLS`, `pkg/fdbgo/transport/conn.go`),
+  a hostname check libfdb_c does not make; `FDB_TLS_VERIFY_PEERS` and `FDB_TLS_PASSWORD`
+  are never read. Fixed in #1006 (RFC-277): the `FDB_TLS_*` path verifies as libfdb_c does;
+  `WithTLSConfig` keeps Go's check, and SNI is still sent (DIVERGENCES.md).
+- [x] **Low:** malformed location replies are absorbed: a missing range covers the whole
+  keyspace (`parseGetKeyServerLocationsReply`, `pkg/fdbgo/client/locality.go:665`);
+  `ReadVectorCount` truncates an oversized count instead of failing
+  (`pkg/fdbgo/wire/reader.go:435-437`). Fixed in #997 (RFC-271); generated decoders that read a vector-count error as an absent vector are #1004's.
+- [x] **Low:** `handleConnError` closes the connection under `connMu`
+  (`pkg/fdbgo/client/topology.go:242`), and a TLS socket close in `failConnection`
+  (`pkg/fdbgo/transport/conn.go:1007`) can block for up to 5 s. Fixed in #1011 (RFC-280):
+  the close runs after the unlock.
+- [x] **Medium:** `GetEstimatedRangeSizeBytes` and `GetRangeSplitPoints` time out each
+  replica after 5 s and end with a non-retryable `all_alternatives_failed` (1006)
+  (`pkg/fdbgo/client/metrics.go:96,170,275,322`); C++ retries 1006 and wrong-shard without a
+  cap (`NativeAPI.actor.cpp:8079,8205`). Fixed in #1011 (RFC-280): no cap and no reply
+  timeout; requests are sent as `loadBalance` sends them.
+- [x] **Low:** a mapped-range read with a positive skip re-sends on reply timeout without the
+  10-re-send cap the other reads have (`pkg/fdbgo/client/mappedrange_selectors.go:154,265`).
+  Fixed in #1011 (RFC-280).
+- [x] **Low:** a `TransactCtx` deadline does not bound a dispatched commit
+  (`pkg/fdbgo/client/transaction.go:1882`); documented at `pkg/fdbgo/fdb/database.go:409`.
+  Decide whether to keep it. Kept in #1011 (RFC-280): libfdb_c's transaction timeout and
+  `Cancel` end the wait as Go's do; the `TransactCtx` doc names the `fdb_future_cancel`
+  difference.
+- [ ] **Connect-failure residuals** (after the refused-connect fix: a failed dial is now
+  request_maybe_delivered and storage reads retry it unbounded with loadBalance's backoff).
+  (a) Recovery timing: C++ resumes a waiting read when connectionKeeper's reconnect
+  succeeds (`okFuture`, LoadBalance.actor.h:618-635); Go polls with `lbRetry` (up to 5 s
+  apart), so after a long outage Go's next try can land past the MVCC window and see 1007
+  where libfdb_c would not. (b) Go marks an address failed on its first connect failure;
+  C++ only after `FAILURE_DETECTION_DELAY` (FlowTransport.actor.cpp:920-930). (c) GRV and
+  location queries do not skip failure-monitor-failed proxies (basicLoadBalance does,
+  LoadBalance.actor.h:779-793): latency only, never an error. (d) `OpenDatabase`'s eager
+  bootstrap returns an error wrapping the coded coordinator connect failure when its
+  context ends; `fdb_create_database` has no such error.
+
+### SQL
+
+- [ ] **Tracked only (owner excluded it from this work).** An auto-commit SELECT shares one
+  FDB transaction for the catalog read, planning and a first page that starts within
+  250 ms (`pkg/relational/core/embedded/statement_read.go`); later pages run their own
+  transactions (`cascades_generator.go`, `runInCapturedTx` with `r.tx == nil`), so one
+  result set spans read versions; Java holds one transaction per result set. Documented
+  in docs/compatibility.md and DIVERGENCES.md ("Auto-commit SELECT").
+- [x] **Medium:** inside an explicit transaction the statement context does not reach FDB
+  reads (the "KNOWN GAP" at `pkg/relational/core/embedded/connection.go:939`;
+  `pkg/recordlayer/database.go:795` sets `context.Background()`), and `TxOptions.ReadOnly`
+  is ignored. Fixed in #999 (RFC-272); `ReadOnly` is now refused with 0A000.
+- [x] **Medium:** panics are recovered only in Exec, Query and Rows.Next
+  (`pkg/relational/core/embedded/connection.go:805,841`, `cascades_generator.go`); not in
+  `embeddedTx.Commit`, BeginTx, SetSchema, PlanExplain, CollectStatistics, DirectAccess or
+  `paginatingRows.Close`. Fixed in #999 (RFC-272).
+- [x] **Medium:** the connector's `initialize` runs in a `sync.Once`
+  (`pkg/relational/sqldriver/driver.go:251`), so a transient open failure breaks that
+  `*sql.DB` for good; it runs under the first caller's context. Fixed in #999 (RFC-272).
+- [x] **Medium:** `ResetSession` (`pkg/relational/core/embedded/connection.go:1022`) keeps the
+  statement timeout, max result bytes, fail-on-scan-limit, plan and stats loggers and
+  slow-query threshold of the previous borrower. Fixed in #999 (RFC-272).
+- [x] **Low:** the nesting guard counts parentheses inside string literals
+  (`pkg/relational/core/parser/parser.go:45,70`) and has no test. Fixed in #999 (RFC-272).
+- [x] **Low:** the GROUP BY ambiguity fallback compares `GetText()` with `EqualFold`
+  (`pkg/relational/core/embedded/plan_visitor.go:1767`). Fixed in #999 (RFC-272); three older 42702 mismatches are a separate section above.
+- [x] **Low:** a stale `Tx` handle's Commit/Rollback clears a newer `activeTx`
+  (`pkg/relational/core/embedded/connection.go:432,439`). Fixed in #999 (RFC-272).
+- [x] **Low:** a self-returning `driver.Valuer` recurses without bound
+  (`pkg/relational/core/embedded/param_binding.go:204`). Fixed in #999 (RFC-272).
+- [x] **Low:** dead exported helpers (`functions.ApplyMathOp`, `IsTruthy`,
+  `LiteralMatchesPKKind`, `ToIntegerArg`); `pkg/relational/sqldriver/txctl_statements_probe_test.go:10-12`
+  contradicts the code. Fixed in #999 (RFC-272).
+### Planner
+
+- [x] **Medium:** `joinOptimizationProbesScenario` is excluded from the cross-engine gate
+  (`conformance/yamsql_cross_engine_conformance_test.go:400-406`) on a historical claim that
+  a 3-way or arithmetic join returns varying row counts (TODO-production.md P2.3). Its six
+  queries are two-table joins, one arithmetic, and the same queries pass in the fast-lane
+  `yamsql_test` (`pkg/relational/conformance/yamsql/testdata/join_optimization_probes.yaml`). Reproduce the claim or re-include
+  the scenario; its arithmetic pin includes a row the yaml says does not qualify. This item
+  supersedes the row-count bullet of TODO-production.md P2.3. Not reproduced; the wrong pin is fixed and the scenario is back in the gate (#1001, RFC-273).
+- [x] **Medium:** `pkg/recordlayer/query/plan/cascades/max_match_map.go:472,521` reads child
+  match results from a Go map and pruning keeps the first on `maxDepth` ties, so map order
+  can pick the winning match (Java uses insertion-ordered maps). Fixed in #1001 (RFC-273).
+- [x] **Medium:** no corpus-wide plan comparison with Java: the javacorpus runner skips every
+  `explain`/`explainContains`/`planHash` assertion
+  (`pkg/relational/conformance/javacorpus/testblock.go:436-437`); only a few hand-written
+  conformance probes and tests compare EXPLAIN output for chosen queries. Assessed in #1001 (RFC-273); the work is the "Java-corpus plan comparison" section above.
+- [x] **Medium:** the determinism fuzzer compares only `len(refA.Members())`
+  (`pkg/recordlayer/query/plan/cascades/planner_fuzz_test.go:104`); check plan, EXPLAIN and
+  rows across repeated plannings. Fixed in #1001 (RFC-273).
+- [x] **Medium:** the context is checked only between tasks, and the fan-out inside one rule
+  is not counted against `MaxNumMatchesPerRuleCall`
+  (`pkg/recordlayer/query/plan/cascades/physical_wrapper.go:250-265`, `planner.go:490-530`).
+  Fixed in #1002 (RFC-274): the context was already checked per binding; a cancelled call's
+  memoize no longer grows the memo, and 14 rules count Java's bindings (the rest are listed in
+  DIVERGENCES.md).
+- [x] **Low:** quantifier order comes from map iteration
+  (`pkg/recordlayer/query/plan/cascades/rule_decorrelate_values.go:320,398`). Fixed in #1001 (RFC-273).
+- [x] **Low:** `pkg/recordlayer/query/executor` imports `pkg/relational/api` (`executor.go`,
+  `executor_new_plans.go`, `resultset.go`, `scalar_subquery.go`). Fixed in #1002 (RFC-274); the
+  `recordlayerdeps` nogo analyzer keeps non-test record-layer code off `pkg/relational`.
+- [ ] **Low (planner gap):** in `FROM emp a, emp b, dept d WHERE a.did = d.did AND b.did = d.did`,
+  any extra predicate tying b to a (`a.eid < b.eid`, `a.salary - b.salary > d.did * 5`) makes Go
+  read the innermost leg whole: `inner=PredicatesFilter(IndexScan(IDX_EMP_DID, [*]), [2 preds])`
+  with `b.did = d.did` as a residual. Without it, or with a b–d predicate, Go probes `[=]`. Java
+  4.14.2.0 drives from `SCAN(DEPT)` and probes both emp legs with `IDX_EMP_DID [EQUALS q0.DID]`
+  in all four shapes. Pinned by `conformance/three_way_join_sarg_java_probe_test.go` and
+  `join_optimization_probes.yaml#6-#10`; find why the b leg loses the `[=]` match.
+
+### Tests and CI
+
+- [x] **High:** Bazel testcontainers sessions collide across PID namespaces, and Ryuk can
+  exit between a suite's last terminated container and later parallel tests. Fixed in #1018:
+  per-process Bazel session IDs and a process-lifetime reaper connection, pinned by
+  sibling-process isolation and real-Docker last-container lifetime regressions.
+- [x] **High ✔ SQL suites pass when the FDB container fails to start.**
+  `pkg/relational/sqltest/testkit/embedded_fdb.go:47-56` treats every `Run` error other than
+  `TerminationError` (timeout, pull, OOM) as "no Docker" and runs with an empty cluster file:
+  30 packages, about 1,168 skip sites. Fail unless Docker is genuinely absent. Fixed in #998.
+- [x] **High ✔ Stacked PRs get no pre-merge CI.** `.github/workflows/ci.yml`
+  `pull_request.branches: [master, main]` filters on the base branch, and AGENTS.md requires
+  `gh stack`. Fixed in #998.
+- [x] **Medium:** docs still describe the deleted nightlies: AGENTS.md:32, `justfile:524`,
+  `infra/README.md:64,74-76,228`, `docs/operations.md:82` (the differential now runs in
+  ci.yml's `libfdbc-differential`), `pkg/relational/sqldriver/stress/README.md:60-80`,
+  `pkg/recordlayer/metadata_user_identifier_lookup_test.go:242-244`,
+  `cmd/fuzzrun/main.go:3-8,81`, `.bazelrc:73` and `.claude/skills/query-grind/SKILL.md:80`.
+  Sweep `git grep -n -i nightl` for the rest. See the open nightly item in the follow-ups
+  above. Fixed in #998.
+- [x] **Medium:** five of the seven `.github/workflows/ci.yml` jobs have no `timeout-minutes`. Fixed in #998.
+- [x] **Medium:** the Java oracle's Maven dependencies are unpinned: `maven.install` has no
+  `lock_file` (`MODULE.bazel:130,275`). Fixed in #1008 (`maven_install.json`, `just maven-repin`).
+- [x] **Low:** tests in no lane: `pkg/relational/core/parser/yamsql_corpus_test.go` (`yamsql`
+  tag, run only by a `go test` recipe), `pkg/relational/sqldriver/stress/stress_10m_test.go`
+  (`realcluster`) and `tools/bazelscaleset` (no BUILD file, no workflow). The libfdbc tests
+  have their own item. Fixed in #1008: the corpus test joins `parser_test`, the 10M scales get a
+  real-cluster-only target checked by `tenmguard` in test-full, and the retired
+  `tools/bazelscaleset` is deleted (source at 86f05ccf8).
+- [x] **Low:** `.bazelrc:40-42` sets a no-op `--test_timeout` with a wrong comment; comments
+  still say `.bazelrc` sets `--local_test_jobs=4` (it sets 0, `.bazelrc:63`):
+  `.github/workflows/ci.yml:619`, `infra/main.tf:226`,
+  `pkg/testcontainers/foundationdb/BUILD.bazel:30`,
+  `pkg/relational/sqltest/agg/distinctelision/distinct_unique_elision_cost_probe_test.go:866`;
+  five hard-coded `go-version`s in ci.yml; unused `pkg/linters/gofmt`; the `golden-update`
+  and `smoke-yamsql` recipes call `go test`; non-standard skips in
+  `cmd/fdb-diff-oracle/fuzz_test.go` and `pkg/relational/core/ddl/fdb_ddl_test.go:100-196`. Partly done in #998 (`.bazelrc` comment, the `--local_test_jobs=4` claims, `pkg/linters/gofmt` removed; the hard-coded `go-version`s stay, since `TestWorkflowGoMatchesGoMod` blocks drift and setup-go ignores `toolchain`). The recipes and skips are fixed in #1008 (both recipes go through Bazel; the oracle skips are failures or deleted dead branches, the DDL skips use the no-Docker form).
+### Docs, API and hygiene
+
+- [x] **Medium:** the `pkg/fdbgo/fdb` package doc (`key.go:1-37`) names itself as the Apple
+  binding, gives the wrong `Error()` format and says there is no per-transaction context. Fixed in #996.
+- [x] **Medium:** "drop-in compatible" fails at the type level (`Transact` takes
+  `func(WritableTransaction)`, Apple's takes `func(Transaction)`) but is claimed in
+  `pkg/fdbgo/fdb/API_PARITY.md:3`, `pkg/fdbgo/fdb/database.go:395`, `pkg/fdbgo/doc.go:64`,
+  `pkg/fdbgo/README.md:73` and, as "API-compatible", `pkg/fdbgo/fdb/key.go:3`. Fixed in #996.
+- [x] **Medium:** `pkg/recordlayer` has no package doc; the `sqldriver` package example
+  (`pkg/relational/sqldriver/driver.go:10-19`) does not compile (a blank import, then
+  `sqldriver.RegisterDomainIfNotExists`). Fixed in #996.
+- [x] **Medium:** STATUS.md's 5 s per-RPC gap omits location lookups
+  (`pkg/fdbgo/client/locality.go:572`; C++ waits for the reply or a proxy change) and that a
+  read fails with 1007 after 10 timed-out re-sends (`readpath.go:39`). Dials are not a gap:
+  C++ also times out a connect (`CONNECTION_MONITOR_TIMEOUT`). Fixed in #996.
+- [x] **Medium:** DIVERGENCES.md:973 and SQL_CONFORMANCE.md:3 are classified against Java
+  4.12.11; SQL_CONFORMANCE's pass count omits the skipped files and plan assertions. Fixed in
+  #1007 (RFC-278).
+- [x] **Low:** stale: TODO.md:3 (PR #786 merged), `tools_cli.go:5-7` (no `cmd/frl/go.mod`),
+  `pkg/fdbgo/client/CRASH_BUG.md` (resolved; title says otherwise). Fixed in #996.
+- [x] **Low:** comments against CLAUDE.md's rules: shift tags
+  (`git grep -n -i -E 'this (same )?shift|follow-up shift|shift investigation' -- '*.go'`),
+  review rounds (`git grep -n -E 'round [0-9]+\)' -- '*.go'`: 3 of its 5 hits, e.g.
+  `pkg/fdbgo/client/readpath.go:1452`, `cascades/values/values.go:2112`; also "PR #446 round 3"
+  at `values.go:2051`) and "(codex)" tags in `.github/workflows/ci.yml` and `infra/main.tf:129`. Partly done in #996 and #998; left: the round-18 notes in `pkg/fdbgo/client/transaction_unit_test.go:806-817`, a shift tag at `cascades/benchmark_test.go:302`, "follow-up shift" at `query/plan/plans/insert.go:34-35` and "Codex-caught" at `pkg/relational/conformance/yamsql/testdata/uuid_column.yaml:36`.
+  The listed shift/round tags and scoped "codex" annotations were removed in #1012. Residual
+  documentation tags and `review-caught`/historical comments remain tracked below; this was not
+  a repository-wide cleanup. Kept: about 30 test files and functions named
+  for "RFC-141 R4 round-N" and similar review rounds (`git grep -n -E 'round-[0-9]+' --
+  '*_test.go'`); renaming them is churn with no behavior change.
+- [ ] **Deferred:** the public API surface: about 16K exported declarations outside
+  `internal/`, including test hooks such as `values.SetCensusHooks`. Deferred by the owner on
+  2026-10-25: another session's client optimizations may change the surface; do not start it.
+  The latest owner decision explicitly defers API reduction **beyond HN**: it is not a launch
+  blocker or a completed item, and it supersedes the v0.3.0/HN assignment in the launch plan.
+  Resume only with separate owner authorization; no API refactor is part of HN-readiness fixes.
+- [ ] **Owner decision:** test and tool dependencies in the library `go.mod` (docker,
+  testcontainers, ginkgo, staticcheck, cobra); nogo without `unused`; nine reused RFC numbers
+  and no RFC index.
+
+### HN release evidence
+
+- [x] Exercise the opt-in `ci.yml` full dispatch on its candidate branch and then the
+  exact merged master release cut. Require the full job to execute, nonempty target
+  and artifact populations, unchanged input manifests, and matching tested SHA;
+  report executed versus cached tests. Ordinary CI and local `just test` are not
+  substitutes for this gate (`RELEASE.md`). Done: candidate run 41871814905 (#1032)
+  and cut `aef9515` run 41882986728 (#1033), all eight jobs; the cut's full lane ran
+  239 targets (1 executed, 238 cached) on unchanged input manifests.
+- [x] Complete the release-cut checklist, dry-run the release workflow on that SHA,
+  and verify clean revision installation and examples. The public installer and
+  tagged `go install` need a root release containing `cmd/fdb`; obtain explicit
+  authorization before tagging, then verify the actual published artifacts. Done:
+  dry run 41884738373 on `aef9515`; v0.2.0 tagged with owner authorization and
+  published 2026-11-07 (run 42423442734); a cold proxy install, the installer,
+  checksums and attestations of the published release were verified.
+- [ ] First-use proxy resolution: twice, the first fresh-cache `go install` of a new,
+  untagged cut revision failed because `proxy.golang.org/fdb.dev/@v/<sha>.info`
+  returned `404 not found: fetch timed out`. Go printed the longer `fdb.dev/cmd/fdb`
+  404 instead. Both recovered minutes later; the tagged v0.2.0 first-use install
+  passed. The cause is unknown (#1033). Re-check a cold `go install` of the next tag
+  and capture the root `.info` response if it fails.
+- [x] Downloads from GitHub releases need a retry window that survives short GitHub
+  outages. On 2026-11-08, about a minute of HTTP 504s from the release-download
+  endpoint failed CI's `just ensure-buf` (bare `curl`, no retry) before any test ran.
+  The same outage made the installer exhaust `curl --retry 3` on `checksums.txt`
+  and refuse to install, which is correct. Census every `curl`/`wget` fetch in
+  `justfile`, workflows, scripts and `install.sh`, and give each a bounded retry.
+  Done in #1039 (`9c34c96c`): `ensure-buf` builds `buf` from the checksum-verified Go
+  module proxy, CI/provisioning/installer curl downloads have bounded retries and
+  per-attempt stall bounds, and the FoundationDB source archive integrity is pinned
+  and guarded in `MODULE.bazel`.
+- [x] The v0.2.0 GitHub release body must be regenerated from the merged notes after
+  #1037 merges (`RELEASE.md` step 6). Done 2026-11-08 from merged master `c1d88d29`:
+  the pre-edit diff against the live body showed only the updated CLI bullet, the
+  pinned Install line and a trailing newline, and the live release body now matches
+  `scripts/release-notes.sh v0.2.0`.
+- [x] Cold-lane container teardown flake: Docker's forced removal exceeded the 30s
+  teardown budget under a fully uncached `just test`
+  (`//tools/clientbench/integration:integration_test`). #1038 moves teardown sites to a
+  shared two-minute `TerminateTimeout`; close this entry when it merges. Done in
+  #1038 (`3ab4766b`): `TerminateTimeout`, `Teardown` and `TeardownT` give teardown
+  sites and failed-startup cleanup a fresh two-minute budget, verified by the full
+  lane (run 42479134946).
+
+### Follow-ups from the fix PRs' reviews
+
+- [ ] **Low:** #1034's final review (ACK at `839cc5d3f`) left low/nit findings in
+  `pkg/fdbgo/client` and the batch TEXT prefetch: `rywEntry.nodeConflict`'s doc says only
+  atomics set it, but `setWith` now sets it and skips the no-op mutates with
+  `atomicWith`'s predicate (one helper with the WriteMap.cpp rationale); the walk's
+  `materializeInto` and `appendIfFitsInto` copy `boundaryArena.bytes` and `keepLocked`'s
+  slot logic (one arena helper); no test pins that `epilogue`'s trims clear the dropped
+  rows of a pooled walk (`w.result[:cap]` all zero after release); the
+  `store_batch_text_prefetch.go` header still says prefetch only warms the RYW cache,
+  though maintenance now reuses its tokenizations; `selectorRangeRead.finish`'s return
+  value is unused; `readThrough` does not use the new `trackError`.
+
+- [x] **Low:** probe two seed-corpus Go extensions against live Java 4.14.2.0 and record each in
+  DIVERGENCES.md's Go-extension table or drop the note
+  (`pkg/relational/conformance/plandiff/seedcorpus/corpus.go`, the NOTE comments before the
+  LIMIT note): bare-paren `WHERE (boolean_expr)` (4.12.11 rejected it) and a `WITH RECURSIVE`
+  body with no self-reference (4.12.11 rejected it; 4.14.2.0's `QueryVisitor.java:212-214`
+  routes it to `visitNamedQuery`, so Java may now accept). `plandiff/README.md:65` also cites
+  CLAUDE.md "gotcha" entries that do not exist. Fixed in #1007: the parenthesized WHERE is a Go
+  extension; both engines refuse the recursive form.
+
+- [x] **Low:** when a statement's context ends inside an explicit transaction, the transaction
+  is cancelled from a background goroutine with no panic recovery; `sqlpage.go` still calls
+  `SetOptions` where the DST skill now recommends `SetOption` (#999's final review). Fixed in
+  #1013: the abort recovers and closes the connection; sqlpage and rowdiff
+  use `SetOption`.
+- [x] **Low:** STATUS.md's timeout paragraph: the facade's pipelined Get makes one more timed-out
+  send than the others. Fixed in #1011 (RFC-280), pinned by
+  `TestPipelinedGetReplyTimeoutSends`; the `readpath.go` timeout comment and both `Database`
+  superset rows were fixed in #1012 (#996's final review). #1011 also corrected the separate
+  estimate-path comparison: no reply timeout and retries until transaction timeout
+  (#996 F6, Nit/unverified).
+- [x] **Low:** the header of `pkg/relational/sqldriver/sql_integration_test.go` still describes a
+  blank import (#996's final review). Fixed in #1013.
+- [x] **Low:** enum-assignment and `range()` bound errors render their message twice since #1002;
+  the `range()` test checks only "in range"; the rule-match trip's error context is unasserted
+  (#1002's final review). Fixed in #1013, pinned end to end.
+- [ ] **Low:** `translateFDBError`'s deserialization, already-exists, invalid-UTF-8,
+  MetaDataException (42000), RecordCoreException and QueryInvalidExpression arms
+  (`pkg/relational/core/embedded/connection.go`) build the message from the typed error and pass
+  the chain holding it as the cause, so the message renders twice. `api.WrapStatedError` (#1013)
+  renders it once, but `Error()` then stops showing the chains' `fmt.Errorf` context; decide per
+  arm against Java's message (#1013 decided so for the schema-template build arm, whose name
+  context Java's message lacks) (#1013's review).
+- [ ] **Low:** a schema template's index refusal renders as `index "IX": XXXXX: …`: the DDL index
+  paths (`pkg/relational/core/embedded/ddl.go`, `index_onsource.go`) wrap the `api.Error` with
+  `fmt.Errorf("index %q: %w")`, a prefix Java's message lacks (`sqltest/core`
+  `TestFDB_DDLRefusalRendersMessageOnce`, index predicate case). Decide whether to drop it or record
+  it in DIVERGENCES.md (#1013's review).
+- [x] **Low (#1001):** `matchResults`' structural keying was pinned only through put/get.
+  `TestRecurseQueryResultValue_FoldedVariantSharesAnEntry` drives a real frame in which q.a over
+  q's expansion folds to a distinct copy of q.a. Fixed in #1016.
+- [x] **Low (#1001):** the fuzzer's plan comparison never faced a choice: no seed (nor 3,000
+  generated inputs) put two plans in one group. It now plans over an index on `T.g`, and
+  `TestPlannerDeterminismSeedsFaceAChoice` requires every seed to plan and rank alternatives.
+  Fixed in #1016.
+- [x] **Low (#1001):** the three-way probe goldens read the innermost `IDX_EMP_DID` leg whole;
+  compared with Java's EXPLAIN (it probes the leg) and tracked as the Planner "planner gap"
+  entry above. Fixed in #1016.
+- [x] **Nit (#1001):** TODO-production.md P2.3 no longer cites `TestRepeatedPlanningIsStable` as
+  row evidence; RFC-273 lists every field the memo rendering prints. Fixed in #1016.
+- [x] **Nit (#1001):** the Java-corpus operator counts say they overlap (sum 488). Fixed in #1016.
+- [x] **Nit (#1001):** the comments the review listed are two lines or fewer. Fixed in #1016.
+- [x] **Nit (#1001):** `recurseQueryResultValue`'s doc no longer says the expansion is unported.
+  Fixed in #1016.
+- [x] **Nit (#1001):** the `corpusOnce` comment names the tests that plan the corpus themselves.
+  Fixed in #1016.
+- [x] **Low (#1002):** `physical_wrapper.go` distinguishes DML's partition match cap from
+  per-member fan-out, which still needs the coarse task backstop. Fixed in #1016.
+- [x] **Low (#1002):** the `MaxNumMatchesPerRuleCall` doc says Java's count applies only where a
+  rule reports one. Fixed in #1016.
+- [x] **Low (#1002):** `TestJavaBindingsSortRollsUpStoredRecord` pins the sort roll-up with plans
+  that differ only in storedRecord. Fixed in #1016.
+- [x] **Low (#1002):** `TestMaxNumMatchesPerRuleCallTripsTheCountingRule` asserts which rule trips
+  one below its Java count (partition select, binary select, NLJ, ordering push, simple select,
+  delete, update) and that the statement plans at the count. Fixed in #1016.
+- [x] **Nit (#1002):** the comments the review listed are two lines or fewer. Fixed in #1016.
+
+### Unverified residuals from final ACK reviews
+
+These are follow-up suggestions, not confirmed bugs. Each retained finding was individually
+`unverified` in its final report; the Low/Nit ratings below are those reports' ratings. Check
+current code and the Java/C++ reference before changing behavior. Duplicate findings share
+one item; superseded findings and already-tracked compatibility boundaries are not reopened.
+
+- [ ] **Low, unverified (#996 F2/F5):** reconcile `rpc.go`'s account of libfdb_c slow-read
+  retries with the C++ hedging behavior; correct the incomplete catalog `Scope:` list in
+  `core/catalog/fdb_store_catalog.go` and the "Exercises every seam" claim in
+  `core/query/expr/fullstack_test.go` (both under `pkg/relational`).
+  [Final review](https://github.com/birdayz/fdb-go/pull/996#issuecomment-6384004563).
+- [ ] **Low, unverified (#997 F1/F3/F4):** pin connection identity at the eager-commit and
+  pipelined-Get send-failure report sites (`TestLateSendFailureEveryArm` skips eager arms).
+  Resolve test-only `locationCache.insertRanges` and its production-path attribution:
+  production uses `cacheReply`. Exercise a mixed locations reply with a server-less shard
+  through `queryLocations → cacheReply`, asserting its stale range is cleared and a later
+  lookup re-asks. [Final review](https://github.com/birdayz/fdb-go/pull/997#issuecomment-6384066384).
+- [ ] **Low, unverified (#998 F1–F5):** make dockerskip's "a different error checked" fixture
+  reach the error-identity check rather than fail adjacency first at `_ = err`. Investigate
+  successful Docker discovery followed by Info failure/default-host substitution being
+  classified as DockerUnavailable; avoid dialing `onlyNoDaemon` twice in
+  `classifyDockerProbe`. Remove the ordinary-run child-dispatch skip in
+  `TestRunWithoutDockerChild`; shorten the remaining `SkipWithoutDocker` and `triggerSpec`
+  comments. This is not the historical discovery-panic finding, which was fixed.
+  [Final review](https://github.com/birdayz/fdb-go/pull/998#issuecomment-6384101421).
+- [ ] **Nit, unverified (#998 F6):** qualify javacorpus's "container failure must be fatal"
+  comment with the permitted local no-Docker exception (same final review).
+- [ ] **Low, unverified (#999 F2/F3/F5/F7):** consolidate duplicated RFC-272 release notes;
+  include auto-commit DML in `detachCtx`/`bindContext` comments. Strengthen or qualify
+  `TestExplicitTx_StatementContextInterruptsCatalogRead`: the outer binding can abort it
+  even if `cachedLoadSchema` uses Background. Correct RFC-272's Connector.Connect recovery
+  claim: initialization recovers, not the remaining New/setter path.
+  [Final review thread](https://github.com/birdayz/fdb-go/pull/999#discussion_r4367458130).
+- [ ] **Nit, unverified (#999 F8/F9):** shorten the listed driver/parser/simgate comments
+  and replace local `apiCode`/row-count helpers with testkit helpers (same final review).
+- [ ] **Low, unverified (#1004 F1):** shorten the newly added explanatory decode-failure
+  comments. [Final review](https://github.com/birdayz/fdb-go/pull/1004#issuecomment-6388313035).
+- [ ] **Nit, unverified (#1004 F2/F3):** consolidate the four vtable-slot corruption helpers;
+  separate unrelated decode-error declarations and Reader fault tests from decode-budget
+  files (same final review).
+- [ ] **Low, unverified (#1006 F2/F3/F6):** assert invalid `FDB_TLS_*` configuration preserves
+  `TLSConfigError` and FDB code 2107 through open; assess typed nested wrong-password and
+  malformed-key causes without starting owner-deferred API restructuring. Consolidate the
+  duplicated CA/leaf and TLS-server test builders. The TLS differential and shared-PBES2
+  work already have open entries.
+  [Final review](https://github.com/birdayz/fdb-go/pull/1006#issuecomment-6389082902).
+- [ ] **Nit, unverified (#1006 F8):** shorten the specified TLS comments. F7's shifted
+  `conn.go` citation now uses `upgradeTLS` rather than a line number (same final review).
+- [ ] **Low, unverified (#1008 F6/F7, duplicate):** eliminate or guard hand-maintained
+  duplication of `stress_test` and `stress_10m_test` sources/dependencies in
+  `pkg/relational/sqldriver/stress/BUILD.bazel`; Gazelle manages only one.
+  [Final review](https://github.com/birdayz/fdb-go/pull/1008#issuecomment-6389999018).
+- [ ] **Low, unverified (#1012 F1/F3–F6):** finish residual `review-caught`/historical comment
+  cleanup and documentation `codex` tags (`OPTIONS.md` and the vector-benchmark docs).
+  Give the duplicated Database-superset list one authoritative location; check AliasMap's
+  "dependency-aware matching not ported" description against `quantifier_match.go`.
+  F12 duplicates the AliasMap finding; the scoped completion text above no longer claims
+  every documentation tag was removed.
+  [Final review](https://github.com/birdayz/fdb-go/pull/1012#issuecomment-6394433956).
+- [ ] **Nit, unverified (#1012 F9–F11, overlapping):** remove stray closing parentheses
+  from the range-timeout comments and their legacy transcript copy (same final review).
+- [ ] **Low, unverified (#1013 F1–F3):** investigate Cancel-panic recovery whose cancellation
+  retry waits behind the held in-flight read. Assert DDL render-once behavior on the error
+  the caller sees, not only the inner `api.Error`. Pin inherited option preservation for
+  all four borrow paths: sqlpage, rowdiff, pinWith and testkit.
+  [Final review](https://github.com/birdayz/fdb-go/pull/1013#issuecomment-6394564263).
+- [ ] **Low, unverified (#1014 F1/F2):** consolidate `pollCoordinatorInWindow`'s duplicate
+  recorder-polling loop; assess excluding every valid `OpenDatabaseCoordRequest` from the
+  recorder rather than only non-zero-known-ID long polls.
+  [Final review](https://github.com/birdayz/fdb-go/pull/1014#issuecomment-6394626965).
+- [ ] **Low, unverified (#1015 F1–F5):** isolate fixture Git commands from global config;
+  assert shutdown still executes under the lock after script death; correct README
+  shutdown/elapsed ordering; preserve/report flock failure distinctly; test missing
+  `lane.rc`/`shutdown.rc` fallbacks. This is not the superseded missing-failing-lane-test
+  finding. [Final review](https://github.com/birdayz/fdb-go/pull/1015#issuecomment-6398608811).
+- [ ] **Nit, unverified (#1015 F6–F8):** shorten the specified lane comments and simplify
+  the chained command-building wrappers (same final review).
+
+### Dependency alerts observed at closeout
+
+GitHub Dependabot snapshot on 2026-10-26: 8 open alerts (5 high, 3 moderate).
+These dependency-graph alerts are separate from the review suggestions above; they do not
+establish vulnerable-code reachability in the published Go library.
+
+- [ ] Triage/update `website/themes/hextra/package-lock.json` development dependencies:
+  [source-map-js #16](https://github.com/birdayz/fdb-go/security/dependabot/16),
+  [nanoid #14](https://github.com/birdayz/fdb-go/security/dependabot/14), and postcss
+  [#10](https://github.com/birdayz/fdb-go/security/dependabot/10) /
+  [#11](https://github.com/birdayz/fdb-go/security/dependabot/11). The snapshot lists fixes
+  in source-map-js 1.2.2, nanoid 3.3.12, and postcss 8.5.18 / 8.5.23 respectively.
+  Update the vendored theme/lockfile and run its documented build/tests; Go vulnerability
+  checks alone do not validate these website dependencies.
+- [ ] Triage `github.com/docker/docker` alerts in `go.mod`:
+  [#4](https://github.com/birdayz/fdb-go/security/dependabot/4),
+  [#3](https://github.com/birdayz/fdb-go/security/dependabot/3),
+  [#2](https://github.com/birdayz/fdb-go/security/dependabot/2), and
+  [#1](https://github.com/birdayz/fdb-go/security/dependabot/1). GitHub labels them runtime
+  dependencies and listed no patched module version. Determine affected library/test/tool
+  paths and remediation, rather than assuming either production exposure or a false positive.
+
+## CLI follow-ups
+
+- [ ] Replace `cmd/fdb/internal/cmd/sql.go`'s line-oriented `splitStatements` with
+  grammar-aware script boundaries shared by `-f` and redirected stdin, preserving
+  fail-fast statement numbering and already-completed statements. Live reproduction:
+  `SELECT order_id FROM orders WHERE order_id = 1; SELECT order_id FROM orders WHERE order_id = 2;`
+  on one line reaches the driver as a batch and fails with `0A000: multi-statement
+  batches must be DDL/DML only`; the same queries on separate lines work. The
+  current boundary is pinned in `TestIntegration_SQLWorkflow_StdinAndContext`'s
+  same-line-query subtest. Account for quoted semicolons, comments, and schema
+  template/function bodies rather than introducing another text splitter. The
+  website SQL reference documents the separate-line workaround.
+
+## OTel storage findings (RFC-283, 2026-10-27)
+
+These findings come from `layers/otel/` and the repository investigation in
+`layers/otel/research_notes/Transactional OTel trace storage/repository.md`, inspected
+against `a7349ff657e1448a4f6937535129cfdb5afafcda`. Source-confirmed gaps below still
+need their own minimal regression before a core behavior change; extension requests
+are not Java parity defects. No Go client correctness bug has been established by
+the trace experiment.
+
+- [x] **Record Layer metadata validation — general factory dispatch.**
+  Metadata construction now invokes registered factories' option validators, not
+  only VECTOR's, while keeping metadata loadable for unlinked plugins. External
+  rejecting-factory and defensive-constructor coverage is in
+  `pkg/recordlayer/custom_maintainer_seam_test.go`; evolution dispatch is preserved.
+- [x] **Planner safety — fail closed for opaque custom index formats.**
+  SQL candidacy uses the explicit built-in VALUE-compatible allowlist in
+  `IsValueScanCandidateIndexType`; custom/exotic layouts are not decoded as VALUE.
+  The production-tied exhaustive census, embedded plan tests and real-FDB SQL
+  opaque-index/VALUE-control execution regression pin that boundary. This does
+  not expose the OTel typed API through SQL or add plugin opt-in candidacy.
+- [ ] **Record Layer external WRITE_ONLY dispatch — embedding hazard.**
+  `StandardIndexMaintainer.UpdateWhileWriteOnly` calls its own `Update`; Go embedding
+  does not dynamically dispatch to an external maintainer's override. An external
+  plugin must currently override both. Add a callback/capability-based safe default
+  or explicit refusal and an external-package regression proving the intended update
+  executes during WRITE_ONLY builds. Preserve idempotent/by-records/by-index behavior;
+  the OTel experiment's explicit override is a workaround, not a core fix.
+- [ ] **Record Layer index clearing — secondary ownership contract.**
+  `FDBRecordStore.DeleteIndexEntries` in `store.go:1153` clears only the primary index
+  subspace, despite its all-entries description; custom maintainers can store their
+  actual entries in `IndexSecondarySubspace`. `DeleteAllRecords` does clear both.
+  Reproduce public index clearing/rebuild with an external secondary-backed maintainer,
+  then define a maintainer-owned complete-clear hook and safe prefix-delete preflight.
+  Cover rebuild, drop and interrupted cleanup; do not assume the primary-only helper
+  clears every structure or change Java-shared formats without checking the reference.
+- [ ] **Record Layer index-state accessor — dropped state/conflict errors.**
+  `index_state.go:GetIndexState` calls `ensureStoreStateLoaded` without an error
+  result, and `getIndexStateLocked` discards the error from `indexStateView.read`.
+  The latter can return READABLE together with a failed state-key conflict read.
+  The V2 real-FDB transactor regression reproduces the adapter returning attribute
+  query data with nil error when using this getter; full `just test` RED compiled
+  and failed both layouts. The adapter now uses supported `ReadIndexState`; full
+  `just test` GREEN passed 179 targets (2 executed / 177 cached). Regression receipt:
+  `layers/otel/bench/evidence/2026-10-27/state-error-regression.txt`.
+  `ReadIndexState` propagates initialization/liveness/conflict errors. Audit remaining transactional
+  callers and define a safe migration/deprecation contract for the non-error getter,
+  with cancellation, state-load and conflict-registration regressions. Do not infer
+  every core scan is affected: public scan paths already use error-aware checks.
+- [ ] **Record Layer typed custom scans — reusable guarded dispatch.**
+  `ScanIndex` enforces readability/instrumentation, while direct `GetIndexMaintainer`
+  capability calls leave those checks to callers. Provide a central typed scan path
+  carrying state, isolation, common budgets, continuations, metrics and decorator-safe
+  capability lookup. Exercise READABLE/WRITE_ONLY/DISABLED and unsupported scan kinds;
+  do not require every new index package to duplicate these guarantees.
+- [ ] **Record Layer external online-build concurrency coverage — extension request.**
+  `UpdateWhileWriteOnlyNonIdempotent` now exposes the callback helper and its
+  range/source-index coordination; `custom_maintainer_seam_test.go` covers external
+  dispatch. Broader by-records/by-index online insert/update/delete race coverage
+  remains separate extension work, not evidence the built-in indexes are incorrect.
+- [ ] **Record Layer scan-budget semantics — document soft limits and support strict callers.**
+  `index_cursor_limits.go:tryScanLimits` checks previously consumed bytes and allows an
+  initial record; source exhaustion can therefore follow a final record exceeding
+  `ScannedBytesLimit`. The OTel adapter needed an explicit accumulated-byte check.
+  Document this continuation/soft-limit contract and consider a reusable strict-budget
+  helper with sole-record, final-record-crossing and exact-budget controls. Preserve
+  the Java-compatible cursor behavior unless reference-backed evidence warrants a
+  change; soft limits themselves are not a newly proved Record Layer correctness bug.
+- [ ] **Go client / Record Layer performance investigation — not a client bug report.**
+  The first unpipelined synthetic load failed the one-second application transaction
+  guard at batch offset 36,160 after 79.358 s, reporting 253,402 affected bytes (below
+  its byte cap). No complete source audit or sustainable-throughput measurement exists
+  for that failed load. Receipt:
+  `layers/otel/bench/evidence/2026-10-27/serial-100k-ingest-failed.json.gz`.
+  A subsequent completed 100,000-span load at `12c293130` using
+  `SaveRecordsPipelined`, batch 32 and eight indexed attributes took 194.455 s
+  (approximately 514 spans/s); the ClickHouse dedicated-attribute arm took 4.442 s.
+  Both source audits passed. Raw ingest/audit receipts are archived under
+  `layers/otel/bench/evidence/2026-10-27/pipeline-100k/`. This is a local end-to-end
+  observation, not isolated client cost or sustainable ingest capacity; the earlier
+  failed serial load used a different batch size and is not a controlled baseline.
+  Compare serial, `SaveRecordsPipelined` and `SaveRecordBatch` on identical source
+  data and batch/transaction budgets, then profile client/RL request waves,
+  GRV/commit latency, retries, decoding and affected bytes. Both batch APIs preserve
+  old-record/index maintenance; do not assume keys absent or weaken transaction
+  checks to manufacture throughput. Record any independently reproduced client
+  defect separately with a regression; do not label serial-loader overhead, an
+  application deadline, or an unmeasured pipeline hypothesis a client bug.
+  Follow-up at `290d0d7b7`: a single ordered 50k sweep completed and audited
+  serial/one-worker at 444 spans/s, pipelined/one-worker at 595, and batch mode
+  at 538 / 1,122 / 1,854 spans/s with one / two / four workers. All five completed
+  arms passed 1,000 timed oracle checks in total. Eight workers failed with
+  `transaction_timed_out (1031)` during store opening after 10,624 acknowledged
+  rows; its loading run correctly rejected audit. Do not report that partial
+  load as throughput or treat increasing workers as a proven capacity fix.
+  Retain the full failed arm and order/growing-database caveats in
+  `layers/otel/bench/evidence/2026-10-27/ingest-ab-50k/README.md`.
+  A separate frozen 100k baseline used 30.319 client CPU-seconds over 199.863 s
+  wall time, while storage queues grew; client CPU saturation is not established.
+  Profiling receipts: `layers/otel/bench/evidence/2026-10-27/profile-100k/`.
+  Profile commit/manifest/store reads and storage persistence/backpressure before
+  attributing delay to client correctness. Validate steady-state behavior at 1M
+  and above rather than extrapolating the short four-worker burst to 100M.
+  The subsequent requested 1M load failed after 412.312 s with 222,400 acknowledged
+  spans and error 1031 during an existing-record read. No ready publication or
+  complete source census was achieved. Post-failure FDB RSS was 4,249,853,952 bytes
+  near its 4-GiB container cap (server ceiling 8 GiB), with a 995,906,485-byte storage
+  persistence queue and 216.787 s worst storage durability lag. The manifest phase
+  includes implicit GRV/start waiting and dominates the overlapping worker totals;
+  do not conclude that the manifest KV, Go client, or Record Layer is defective.
+  Full failure receipts: `layers/otel/bench/evidence/2026-10-27/pilot-1m-failed/`.
+  Validate a properly budgeted role-separated server profile and persistence behavior
+  before retrying a larger population; do not hide this failure or count it as 1M.
+  A separately labeled V2/four-process/16-GiB/Redwood pilot was externally stopped
+  after 143,264 acknowledged spans because the monitor treated a sole batch-priority
+  probe timeout as fatal aggregate unhealthiness. Data remained healthy/available,
+  roles/recovery intact; storage queue was about 1.026 GB and durability lag 23.9 s.
+  This is real backpressure and a monitor-terminated incomplete gate, not a proven
+  DB crash or successful capacity result. Preserve the stop and use any narrowly
+  source-backed bulk-warning policy only as a new arm; readiness/final drain and
+  all structural/resource/backlog gates remain strict. Receipts:
+  `layers/otel/bench/evidence/2026-10-27/pilot-1m-v2-monitor-aborted/`.
+  A new, separately declared bounded-bulk policy arm then failed with transaction
+  timeout 1031 after 114,720 acknowledged spans in 47.583 s; the monitor did not
+  terminate this load. Three subsequent strict drained samples passed, but the
+  ready/source-audit guard correctly rejected the still-loading namespace. This
+  is neither a completed 1M gate nor proof of a client defect. Bounded application
+  recovery now permits at most eight fresh source Runs on 1031 with cancellable
+  backoff and immutable payloads; all old/new maintenance and guards remain intact.
+  Initialization/source/ready reads now arm the 1500-ms timeout first; neither
+  initialization nor publication adopts or retries an ambiguous ownership state.
+  Real-FDB tests cover both ambiguous commit orders, already-committed replay,
+  Drop conflicts, cancellation, exhaustion, accounting and earliest timeout setup.
+  Fast lane: 179 targets pass (3 executed / 176 cached), not full-suite or completed
+  large-load proof. Terminal application errors are not retried. Failed receipts:
+  `layers/otel/bench/evidence/2026-10-27/pilot-1m-v2-bulk-timeout/`.
+  The subsequent frozen `c7d00bf` four-worker arm recovered transient timeouts but
+  was monitor-stopped after 284,544 acknowledged spans / 167.996 s: queue exceeded
+  512 MiB and durability lag exceeded 60 s for six samples (final 1.005 GB / 91.25 s).
+  The final loader 1031 followed that shutdown. No strict drain, source audit or
+  ready/query gate completed. Preserve this failed arm and diagnose durable-write
+  stalls / fetch amplification rather than weakening the backlog gates. Receipts:
+  `layers/otel/bench/evidence/2026-10-27/pilot-1m-v2-backlog-aborted/`.
+- [ ] **Go client / Record Layer query tails — unlocalized performance finding.**
+  In the same immutable 100,000-span campaign at `12c293130`, three rotated rounds
+  each measured 1,000 selective queries (200 per class) and 1,000 trace lookups per
+  backend. FDB rare-query p99 was 42.448 / 1.800 / 1.774 ms; the ClickHouse
+  dedicated-attribute arm was 9.233 / 9.787 / 7.847 ms. FDB trace-lookup p99 was
+  29.136 ms in the first round, then 0.745 / 0.875 ms. All 12,000 timed queries
+  passed the independent oracle, but median wins do not establish a clean p99 win.
+  Preserve the first-round spike, not just the later fast samples; all rounds are
+  archived under `layers/otel/bench/evidence/2026-10-27/pipeline-100k/`.
+  Reproduce with explicit warmup/cache policy and synchronized client/RL timers,
+  FDB background-work metrics, host load and cgroup CPU/I/O/throttling counters.
+  Localize the delay before claiming a Go client defect or production tail SLO.
+
+### OTel prototype regression gaps from final review
+
+The pinned review of `12c293130597477035e32b372b3c4101dbd9c2fb` returned NAK
+for these three confirmed test-coverage gaps, not runtime correctness defects.
+They concern the experimental adapter/campaign, not established Go client bugs.
+The regressions below now pass: `just test` passed 179 targets (3 executed,
+176 cached), including all six new real-FDB ready/interrupted-ingest Drop cases
+with no skips and the 13-case campaign suite. Source inputs were frozen around
+the run. This is fast-lane validation, not full-suite or 100M-scale evidence.
+The two Record Layer adapter regressions (F2, F3) covered the deleted custom
+store (`FDBBackend`) and were removed with it in phase 3B. The sql backend has
+no loading manifest; its `Drop` is SQL `DROP DATABASE` of the run's database.
+
+- [x] **Campaign shared-lock exclusion — contention regression (review F1).**
+  `layers/otel/bench/local_campaign_test.sh` uses an uncontested private lock, so
+  removing the runner's `flock` would not fail the tests. Add a bounded independent
+  holder/contender handshake proving the real campaign cannot reach its fake
+  executable while the configured lane lock is held, proceeds after release,
+  completes normally, and releases the lock itself.
+- [x] **Record Layer adapter partial-ingest publication — failure regression (review F2).**
+  `layers/otel/integration_test.go` does not fail public `FDBBackend.Ingest` after
+  a committed batch. Deterministically interrupt a real-FDB load after at least one
+  committed source batch; assert the persisted partial population, a `loading`
+  manifest, rejection from Query/Trace/Audit and a second Ingest, and successful
+  explicit owned cleanup. Manually installing a loading manifest is not a substitute
+  for exercising the public ingest failure boundary in `layers/otel/fdb.go`.
+- [x] **Record Layer adapter owned Drop — deletion/isolation regression (review F3).**
+  Successful `FDBBackend.Drop` is currently checked only for a nil cleanup error.
+  Add ready- and loading-run tests that inspect the raw owned root and prove it is
+  empty after Drop, while an independently populated sibling root remains unchanged.
+  A no-op successful Drop must fail these assertions; `DeleteAllRecords` coverage
+  does not establish the backend Drop contract.
+
+### Final 10M stored-record proof requested by owner
+
+The owner reduced the target to **10,000,000 stored spans**. Complete the 10M
+comparison and stop; no 100M load or further scale-up is in scope. Core Record
+Layer fixes are allowed for this proof; keep them in separable commits with
+regressions so they can be proposed upstream after the PoC.
+
+The evidence in this section measured the custom store (`FDBBackend` with its
+eight posting indexes and two native indexes; the sealed app's prefix
+`("otel_otelbench_v2", Run, "store")`), which the relational replacement deleted
+(`layers/otel/rfcs/relational-exporter-migration.md`). It is historical. A
+resumed 10M proof measures the OTEL_V1 Exporter and re-derives its write set,
+key prefixes and guards; nothing below transfers to it unmeasured.
+
+- [ ] Reach a measured 20,000 durably acknowledged spans/s with every OTEL_V1
+  SPANS index maintained synchronously (the custom store measured below
+  maintained eight custom postings and two native indexes). The completed 1M
+  arm achieved about 1,101/s at batch 32 / two workers. Its cumulative worker
+  timing averages about 58 ms per source batch, including about 32.6 ms in
+  successful commit; this is not a pure disk-latency measurement. Add explicit
+  client GRV/read/commit distributions without extra RPCs, profile before making
+  core changes, and check fresh plus already-committed replay transaction sizes
+  before increasing batches. Retain the 300KB estimate, 500KB actual-size,
+  save/time/retry guards and warning/backlog stops. More workers alone already
+  failed the earlier backlog gate. No 20k/s measurement or runtime change yet.
+  The owner authorized a reviewed read-only inode-flags probe and a guarded
+  fresh-volume 100k profiling run to replace the pinned image's missing `lsattr`
+  check. Implementation, test, formal-review and actual-inode gates remain;
+  no filesystem flag changes, retained-data changes or guard relaxation are
+  authorized. Keep the 4-CPU/16-GiB resource envelope and 10M final ceiling.
+  The first operations commit `428478f2` passed 182 fast targets (2 executed,
+  180 cached), 29 Python methods, 121 C predicate checks and 9,532 injected C
+  checks, but formal review returned NAK with 13 blockers. Close sticky shutdown
+  failure accounting, continuous lease identity/default-path compatibility,
+  preconfigure warning rejection, complete evidence inventory and the shell,
+  deadline, observation-adapter, monitor and foreground-lifecycle regression
+  gaps; correct scope documentation and remove dead warning-waiver plumbing.
+  No runtime is admitted until fixes pass validation and formal re-review.
+  Initial formal review of `e4107200` returned NAK for missing overlapping-worker
+  profiling assertions (F1) and retry/failure receipt assertions (F3, duplicate
+  F2). Both were fixed with deterministic regressions in `12b1c7da`; formal
+  re-review ACKed that commit. Its fast lane passed 179 targets (2 executed,
+  177 cached), with 1,323 OTel XML cases and zero failures/errors/skips. This is
+  instrumentation and guard validation, not a 20k/s result or full-suite proof.
+- [ ] Profile and accelerate real Record Layer ingestion before the final 10M load.
+  Compare serial/pipelined/batch APIs on matched data and transaction budgets,
+  then bounded independent transaction workers. Retain old/new index maintenance,
+  ownership checks, byte/time guards and complete-ready publication. Use measured
+  profiles to justify core changes rather than assuming the adapter is the cause.
+- [x] Add equivalent needle-query access paths on FDB and ClickHouse for
+  tenant-scoped trace ID, standalone span ID, indexed GenAI/custom attributes and
+  half-open time ranges. Pin returned fields, duplicate handling, ordering, limits,
+  scoped/type lookalikes and misses; trace-plus-span primary-key lookup is not a
+  substitute for standalone span-ID search. Account for every maintained index.
+  Implemented fixture/tool V2 with intrinsic Record Layer VALUE indexes, CH span/time
+  projections, exact GenAI response-ID predicates, and state/budget/boundary regressions.
+  Fast lane passed 179 targets (3 executed / 176 cached); real FDB and CH tests had
+  no skips. This implements access paths, not a 100M stored-population measurement.
+- [x] Make the independent query oracle bounded-memory at 100M, with small-corpus
+  equivalence tests. Keep preparation outside timed queries and retain every timed
+  answer check; do not replace source truth with a backend-derived expected result.
+  V2 pairs the guaranteed adjacent source spans per trace, retains K-heap state per
+  unique predicate, and prepares known trace/span needles without a source scan.
+  Brute-force equivalence, odd/tied populations, cancellation and bounded-retention
+  tests pass; a 100M configuration test is not evidence of 100M records stored.
+- [x] Add a native-TCP ClickHouse query arm with the official pinned Go driver,
+  matched SQL/settings/result shapes/ownership checks and persistent connections.
+  Keep the HTTP arm and disclose transport differences. Implemented in `edfd8dbe8`
+  with driver v2.43.0 and real 26.10.2.103 parity across all four layouts, including
+  server-budget rejection and typed-nil error rows. Fast lane: 179 passing targets,
+  2 executed / 177 cached; commit hook: 1 executed / 178 cached. Not full-suite proof.
+- [x] **Native decoded-byte cap regression (formal review F1).** Re-review of
+  `290d0d7b..edfd8dbe` confirmed the four prior V2 blockers fixed, but the native
+  32-MiB owner/result caps lack public boundary regressions. Exercise Query, Trace,
+  Span and Time at and just above the decoded-byte limit, including a valid padded
+  manifest and cumulative multirow results. Require typed budget errors, row closure,
+  no data operation after owner rejection, and correct current-query provenance;
+  row-count failures and server `max_bytes_to_read` failures are not substitutes.
+  Public exact-32-MiB and +1-byte regressions now pass across all four operations,
+  including valid padded owners, cumulative results, closure and query provenance.
+- [x] Reconcile native/HTTP sample query IDs with actual ClickHouse query-log work
+  outside the timed path. All 76,800 data-query IDs across 18 tuning and three
+  confirmation receipts reconcile, with no missing/duplicate/error terminals;
+  observed settings are four threads, 8-GiB query cap and cache disabled. Native
+  read-work fields remain explicitly unavailable and unmodified. Separate owner
+  requests are not covered by these data-request-only metrics; a zero integer-
+  millisecond server duration is resolution-limited, not zero elapsed time.
+- [ ] Harden generic CH HTTP exception classification or explicitly reject
+  unsupported response framing. HTTP 200 plus EOF is not universally a server
+  operation ACK: a profile enabling `framing_output_format` can frame a late
+  INSERT exception in a successful HTTP stream. The measured pinned profile uses
+  `None` and forces progress headers off; its completed source audits provide
+  independent data evidence. Keep the diagnostic definition at HTTP-response ACK
+  scope, not an unsupported general server-operation guarantee.
+- [ ] Extend CH tuning before claiming a broad production advantage. The first
+  1M guarded-query comparison is complete against the best-tested passing
+  8192/512/64 profiles, not a globally optimal CH configuration.
+  Earlier benchmark tables used default 8192-row MergeTree granularity. The
+  selected-projection regression's separate 64-row fixture was not benchmark
+  tuning. Fresh 1M 8192/512/64 layouts pass source audits. All 28,800 tuning
+  answers pass; a fixed geometric mean of twelve native medians selects 8192.
+  Its 48,000-answer native confirmation also passes, with four selected-class
+  median ratios about 9–14x above FDB's guarded path. All sixteen classes and
+  tails remain intact; source/oracle populations are matched, not deadlines,
+  engine-only costs, durability or acknowledgment batching. Broader SQL/layout/
+  projection tuning and the final 10M/concurrent-load gates remain open. An explicit fresh-table granularity option (1..8192,
+  default 8192) now pins CH manifests and records actual DDL/settings/marks; FDB
+  manifest bytes and source identity are unchanged. Real 512/64 Map/attribute
+  profiles pass both transports and the source oracle. Their implementation fast
+  lane passed 179 targets, 3 executed / 176 cached, not full-suite proof. Retain
+  ingest/storage/maintenance costs alongside the completed three-profile query
+  measurements, and preserve any further tuning as separately named campaigns.
+  The earlier ALTER attempt was rejected as READONLY_SETTING; do not claim it took
+  effect or call the current profile an optimal tuned baseline. The extreme
+  granularity-1 arm hit its initial 10-minute load deadline. A distinct 30-minute
+  load acknowledged 1M, but both its first and later quiescent full audits hit
+  the unchanged 2-second EXPLAIN deadline; separate five- and ten-minute drain
+  windows also failed their three-zero-sample gates. Retain all failures, shared
+  background-maintenance confounds and any explicit eligible-profile exclusions.
+- [x] Preserve CH source-INSERT HTTP-response progress on every error return,
+  without guessing an ambiguous physical tail or inferring ready publication.
+  Public regressions cover 48 source/ready/admission cases plus 26 initialization
+  cases, including rollback, retained loading ownership and non-adoption.
+  Fast lane passes 179 targets (2 executed / 177 cached), 1,279 OTel XML cases,
+  zero failures/errors/skips; CLI build passes. Not full-suite verification.
+- [x] Complete the first stored 1M V2 gate. Frozen `c7d00bf`, two batch workers,
+  1M spans / 908.535 s, strict final drain, full 1M-record/8M-posting/native-index
+  census and 1,600 oracle-checked answers passed. Three additional warm rounds
+  verified all 48,000 answers (1,000/class/round); tail samples remain intact.
+  This FDB-only gate is not the final 10M comparison, HA or a production SLO. Receipts:
+  `layers/otel/bench/evidence/2026-10-27/pilot-1m-v2-workers2-complete/` and
+  `layers/otel/bench/evidence/2026-10-27/query-1m-fdb-warm/`.
+- [ ] Gate capacity using measured physical volume/filesystem growth at 1M and 10M,
+  peak maintenance/log space, and a fixed free-space stop reserve. Logical KV
+  extrapolations and retained-volume deltas do not establish physical 10M fit or
+  safe coexistence with ClickHouse. Run variants sequentially; owned cleanup
+  requires approval, and protected data must not be deleted to force a pass.
+  Respect FDB's own operating-space reserve too: exact 7.3 source defaults
+  `MIN_AVAILABLE_SPACE=100 MB`, `MIN_AVAILABLE_SPACE_RATIO=0.05`; Ratekeeper uses
+  the greater value and reports free-minus-reserve as `least_operating_space`.
+  A host-only 64-GiB floor would not suffice on this roughly 1.9-TB filesystem;
+  preserve the database's reserve rather than lowering it to force a fit.
+  The completed 1M arm added 2.810 GB to the whole retained volume and owns
+  3.435 GB logical KV, but old failed roots, fetch/merge history, logs and
+  preallocation prevent treating that delta as isolated per-run physical bytes.
+  No 10M physical/maintenance gate has run. Diagnose the observed sync stalls
+  and conditional Btrfs direct-I/O fallback before a larger/faster profile;
+  do not infer a client bug or change filesystem flags on existing data.
+  A fresh-empty-volume NOCOW prototype is prepared but unapproved. Its 297 pure
+  policy cases and 27 C predicates pass; distinct listen ports, formal review,
+  real empty-Btrfs/minimum-capability validation, bootstrap and actual storage/
+  log inode gates remain open. No existing-volume flag change is authorized;
+  filesystem checksum/compression changes are not durability-equivalent evidence.
+- [ ] Load and verify the final 10M population and ClickHouse comparison, then
+  retain repeated needle-query latency/work receipts and bounded ingest-plus-
+  concurrent-query measurements. Report achieved throughput, p50/p95/p99/p99.9
+  populations, failures, CPU/RAM, physical storage and write amplification. Keep
+  cold/warm policy and durability boundaries explicit; the current local single-
+  node runs are not HA/SLO proof. Stop at 10M; the former 100M load is out of scope.
+- [ ] Complete the native horizontal campaign in
+  `layers/otel/bench/ops/horizontal/` under a newly approved runtime window/budget;
+  there is still **no accepted 1M-pair result or sustained 20k/scaling proof**.
+  Keep the two 2026-10-29 windows distinct:
+  - The earlier window ended with all eleven created servers deleted by
+    00:32:06Z, zero ingest, and exact baseline equality for all ten resource kinds
+    / seventeen pre-existing IDs. Provider SDK shape differences and invalid
+    empty `ssh_genkeytypes` blocked bootstrap; no health warning was waived.
+  - The fresh 09:29:51Z window actually validated all five hosts' pinned SSH,
+    cloud-init 26.1 user-data/vendor/network schemas and clean status, native
+    ext4/fsync/checksum preparation, quiet admission and one-host FDB startup.
+    Real two-producer independent-store 100k ingest then failed unchanged strict
+    health on `batch_priority_transaction_start_probe_timeout`; storage queue was
+    1,413,262,266 bytes and durability lag 33.702 s. One producer process exited
+    zero and the other was aborted, but the completed producer's `ingest.json`
+    was not retained, so do not claim a verified row count or paired result.
+    Failure collection now includes mode JSON under the existing size/symlink
+    guards. Larger two-/three-storage-host layouts remain unmeasured. A later
+    preregistered larger-first attempt hit the compound create CLI's 20-second
+    outer wait, before SSH or load; the provider action itself succeeded in seven
+    seconds (10:29:36–10:29:43Z), not an action timeout or three-host capacity
+    result. All fifteen
+    servers created across this fresh window were removed, and exact baseline
+    equality passed again for all ten resource kinds / seventeen IDs.
+  The horizontal emitter's nonempty `[ed25519]` preserves supplied host keys and
+  known_hosts; shared renderers/old profiles remain unchanged. Async network
+  attachment now records/polls the exact scoped network action and verifies the
+  owned server binding. The subsequent compound resource-create CLI operation
+  now has a bounded 120-second budget (HTTP requests remain capped at 30 seconds),
+  one invocation/no ambiguous resubmission, private raw attempt diagnostics and
+  unchanged active/hard deadlines; validate this correction in a future approved
+  campaign, not another launch in either closed window. Preregister prerequisite
+  order (`[1,2,3]` or `[3,2,1]`) before data; a failed gate remains fatal and all
+  three complete 100k pairs are required before the measured phase. Keep every
+  existing resource, health, disk, transaction and row-count guard, independent
+  teardown acknowledgement before creation, and absolute cleanup deadlines.
+  Retain failed/partial evidence and separate logical active-topology cost from
+  rounded held-server/IPv4 charges. Single R1 is non-HA; role/counter observations
+  alone cannot prove complete run-specific placement or that extra storage helped.
+- [ ] Establish sustained horizontal 20k ingestion and identify the native
+  CPU-versus-I/O limit; this work is **not completed**. In the fresh 2026-10-29
+  selected two-/three-storage-host study, both independent-store 100k pairs
+  passed strict health, full censuses and 1,600 oracle checks per producer:
+  three hosts acknowledged 200,000 rows at 7,217.2046666 common-wall rows/s;
+  two hosts acknowledged 200,000 rows at 6,318.8476102 rows/s. These are accepted
+  bounded 100k gates, not sustained 20k or 1M results. The subsequent three-host
+  1M-per-producer wave failed the unchanged strict batch-priority transaction
+  probe warning; the two-host 1M wave was not reached. The frozen failure status
+  reports node1 role input-minus-durable backlog 1,137,613,528 bytes and role
+  durability lag 39.0596 s; cluster QoS worst-queue/worst-lag fields are a separate
+  sampled family and must not be substituted for those per-role values.
+  All five owned servers were removed, exact original seventeen-ID / ten-kind
+  inventory equality passed, and source hashes stayed unchanged during the run.
+  Captured process CPU, device busy, memory, queue/lag and host pressure history
+  does not by itself identify CPU saturation, a single event-loop limit or a disk
+  bottleneck. Keep the CPU-versus-I/O cause unresolved until bounded measurements
+  discriminate it; queue growth alone is not causal proof. Future explicitly
+  preregistered two-host-first measurement still needs both fresh selected 100k
+  gates before measurement and must retain the failed three-host study, not waive
+  it. Native input/durable counter parsing and explicit server-only cost labels
+  apply to new captures; do not rewrite frozen rates, windows, populations or
+  verdicts. Any further paid run needs approval, independent teardown readiness,
+  original health/resource/transaction guards and a new fixed lifetime budget.
+  The subsequent fresh two-host-first rerun was blocked before SSH or load:
+  creation of the third owned server returned `dedicated core limit exceeded`
+  (`resource_limit_exceeded`). Only two owned servers were created; both were
+  deleted, and exact twenty-eight-ID / ten-kind baseline equality passed,
+  preserving the original seventeen IDs plus eleven external-campaign resources.
+  Source/profile checks stayed unchanged. This provider-quota rejection gives no
+  two-host large-wave outcome and no new throughput or 20k claim. No further
+  launch is authorized in that window; do not retry the quota, adopt external
+  machines, or mutate/delete other work to manufacture capacity or equality.
+- [x] Capture the separate 2026-10-29 one-FDB-host/one-producer native diagnostic;
+  this completes attribution data collection, **not** the throughput/scaling task.
+  The first attempt released no producer: missing cgroup `io.stat` stopped both
+  samplers. Diagnostic-only I/O accounting fixed that prerequisite without
+  changing legacy slices or weakening the missing-file failure guard. The retry's
+  100k gate passed strict health, all 1,100,002 census keys and 1,600 oracle cases.
+  Its 1M probe then failed strict client health; partial completed rows remain
+  unknown and there is **no accepted large-wave/ACK-rate result**. Both stage
+  profiles were CAPTURED: prerequisite node/client load populations 17/17 frames;
+  probe 43/42 frames over 42.010/41.000 seconds, with the producer PID in 39 frames.
+  No cgroup CPU throttling was observed. Native full-interval storage main CPU
+  was about 0.84 core; Redwood I/O slots reached 64 with growing waiters. Biased
+  Net2 stacks and host-device busy/await do not establish a CPU or disk cause;
+  mixed 30-second KAIO windows are not pure-load latency evidence.
+  The protected twenty-eight-ID global cleanup gate **remains failed** because
+  the external campaign's owner independently removed all eleven of its IDs.
+  Fresh ten-kind verification separately proved the original seventeen IDs
+  exactly present and every owned ID absent; missing external IDs were enumerated.
+  Supervisors were stopped only after that proof and PID/cmdline binding. No
+  receipt was rewritten to PASS, no external resource was recreated or adopted,
+  and original source/profile hashes stayed unchanged throughout runtime.
+  The storage-process-only `max_outstanding=128` follow-up also passed its fresh
+  100k gate and captured the failed 1M probe (45 FDB load frames /43.997 seconds).
+  Actual cmdline and native IOActive=128 verified the intervention; waiters still
+  grew and unchanged strict client health failed. The earlier 64 failure stays
+  failed; these sequential profiles establish neither causal CPU/I/O limits nor
+  accepted large-wave throughput. Both retries' global28 gates stayed failed on
+  independently removed external IDs; separate original17/owned-absence proofs
+  and manual 8,624-file/three-asset source verification were preserved. Post-run
+  source verification now runs in a nested finally even if cleanup fails/raises;
+  this evidence fix does not waive the failed inventory gate.
+- [ ] Runtime-verify the prepared diagnostic two-storage-process candidate in a
+  **new explicitly approved window**. Two colocated SS use 2GiB/1GiB cache each,
+  preserving aggregate4GiB/2GiB, CPU4/memory16GiB and unchanged controls/guards.
+  Only (storage processes, max_outstanding) profiles (1,64), (1,128), (2,64) are
+  permitted; retain every SS ID/counter and all three bounded native trace tails.
+  Both SS must be observed active or the capture is not-exercised/INCONCLUSIVE.
+  The candidate is offline-tested, **runtime UNVERIFIED**. The 16:10:38Z window
+  explicitly forgoes this launch: admission reserves/deadlines were not reset or
+  relaxed to squeeze in another paid attempt.
+  The renewed approval now has an offline-tested bounded two-host Session
+  candidate: provision once, preregister capacity16g (two SS4GiB/2GiB cache each)
+  then baseline (two SS2GiB/1GiB each), both MAX_OUTSTANDING64. Memory/cache is
+  the only case variable; the independent storage queue/health limits stay fixed.
+  Every case has a fresh arm/datadir and its own full100k gate/1M120s probe;
+  exact owned-unit/scope quiescence and quiet admission separate cases without
+  deleting VMs. Only canonical receipt-bound batch-probe/storage-queue failures
+  with freshly passing fatal guards may end an arm rather than the Session.
+  Unknown/host/source/resource/identity/deadline faults still force cleanup.
+  Shared source/ownership lease, host history,16MiB traces/1GiB receipts and
+  original2h clocks never reset. Every Session requires sealed inputs, an
+  independent watchdog and explicit launch approval; its two cases add at most
+  2.2M rows (4.8M prior upper gives7M cumulative, not100M).
+  The first bounded Session did reuse the same two VMs across both cases; both
+  100k gates passed all1,100,002 census keys and1600 oracle checks. Capacity16g's
+  probe remained ARM_FAILURE on strict health; baseline's probe lost storage4510
+  PID12998 and correctly ended SESSION_FATAL. Cause remains **UNKNOWN**: cgroup
+  OOM counters were zero and the old collector required that dead PID to remain
+  readable, so final native traces were not retained. All owned resources were
+  deleted with exact17-ID/ten-kind inventory equality and unchanged source seals.
+  The forensic-only correction now seals live-open filenames/inodes/prefixes and
+  unit invocation identity before release, retains bounded owned postmortem
+  tails/unit exit/journal facts as INCONCLUSIVE, records actual SC_PAGESIZE, and
+  never restores health or reuse permission. It remains runtime-unverified;
+  archived failures/cause UNKNOWN are not rewritten. The original setup cutoff
+  closed before forensic readiness, so the draft single balanced repro was
+  forgone without creating resources or resetting/extending that lease.
+- [ ] Execute the separately authorized bounded independent-namespace weak-scaling
+  candidate only after its OPS inputs, new immutable2h lease and independent
+  watchdog are sealed. `otel_native_scaling_v1` prepares six ccx43 HEL1 role hosts
+  once and reuses them for ordered active (storage hosts,producers)1/1,2/2,3/3
+  stages with fresh clusters and independent namespaces. Each producer must pass
+  its own100k exact census/1600-oracle gate before375k measured rows; authorized
+  2.85M plus prior7M remains9.85M, with no failed-row reclamation. The scaling-only
+  profile is3SS/host each3GiB/cache1GiB/MAX64, node1 controls5x1GiB, fixed4CPU/
+  16GiB/swap0 and GOMAX4. It is not proven memory-safe or pure worker isolation.
+  The primary metric is common release through strict stable durable drain;
+  last-complete-ACK rate is separate. All3 eligible measured stages and a passing1x
+  baseline are required for drained efficiency>=0.90 near-linearity. Missing/idle/
+  reset SS counters stay INCONCLUSIVE. No shared-corpus/statistical/sustained120s
+  20k claim follows from this bounded one-sample weak-scaling experiment. Canonical
+  strict queue failures alone may end a stage after fresh fatal guards; unknown
+  native/host/source/identity/deadline faults remain SESSION_FATAL. Exact owned
+  quiescence plus fresh quiet admission separates stages, all6 VMs remain billed,
+  and final cleanup/source checks always run. Shared16MiB evidence reserves all6
+  waves fairly (startup seals included, unused carryforward);1GiB receipts and
+  old standalone/horizontal/diagnostic/session defaults remain unchanged. The
+  candidate remains **runtime UNVERIFIED**; no new lease/resources are implied by
+  offline implementation or tests, and earlier failures remain UNKNOWN/failed.
+  The first six-host attempt was interrupted during preparation before any stage
+  or producer-release receipt existed; the controller and independent watchdog
+  processes were no longer present and their former task owner was unavailable.
+  Positive local evidence now establishes a common-mode runtime service restart:
+  `bruh-web.service` stopped07:09:51.371–07:09:52.304Z and started07:09:52.320Z,
+  3.297s after client3 readiness. Its `KillMode=control-group` covered both runtime
+  jobs; the watchdog was not genuinely independent. Restart initiator/reason and
+  individual child signals remain UNKNOWN, not a native throughput failure.
+  Evidence is `runtime-restart-evidence.json` in the campaign root. The older
+  storage4510/PID12998 cause remains UNKNOWN. Cleanup supervision was restored
+  under the original unchanged lease solely to delete the six owned hosts and
+  auxiliaries, with fresh exact17-ID/ten-kind inventory equality and unchanged
+  source seals. No scaling measurements completed, and the owner declined a
+  restart. Evidence: `/var/tmp/fdb-native-scaling.NjSZRv/`.
+- [ ] Obtain explicit operator authorization for a harmless local managed-watch
+  isolation probe before any future scaling launch. The scaling-only corrective
+  candidate adds offline private helper-bundle/USER-service preparation and live
+  pre-mutation admission, not automatic installation/start or runtime detachment.
+  The watch must be outside `bruh-web.service` at the USER-manager root slice;
+  separate PGIDs in the same runtime cgroup do not pass. Exact live PID/start/
+  boot/argv, manager/unit/dependency identity, kernel-argv bundle seal, fresh
+  registered-controller ACK, source/assets and original deadline are checked.
+  Its own ExecCondition may set only its generated unit's remaining RuntimeMax;
+  manual restart never renews lifetime. Controller loss/runtime invocation change
+  or unknown supervision triggers existing exact owned cleanup without an EXIT
+  marker. Active admission failure cannot block deletion; source/runtime faults
+  still permit the sealed cleanup bundle. Tests use fake manager/procfs/clocks/
+  providers only. Actual OS survival remains **UNVERIFIED**, no unit activation or
+  new lease/resources is implied, and legacy native argv/application/rows remain
+  unchanged. Preserve old native PID12998 cause UNKNOWN separately from the now
+  confirmed runtime-restart failure domain.
+- [ ] Run the user's explicitly approved plain foreground scaling perf test with
+  `foreground_only:true` and no `managed_watch`; no external service/bundle or
+  managed admission/registration is required. The mode is explicit and typed,
+  reports `execution_mode:bounded_foreground`, and retains bounded prepare,
+  internal auxiliary guard, all existing source/health/ownership/disk/transaction
+  checks, immutable2h lease, final cleanup and six-host reuse across1/2/3 tiers.
+  There is no independent runtime-survival claim. The prior interrupted attempt
+  positively reached no ingest: no prepared completion, stage, active arm or
+  producer grant/release existed. Its unused2.85M allocation plus prior loaded
+  upper7M remains9.85M; this is not unknown failed-row reclamation. No agent cloud
+  actions or further infrastructure features are authorized by this code change.
+  The completed foreground run passed pairs1 (ACK6278.13374 rows/s, durable-drained
+  3755.93940 rows/s, drain40.11s) and both pairs2 gates, then failed pairs2 measured:
+  native transaction/log4504/PID15874 RSS-monitor `OutOfMemory`, exit20 under1GiB.
+  This is not a storage/kernel OOM; older storage4510/PID12998 remains UNKNOWN.
+  All six hosts/auxiliaries were deleted, fresh exact17-ID/ten-kind inventory
+  equality passed, and source seals stayed unchanged. Pairs3 was never issued.
+- [ ] Run only the separately approved bounded log-memory follow-up if the original
+  lease/cutoffs still fit after committed hook readiness. Optional scaling-only
+  `log_memory_gib:2` requires integer2, foreground true/no managed watch, exact
+  stages2/2 then1/1 and prior issued upper8425000. Only node1 transaction/log4504
+  changes1GiB→2GiB; cache64MiB, all other argv/knobs and16GiB/4CPU/swap0 slice stay
+  unchanged (node1 configured total15GiB). Six fresh hosts are prepared once and
+  reused;2x runs first, followed by a fresh same2GiB-log1x baseline. Per producer
+  100k gate+375k measured/120s yields1.425M/four waves, total9.85M. Failed pairs2
+  rows remain charged in full; only positively unissued pairs3 rows are reused.
+  Shared16MiB evidence/1GiB receipts and SESSION_FATAL OOM behavior remain intact.
+  Original09:49:26–11:49:26Z lease,10:56:06Z setup and11:04:26Z measured-entry
+  cutoffs are unchanged. No3x, stale1GiB baseline or sustained20k claim follows.
+  The foreground follow-up passed the fresh200k gate, then its750k measured wave
+  failed the exact batch-probe/storage-queue health guard. LogPID5493 stayed live
+  across139 gate/measured frames and reached1,452,507,136B RSS;14/55 load frames
+  exceeded the old1GiB cap without a native exit. This verifies the targeted
+  memory correction over the observed window, not general memory safety or20k.
+  Fresh1x never started a cluster/workload because the original setup reserve
+  expired; comparison stays INCONCLUSIVE. All six hosts/auxiliaries were deleted,
+  fresh exact17-ID/ten-kind equality passed, and source seals stayed unchanged.
+  Evidence: `/var/tmp/fdb-perf-scaling.v4O6xf/log2g/native-analysis.json`.
+- [ ] Test exact measured-range conditioning before adding more ingest workers or
+  hosts. OTEL_V1 benchmark stores live at `/OTELBENCH/R_<RUN>` in the relational
+  keyspace, so a rerun re-derives the prefix layout; the append experiment
+  below relied on the deleted store's ready/loading manifests and must be
+  restated against the relational catalog first. The measured, sealed app (the
+  custom store) used physical prefix `("otel_otelbench_v2", Run, "store")`;
+  gate Runs9310/9311 and measured Runs9313/9314 are disjoint. Early observed native
+  input concentrated85.1153% on one of six SS, with a1.499GB raw MVCC queue; these
+  counters include setup/DD activity, so cold-prefix causality is a hypothesis,
+  not proven shard-placement evidence. Count is part of corpus/owner identity;
+  simply reusing a100k Run with375k Count would violate existing guards. A future
+  FDB-only append experiment must transactionally authenticate ready100k, claim
+  loading475k with unchanged layout/corpus parameters, write only ordinals
+  [100000,475000), preserve all ordinary owner/old-image/conflict/transaction
+  checks, and publish ready475k only after375k acknowledged additions. Partial
+  failure must remain fail-closed, not implicit resume. Final census/query truth
+  must cover all475k; measured rates must count only375k additions. Generation is
+  prefix-stable, but this is a changed benchmark boundary requiring a fresh
+  same-protocol baseline. No application/storage change is implemented or implied.
+
+### OTel log payload storage migration
+
+- [x] **Migrate log payloads to standard Record Layer records without silently
+  changing existing `logs_v1` bytes.** Delivered by the relational
+  replacement (`layers/otel/rfcs/relational-exporter-migration.md`, phase 2B
+  and 3B): logs are OTEL_V1 `LOGS` records written by `logs_rel.go` through
+  `SaveRecordBatch` with the Record Layer serializer and split records, and the
+  `logs_v1` format, its codec and readers are deleted. There was no migration:
+  the OTel layer is pre-release and its stores were recreated (owner
+  decision). Regressions: `TestRelLogsRealFDB` (export, replace, large/split
+  rows, admission, corruption) and `TestRelLogOTLPFidelityEncoding`.
+  The original item, against the deleted store, follows.
+  `layers/otel/logs.go` owned a separate eight-field tuple header `(version, codec, raw_len, stored_len,
+  chunks, effective, source, inline)`, raw/Brotli codec policy, 90,000-byte
+  inline/chunk rows and reassembly/corruption validation. Spans and messages
+  already use Record Layer serialization and splitting; the log format is not
+  wire-identical to those facilities, and no necessary independent-format
+  constraint has been established. Define a log envelope Record Layer type and
+  reuse `TransformedRecordSerializer` (including opt-in bounded Brotli) and
+  `SplitHelper`, while retaining log-specific time/equality/trace indexes,
+  ownership, admission budgets, fidelity and replacement semantics in OTel.
+  Before cutover, define an explicit versioned ownership/layout boundary and
+  migration or recreation procedure for existing `logs_v1` stores; do not
+  reinterpret their bytes as Record Layer records. Add end-to-end coverage for
+  raw/Brotli and inline/split payloads, bounded corrupt-input rejection,
+  old-format read/migration or explicit refusal, replacement/deletion cleanup,
+  index consistency and failed/partial migration. This entry defers the storage
+  refactor; the current persisted format and readers remain unchanged.
+
+### OTel GenAI messages on Record Layer TEXT indexes (2026-11-02)
+
+`layers/otel/messages_rel.go` stores GenAI messages as OTEL_V1 `MESSAGES` rows
+with the `MESSAGES_TEXT` full-text index and `MESSAGE_TRACES` markers in each
+tenant's store (README "GenAI message storage"); the custom store's `Message`
+records were deleted. Open work follows; the client and Record Layer items
+apply to the new store's TEXT maintenance as well.
+Historical standalone performance numbers have been removed here because the
+paired source trees, compiler and sample populations were not identified with
+these claims; the implementation notes below are not controlled comparisons.
+
+- [ ] **Re-measure client cost in message ingest.** Investigate RYW selector
+  resolution and per-transaction lock hold time during BunchedMap reads for
+  TEXT index maintenance. Capture both measured trees, compiler, workload and
+  repeat populations before attributing a throughput bound or improvement.
+  Client side done (unmeasured on the bench box): a Set after any pinned read
+  cloned the whole write map (O(writes) per Set), and every walk step re-derived
+  its segment with ~10 binary searches. The write map, its cleared/unreadable
+  lists, the WriteMap nodes and the snapshot cache now sit on persistent
+  sequences (`ryw_pseq.go`, O(1) snapshot, O(log n) path copy), the walk
+  iterator is RYWIterator's two-cursor composition (O(1) amortized steps), and
+  conflict filtering on a pinned version runs outside the lock.
+  `BenchmarkRYWConcurrentReads` (//pkg/fdbgo/client:range_selector_unit_test)
+  exercises concurrent reads over a populated write map; re-measure it with
+  paired provenance before making a performance comparison.
+  Second round (profile at 7cf0eda3c): the walk runs outside `rywCache.mu` on
+  the pinned write-map version and a persistent snapshot of the cache; the lock
+  covers only pinning, snapshotting and accepting a storage reply. Walks and
+  their iterators are pooled, boundaries are lazy (no `keyAfter` copies), the
+  facade's selector copies are kept (`StartGetRangeOwnedSelectors`), a
+  cancellable caller context is merged with the transaction's only when
+  something waits (a cached RYW read derives none), point writes share one
+  arena copy of `key\x00` between mutation and conflict range, the conflict
+  arena grows in chunks without copying, and Commit coalesces the write
+  conflicts once (the self-conflict check and range reuse that vector).
+  Re-measure BunchedMap-shaped puts, cached selector reads and cached Gets
+  together with their allocation populations.
+  Third round (profile at cd1ee1615): conflicts live where C++ keeps them
+  (`conflict_map.go`). With RYW, write conflicts are only the WriteMap nodes'
+  flags, updated under `conflictMu` with the op-log, and read conflicts a
+  coalescing map in the conflict arena (an already covered range costs two
+  searches); Commit freezes both with the mutations and builds mutations and
+  write conflicts in one pass over the frozen write map
+  (writeRangeToNativeTransaction), a write-only transaction's from the node
+  log without building the nodes. updateConflictMap walks the write map with
+  two cursors instead of sorting copied boundaries. Persistent-sequence nodes
+  take C++ PTree's spare version slot and come from per-sequence chunks; walk
+  skips are finger searches from the cursor; AppendIfFits extends the value's
+  owned spare capacity. Deliberate changes, toward C++: a versionstamped
+  transaction ships the write map's coalesced write conflicts (keeping the
+  conflicts of the writes Go keeps in an SVK span, RFC-098); disabling RYW
+  after a conflict-only write fails with 2000, and read conflicts recorded
+  before disabling are not shipped. Re-measure `BenchmarkRYWConflictCalls`
+  and `BenchmarkRYWBunchedMapPuts`, distinguishing CPU, allocation and wall-time
+  effects rather than inferring one from another.
+  Open: re-measure otelbench, profiling versioned-node searches, transaction
+  locks and position-indexed sequence copying (C++ PTree keeps no subtree
+  sizes). Every pipelined read that is not answered locally still runs on its
+  own goroutine (`startPendingRange`);
+  the op-log copied each Set's key and value besides the write map (fixed
+  by the fourth round, "RYW CPU in TEXT-maintenance-shaped transactions" in
+  section 0).
+- [ ] **TEXT index maintenance CPU in message transactions.** Record Layer
+  side done: a BunchedMap put or remove keeps each stored key's packed bytes, as Java's
+  `Tuple.fromBytes` does, validating instead of unpacking them, compares by
+  those bytes (`Tuple.compareTo`) with a binary search over the sorted bunch,
+  and writes canonical position lists back as stored; tuples elsewhere compare
+  element-wise (`compareTuples`, `TupleUtil.compareItems`); the default
+  tokenizer streams word segments. Re-measure `BenchmarkTextBunchedMapPut/append`
+  with paired provenance. Per-put conflict ranges equal Java's and are pinned by "BunchedMap operation conformance";
+  the conflict-range share of the profile is client cost (pkg/fdbgo/client).
+  Fixed on the way: the APPEND_IF_FITS path did not instrument its write, a
+  remove passed the wrong old value to its instrumentation, and a stored key
+  with a non-canonical encoding was rewritten canonically (Java keeps it).
+  Pipelined reads: a put's or remove's snapshot read is now the RangeResult
+  future GetRange returns, completed in order on the maintainer's goroutine,
+  as Java's forEachAsync completes BunchedMap's futures; it reads with
+  WANT_ALL as Java does (it read with ITERATOR, whose 4 KB first batch split
+  reads of large bunches). Re-measure `BenchmarkTextBunchedMapPipelinedPuts/deep`.
+  Open: the pure-Go client still starts one goroutine per read it cannot answer locally (`startPendingRange`, client
+  scope); `DeserializeEntries` (scans, Get) still unpacks every key.
+- [ ] **TEXT maintenance round trips across a batch's records.** Done:
+  `SaveRecordBatch(WithOptions)` and `PrefetchRecordBatch` read the batch's
+  TEXT bunches (one snapshot read per token map) and updated records'
+  tokenizer versions together into the transaction's read-your-writes cache
+  before the records are applied (`store_batch_text_prefetch.go`); the commit
+  is the sequential saves' commit, pinned by "Batch TEXT bunch prefetch".
+  Open: `PrefetchRecordBatch` cannot warm an update's removals (old
+  images are not yet read); a map whose batch keys lie far apart past
+  2*keys+2 rows costs a second prefetch round trip.
+- [ ] **Record Layer KeySpace over the directory layer** (raised by layers/otel's
+  `directory_v1` layout, which the relational replacement deleted; OTel stores
+  now live under the relational keyspace, and the open Java-parity gaps below
+  remain Record Layer work). Done: `keyspace.Path.ToSubspace` is Java's
+  `new Subspace(toTuple())` (it packed the tuple as one nested element), and
+  `recordlayer.DirectoryLayerDirectory` / `KeySpaceResolver` port Java's
+  DirectoryLayerDirectory over its default scope `ExtendedDirectoryLayer.global`
+  (`ExtendedDirectoryLayerGlobal`), pinned by "KeySpace path and directory
+  layer conformance". Open, against Java's KeySpace: `KeySpace.PathFromTuple`
+  does not reverse-resolve a DirectoryLayerDirectory's longs (Java's
+  `pathFromKey`), a DirectoryLayerDirectory refuses a long value (Java looks
+  it up), and `runChild` (resolveWithMetadata's child transaction) takes a
+  fresh read version where Java's runAsyncBorrowingReadVersion borrows the
+  parent's.
+- [x] **Measure phrase-query fanout cost.** Profile the TEXT phrase scan of
+  16 writer shards per role (`fts_phrase_first_turn`, `fts_multi_turn_history`)
+  before attributing its cost or comparing layouts. Done on OTEL_V1 ("G3
+  findings" below): without a role each class issued 226-293 range requests
+  for about 130-150 rows; probing the rarest term per shard cut that to 72-74
+  requests, 0.49-0.51x the custom store's p50 quiesced (benchmark doc,
+  "Quiesced query gate").
+- [ ] **`bulk_index_conflicts` widens over every index of the store.** Record
+  Layer side done: `BatchSaveOptions.CoalesceIndexWriteConflicts` now covers
+  only the indexes whose maintainer the batch ran (the saved and overwritten
+  records' types, multi-type and universal indexes, not disabled or queued),
+  pinned by "Batch index write-conflict coalescing scope" in
+  `pkg/recordlayer/store_batch_conflicts_test.go`. layers/otel accepts the
+  combination again (exporter default on). Re-measure message-transaction
+  conflicts and throughput with paired provenance; the scope regression does
+  not establish a performance result.
+
+## TEXT primary-key overlap boundary
+
+- [ ] Optional Go extension: establish a wire-compatible retrieval and migration
+  policy for TEXT indexes
+  whose tokenized field is also a trimmed primary-key component. Normal metadata
+  position derivation can place that PK component at the token column, which no
+  longer contains the original string; do not fetch a record using the token as
+  its primary key or silently change existing maintenance keys. Query planning
+  currently declines this access path, executable text plans return a typed
+  error, and Go FULLTEXT DDL rejects the shape. Regression guards are
+  `TestIntegrationTextRejectsPrimaryKeyTrimmedIntoToken` and
+  `TestFullTextDDLDeclinesTokenizedPrimaryKey`. Ordinary record filtering remains
+  available. This is not a deferred Java-supported retrieval feature: the live
+  Java 4.14.2.0 `probeTextPrimaryKeyOverlap` regression in
+  `conformance/text_index_conformance.java` pins stored PK `(\"red blue\",1)`
+  versus extracted `(\"red\",1)`, and confirms both direct fetch and Java
+  `TISCAN` fail with `RecordCoreStorageException`. Compatibility of a different
+  persisted representation is not proven.
+
+## OTel SQL ingest migration
+
+- [x] Move the OTel writer onto each tenant's relational schema subspace using
+  `layers/otel/otelsql.OTEL_V1`; register the template once and create one store
+  containing spans, logs, messages and message_traces. Existing ingest is not
+  migrated by the schema/SQL tests. Benchmark runs get dedicated catalog
+  databases/stores; production tenants share one signal store, which run-level
+  Drop must never clear. Define migration of existing data and preserve the
+  current API while switching its storage.
+  Delivered (3A): `otel.Exporter` writes every signal into `/OTEL/R_<RUN>`,
+  schema `T<tenant>`, via `EnsureTenant`; no data migration (owner,
+  pre-release); `TestRelExporterRealFDB`, `TestFDB_EnsureTenant`.
+- [x] Populate typed attribute arrays, promoted fields, event/link projections
+  and message references. Preserve the exact current duplicate-attribute
+  contract and original ordinals where references require them. Pin unknown
+  fields, presence, duplicate/order preservation and all AnyValue types end to
+  end. Keep lossless message manifests/reference reconstruction: full GenAI
+  history in every span's otlp would restore quadratic storage amplification.
+  Compare against a truly complete raw projection with measured bytes/mutations.
+  Implement indexed key/value admission and long-string digest lookup
+  with collision verification before enabling this schema in production ingest.
+  Delivered: `otelsql` compiled builders, `ref_chunks`/`SPANS_REF_CHUNKS`,
+  long strings by digest verified on the record; `TestBuildCompiledIsBuild`,
+  `TestRelExporterRealFDB/otlp_fidelity`, `TestRelAdvancedQueriesRealFDB`;
+  bytes in the benchmark doc (G2A, G2C).
+- [ ] Event and link projections omit the bytes and long-string attribute arrays
+  and the resource/scope dropped counts (`otelsql/rows.go`, `newAttrArrays(ev,
+  false)`); `otlp` preserves them, so SQL projection coverage is incomplete
+  (docs/compatibility.md). Project them, or record the boundary as final, and
+  compare against a complete raw projection with measured bytes/mutations.
+- [x] Store logs as records instead of raw KV, migrate message markers, choose
+  a Java-interoperable serializer and verify exporter writes through SQL reads.
+  Delivered: LOGS and MESSAGE_TRACES rows, `zlib-1` default;
+  `TestRelLogsRealFDB`, SQL reads in `TestFDB_SQLBackend` and
+  `TestFDB_OtelTemplateV1`, SQL reads of Exporter-written LOGS, MESSAGES and
+  MESSAGE_TRACES in `TestRelExporterRealFDB/logs_messages_sql`, Java reads in
+  `OtelTemplateOverlayJavaProbe`.
+- [ ] Add metrics tables in the same tenant store, then span/log/message/metric
+  join regressions; the v1 template has no metrics table yet (RFC
+  relational-exporter-migration §4.3, D9).
+- [x] Decide TEXT grouping/indexing for SQL message search, and reimplement the
+  typed query API over the standard indexes without losing scan budgets,
+  signed keyset tokens, snapshot-page semantics or distinct-trace top-K early
+  termination. Measure ingest cost on matched baseline/new workloads; no
+  extrapolated CPU or index-size estimate is validation.
+  Delivered: FULLTEXT `MESSAGES_TEXT` partitioned by (role, shard);
+  `SpanReader` direct scans with budgets, v2 signed tokens and early top-K
+  (`TestRelAdvancedQueriesRealFDB`, `TestRelContinuationRejections`); ingest
+  measured at G2A and G3 (benchmark doc).
+- [ ] Probe two-level fan-out event/link attributes and element-level index
+  filtering before promising indexed same-event/same-link searches. Current
+  OTel probes cover one attribute array; unnest joins remain scan/explode paths
+  in both engines (Java issue #3896).
+- [ ] Track Java 4.14.2.0's BYTES ordered-union comparator defect and decide
+  upstream reporting (no issue filed here). `OtelSQLShapesJavaProbe` OR cursor 1
+  on `OTEL_V1` has two time-200 legs: `ComparisonKeyFunction.OnValues` retains
+  ByteString and `KeyComparisons.java:49` casts it to Comparable, producing
+  ClassCastException / SQLSTATE XXXXX. On a pinned-version update, re-evaluate
+  this exact case and replace its strict error pin with exact suffix rows only
+  when fixed; preserve every Go page/cursor and Java's working controls.
+- [x] Java readers of OTEL_V1 stores (RFC relational-exporter-migration R2).
+  A TEXT index naming `otel_message_v1` made every Java statement on the schema
+  fail `42000 MetaDataException unrecognized text tokenizer`, so MESSAGES_TEXT
+  uses the default tokenizer and `otelsql.BuildMessageCompiled` stores
+  `IndexableText` (overlong tokens as the placeholder `oteloverlongtoken`,
+  positions kept). `OtelTemplateOverlayJavaProbe` reads every table of a
+  Go-written TemplateDDL store in Java and pins the Go-only-tokenizer refusal.
+  Stream 2C must tokenize terms and count segment postings with the default
+  tokenizer over `IndexableText`, not `otel_message_v1`.
+- [x] `BuildLogCompiled` leaves an `event_name` over 1,024 bytes NULL (LOGS_EVENT
+  keys it) and `LogProjection` counts it; the old log store indexed event names
+  up to 64,000 bytes by digest. Phase 2B decides whether `QueryLogsByAttribute`
+  on such names needs a digest column or refuses them.
+  Decided: refused; a query naming one is `ConfigError`
+  (`TestRelLogsRealFDB/boundary_admission`, `existential_log_clauses`).
+- [x] Data race in `pkg/fdbgo/client` RYW range reads with AppendIfFits writes
+  (found under `-race` by the old and the new message stores): resolved
+  AppendIfFits values lived in the pooled walk's `keyBuf`, which the next walk
+  reused while a pending read that ran in its goroutine still held its rows
+  uncopied. Fixed in PR #1034 (`valBuf`, dropped on release); regression
+  `TestPendingRangeKeepsAppendedValuesAcrossWalks` (range_selector_unit_test).
+- [x] Stream 2C follow-ups (`messages_rel.go`, `messages_query_rel.go`):
+  - 3B must keep what the new files use from messages.go and messages_query.go:
+    `messageTimerStats`, `isTransactionTooLarge`, `messagePipelineSizer`, the
+    `MessageFullTextQuery`/`MessageSpanHit`/`MessageFullTextPage` types and the
+    `MessageMatch*` modes; and from old test files `cacheFixtureMarker`
+    (messages_test.go). Phase 3A moved `awaitMessageCondition` to
+    messages_rel_lifecycle_fdb_test.go.
+  - MESSAGES_TEXT holds 21-23% more bytes than the old TEXT index on the
+    `BenchmarkMessageWriteCostRealFDB` workloads, with the same bunch count
+    (6,017 and 10,143 rows): the schema subspace prefix is 23 bytes against
+    10 (26% of the difference; also all of the +40% written key bytes, 13 B
+    per write), and every entry's primary key carries the record type key
+    (about 1.9 B per posting, the rest). The whole store is 1.04-1.06x.
+    Accepted at the cutover (D4 kept); recorded in the benchmark doc and the
+    RFC's D4 row.
+  - Done: 3B kept the listed helpers and types.
+- [x] Phase 3B deletion (rfcs/relational-exporter-migration.md §6). After 3A
+  the old store's code is reachable only from `otelbench --backend fdb` and its
+  own tests: `FDBBackend`, index.go, the old logs/messages/query storage
+  methods' remaining helpers, `restoreEnvelopeOTLP`, `legacyCanonicalValue`/
+  `legacyCanonicalAttribute` (the old store's string-coerced postings), the
+  FDBBackend tests (`posting_value_test.go`, `record_compression_test.go`,
+  `posting_diff_test.go`, ...), and otelbench's `--posting-value-format`,
+  `--hash-bytes` and Brotli values. The collector's `removedExporterKey`
+  recognizes otel's removed-key `ConfigError` by its " was removed" text; 3B
+  can drop it with the removed keys once no YAML names them.
+  Delivered: the custom store, its tests and the `fdb` otelbench flags are
+  deleted (RFC status line); `removedExporterKey` stays as the migration message
+  and now matches the typed `otel.RemovedConfigKeyError`, not the message text.
+- [ ] **Low:** the collector's own YAML key check (`checkKeys`,
+  `layers/otel/collector/collector.go`) refuses a YAML merge key (`<<`) as an
+  unknown key, as it did before PR #1035; `ExporterConfig` now follows merge
+  keys and aliases (`checkExporterYAMLKeys`). Follow them there too, with a
+  test.
+- [ ] G3 findings (benchmark doc, "Gate G3"):
+  - [x] `fts_single_token` p50 was 1.53x the custom store's. Cause: it is the
+    first post-ingest class and ran inside the storage server's 6-10 s drain
+    of the ingest's non-durable mutations with 818 range requests per query;
+    a 100-iteration p50 is slow when over half the iterations fall inside
+    the drain (benchmark doc, "fts_single_token: the G3 gap explained and
+    fixed"). In-place reference decoding and coalesced marker reads (commits
+    "otel: message queries read reference chunks in place" and "otel: one
+    marker read per run of a writer's matching messages") bring it to 79
+    requests, 0.30x the custom store quiesced and 0.24-0.46x by G3's method.
+  - [x] Message persist wall is 1.39x with the same summed message transaction
+    time and count and 0 retries. Owner decision: G2C's persist criterion is
+    the summed message transaction time (0.93x).
+  - [x] Without a role, `fts_phrase_first_turn` and `fts_multi_turn_history`
+    issued 226-293 range requests for about 130-150 rows: the TextScan of each
+    (role, shard) opens a read per term. An "all" or phrase query of several
+    terms now counts the terms in shard 0, probes the rarest in the other
+    shards and scans only the shards holding it (commit "otel: phrase and all
+    queries scan only shards holding their rarest term"): 72-74
+    requests, 0.49-0.51x the custom store quiesced.
+  - [x] collector-bench's post-ingest phase starts while the storage server
+    still drains 400-500 MB of the ingest (6-10 s), so its first classes
+    absorb the drain. Owner decision: the G3 query gate runs `--query-only`
+    after the queues drain (benchmark doc, "Quiesced query gate"); the
+    post-ingest numbers are reported, not gated. The bench still cannot wait
+    for durability itself (the Go client does not serve
+    `\xff\xff/status/json`).
+  - [x] `tuple.decodeInt` (pkg/fdbgo/fdb/tuple) decoded every int through
+    `binary.Read(bytes.NewBuffer(...))`: four allocations per int, 15% of the
+    old message query's allocations. It now decodes from a stack array (one
+    allocation: boxing the result); `TestDecodeIntMatchesBinaryRead` pins
+    equal results against the binary.Read version for every int type code.
+    decodeFloat and decodeDouble keep the binary.Read pattern.
+  - `otel.NewExporter` uses the fixed template name OTEL_V1, so it cannot open
+    on a shared cluster whose catalog holds OTEL_V1 from another revision
+    (otelcmp after G2A); `sqlbackend` avoids that with `RevisionTemplateName`.
+- [ ] Rename `layers/otel`'s `rel`-prefixed identifiers and `*_rel.go` files
+  to plain names. The prefix told the relational implementation from the
+  custom store while both existed, and the cutover renamed only
+  `relExporter`. About 40 identifiers (`relMessageStore`, `relLogStore`,
+  `relSpan`, `relAttr`, `relParts`, `openRelDatabase`,
+  `validateRelQueryAttribute`, ...) keep it; `relMessageQueryPlan` wraps the
+  storage-free `messageQueryPlan`, and `exporter.go` holds the configuration
+  while the Exporter is in `exporter_rel.go`.
+
+### OTel relational prototype findings (2026-11-07)
+
+Measured with `otelbench --backend sql` (`layers/otel/sqlbackend`); numbers and
+boundary in `docs/benchmarks/otel-relational-local-20261107.md`.
+
+- [x] Ingest CPU parity. Compiled OTEL_V1 row types (`otelsql/otelv1pb`,
+  bound with `WithLocalFileDescriptor`) and single-pass fan-out key evaluation
+  bring direct OTEL_V1 ingest to 258 µs/span uncompressed and 283 with `zlib-1`.
+  The production `fdb` configuration costs 353. Regressions:
+  `TestBuildCompiledIsBuild`, `TestCompiledTypesMatchTemplateDescriptor`,
+  `TestCompositeKeyExpressionFanOutMatchesReferenceCrossProduct`.
+- [ ] Remaining ingest CPU, shared with every Record Layer writer:
+  - the Go client's write path (RYW cache, mutation log, conflict ranges, commit encoding) is about 38% of allocations;
+  - the batch prefetch and batch save both walk the UTF-8 check;
+  - `readIndexState` starts a goroutine-backed `GetReadVersion` future per record and index.
+- [ ] SQL statement floor. A point query costs 0.56–0.60 ms p50 on a pinned
+  connection and 0.77–0.84 ms pooled, against 0.29–0.32 ms for `SpanReader`
+  (which also reads at a cached read version).
+  - Done: per-connection parse cache, binding walk compiled once per cached tree, record-type equality memo in the edge binder.
+  - Left: planning (plan-cache lookup, index-state snapshot) and the executor per row; the pooled path's schema-witness reads.
+  - A read-version cache for SQL would save one round trip but changes autocommit SELECT freshness; only as an opt-in.
+- [ ] `SpanReader` point reads take two round trips (store header and index
+  states overlapped, then the scan). Issuing the scan's first range read with the
+  store open would make it one, but the cursor's first page must then come from
+  the RYW cache, which needs the prefetch to match its first request exactly
+  (limit, streaming mode, byte target). Worth ~0.1 ms per read.
+- [ ] zlib is about 15% of `zlib-1` ingest CPU (stdlib `compress/flate`, dynamic
+  Huffman per ~1.5 KB record). `klauspost/compress` (already an indirect
+  dependency) would likely halve it; it needs a direct dependency and a notices
+  refresh.
+- [ ] SELECT pages are bounded only by time unless
+  `execution_scanned_rows_limit` is set, and a page is read whole before its
+  first row is returned. Java's result set iterates its cursor lazily instead.
+  The OTel backend works around it with `LIMIT` batches (K, 2K, ...) and a
+  `start_ns <=` keyset bound. A generic fix is lazy first-page streaming, or a
+  page bound that grows without penalizing small fully consumed results.
+- [ ] Trace-to-logs-to-metrics joins plan as unpipelined index nested loops
+  (`FlatMap` + `IndexScan(LOGS_TRACE, [=, =])`), one sequential probe per outer
+  span. Pipeline inner probes or plan a shared-prefix scan before relying on
+  SQL joins on the hot path; add the metrics tables (template v2) with an
+  exemplar trace_id fan-out index and a (service, time) index.
+
+## Grafana datasource (`layers/otel/grafana`): deferred
+
+- [ ] Plugin CPU under dashboard load: the R1 check (README "Load (R1)": 20
+  panels, 2 x 20,000 spans) saturates the plugin at a 5 s refresh (about seven
+  cores, 39% of requests cancelled by the next refresh; p95 9.1 s at 30 s)
+  while FDB idles at half a core. Profile the in-process SQL path (planning,
+  hash aggregation of time-bucketed scans) before tuning; consider caching
+  plans per panel SQL and bounding concurrent panel queries per instance.
+- [ ] Raw SQL lists other tenants' names: a T1 connection's SELECT on
+  `INFORMATION_SCHEMA` returns every schema, table and column name of the
+  database (rows are isolated, names are not; RFC R3). The plugin filters only
+  its own tenants and completion routes. The fix belongs in the engine
+  (`INFORMATION_SCHEMA` scoped to the connection's schema, or a DSN option).
+- [ ] Typed SQLSTATE in panels: sqlds flattens driver errors to text; Grafana
+  gets the code only inside the message. Needs our own query loop or an sqlds
+  change that keeps the error chain (health and `sql_failures_total` are typed).
+- [ ] Metric cardinality: `fdb_datasource_*` counters carry a tenant label, so
+  series grow with the tenants queried under an `allowedSchemas` prefix. Cap or
+  make the label optional before deployments with thousands of tenants.
+- [ ] Logs reads are uncounted: `otel.Reader`'s log queries return no read
+  stats, so logs queries add nothing to `otel_read_bytes_total`.
+- [ ] Trace-search summaries read up to 20 whole traces sequentially, each under
+  the full trace budget; give them their own budget or bounded parallelism.
+- [ ] `TraceBudget.MaxBytes` (stored bytes) has no setting; `traceMaxBytes` maps
+  to `MaxDecodedBytes`.
+- [ ] The e2e job (`grafana-plugin.yml`, Playwright on Grafana 13.1.9 and 12.0.0)
+  runs only on `workflow_dispatch`; measure it on the runners and move it to
+  pull requests if it fits.
+
+## TEXT SQL access paths
+
+- [ ] Recover and diagnose the historical RFC-258 fail-on-scan-limit failure
+  cited during PR #1025 validation. The named conformance case is
+  `matches writes outside the range and fail-on-scan-limit` in
+  `conformance/index_remote_fetch_conformance_test.go`; the failing assertion,
+  fetch method, original output and cause have not been recovered. PR CI runs
+  41599086248 and 41607664254 do not contain that failure; the retained local
+  log was overwritten by a passing run. Recover the original full-lane log/BEP
+  or session evidence, then add a deterministic regression or fix. A rerun pass
+  does not establish that this failure was unrelated or fixed.
+
+- [ ] Text access with an unbound grouping column (`PARTITION BY (tenant, shard)`
+  queried with `tenant = ?` only). Correct execution needs the distinct values
+  of the unbound column under the bound prefix: a skip scan over the TEXT index
+  (one limit-1 range read past each `(tenant, shard)` prefix), then one
+  `TextScan` per group, as the IN-list path already does. It costs a read per
+  group and a read-conflict range over the whole prefix, so the planner would
+  need a group-count estimate to prefer it over record filtering. Today such a
+  query falls back to record filtering; an IN list over the column is planned
+  as a text access.
+- [x] `TextScan` logical suffix bounds include the predecessor bunch and filter
+  decoded entries at both endpoints (`bunched_map_iterator.go`). The native
+  fixture in `conformance/text_query_conformance_test.go` pins Go's logical rows
+  versus Java 4.14.2.0's physical-bunch rows, including same-engine page resumes.
+  Bounded continuations are not a cross-engine remaining-row/page contract; see
+  DIVERGENCES.md, “TEXT logical suffix bounds”. The SQL executor retains its
+  whole-group filtering path for caller-built typed suffix plans; SQL planning
+  does not currently produce suffix bounds.
 
 ## OpenTelemetry production hardening
 

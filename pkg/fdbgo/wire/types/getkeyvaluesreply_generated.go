@@ -46,31 +46,10 @@ type GetKeyValuesReply struct {
 	Arena    []byte  // slot 7
 }
 
-func (m *GetKeyValuesReply) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(GetKeyValuesReplySlotPenalty) {
-		m.Penalty = r.ReadFloat64(GetKeyValuesReplySlotPenalty)
-	}
-	if r.FieldPresent(GetKeyValuesReplySlotError) && r.ReadUint8(GetKeyValuesReplySlotError) > 0 {
-		if nr, err := r.ReadNestedReader(GetKeyValuesReplySlotError + 1); err == nil {
-			m.Error.UnmarshalFromReader(nr)
-		}
-		m.HasError = true
-	}
-	if r.FieldPresent(GetKeyValuesReplySlotData) {
-		m.Data = r.ReadBytes(GetKeyValuesReplySlotData)
-	}
-	if r.FieldPresent(GetKeyValuesReplySlotVersion) {
-		m.Version = r.ReadInt64(GetKeyValuesReplySlotVersion)
-	}
-	if r.FieldPresent(GetKeyValuesReplySlotMore) {
-		m.More = r.ReadBool(GetKeyValuesReplySlotMore)
-	}
-	if r.FieldPresent(GetKeyValuesReplySlotCached) {
-		m.Cached = r.ReadBool(GetKeyValuesReplySlotCached)
-	}
-	if r.FieldPresent(GetKeyValuesReplySlotArena) {
-		m.Arena = r.ReadBytes(GetKeyValuesReplySlotArena)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *GetKeyValuesReply) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *GetKeyValuesReply) UnmarshalFDB(data []byte) error {
@@ -78,12 +57,21 @@ func (m *GetKeyValuesReply) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *GetKeyValuesReply) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(GetKeyValuesReplySlotPenalty) {
 		m.Penalty = r.ReadFloat64(GetKeyValuesReplySlotPenalty)
 	}
-	if r.FieldPresent(GetKeyValuesReplySlotError) && r.ReadUint8(GetKeyValuesReplySlotError) > 0 {
-		if nr, err := r.ReadNestedReader(GetKeyValuesReplySlotError + 1); err == nil {
-			m.Error.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetKeyValuesReplySlotError) && r.ReadUint8(GetKeyValuesReplySlotError) == 1 && r.FieldPresent(GetKeyValuesReplySlotError+1) {
+		nr, err := r.ReadNestedReader(GetKeyValuesReplySlotError + 1)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetKeyValuesReply", Field: "Error", Err: err}
+		}
+		if err := m.Error.decode(nr, b); err != nil {
+			return err
 		}
 		m.HasError = true
 	}
@@ -101,6 +89,9 @@ func (m *GetKeyValuesReply) UnmarshalFDB(data []byte) error {
 	}
 	if r.FieldPresent(GetKeyValuesReplySlotArena) {
 		m.Arena = r.ReadBytes(GetKeyValuesReplySlotArena)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "GetKeyValuesReply", Err: err}
 	}
 	return nil
 }
@@ -277,21 +268,28 @@ func (m *GetKeyValuesReply) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseGetKeyValuesReplyVectorFromReader reads a FlatBuffers vector of GetKeyValuesReply.
-func ParseGetKeyValuesReplyVectorFromReader(r *wire.Reader, slot int) []GetKeyValuesReply {
+// ParseGetKeyValuesReplyVectorFromReader reads a FlatBuffers vector of GetKeyValuesReply under one decode budget.
+func ParseGetKeyValuesReplyVectorFromReader(r *wire.Reader, slot int) ([]GetKeyValuesReply, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]GetKeyValuesReply, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]GetKeyValuesReply", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]GetKeyValuesReply, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]GetKeyValuesReply", Err: err}
 		}
-		var elem GetKeyValuesReply
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

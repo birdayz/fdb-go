@@ -112,9 +112,8 @@ type Planner struct {
 	// RecordQueryPlanComplexityException("Maximum task queue size...").
 	MaxTaskQueueSize int
 
-	// MaxNumMatchesPerRuleCall caps the bindings one rule invocation may
-	// produce; 0 disables (Java default). Hitting it returns
-	// ErrPlannerRuleMatchCapHit via the task-level capErr channel.
+	// MaxNumMatchesPerRuleCall caps one rule call's bindings (Java's count where the rule
+	// reports one, else Go's; see DIVERGENCES.md) with ErrPlannerRuleMatchCapHit; 0 disables.
 	MaxNumMatchesPerRuleCall int
 
 	// DisabledRules holds rule names excluded from selection — Java's
@@ -663,7 +662,8 @@ func (e plannerErr) Error() string { return string(e) }
 // RecordQueryPlanComplexityException via addLogInfo (MAX_TASK_COUNT/TASK_COUNT
 // and the queue and rule-match equivalents), and the SQL layer propagates them
 // as error context; without the numbers a user cannot tell a near-miss from a
-// query that is orders of magnitude past the bound.
+// query that is orders of magnitude past the bound. The rule-match budget is the
+// exception: like Java, it reports bound+1, that it tripped but not by how much.
 //
 // Error and Unwrap both delegate to the cap sentinel, so every existing
 // errors.Is check and every message assertion keeps working unchanged — this
@@ -673,7 +673,8 @@ type PlannerBudgetExceededError struct {
 	Budget string
 	// Limit is the configured bound.
 	Limit int
-	// Observed is the value that exceeded it.
+	// Observed is the value that exceeded it; for MaxNumMatchesPerRuleCall it is
+	// the bound+1 Java reports, since Java stops at the first binding past it.
 	Observed int
 
 	sentinel plannerErr
@@ -701,10 +702,11 @@ func newQueueCapError(limit, observed int) *PlannerBudgetExceededError {
 	}
 }
 
-// newRuleMatchCapError reports the MaxNumMatchesPerRuleCall budget.
-func newRuleMatchCapError(limit, observed int) *PlannerBudgetExceededError {
+// newRuleMatchCapError reports the MaxNumMatchesPerRuleCall budget. Java
+// throws at the first binding past the bound, so it observes bound+1.
+func newRuleMatchCapError(limit int) *PlannerBudgetExceededError {
 	return &PlannerBudgetExceededError{
-		Budget: "MaxNumMatchesPerRuleCall", Limit: limit, Observed: observed, sentinel: ErrPlannerRuleMatchCapHit,
+		Budget: "MaxNumMatchesPerRuleCall", Limit: limit, Observed: limit + 1, sentinel: ErrPlannerRuleMatchCapHit,
 	}
 }
 

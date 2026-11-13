@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
@@ -69,6 +71,7 @@ func TestNativeReadTagSampling(t *testing.T) {
 				switch fault {
 				case "hedge":
 					duplicateServers(&Database{db: tx.db}, 2)
+					setSecondBudget(tx.db.queueModel, 1)
 				case "alternative":
 					loc, err := tx.db.locCache.locate(tx.db, ctx, []byte(prefix+"a"), NoTenantID, types.SpanContext{}, false)
 					if err != nil || len(loc.Servers) == 0 {
@@ -83,10 +86,9 @@ func TestNativeReadTagSampling(t *testing.T) {
 					q := tx.db.queueModel
 					delta := q.startRequest(real.Address)
 					defer q.endRequest(real.Address, delta, 0, false)
-					q.mu.Lock()
-					q.getOrCreate(real.Address).smoothOutstanding.estimate = 1
-					q.getOrCreate(alias).latency = time.Hour.Seconds() // no timer hedge within the test's lifetime
-					q.mu.Unlock()
+					withServer(q, real.Address, func(d *queueData) { d.smoothOutstanding.estimate = 1 })
+					// A new database has no second-request budget, so the dead primary is
+					// never hedged: its failure moves on to the real server.
 					if best, next := q.chooseTopTwo(servers); best != 0 || next != 1 {
 						t.Fatalf("alternative selection = %d,%d; want dead primary then real", best, next)
 					}
@@ -170,11 +172,36 @@ func TestNativeReadTagSampling(t *testing.T) {
 			t.Cleanup(cancel)
 			tx, rec, sim, draws, rv, _ := setup(t, ctx)
 			tx.db.hedgeEnabled.Store(hedge)
+			tx.rpcTimeoutOverride = time.Minute
 			plan := &replyPlan{rec: rec}
 			if hedge {
+				// Both selectors overlap: fund each, then fund the exact read after
+				// they finish. An incidental selector hedge cannot steal its budget.
 				duplicateServers(&Database{db: tx.db}, 2)
-				plan.entries = []plannedReply{dropReply("GetKeyRequest")}
-				sim.setIntercept(plan.intercept)
+				setSecondBudget(tx.db.queueModel, 2)
+				tx.db.readTags.draw = func() float64 {
+					draw := draws.draw()
+					if draws.count() == 3 {
+						setSecondBudget(tx.db.queueModel, 1)
+					}
+					return draw
+				}
+				plan.entries = []plannedReply{dropReply("GetKeyRequest"), dropReply("GetKeyValuesRequest")}
+				sim.setIntercept(func(idx int, token transport.UID, body []byte) ([]byte, bool) {
+					if rec.replyKind(token) == "GetKeyRequest" {
+						beginReply := false
+						for _, msg := range rec.messages() {
+							if req, ok := msg.(*types.GetKeyRequest); ok && req.Reply.Token == wire.UIDFromParts(token.First, token.Second) {
+								beginReply = string(req.Sel.Key) == prefix+"a"
+								break
+							}
+						}
+						if !beginReply {
+							return body, false
+						}
+					}
+					return plan.intercept(idx, token, body)
+				})
 				sim.armEverything()
 			}
 			draws.script(drawHit, drawMiss, drawHit)
@@ -186,16 +213,25 @@ func TestNativeReadTagSampling(t *testing.T) {
 			recorded := rec.stop()
 			got := taggedRequests(t, recorded)
 			plan.check(t)
-			wantRequests := 3
+			// A hedge resends its request with its tags (LoadBalance.actor.h:660-662).
+			sends := map[string]int{}
+			for _, r := range got {
+				sends[r.kind]++
+			}
+			// Separate selector/exact budgets force both planned drops to hedge,
+			// without relying on short timeouts for successful replies.
+			wantExact, maxPerSelector := 1, 1
 			if hedge {
-				wantRequests++
+				wantExact, maxPerSelector = 2, 2
 			}
-			if len(got) != wantRequests || draws.count() != 3 {
-				t.Fatalf("fallback requests %v after %d draws, want %d sends after 3 draws", got, draws.count(), wantRequests)
+			if draws.count() != 3 || len(got) != sends["GetKeyRequest"]+sends["GetKeyValuesRequest"] || sends["GetKeyValuesRequest"] != wantExact {
+				t.Fatalf("fallback requests %v after %d draws; want 3 draws and %d exact sends", got, draws.count(), wantExact)
 			}
+			perSelector := map[string]int{}
 			for _, msg := range recorded.msgs {
 				switch q := msg.(type) {
 				case *types.GetKeyRequest:
+					perSelector[string(q.Sel.Key)]++
 					want := string(q.Sel.Key) == prefix+"a"
 					if string(q.Sel.Key) != prefix+"a" && string(q.Sel.Key) != prefix+"d" {
 						t.Fatalf("unexpected fallback selector %+v", q.Sel)
@@ -208,6 +244,10 @@ func TestNativeReadTagSampling(t *testing.T) {
 						t.Errorf("fallback exact request HasTags=%t Tags=%q, want new third sample", q.HasTags, q.Tags)
 					}
 				}
+			}
+			a, d := perSelector[prefix+"a"], perSelector[prefix+"d"]
+			if a != maxPerSelector || d < 1 || d > maxPerSelector {
+				t.Errorf("selector sends a=%d d=%d, want exactly %d and 1-%d", a, d, maxPerSelector, maxPerSelector)
 			}
 		})
 	}

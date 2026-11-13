@@ -17,7 +17,7 @@ import (
 //
 // The decision lives in ONE function, decideStatistics, because it has two
 // callers whose answers must never disagree. The planner asks it what to plan
-// on. `frl stats show` asks it what to tell an operator. Separate
+// on. `fdb rl stats show` asks it what to tell an operator. Separate
 // implementations would eventually have the CLI report "usable" for statistics
 // the planner had already refused — the most expensive kind of wrong, because
 // it reads as a confirmation.
@@ -46,7 +46,7 @@ import (
 // methods, and TestIntegration_Stats_FleetCollectIsReadableByTheConnection is
 // what proves the two agree.
 func (c *EmbeddedConnection) statisticsLocation(ctx context.Context) (recordlayer.StatisticsSubspace, subspace.Subspace, error) {
-	storeSubspace, err := c.sess.Keyspace.SchemaSubspaceIn(ctx, configuredRunner{c.sess.DB, c.Options()}, c.sess.DBPath, c.sess.Schema)
+	storeSubspace, err := c.sessionSchemaSubspace(ctx)
 	if err != nil {
 		return recordlayer.StatisticsSubspace{}, nil, err
 	}
@@ -64,7 +64,7 @@ func (c *EmbeddedConnection) statisticsLocation(ctx context.Context) (recordlaye
 const statisticsMaxAgeVersions int64 = 24 * 60 * 60 * 1_000_000
 
 // StatisticsRefusal names why collected statistics were not used. The values
-// are stable strings because `frl stats show` prints them.
+// are stable strings because `fdb rl stats show` prints them.
 //
 // ADDING ONE? Add it to allStatisticsRefusals in statistics_reader_test.go and
 // give it a case in decideStatisticsCases. The coverage guard cannot catch a
@@ -207,9 +207,10 @@ type statisticsGateInput struct {
 //
 // It deliberately ignores the PLANNER_STATISTICS opt-in: the flag governs
 // whether the planner asks, not whether the data is any good, and an operator
-// running `frl stats show` wants to know the data is fresh BEFORE turning the
+// running `fdb rl stats show` wants to know the data is fresh BEFORE turning the
 // flag on. The CLI prints the flag's role separately.
-func (c *EmbeddedConnection) StatisticsStatus(ctx context.Context) (StatisticsStatus, error) {
+func (c *EmbeddedConnection) StatisticsStatus(ctx context.Context) (_ StatisticsStatus, err error) {
+	defer c.recoverInto(&err)
 	if c.closed.Load() {
 		return StatisticsStatus{}, driver.ErrBadConn
 	}
@@ -281,7 +282,7 @@ func evaluateCollectedStatistics(
 	// undecodable key or value -- would be reported as "not collected", which is
 	// the one thing it is not. Only NoHeader means absent.
 	stats, readRefusal, readVersion, rErr := recordlayer.ReadStatisticsAtWithRefusal(
-		ctx, configuredRunner{c.sess.DB, c.Options()}, statsSubspace, storeSubspace)
+		ctx, c.runner(c.Options()), statsSubspace, storeSubspace)
 	ok := rErr == nil && readRefusal == recordlayer.StatisticsReadOK
 	in.ReadErr, in.Found, in.Stats, in.ReadRefusal = rErr, ok, stats, readRefusal
 	if rErr == nil && ok {
@@ -533,7 +534,7 @@ func ambiguousStorageName(declared map[string]struct{}) ([]string, bool) {
 // offline collector (RFC-236), or nil to plan on the cost model's constant.
 //
 // The opt-in flag is the first and cheapest gate; the rest is
-// evaluateCollectedStatistics, shared with `frl stats show`.
+// evaluateCollectedStatistics, shared with `fdb rl stats show`.
 func (g *cascadesGenerator) fetchCollectedStatistics(
 	ctx context.Context,
 	md *recordlayer.RecordMetaData,

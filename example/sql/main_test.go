@@ -28,13 +28,7 @@ func TestQuickstartRunsTwice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := foundationdbtc.Terminate(ctx, container); err != nil {
-			t.Error(err)
-		}
-	})
+	t.Cleanup(func() { foundationdbtc.TeardownT(t, container) })
 	clusterFile, err := container.ClusterFilePath(ctx)
 	if err != nil {
 		t.Fatal(err)

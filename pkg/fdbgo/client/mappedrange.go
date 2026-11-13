@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"sort"
 	"sync"
 
 	"fdb.dev/pkg/fdbgo/transport"
@@ -134,9 +133,11 @@ func parseGetMappedKeyValuesReply(data []byte) ([]MappedKeyValue, bool, float64,
 		return nil, false, -1.0, fmt.Errorf("GetMappedKeyValues: %w", err)
 	}
 	var reply types.GetMappedKeyValuesReply
-	reply.UnmarshalFromReader(&r)
-	if ferr := wire.ReadInlineReplyError(&r, types.GetMappedKeyValuesReplySlotError); ferr != nil {
-		return nil, false, reply.Penalty, ferr
+	if err := reply.UnmarshalFromReader(&r); err != nil {
+		return nil, false, -1.0, fmt.Errorf("GetMappedKeyValues: %w", err)
+	}
+	if reply.HasError {
+		return nil, false, reply.Penalty, &wire.FDBError{Code: int(reply.Error.ErrorCode)}
 	}
 
 	rows := make([]MappedKeyValue, 0, len(reply.Data))
@@ -232,9 +233,9 @@ var mappedRangeScanOps = rangeScanOps[MappedKeyValue]{
 	},
 }
 
-func (tx *Transaction) sendGetMappedRange(mapper []byte) func(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo, tags readTagSample) ([]MappedKeyValue, bool, error) {
-	return func(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo, tags readTagSample) ([]MappedKeyValue, bool, error) {
-		return sendRangeRPC(tx, ctx, firstGreaterOrEqual(begin), firstGreaterOrEqual(end), limits, readVersion, reverse, servers, tags, rangeRPCOps[MappedKeyValue]{
+func (tx *Transaction) sendGetMappedRange(mapper []byte) func(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo, tags readTagSample, lb lbRetry) ([]MappedKeyValue, bool, error, lbRetry) {
+	return func(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo, tags readTagSample, lb lbRetry) ([]MappedKeyValue, bool, error, lbRetry) {
+		rows, more, err := sendRangeRPCPaced(tx, ctx, firstGreaterOrEqual(begin), firstGreaterOrEqual(end), limits, readVersion, reverse, servers, tags, rangeRPCOps[MappedKeyValue]{
 			// getMappedKeyValues is adjusted endpoint 14, NOT 3. The field is
 			// DECLARED immediately after getKeyValues (StorageServerInterface.h:103)
 			// but is assigned getAdjustedEndpoint(14) (:184-185) — it was appended
@@ -245,7 +246,8 @@ func (tx *Transaction) sendGetMappedRange(mapper []byte) func(ctx context.Contex
 			build:    buildGetMappedKeyValuesRequest(mapper),
 			putBuf:   func(bufp *[]byte) { getMappedKeyValuesBufPool.Put(bufp) },
 			parse:    parseGetMappedKeyValuesReply,
-		})
+		}, &lb)
+		return rows, more, err, lb
 	}
 }
 
@@ -501,13 +503,13 @@ func (tx *Transaction) addMappedRangeConflictMustUnmodified(ctx context.Context,
 	w := c.liveLocked()
 	w.ensureSorted()
 	prefixEnd := end
-	if i := sort.SearchStrings(w.sortedKeys, string(begin)); i < len(w.sortedKeys) && w.sortedKeys[i] < string(end) {
-		prefixEnd = []byte(w.sortedKeys[i])
+	if _, x := w.sorted.find(func(x *rywWrite) bool { return x.key >= string(begin) }); x != nil && x.key < string(end) {
+		prefixEnd = []byte(x.key)
 	}
-	if i := sort.Search(len(w.cleared), func(i int) bool {
-		return bytes.Compare(w.cleared[i].end, begin) > 0
-	}); i < len(w.cleared) && bytes.Compare(w.cleared[i].begin, prefixEnd) < 0 {
-		prefixEnd = w.cleared[i].begin
+	if _, r := w.cleared.find(func(r *rywRange) bool {
+		return bytes.Compare(r.end, begin) > 0
+	}); r != nil && bytes.Compare(r.begin, prefixEnd) < 0 {
+		prefixEnd = r.begin
 		if bytes.Compare(prefixEnd, begin) < 0 {
 			prefixEnd = begin
 		}

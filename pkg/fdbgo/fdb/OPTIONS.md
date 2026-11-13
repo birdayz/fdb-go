@@ -12,10 +12,10 @@ ignoring this option change what the caller gets?**
 
 - **Honored** — implemented; takes effect.
 - **`UnsupportedOptionError`** (FDB error 2007) — the option's silent omission would change
-  **access, authorization, idempotency, storage-quota, or a conflict read-back** the caller relies
+  **access, authorization, idempotency, storage-quota, or special-key writes** the caller relies
   on. The pure-Go client does **not** implement these, so rather than silently grant/deny something,
-  it **fails loudly**. (`report_conflicting_keys`, `raw_access`, `automatic_idempotency`,
-  `bypass_storage_quota`, `authorization_token`, and their database-default twins.)
+  it **fails loudly**. (`raw_access`, `automatic_idempotency`, `bypass_storage_quota`,
+  `authorization_token`, `special_key_space_enable_writes`, and their database-default twins.)
 - **Accepted & ignored (silent no-op)** — accepting the call but doing nothing is provably safe,
   because the option is one of:
   - a **no-op in `libfdb_c` too** (the C client also ignores it — `default: break`, no consumers;
@@ -63,7 +63,7 @@ C++ references are into the FoundationDB 7.3.77 source: `T::setOption` =
 | `SetTag` | **honored** | T:7123 `addTag` | n/a | |
 | `SetBypassUnreadable` | **honored** | RYW:2611 `bypassUnreadable` | n/a | |
 | `SetSpanParent` | **honored** | T:7128 span link | n/a | trace span linkage |
-| `SetReportConflictingKeys` | **`UnsupportedOptionError`** | T:7135 `reportConflictingKeys` | **UNSAFE** | Go has no conflicting-key read-back; errors rather than silently drop it |
+| `SetReportConflictingKeys` | **honored** | T:7135 `reportConflictingKeys`, T:6887 commit field | n/a | not persistent; a `not_committed` leaves the conflicting ranges under `\xff\xff/transaction/conflicting_keys/` (T:6700-6717), kept across OnError/Reset |
 | `SetRawAccess` | **`UnsupportedOptionError`** | T:7161 `rawAccess` | **UNSAFE** | would change which keyspace/tenant a read targets |
 | `SetAutomaticIdempotency` | **`UnsupportedOptionError`** | T:7196 generates idempotency id | **UNSAFE** | silently dropping the idempotency contract is dangerous on retry |
 | `SetBypassStorageQuota` | **`UnsupportedOptionError`** | T:7173 `bypassStorageQuota` commit flag | **UNSAFE** | quota bypass must not be silently assumed |
@@ -87,11 +87,17 @@ C++ references are into the FoundationDB 7.3.77 source: `T::setOption` =
 | `SetDebugRetryLogging` | accept & ignore | RYW:2580 retry-log name | safe (telemetry) | |
 | `SetAutoThrottleTag` | **honored** | T:7120 add to tags + readTags | n/a | adds to both the txn tag set and the read tag set; a sampled read request (`sampleReadTags()`, about 1%) carries the read set |
 | `SetIncludePortInAddress` | accept & ignore | deprecated / default-on ≥630 | safe | |
-| `SetSpecialKeySpaceRelaxed` | **rejected** (`*UnsupportedOptionError`) | RYW:2602-2605 relaxes special-key-space READ restriction | fails unsafe | Go has no special-key-space module — silently "granting" the relaxation for reads that cannot succeed is the SetReportConflictingKeys migration trap |
-| `SetSpecialKeySpaceEnableWrites` | **rejected** (`*UnsupportedOptionError`) | RYW:2607-2610 arms specialKeySpace->commit translation | fails unsafe | same — without the module the `\xff\xff/management/...` write is dropped or shipped literally; the cluster change silently does not happen |
+| `SetSpecialKeySpaceRelaxed` | **honored** | RYW:2603-2605 relaxes special-key-space READ restriction | n/a | a read may span modules or none; one that reaches a module other than `conflicting_keys/` fails with 2108 either way |
+| `SetSpecialKeySpaceEnableWrites` | **rejected** (`*UnsupportedOptionError`) | RYW:2607-2610 arms specialKeySpace->commit translation | fails unsafe | without a write module the `\xff\xff/management/...` write is dropped or shipped literally; the cluster change silently does not happen |
 | `SetInitializeNewDatabase` | accept & ignore | T:6950 RV=0 + causalWriteRisky | safe | db-bootstrap tool only; never used by app code |
 
 ## Database options (`DatabaseOptions`)
+
+The fields of the facade's `txDefaults` are captured together. Native-owned
+`SetTransactionReportConflictingKeys` is outside that snapshot: concurrent default
+updates during construction or Reset can combine its generation with another
+facade-default generation. This existing cross-owner limitation is not a claim of
+whole-database snapshot coherence.
 
 | Option (method) | Pure-Go | libfdb_c (C++) | Unsafe if ignored? | Notes |
 |---|---|---|---|---|
@@ -100,7 +106,7 @@ C++ references are into the FoundationDB 7.3.77 source: `T::setOption` =
 | `SetTransactionMaxRetryDelay` | **honored** (tx default) | DB default | n/a | |
 | `SetTransactionSizeLimit` | **honored** (tx default) | DB default | n/a | <= 0 is unset (10 MB); 1-31 or > 10,000,000 fails each txn's ops with 2006 (C++ undefined) |
 | `SetReadSystemKeys` | **honored** (tx default) | DB default → READ_SYSTEM_KEYS | n/a | |
-| `SetTransactionReportConflictingKeys` | **`UnsupportedOptionError`** | DB default twin | **UNSAFE** | mirrors the tx option |
+| `SetTransactionReportConflictingKeys` | **honored** (tx default) | DB default → REPORT_CONFLICTING_KEYS per-tx | n/a | re-applied on Reset and OnError, like libfdb_c's transaction defaults (RYW:2722-2723, 2751-2754) |
 | `SetTransactionAutomaticIdempotency` | **`UnsupportedOptionError`** | DB default twin | **UNSAFE** | |
 | `SetTransactionCausalReadRisky` | **honored** (tx default) | DB default → CAUSAL_READ_RISKY per-tx | n/a | sets the GRV causal-read-risky flag on each new tx (read-version/staleness change); the per-tx form is honored, so the DB default propagates via `txDefaults` (FDB C++ dev review #331) — unlike `causal_write_risky`, whose per-tx form is a fail-safe no-op |
 | `SetSnapshotRywEnable` / `SetSnapshotRywDisable` | **honored** (tx default) | DB:2156 cumulative counter, seeded per-tx (RYW:2082) | n/a | changes snapshot-read-after-write semantics; propagated via `txDefaults` as a CUMULATIVE counter — enable+disable nets to enabled, matching libfdb_c, not last-wins (codex #331) |

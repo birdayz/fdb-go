@@ -84,10 +84,9 @@ func (store *FDBRecordStore) isRecordCountDisabled() bool {
 // Matches Java's FDBRecordStore.addRecordCount().
 //
 // Key format: subspace[RecordCountKey] + evaluated_count_key_tuple
-// The record type is a parameter, not re-derived here: the count key is very
-// often RecordTypeKey() (per-type counting), which resolves its value from the
-// record's own type, and every caller already holds the resolved type.
-func (store *FDBRecordStore) addRecordCount(recordType *RecordType, record proto.Message, increment []byte) error {
+// Evaluate against the stored record so type-, primary-key- and version-dependent
+// expressions see the same values as index maintenance.
+func (store *FDBRecordStore) addRecordCount(record *FDBStoredRecord[proto.Message], increment []byte) error {
 	countKey := store.metaData.GetRecordCountKey()
 	if countKey == nil {
 		return nil // Counting not configured
@@ -102,10 +101,7 @@ func (store *FDBRecordStore) addRecordCount(recordType *RecordType, record proto
 
 	// Evaluate the count key expression against the record.
 	// Count keys should produce exactly one tuple.
-	subkeys, err := countKey.Evaluate(&FDBStoredRecord[proto.Message]{
-		RecordType: recordType,
-		Record:     record,
-	}, record)
+	subkeys, err := countKey.Evaluate(record, record.Record)
 	if err != nil {
 		return fmt.Errorf("record count key evaluation failed: %w", err)
 	}
@@ -119,6 +115,10 @@ func (store *FDBRecordStore) addRecordCount(recordType *RecordType, record proto
 	keyTuple := make(tuple.Tuple, len(subkey))
 	for i, v := range subkey {
 		keyTuple[i] = v
+	}
+	// Counts use an ordinary atomic ADD, not a versionstamped-key mutation.
+	if incomplete, _ := keyTuple.HasIncompleteVersionstamp(); incomplete {
+		return &IncompleteVersionstampError{Context: "record count key"}
 	}
 	fdbKey := countSubspace.Pack(keyTuple)
 

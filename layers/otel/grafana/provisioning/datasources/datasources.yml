@@ -1,0 +1,23 @@
+apiVersion: 1
+
+# The FoundationDB datasource of the development stack (docker-compose.yaml).
+# /OTEL/R_GRAFANA_DEV is the OTel run database an Exporter run named grafana_dev
+# writes (one schema T<n> per tenant); point `database` at any relational
+# database for plain SQL.
+datasources:
+  - name: 'FoundationDB'
+    uid: 'fdb-dev'
+    type: 'birdayz-foundationdb-datasource'
+    access: proxy
+    isDefault: true
+    orgId: 1
+    version: 1
+    editable: true
+    jsonData:
+      clusterString: 'docker:docker@fdb:4500'
+      tlsMode: 'off'
+      database: '/OTEL/R_GRAFANA_DEV'
+      defaultSchema: 'T0'
+      allowedSchemas: ['T*']
+      otelMode: 'auto'
+      transactionTags: ['grafana']

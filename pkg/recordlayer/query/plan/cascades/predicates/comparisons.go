@@ -278,8 +278,9 @@ type Comparison struct {
 	// runtime from EvaluationContext.getBinding(ParameterName).
 	ParameterName string
 
-	// TextTokenizerName and TextAnalyzerName are set for text-search
-	// comparisons (Java's TextComparison). Empty = default tokenizer.
+	// TextTokenizerName is Java's TextComparison tokenizerName: "" lets a scan
+	// use any index tokenizer. TextAnalyzerName is its fallbackTokenizerName,
+	// used by evaluation without a tokenizerName ("" = default).
 	TextTokenizerName string
 	TextAnalyzerName  string
 
@@ -394,6 +395,9 @@ func (c Comparison) Eval(left any) (TriBool, error) {
 // EvalAgainst — separating eval from dispatch is what lets a
 // non-constant RHS (`a = b + 1`) work row-by-row.
 func (c Comparison) EvalAgainst(left, right any) (TriBool, error) {
+	if c.Type.IsText() {
+		return c.evalText(left, right)
+	}
 	// IS NULL / IS NOT NULL are SQL 2VL: they resolve definitively
 	// even when the LHS is NULL, and ignore Operand entirely.
 	switch c.Type {

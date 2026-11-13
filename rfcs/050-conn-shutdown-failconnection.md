@@ -79,7 +79,7 @@ of the three callers fire. All three now route through it — there is one path:
   `failAllPending(err)`. Because `closeOnce` gates the trio, only the first of
   {monitor death, readLoop error, Close} delivers to the pending map; the others
   are no-ops. (Note: single-delivery to a given pending reply is guaranteed by the
-  pending-map + `pendingMu` + delete-as-you-go in `failAllPending` itself — that
+  pending shard map + `pendingShards[i].mu` + delete-as-you-go in `failAllPending` itself — that
   invariant is unchanged and is what makes even a stray concurrent caller safe;
   `closeOnce` additionally guarantees the *meaningful* error is the one delivered,
   rather than a later "use of closed connection" read error.)

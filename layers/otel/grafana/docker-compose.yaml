@@ -1,0 +1,73 @@
+# Development stack: Grafana 13.1 with this plugin's dist/ mounted (unsigned
+# loading allowed), a single-node FoundationDB 7.3 and a seed job that writes
+# the demo run /OTEL/R_GRAFANA_DEV through otel.Exporter. Build first:
+#
+#   just grafana-build                                  # dist/gpx_foundationdb_*
+#   npm run build                                       # dist/module.js
+#   CGO_ENABLED=0 go build -o bin/seed ./cmd/seed       # the seed job's binary
+#   docker compose up --build
+#   GRAFANA_VERSION=12.0.0 docker compose up --build    # oldest supported Grafana
+#
+# The datasource in provisioning/ reaches FDB with the cluster string
+# docker:docker@fdb:4500 (a hostname coordinator, resolved on the compose network).
+services:
+  grafana:
+    extends:
+      file: .config/docker-compose-base.yaml
+      service: grafana
+    build:
+      args:
+        grafana_version: ${GRAFANA_VERSION:-13.1.9}
+    environment:
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: birdayz-foundationdb-datasource
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+
+  # Writes T0 (messages as deltas) and T1 (full-text) of run grafana_dev.
+  seed:
+    image: foundationdb/foundationdb:${FDB_VERSION:-7.3.77}
+    depends_on:
+      fdb-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./bin/seed:/usr/local/bin/seed:ro
+    entrypoint: ['/usr/local/bin/seed']
+    command: ['-cluster-string', 'docker:docker@fdb:4500', '-run', 'grafana_dev', '-traces', '${SEED_TRACES:-200}']
+
+  fdb:
+    image: foundationdb/foundationdb:${FDB_VERSION:-7.3.77}
+    hostname: fdb
+    environment:
+      FDB_NETWORKING_MODE: container
+      FDB_CLUSTER_FILE_CONTENTS: docker:docker@fdb:4500
+    # Data on tmpfs, as the repository's FDB testcontainer does: on a nearly full
+    # host disk FDB's free-space ratio throttles every transaction to zero. The
+    # EIO file backend avoids 7.3.77's fatal fallocate EINTR (testcontainers/foundationdb).
+    tmpfs:
+      - /var/fdb/data
+    entrypoint:
+      - /usr/bin/tini
+      - -g
+      - --
+      - /bin/bash
+      - -c
+      - sed -i 's|^fdbserver |fdbserver --knob_disable_posix_kernel_aio=1 |' /var/fdb/scripts/fdb.bash && exec /var/fdb/scripts/fdb.bash
+
+  # Configures a new database; when the fdb container kept running it finds one available.
+  fdb-init:
+    image: foundationdb/foundationdb:${FDB_VERSION:-7.3.77}
+    depends_on:
+      - fdb
+    entrypoint: ['bash', '-c']
+    command:
+      - |
+        echo docker:docker@fdb:4500 > /tmp/fdb.cluster
+        for i in $$(seq 60); do
+          out=$$(fdbcli -C /tmp/fdb.cluster --exec 'status minimal' --timeout 5 2>&1)
+          case "$$out" in *"is available"*) echo "$$out"; exit 0 ;; esac
+          fdbcli -C /tmp/fdb.cluster --exec 'configure new single memory' --timeout 10 > /dev/null 2>&1
+          sleep 1
+        done
+        echo "FoundationDB did not become available: $$out" >&2
+        exit 1

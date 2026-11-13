@@ -13,6 +13,18 @@ bazel_dep(name = "rules_shell", version = "0.8.0")
 
 go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
 go_deps.from_file(go_mod = "//:go.mod")
+
+# Test-only scanner and its missing transitive module; not root Go dependencies.
+go_deps.module(
+    path = "golang.org/x/telemetry",
+    sum = "h1:P6NGsugec4oASJ+yKMNgTndeo0h2CbixZLvQIe9h5R4=",
+    version = "v0.0.0-20261010193011-f71dc92da45e",
+)
+go_deps.module(
+    path = "golang.org/x/vuln",
+    sum = "h1:12VaqnI9kJfqwRoPptxoqsUhQtdfrSbdksT7X/KY/sc=",
+    version = "v1.9.0",
+)
 go_deps.module_override(
     patch_strip = 1,
     patches = [
@@ -22,16 +34,25 @@ go_deps.module_override(
     ],
     path = "github.com/apple/foundationdb/bindings/go",
 )
+
+# One testcontainers session (and reaper) per Bazel test action; see the patch.
+go_deps.module_override(
+    patch_strip = 1,
+    patches = ["//patches:testcontainers-session-per-bazel-test.patch"],
+    path = "github.com/testcontainers/testcontainers-go",
+)
 use_repo(
     go_deps,
     "build_buf_go_protoyaml",
     "cc_mvdan_gofumpt",
     "co_honnef_go_tools",
+    "com_github_andybalholm_brotli",
     "com_github_antlr4_go_antlr_v4",
     "com_github_apple_foundationdb_bindings_go",
     "com_github_birdayz_protobuf_ecosystem",
     "com_github_charmbracelet_x_term",
     "com_github_chzyer_readline",
+    "com_github_clickhouse_clickhouse_go_v2",
     "com_github_containerd_errdefs",
     "com_github_docker_docker",
     "com_github_docker_go_connections",
@@ -48,6 +69,7 @@ use_repo(
     "com_github_testcontainers_testcontainers_go",
     "com_github_zeebo_xxh3",
     "in_gopkg_yaml_v3",
+    "io_opentelemetry_go_otel",
     "io_opentelemetry_go_otel_exporters_otlp_otlptrace",
     "io_opentelemetry_go_otel_sdk",
     "io_opentelemetry_go_otel_trace",
@@ -56,8 +78,10 @@ use_repo(
     "land_charm_lipgloss_v2",
     "org_golang_google_protobuf",
     "org_golang_x_sys",
+    "org_golang_x_telemetry",
     "org_golang_x_text",
     "org_golang_x_tools",
+    "org_golang_x_vuln",
     "org_uber_go_mock",
 )
 
@@ -114,6 +138,7 @@ filegroup(
 )
 BUILDEOF""",
     ],
+    integrity = "sha256-XlpcbZ0Of1EIYaqKo58A/w81rQu7UzQCB8+d383ycwA=",
     strip_prefix = "foundationdb-7.3.77",
     urls = ["https://github.com/apple/foundationdb/archive/refs/tags/7.3.77.tar.gz"],
 )
@@ -143,6 +168,9 @@ maven.install(
         "bazel_worker_java",
         "protobuf",
     ],
+    # Pinned resolution of every artifact above and its transitive closure.
+    # Repin after any artifact or version change: `just maven-repin`.
+    lock_file = "//:maven_install.json",
     repositories = [
         "https://repo1.maven.org/maven2",
     ],
@@ -272,8 +300,8 @@ cc_library(
     urls = ["https://github.com/apple/foundationdb/releases/download/7.3.77/fdb-headers-7.3.77.tar.gz"],
 )
 
-# libfdb_c 7.3.77 for the Java conformance server; fdb-java 7.1.26 (unpinned, no maven lock) runs
-# on it because the C API is backward compatible. The host still provides liblzma.so.5.
+# libfdb_c 7.3.77 for the Java conformance server; fdb-java 7.1.26 (pinned in maven_install.json,
+# a transitive dependency of the Record Layer) runs on it because the C API is backward compatible. The host still provides liblzma.so.5.
 http_file(
     name = "libfdb_c_linux_x86_64",
     downloaded_file_path = "libfdb_c.so",

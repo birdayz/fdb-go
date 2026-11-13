@@ -48,10 +48,11 @@ func TestMakeSelfConflicting_AddsSCRangeToBoth(t *testing.T) {
 	tx.conflictMu.Lock()
 	tx.makeSelfConflictingLocked()
 	tx.conflictMu.Unlock()
-	if len(tx.readConflicts) != 1 || len(tx.writeConflicts) != 1 {
-		t.Fatalf("must add one range to each set, got read=%d write=%d", len(tx.readConflicts), len(tx.writeConflicts))
+	reads, writes := tx.readConflictRanges(), tx.writeConflictRanges()
+	if len(reads) != 1 || len(writes) != 1 {
+		t.Fatalf("must add one range to each set, got read=%d write=%d", len(reads), len(writes))
 	}
-	for _, cr := range []KeyRange{tx.readConflicts[0], tx.writeConflicts[0]} {
+	for _, cr := range []KeyRange{reads[0], writes[0]} {
 		if !bytes.HasPrefix(cr.Begin, selfConflictPrefix) {
 			t.Fatalf("self-conflict key %x lacks the \\xFF/SC/ prefix", cr.Begin)
 		}
@@ -62,7 +63,7 @@ func TestMakeSelfConflicting_AddsSCRangeToBoth(t *testing.T) {
 			t.Fatal("self-conflict range end != keyAfter(begin) (must be a single-key range)")
 		}
 	}
-	if !bytes.Equal(tx.readConflicts[0].Begin, tx.writeConflicts[0].Begin) {
+	if !bytes.Equal(reads[0].Begin, writes[0].Begin) {
 		t.Fatal("read and write self-conflict keys differ — must be the SAME synthetic key")
 	}
 }
@@ -82,7 +83,7 @@ func TestDummyBarrier_PicksSCKeyOverRealKey(t *testing.T) {
 	tx.makeSelfConflictingLocked()
 	tx.conflictMu.Unlock()
 
-	key := intersectConflictRanges(tx.writeConflicts, tx.readConflicts)
+	key := intersectConflictRanges(tx.writeConflictRanges(), tx.readConflictRanges())
 	if bytes.Equal(key, realKey) {
 		t.Fatalf("dummy barrier picked the REAL user key %q — it must pick the synthetic \\xFF/SC/ key", key)
 	}
@@ -158,7 +159,7 @@ func TestIntersectRanges(t *testing.T) {
 // vectors, deep-copied out of the pooled buffer so the caller can read them after the buffer is returned.
 func marshaledConflictRanges(t *testing.T, tx *Transaction) (reads, writes []types.KeyRangeRef) {
 	t.Helper()
-	body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations, tx.writeConflicts)
+	body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations, tx.writeConflictRanges())
 	defer marshalBufPool.Put(poolBuf)
 	var req types.CommitTransactionRequest
 	if err := req.UnmarshalFDB(body); err != nil {
@@ -217,10 +218,7 @@ func TestCommit_CallsMaybeMakeSelfConflicting(t *testing.T) {
 		t.Fatal("Commit on a cancelled ctx must fail at the commit-path GRV (before tx.commit); got nil")
 	}
 
-	tx.conflictMu.Lock()
-	reads := append([]KeyRange(nil), tx.readConflicts...)
-	writes := append([]KeyRange(nil), tx.writeConflicts...)
-	tx.conflictMu.Unlock()
+	reads, writes := tx.readConflictRanges(), tx.writeConflictRanges()
 	if !anySelfConflictKeyRange(reads) {
 		t.Fatalf("Commit() did not inject the \\xFF/SC/ range into readConflicts — the maybeMakeSelfConflicting call site is unwired; got %d ranges", len(reads))
 	}
@@ -240,7 +238,7 @@ func TestCommit_NonTenantWriteOnlyInjectsSelfConflictToWire(t *testing.T) {
 	tx := newTestTx()
 	tx.tenantId = NoTenantID
 	tx.addWriteConflict([]byte("wk"), keyAfterBytes([]byte("wk"))) // write-only: one write conflict, no reads
-	tx.maybeMakeSelfConflicting(tx.writeConflicts, tx.readConflicts)
+	tx.maybeMakeSelfConflicting(tx.writeConflictRanges(), tx.readConflictRanges())
 	reads, writes := marshaledConflictRanges(t, tx)
 	if !anySelfConflictRange(reads) || !anySelfConflictRange(writes) {
 		t.Fatalf("non-tenant write-only commit must ship the \\xFF/SC/ range in BOTH conflict vectors; reads=%v writes=%v",
@@ -254,7 +252,7 @@ func TestCommit_TenantWriteOnlyInjectsSelfConflictToWire(t *testing.T) {
 	tx := newTestTx()
 	tx.tenantId = 42
 	tx.addWriteConflict([]byte("wk"), keyAfterBytes([]byte("wk")))
-	sc, _, added := tx.maybeMakeSelfConflicting(tx.writeConflicts, tx.readConflicts)
+	sc, _, added := tx.maybeMakeSelfConflicting(tx.writeConflictRanges(), tx.readConflictRanges())
 	if !added || !bytes.HasPrefix(sc.Begin, []byte("\xff/SC/")) || len(sc.Begin) != len("\xff/SC/")+16 {
 		t.Fatalf("tenant self-conflict range = %x, added = %v", sc, added)
 	}
@@ -282,7 +280,7 @@ func TestCommit_IntersectingConflictsSkipSelfConflict(t *testing.T) {
 	tx.tenantId = NoTenantID
 	tx.addWriteConflict([]byte("a"), []byte("z"))
 	tx.addReadConflict([]byte("m"), []byte("n")) // [m,n) ⊂ [a,z): the real ranges already intersect
-	tx.maybeMakeSelfConflicting(tx.writeConflicts, tx.readConflicts)
+	tx.maybeMakeSelfConflicting(tx.writeConflictRanges(), tx.readConflictRanges())
 	reads, writes := marshaledConflictRanges(t, tx)
 	if anySelfConflictRange(reads) || anySelfConflictRange(writes) {
 		t.Fatal("already-intersecting real conflict ranges must NOT get a \\xFF/SC/ range")

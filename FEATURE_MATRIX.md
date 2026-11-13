@@ -23,12 +23,12 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**407 scenarios · 3458 query/assertion cases** across 18 feature areas — 3038 supported, 101 unsupported-feature pins, 319 error-path pins.
+**409 scenarios · 3480 query/assertion cases** across 18 feature areas — 3060 supported, 101 unsupported-feature pins, 319 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
 | Aggregates & GROUP BY | 63 | 431 | 395 | 18 | 18 |
-| Joins | 66 | 313 | 296 | 2 | 15 |
+| Joins | 68 | 335 | 318 | 2 | 15 |
 | Subqueries (EXISTS / IN / scalar) | 47 | 323 | 270 | 29 | 24 |
 | CTEs | 15 | 202 | 161 | 4 | 37 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 14 | 78 | 67 | 5 | 6 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 48 | 488 | 421 | 9 | 58 |
-| **Total** | **407** | **3458** | **3038** | **101** | **319** |
+| **Total** | **409** | **3480** | **3060** | **101** | **319** |
 
 ## Aggregates & GROUP BY
 
@@ -90,7 +90,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `dotted_column_group_by` | 4 | 3 | 0 | 1 | A COLUMN WHOSE QUOTED NAME HOLDS DOTS GROUPS UNDER A TABLE ALIAS, as Java's |
 | `empty_result_aggregate` | 4 | 4 | 0 | 0 | Aggregates over empty result sets |
 | `escaped_table_grouped_aggregate` | 4 | 4 | 0 | 0 | RFC-238 §7c predicted five matching gates turn on when the escaped-name |
-| `go_extensions_group_by` | 5 | 5 | 0 | 0 | Go extensions: GROUP BY (Java rejects) |
+| `go_extensions_group_by` | 5 | 5 | 0 | 0 | Go extensions: GROUP BY over unordered input (Java refuses) |
 | `group_by_case` | 1 | 1 | 0 | 0 | GROUP BY with CASE expression |
 | `group_by_count_star` | 4 | 4 | 0 | 0 | GROUP BY with COUNT(*) edge cases |
 | `group_by_derived_expr` | 4 | 4 | 0 | 0 | GROUP BY expressions through derived tables — regression guards for |
@@ -158,7 +158,9 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `join_leg_name_pins` | 3 | 3 | 0 | 0 | same-named columns across join legs |
 | `join_null_key` | 3 | 3 | 0 | 0 | SQL §7.6: NULL = NULL evaluates to UNKNOWN, so rows with NULL in a |
 | `join_on_syntax` | 6 | 6 | 0 | 0 | JOIN ... |
-| `join_optimization_probes` | 6 | 6 | 0 | 0 | — |
+| `join_optimization_probes` | 11 | 11 | 0 | 0 | — |
+| `join_optimization_probes_nested_loop` | 6 | 6 | 0 | 0 | Join probes with predicate push-down disabled: nested-loop joins. |
+| `join_optimization_probes_scan_only` | 11 | 11 | 0 | 0 | Join probes with index matching disabled: every leg is a full scan. |
 | `join_order_expression` | 3 | 3 | 0 | 0 | ORDER BY on join results with expressions |
 | `join_pagination` | 7 | 7 | 0 | 0 | JOIN with paginated results (LIMIT+OFFSET) |
 | `join_patterns_java` | 7 | 7 | 0 | 0 | JOIN patterns from Java test coverage. |
@@ -233,7 +235,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `scalar_subquery_types` | 9 | 8 | 1 | 0 | Type-coverage probes for scalar subqueries: the cached value flows |
 | `self_not_exists` | 3 | 3 | 0 | 0 | NOT EXISTS on the same table (self-referential) |
 | `subquery_exists_complex` | 4 | 4 | 0 | 0 | Complex EXISTS subquery patterns |
-| `subquery_in` | 13 | 5 | 8 | 0 | `col IN (subquery)` is rejected at predicate evaluation time. |
+| `subquery_in` | 13 | 5 | 8 | 0 | Both engines reject IN (subquery) with 0AF00 (DocClaimsJavaProbe's in_subquery). |
 | `subquery_in_from` | 3 | 3 | 0 | 0 | Subquery in FROM clause (derived table) |
 | `subquery_scalar_in_where` | 3 | 3 | 0 | 0 | Scalar subquery used in WHERE predicate |
 | `update_correlated_exists` | 4 | 4 | 0 | 0 | UPDATE with correlated EXISTS |

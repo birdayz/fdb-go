@@ -2,6 +2,7 @@ package embedded
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -514,12 +515,16 @@ func TestSemanticEnumRejectsMalformedExactDeclarations(t *testing.T) {
 
 func TestEnumErrorClassification(t *testing.T) {
 	t.Parallel()
-	cause := &values.InvalidEnumValueError{Value: "PURPLE"}
-	for _, mapped := range []error{mapPredicateWalkError(cause), translateExecError(cause)} {
-		var sqlErr *api.Error
-		var enumErr *values.InvalidEnumValueError
-		if !errors.As(mapped, &sqlErr) || sqlErr.Code != api.ErrCodeInternalError || !errors.As(mapped, &enumErr) || enumErr.Value != "PURPLE" {
-			t.Fatalf("enum classification or cause lost: %v", mapped)
+	for _, cause := range []error{&values.InvalidEnumValueError{Value: "PURPLE"}, &values.InvalidUUIDValueError{Value: "PURPLE"}} {
+		wrapped := fmt.Errorf("walk: %w", cause)
+		for _, mapped := range []error{mapPredicateWalkError(wrapped), translateExecError(wrapped)} {
+			var sqlErr *api.Error
+			if !errors.As(mapped, &sqlErr) || sqlErr.Code != api.ErrCodeInternalError || !errors.Is(mapped, cause) {
+				t.Fatalf("classification or cause lost: %v", mapped)
+			}
+			if mapped.Error() != "XX000: "+cause.Error() {
+				t.Fatalf("renders %q, want the message once", mapped.Error())
+			}
 		}
 	}
 }

@@ -785,6 +785,8 @@ type grvResult struct {
 	err     error
 }
 
+var grvReplyPool = sync.Pool{New: func() any { return make(chan grvResult, 1) }}
+
 // getReadVersion returns a read version, using the cache if fresh. The
 // second return is the database-locked flag from the reply (or from the
 // cache entry) — the per-transaction lock check happens at the consumption
@@ -851,7 +853,8 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
 	}
 
 	// Slow path: batch request to proxy.
-	req := grvRequest{reply: make(chan grvResult, 1), spanContext: span, tags: tags}
+	replyCh := grvReplyPool.Get().(chan grvResult)
+	req := grvRequest{reply: replyCh, spanContext: span, tags: tags}
 
 	b = b.forFlags(flags)
 	switch batch := b.admit(db, req); len(batch) {
@@ -863,14 +866,16 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
 		// :7266-7287, :7382), so a cancelled lone caller here also skips tag throttles,
 		// the minAcceptable floor and one batch-window sample.
 		b.flushWithin(db, ctx, batch)
-		result := <-req.reply
+		result := <-replyCh
+		grvReplyPool.Put(replyCh)
 		return result.version, result.locked, result.instant, result.err
 	default:
 		go b.flush(db, batch)
 	}
 
 	select {
-	case result := <-req.reply:
+	case result := <-replyCh:
+		grvReplyPool.Put(replyCh)
 		return result.version, result.locked, result.instant, result.err
 	case <-ctx.Done():
 		return 0, false, time.Time{}, ctx.Err()
@@ -1463,7 +1468,7 @@ retry:
 				if ended := grvRPCEnded(ctx, db); ended != nil {
 					return 0, false, false, false, nil, 0, attemptEpoch, ended
 				}
-				db.handleReadConnError(proxy.Address, err)
+				db.handleReadConnError(proxy.Address, conn, err)
 				continue
 			}
 
@@ -1488,7 +1493,7 @@ retry:
 			}
 			replyCleanup.release()
 			if resp.Err != nil {
-				db.handleReadConnError(proxy.Address, resp.Err)
+				db.handleReadConnError(proxy.Address, conn, resp.Err)
 				continue
 			}
 			// A well-formed frame proves address reachability; clear failures before
@@ -1585,7 +1590,9 @@ func parseGetReadVersionReply(data []byte) (int64, bool, bool, bool, []types.Tra
 		return 0, false, false, false, nil, 0, fmt.Errorf("GRV: %w", err)
 	}
 	var reply types.GetReadVersionReply
-	reply.UnmarshalFromReader(&r)
+	if err := reply.UnmarshalFromReader(&r); err != nil {
+		return 0, false, false, false, nil, 0, fmt.Errorf("GRV: %w", err)
+	}
 	return reply.Version, reply.Locked, reply.RkDefaultThrottled, reply.RkBatchThrottled, reply.TagThrottleInfo, reply.ProxyTagThrottledDuration, nil
 }
 

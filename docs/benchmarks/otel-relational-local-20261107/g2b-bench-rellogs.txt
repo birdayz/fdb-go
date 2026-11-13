@@ -1,0 +1,31 @@
+# Gate G2B: BenchmarkRelLogsVsFDB (layers/otel/logs_rel_bench_test.go), both log stores in
+# one test binary on the benchmark's own FDB testcontainer, 2026-11-07, two sets of two
+# alternating runs per arm (arm=fdb: the custom store's Exporter.ExportLogs on FDBBackend;
+# arm=rel: the relational log store). 20,000 logs per run in calls of 500, then 400
+# QueryLogsByTrace reads. cpu_us_per_log is the test process's user+sys over the export calls.
+# Command: bazelisk test //layers/otel:otel_test --test_arg=-test.run='^$'
+#   --test_arg=-test.bench=BenchmarkRelLogsVsFDB --test_arg=-test.benchtime=1x
+#   --test_output=all --nocache_test_results
+# Recovered from the stream 2B agent's session log: the lines the command printed through
+# grep -E "arm=|Benchmark|ok|FAIL|PASS|Error|error" (set 1) and "arm=|Benchmark|^PASS|FAIL"
+# (set 2), with uptime before and after. No other output of these runs was kept.
+#
+# set 1, 15:44 local: tree = archive/otel-relational/g2b-logs^ (6918c3314), the benchmark's
+# commit, run just before committing it; load average after: 14.17, 23.46, 41.62
+BenchmarkRelLogsVsFDB
+    logs_rel_bench_test.go:181: arm=fdb run=0 logs=20000 batches=320 cpu_us_per_log=854.0 wall_s=8.09 kv_bytes_per_log=2351.5 prefix_bytes_per_log=1821.4 keys_per_log=11.80 stats_stored_per_log=380.2 logical_per_log=502.8 by_trace_reads=400 logs_read=1280 p50_ms=0.698 p99_ms=5.818
+    logs_rel_bench_test.go:181: arm=rel run=0 logs=20000 batches=320 cpu_us_per_log=347.7 wall_s=3.41 kv_bytes_per_log=2244.6 prefix_bytes_per_log=1499.2 keys_per_log=13.00 stats_stored_per_log=601.6 logical_per_log=502.8 by_trace_reads=400 logs_read=1280 p50_ms=0.686 p99_ms=1.483
+    logs_rel_bench_test.go:181: arm=fdb run=1 logs=20000 batches=320 cpu_us_per_log=826.6 wall_s=8.42 kv_bytes_per_log=2351.5 prefix_bytes_per_log=1821.4 keys_per_log=11.80 stats_stored_per_log=380.2 logical_per_log=502.8 by_trace_reads=400 logs_read=1280 p50_ms=0.577 p99_ms=2.313
+    logs_rel_bench_test.go:181: arm=rel run=1 logs=20000 batches=320 cpu_us_per_log=321.8 wall_s=2.45 kv_bytes_per_log=2244.6 prefix_bytes_per_log=1499.2 keys_per_log=13.00 stats_stored_per_log=601.5 logical_per_log=502.8 by_trace_reads=400 logs_read=1280 p50_ms=0.587 p99_ms=5.524
+BenchmarkRelLogsVsFDB-24    	       1	31706856956 ns/op	      2352 fdb-B/log	       826.6 fdb-cpu-us/log	      2245 rel-B/log	       321.8 rel-cpu-us/log
+PASS
+#
+# set 2, 15:51 local: tree = archive/otel-relational/g2b-logs (15af5fd66), git status clean;
+# load average before: 23.91, 23.43, 35.39; after: 24.29, 23.63, 34.96
+BenchmarkRelLogsVsFDB
+    logs_rel_bench_test.go:181: arm=fdb run=0 logs=20000 batches=320 cpu_us_per_log=811.0 wall_s=8.14 kv_bytes_per_log=2351.5 prefix_bytes_per_log=1821.4 keys_per_log=11.80 stats_stored_per_log=380.2 logical_per_log=502.8 by_trace_reads=400 logs_read=1280 p50_ms=0.852 p99_ms=7.978
+    logs_rel_bench_test.go:181: arm=rel run=0 logs=20000 batches=320 cpu_us_per_log=362.6 wall_s=4.49 kv_bytes_per_log=2244.6 prefix_bytes_per_log=1499.2 keys_per_log=13.00 stats_stored_per_log=601.6 logical_per_log=502.8 by_trace_reads=400 logs_read=1280 p50_ms=0.862 p99_ms=2.410
+    logs_rel_bench_test.go:181: arm=fdb run=1 logs=20000 batches=320 cpu_us_per_log=815.4 wall_s=9.66 kv_bytes_per_log=2351.5 prefix_bytes_per_log=1821.4 keys_per_log=11.80 stats_stored_per_log=380.2 logical_per_log=502.8 by_trace_reads=400 logs_read=1280 p50_ms=0.597 p99_ms=6.952
+    logs_rel_bench_test.go:181: arm=rel run=1 logs=20000 batches=320 cpu_us_per_log=316.9 wall_s=2.51 kv_bytes_per_log=2244.6 prefix_bytes_per_log=1499.2 keys_per_log=13.00 stats_stored_per_log=601.6 logical_per_log=502.8 by_trace_reads=400 logs_read=1280 p50_ms=0.579 p99_ms=1.738
+BenchmarkRelLogsVsFDB-24    	       1	34753065998 ns/op	      2352 fdb-B/log	       815.4 fdb-cpu-us/log	      2245 rel-B/log	       316.9 rel-cpu-us/log
+PASS

@@ -15,7 +15,7 @@ Tags are `v0.MINOR.PATCH`. Two axes, deliberately decoupled:
 - **Persisted data compatibility is release-specific.** The current Java target is
   **Record Layer 4.14.2.0**, with the exceptions in [docs/compatibility.md](docs/compatibility.md).
   Do not infer cross-release SQL storage or cross-engine continuation compatibility
-  from that target. The v0.2.0 candidate changes v0.1.0's Go SQL keyspace without an
+  from that target. v0.2.0 changes v0.1.0's Go SQL keyspace without an
   automatic migration. Persisted-format changes must be explicit in the changelog's
   **Compatibility** block and validated by the relevant conformance, differential
   and stress suites before release.
@@ -27,10 +27,10 @@ in `MODULE.bazel` / `go.mod`.
 
 - The **latest tagged minor** is supported; security and correctness fixes land there.
 - Older minors are best-effort only until `v1`.
-- The first tag is **v0.1.0** (2026-08-26). **v0.2.0 is a release candidate,
-  not a published tag.** Documentation at HEAD describes HEAD. A support policy
-  is not evidence of a backport or a published tag. Pin a revision and read its
-  changelog and upgrade guidance.
+- The first tag is **v0.1.0** (2026-08-26). The latest tag is **v0.2.0** (2026-11-07,
+  commit `aef9515`). Documentation at HEAD describes HEAD, which can include unreleased
+  changes after the latest tag. A support policy is not evidence of a backport.
+  Pin a revision and read its changelog and upgrade guidance.
 - Security fixes follow `SECURITY.md` (private report → fix on the latest minor / `master` → disclose).
 
 ## Cutting a release (checklist)
@@ -58,56 +58,44 @@ the maintainer chooses to cut `vX.Y.Z`:
    and HNSW layout), the Compatibility block is explicit and Java conformance,
    cross-client differential and the full lane pass **in CI on that commit**.
    Local validation is `just test` only; do not run `just test-full` locally.
-   The fast CI job skips stress/manual targets, so it is not the full-lane gate.
-3. **Dry run** on that commit: `gh workflow run frl-release.yml --ref master -f version=vX.Y.Z`
+   The ordinary CI suite skips stress/manual targets, so it is not the full-lane gate.
+   Opt in with `gh workflow run ci.yml --ref <candidate-branch> -f full=true`:
+   rehearse the dispatch path on the candidate branch, then repeat with `--ref master`
+   after the cut merges. Check `gh run view <id> --json headSha,jobs` against the exact
+   cut SHA and require the **Full release lane (default budgets)** job to succeed,
+   not be skipped. A branch push does not replace a completed full dispatch.
+   Download `full-lane-evidence`; retain its report, BEP, tested-input manifests and
+   exit metadata, separating executed tests from cached results. This lane includes
+   manual targets but excludes `realcluster` targets and does not establish every
+   extended seed, race or active-fuzz mode. It runs only on explicit dispatch;
+   ordinary PR/push CI does not run the full lane.
+3. **Dry run** on that commit: `gh workflow run fdb-release.yml --ref master -f version=vX.Y.Z`
    and wait for success; check that the run's commit (`gh run view <id> --json headSha`) is the cut
    commit. It builds, smoke-tests and previews the notes; a dispatch never publishes.
 4. **Tag** the cut commit by SHA:
    `git fetch origin && git tag -a vX.Y.Z -m vX.Y.Z <sha> && git push origin vX.Y.Z`.
    Report the exact cut SHA and verified gates to the maintainer and obtain
-   explicit tagging authorization first. `frl-release.yml` publishes the GitHub
-   release; do not create it by hand. For v0.2.0, continue below only after the
-   root-module release is actually available from the proxy.
+   explicit tagging authorization first. `fdb-release.yml` publishes the GitHub
+   release; do not create it by hand.
 5. **Check what users get**, in a clean environment:
 
    ```sh
    export GOPROXY=https://proxy.golang.org GOFLAGS=-modcacherw GOMODCACHE="$(mktemp -d)" GOBIN="$(mktemp -d)"
    go list -m fdb.dev@latest                                          # fdb.dev vX.Y.Z; the proxy's list can lag ~30 min
-   go install fdb.dev/cmd/frl@vX.Y.Z && "$GOBIN/frl" version --short  # vX.Y.Z
+   go install fdb.dev/cmd/fdb@vX.Y.Z && "$GOBIN/fdb" version --short  # vX.Y.Z
    ```
 
    `curl -fsSL https://fdb.dev/install.sh | sh` installs vX.Y.Z.
+6. **Record publication** in a follow-up PR: pages that say publication is pending
+   (step 1's pages, `docs/release-notes/vX.Y.0.md`) say the tag is published, and
+   `SECURITY.md` names the new supported minor. If the notes change, regenerate the
+   release body only after that PR merges, from a clean checkout of the merged commit:
+   `diff <(gh release view vX.Y.Z --json body --jq .body) <(scripts/release-notes.sh vX.Y.Z)`,
+   then `scripts/release-notes.sh vX.Y.Z | gh release edit vX.Y.Z --notes-file -`.
+
+The CLI is the root module's `cmd/fdb` package. Releases contain
+`fdb_<version>_<os>_<arch>.tar.gz` with the `fdb` binary and license notices,
+plus `checksums.txt`. The installer accepts root `vX.Y.Z` release tags only;
+it does not install legacy binaries or nested-module releases.
 
 No tag is cut automatically by CI or by this document.
-
-### Once, with v0.2.0: retire the nested `fdb.dev/cmd/frl` module
-
-v0.1.0 shipped `frl` as the nested module `fdb.dev/cmd/frl` (tag `cmd/frl/v0.1.0`). As the longer
-module path it wins `go install fdb.dev/cmd/frl@latest` over the root module until every version
-of it is retracted. Commit `948f2d3b69e0aa7fe85d2b25552b63a114384d7d` (branch `release/cmd-frl-v0.1.1-retract`) holds the
-retraction: a `cmd/frl/go.mod` retracting every version up to and including v0.1.1. It must never merge
-into master.
-
-1. Before item 3, the fdb.dev stub for `cmd/frl` is live (`website.yml` deploys it when the
-   release-prep change reaches master): `GOPROXY=direct go list -m -versions fdb.dev/cmd/frl`
-   prints `fdb.dev/cmd/frl v0.1.0`. Without the stub the proxy cannot fetch the new tag.
-2. After checklist step 4, wait until `GOPROXY=https://proxy.golang.org go list -m fdb.dev@latest` prints
-   `fdb.dev v0.2.0`. Retracting earlier makes `@latest` fall back to root v0.1.0, which does not
-   contain `cmd/frl`.
-3. Tag the reviewed commit, then delete the branch so nobody merges it:
-
-   ```sh
-   git fetch origin
-   git tag -a cmd/frl/v0.1.1 -m "Retract the nested frl module" 948f2d3b69e0aa7fe85d2b25552b63a114384d7d
-   git push origin cmd/frl/v0.1.1
-   git push origin --delete release/cmd-frl-v0.1.1-retract
-   ```
-
-   No workflow runs for this tag. Do not create a GitHub release for it: `install.sh` would offer
-   it as the newest release.
-4. In a clean environment (checklist step 5's `export`), make the proxy fetch the tag, then check:
-
-   ```sh
-   go list -m -retracted fdb.dev/cmd/frl@v0.1.1   # fdb.dev/cmd/frl v0.1.1 (retracted)
-   go install fdb.dev/cmd/frl@latest && go version -m "$GOBIN/frl" | awk '$1=="mod"'   # mod fdb.dev v0.2.0 ...
-   ```

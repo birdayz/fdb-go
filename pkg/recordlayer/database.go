@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -301,6 +302,19 @@ func (d *FDBDatabase) applyReadSystemKeys(o fdb.TransactionOptions) {
 	}
 }
 
+// OpenRecordContext opens a transaction and its record context as each Run
+// attempt does (system keys readable unless the database is tenant-scoped),
+// for a caller that commits (CommitWithHooks) or cancels it itself and does
+// its own retrying.
+func (d *FDBDatabase) OpenRecordContext(ctx context.Context) (*FDBRecordContext, error) {
+	tx, err := d.CreateWritableTransaction()
+	if err != nil {
+		return nil, err
+	}
+	d.applyReadSystemKeys(tx.Options())
+	return d.NewRecordContextIn(ctx, tx), nil
+}
+
 // Run executes fn in a transaction and commits it, retrying as Java's
 // FDBDatabaseRunner does (FDBDatabaseRunnerImpl.RunRetriable): at most
 // MaxAttempts attempts (default 10), each a fresh transaction, retried while
@@ -422,7 +436,7 @@ func (d *FDBDatabase) runContexts(ctx context.Context, policy attemptPolicy, rou
 func (d *FDBDatabase) precommit(recordCtx *FDBRecordContext, result any, commitStart *time.Time) (any, error) {
 	// EventCommit spans the pre-commit checks plus the commit itself, which is
 	// the interval Java measures: startTimeNanos is taken at the first line of
-	// commitAsync, before runCommitChecks, and the event is recorded when the
+	// commitAsync, before commit checks, and the event is recorded when the
 	// commit future completes (FDBRecordContext.java:478, :513-533; the
 	// FDBStoreTimer javadoc at :81-86 says so explicitly). Post-commit hooks
 	// are outside the span in Java and are outside it here.
@@ -432,7 +446,7 @@ func (d *FDBDatabase) precommit(recordCtx *FDBRecordContext, result any, commitS
 	// nothing ever calls Commit, which is why the whole autocommit SQL path
 	// reported zero commits while committing on every statement.
 	*commitStart = time.Now()
-	if err := recordCtx.runCommitChecks(); err != nil {
+	if err := recordCtx.drainCommitChecksAndSealWrites(); err != nil {
 		return nil, err
 	}
 	// Flush queued version mutations before the transactor commits.
@@ -671,6 +685,12 @@ type FDBRecordContext struct {
 	// refused as Java's ensureActive refuses it.
 	deactivated atomic.Bool
 
+	// A successful direct commit detaches physical coordination from the
+	// caller's cancellation owner, without changing immutable Context().
+	directCommitOwned  atomic.Bool
+	recordPhysical     recordPhysicalState
+	recordPhysicalHook func(stage string, key []byte)
+
 	// database is the FDBDatabase that opened this context (Java's
 	// FDBRecordContext.getDatabase); nil for a context over an external
 	// transaction built by NewFDBRecordContext.
@@ -799,8 +819,8 @@ func NewFDBRecordContext(tx fdb.WritableTransaction, env *dst.Env) *FDBRecordCon
 
 // NewRecordContext wraps an externally-created FDB transaction in a context that inherits
 // everything this database gives the contexts it opens itself: the DST environment and the
-// StoreTimer. It is the form every caller holding an *FDBDatabase should use — SQL's
-// explicit BeginTx→COMMIT path among them.
+// StoreTimer. It is the form every caller holding an *FDBDatabase should use; one with a
+// context (SQL's explicit BeginTx→COMMIT path) uses NewRecordContextIn.
 //
 // The point is that per-database state is threaded in ONE place. NewFDBRecordContext takes
 // the fields one by one, which is why env was silently dropped on the explicit-transaction
@@ -808,7 +828,14 @@ func NewFDBRecordContext(tx fdb.WritableTransaction, env *dst.Env) *FDBRecordCon
 // the identical failure for instrumentation, where the symptom is even quieter (a metric
 // that reads zero looks exactly like a workload that did nothing).
 func (d *FDBDatabase) NewRecordContext(tx fdb.WritableTransaction) *FDBRecordContext {
+	return d.NewRecordContextIn(context.Background(), tx)
+}
+
+// NewRecordContextIn is NewRecordContext with ctx as the context's Context(),
+// which bounds the reads and child transactions that take it from there.
+func (d *FDBDatabase) NewRecordContextIn(ctx context.Context, tx fdb.WritableTransaction) *FDBRecordContext {
 	rc := NewFDBRecordContext(tx, d.Env())
+	rc.ctx = ctx
 	rc.SetTimer(d.Timer())
 	rc.database = d
 	return rc
@@ -906,10 +933,8 @@ func (rc *FDBRecordContext) GetApproximateTransactionSize() (int64, error) {
 	return rc.tx.GetApproximateSize().Get()
 }
 
-// CheckTransactionSize checks the approximate transaction size against the
-// configured warning and error thresholds. Returns TransactionSizeExceededError
-// if the error threshold is exceeded, TransactionSizeWarningError if the warning
-// threshold is exceeded (once per transaction), or nil.
+// CheckTransactionSize returns TransactionSizeExceededError past the error threshold; past the
+// warning threshold it logs and counts CountTransactionSizeWarning once per transaction.
 func (rc *FDBRecordContext) CheckTransactionSize() error {
 	if rc.txSizeWarnBytes == 0 && rc.txSizeErrorBytes == 0 {
 		return nil
@@ -922,7 +947,14 @@ func (rc *FDBRecordContext) CheckTransactionSize() error {
 		return &TransactionSizeExceededError{CurrentBytes: size, LimitBytes: rc.txSizeErrorBytes}
 	}
 	if rc.txSizeWarnBytes > 0 && size >= rc.txSizeWarnBytes && rc.txSizeWarned.CompareAndSwap(false, true) {
-		return &TransactionSizeWarningError{CurrentBytes: size, LimitBytes: rc.txSizeWarnBytes}
+		// A warning, not an error: the write that crossed the threshold succeeded.
+		rc.Timer().Increment(CountTransactionSizeWarning)
+		ctx := rc.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		slog.Default().LogAttrs(ctx, slog.LevelWarn, "transaction size exceeds warning threshold",
+			slog.Int64("current_bytes", size), slog.Int64("limit_bytes", rc.txSizeWarnBytes))
 	}
 	return nil
 }
@@ -937,17 +969,6 @@ type TransactionSizeExceededError struct {
 
 func (e *TransactionSizeExceededError) Error() string {
 	return fmt.Sprintf("transaction size %d bytes exceeds limit %d bytes", e.CurrentBytes, e.LimitBytes)
-}
-
-// TransactionSizeWarningError is returned once per transaction when the
-// approximate size exceeds the configured warning threshold.
-type TransactionSizeWarningError struct {
-	CurrentBytes int64
-	LimitBytes   int64
-}
-
-func (e *TransactionSizeWarningError) Error() string {
-	return fmt.Sprintf("transaction size %d bytes exceeds warning threshold %d bytes", e.CurrentBytes, e.LimitBytes)
 }
 
 // Commit runs pre-commit checks, flushes pending version mutations, commits the
@@ -1175,8 +1196,8 @@ func (rc *FDBRecordContext) getCommitCheck(name string) CommitCheckFunc {
 	return nil
 }
 
-// removeCommitCheck cancels a named check that has not started, including one
-// in the current run's snapshot. It does not stop an already executing check.
+// removeCommitCheck cancels a named check that has not started in the live
+// commit drain. It does not stop an already executing check.
 // Store deletion uses this before clearing data to prevent deferred retirement
 // from recreating deleted index-state keys.
 func (rc *FDBRecordContext) removeCommitCheck(name string) {
@@ -1210,27 +1231,25 @@ func (rc *FDBRecordContext) AddPostCommit(hook PostCommitFunc) {
 	rc.postCommits = append(rc.postCommits, hook)
 }
 
-// runCommitChecks runs all registered pre-commit checks.
-// Returns the first error encountered, or nil if all pass.
-// Called at commit time when all goroutines should be done. Registration state
-// is locked, but checks run without the lock so they can cancel pending checks.
-func (rc *FDBRecordContext) runCommitChecks() error {
-	rc.commitMu.Lock()
-	checks := make([]*commitCheckRegistration, len(rc.commitChecks))
-	copy(checks, rc.commitChecks)
-	rc.commitMu.Unlock()
-	for _, entry := range checks {
+// runPendingCommitChecks drains registrations exactly once for one commit,
+// including checks registered by checks or joined record writers.
+func (rc *FDBRecordContext) runPendingCommitChecks(checked *int) error {
+	for {
 		rc.commitMu.Lock()
+		if *checked == len(rc.commitChecks) {
+			rc.commitMu.Unlock()
+			return nil
+		}
+		entry := rc.commitChecks[*checked]
+		*checked++
 		active := entry.active
 		rc.commitMu.Unlock()
-		if !active {
-			continue
-		}
-		if err := entry.check(); err != nil {
-			return err
+		if active {
+			if err := entry.check(); err != nil {
+				return err
+			}
 		}
 	}
-	return nil
 }
 
 // runPostCommits runs all registered post-commit callbacks.
@@ -1408,13 +1427,14 @@ func (rc *FDBRecordContext) CommitWithVersionstamp() ([]byte, error) {
 	if rc.routeOwned || !rc.deactivated.CompareAndSwap(false, true) {
 		return nil, errTransactionNotActive()
 	}
+	rc.directCommitOwned.Store(true)
 	// Include pre-commit checks in the commit span, but not post-commit hooks.
 	commitStart := time.Now()
-	if err := rc.runCommitChecks(); err != nil {
+	if err := rc.drainCommitChecksAndSealWrites(); err != nil {
+		rc.tx.Cancel()
 		rc.Timer().RecordSince(EventCommit, commitStart)
 		return nil, err
 	}
-
 	rc.flushVersionMutations()
 
 	// Only request versionstamp future if we actually queued versionstamp mutations.
@@ -1426,6 +1446,7 @@ func (rc *FDBRecordContext) CommitWithVersionstamp() ([]byte, error) {
 	}
 
 	if err := rc.tx.Commit().Get(); err != nil {
+		rc.tx.Cancel()
 		rc.Timer().RecordSince(EventCommit, commitStart)
 		return nil, err
 	}

@@ -72,5 +72,5 @@ func parseJavaFloat(text string, bits int) (any, error) {
 
 func numberFormatError(input string) error {
 	nfe := &recordlayer.NumberFormatError{Input: input}
-	return api.WrapError(api.ErrCodeUnknown, nfe.Error(), nfe)
+	return api.WrapStatedError(api.ErrCodeUnknown, nfe.Error(), nfe)
 }

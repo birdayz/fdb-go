@@ -212,9 +212,9 @@ var _ = Describe("FunctionKeyExpression", func() {
 			Expect(countVersionColumns(expr)).To(Equal(0))
 		})
 
-		It("returns 1 for FunctionExpr with VersionKey arguments", func() {
+		It("keeps Java's default 0 for FunctionExpr with VersionKey arguments", func() {
 			expr := FunctionExpr("fn", VersionKey())
-			Expect(countVersionColumns(expr)).To(Equal(1))
+			Expect(countVersionColumns(expr)).To(Equal(0))
 		})
 
 		It("returns 0 for FunctionExpr with Field arguments", func() {
@@ -222,9 +222,9 @@ var _ = Describe("FunctionKeyExpression", func() {
 			Expect(countVersionColumns(expr)).To(Equal(0))
 		})
 
-		It("returns 1 for FunctionExpr with Concat containing VersionKey", func() {
+		It("keeps Java's default 0 for FunctionExpr with Concat containing VersionKey", func() {
 			expr := FunctionExpr("fn", Concat(Field("a"), VersionKey()))
-			Expect(countVersionColumns(expr)).To(Equal(1))
+			Expect(countVersionColumns(expr)).To(Equal(0))
 		})
 	})
 })

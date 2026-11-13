@@ -1,6 +1,8 @@
 package infra
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,6 +10,9 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestPrecommitFastLane(t *testing.T) {
@@ -98,7 +103,7 @@ func TestJustTestLanes(t *testing.T) {
 			dir := t.TempDir()
 			stub := `#!/bin/bash
 if [ "$1" = query ]; then
-    [ "$2" = 'kind(".*_test", //...)' ] || exit 91
+    [ "$2" = 'kind(".*_test", //...) except attr(tags, "realcluster", //...)' ] || exit 91
     printf '%s\n' "$LABELS"
     exit "$QUERY_EXIT"
 fi
@@ -176,4 +181,385 @@ func TestWorkflowsUseTheCIConfig(t *testing.T) {
 		t.Fatal("found no bazelisk commands in the workflows: the check matched nothing")
 	}
 	t.Logf("%d workflow Bazel commands pass --config=ci", checked)
+}
+
+// laneHarness runs run-verified-lane.sh against a fake just in a throwaway repo.
+// The fake starts a lingering daemon, as bazelisk starts a server, and probes the
+// lock from inside the lane.
+type laneHarness struct {
+	t                              *testing.T
+	script, bin, repo, lock, state string
+}
+
+func newLaneHarness(t *testing.T) *laneHarness {
+	t.Helper()
+	script, err := filepath.Abs("../tools/lanes/run-verified-lane.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &laneHarness{t: t, script: script, bin: t.TempDir(), repo: t.TempDir(), state: t.TempDir()}
+	h.lock = filepath.Join(h.state, "lane.lock")
+	for name, body := range map[string]string{
+		"just": `#!/bin/bash
+if [ "$1" = --dry-run ]; then echo fake; exit 0; fi
+if [ "$1" = --evaluate ]; then echo "$STATE/race_base"; exit 0; fi
+sleep 300 </dev/null >/dev/null 2>&1 &
+echo $! > "$STATE/daemon.pid"
+if flock -n "$FDB_LANE_LOCK" true; then echo free > "$STATE/probe"; else echo held > "$STATE/probe"; fi
+echo $$ > "$STATE/just.pid"
+printf '%s\n' "$@" > "$STATE/just.args"
+if [ -n "$BLOCK" ]; then exec sleep 300; fi
+exit "${JUST_EXIT:-0}"
+`,
+		"bazelisk": `#!/bin/bash
+if flock -n "$FDB_LANE_LOCK" true; then echo free > "$STATE/shutdown-probe"; else echo held > "$STATE/shutdown-probe"; fi
+printf '%s\n' "$*" > "$STATE/bazelisk.args"
+`,
+	} {
+		syscall.ForkLock.Lock()
+		err := os.WriteFile(filepath.Join(h.bin, name), []byte(body), 0o700)
+		syscall.ForkLock.Unlock()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = h.repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	t.Cleanup(func() {
+		for _, f := range []string{"daemon.pid", "just.pid"} {
+			if pid := h.pid(f); pid > 0 {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+	return h
+}
+
+func (h *laneHarness) command(block bool, env ...string) *exec.Cmd {
+	return h.laneCommand("fast", block, env...)
+}
+
+func (h *laneHarness) laneCommand(lane string, block bool, env ...string) *exec.Cmd {
+	return h.laneCommandArgs(lane, block, nil, env...)
+}
+
+func (h *laneHarness) laneCommandArgs(lane string, block bool, extra []string, env ...string) *exec.Cmd {
+	cmd := exec.Command("bash", append([]string{h.script, h.repo, lane}, extra...)...)
+	cmd.Env = append(os.Environ(), "PATH="+h.bin+":"+os.Getenv("PATH"), "FDB_LANE_LOCK="+h.lock, "STATE="+h.state, "TMPDIR="+h.t.TempDir())
+	if block {
+		cmd.Env = append(cmd.Env, "BLOCK=1")
+	}
+	cmd.Env = append(cmd.Env, env...)
+	return cmd
+}
+
+func (h *laneHarness) pid(name string) int {
+	raw, err := os.ReadFile(filepath.Join(h.state, name))
+	if err != nil {
+		return 0
+	}
+	var pid int
+	if _, err := fmt.Sscan(string(raw), &pid); err != nil {
+		return 0
+	}
+	return pid
+}
+
+func (h *laneHarness) waitFor(name string) int {
+	h.t.Helper()
+	for i := 0; i < 3000; i++ {
+		if pid := h.pid(name); pid > 0 {
+			return pid
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	h.t.Fatalf("fake just never wrote %s", name)
+	return 0
+}
+
+// lockFree reports whether the lane lock can be taken now.
+func (h *laneHarness) lockFree() bool {
+	h.t.Helper()
+	f, err := os.OpenFile(h.lock, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return false
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return true
+}
+
+func (h *laneHarness) alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
+
+// The lane's Bazel server outlives the lane. If it inherits the lock descriptor,
+// a killed lane leaves every later heavy lane blocked on flock.
+func TestVerifiedLaneLock(t *testing.T) {
+	t.Parallel()
+	t.Run("held_during_lane_free_after_with_daemon", func(t *testing.T) {
+		t.Parallel()
+		h := newLaneHarness(t)
+		out, err := h.command(false).CombinedOutput()
+		if err != nil {
+			t.Fatalf("lane: %v: %s", err, out)
+		}
+		if args, err := os.ReadFile(filepath.Join(h.state, "bazelisk.args")); err != nil || string(args) != "shutdown\n" {
+			t.Fatalf("shutdown args = %q (%v), want \"shutdown\"", args, err)
+		}
+		if meta := laneMetadata(t, out); !strings.Contains(meta, "shutdown: bazelisk shutdown exit=0\n") {
+			t.Fatalf("metadata lacks the fast-lane shutdown line:\n%s", meta)
+		}
+		probe, err := os.ReadFile(filepath.Join(h.state, "probe"))
+		if err != nil || strings.TrimSpace(string(probe)) != "held" {
+			t.Fatalf("lock during the lane = %q (%v), want held", probe, err)
+		}
+		probe, err = os.ReadFile(filepath.Join(h.state, "shutdown-probe"))
+		if err != nil || strings.TrimSpace(string(probe)) != "held" {
+			t.Fatalf("lock during the server shutdown = %q (%v), want held", probe, err)
+		}
+		daemon := h.pid("daemon.pid")
+		if daemon == 0 || !h.alive(daemon) {
+			t.Fatalf("daemon %d is not running, so the check below would be vacuous", daemon)
+		}
+		if !h.lockFree() {
+			t.Fatalf("lane lock still held after the lane exited (by its daemon %d)", daemon)
+		}
+	})
+	t.Run("race_lane_shuts_down_the_race_output_base", func(t *testing.T) {
+		t.Parallel()
+		h := newLaneHarness(t)
+		out, err := h.laneCommand("race", false).CombinedOutput()
+		if err != nil {
+			t.Fatalf("lane: %v: %s", err, out)
+		}
+		args, err := os.ReadFile(filepath.Join(h.state, "bazelisk.args"))
+		want := "--output_base=" + filepath.Join(h.state, "race_base") + " shutdown"
+		if err != nil || strings.TrimSpace(string(args)) != want {
+			t.Fatalf("shutdown args = %q (%v), want %q", args, err, want)
+		}
+		meta := laneMetadata(t, out)
+		if !strings.Contains(meta, "shutdown: bazelisk "+want+" exit=0\n") {
+			t.Fatalf("metadata lacks the race shutdown line:\n%s", meta)
+		}
+	})
+	t.Run("recipe_and_extra_args_reach_just", func(t *testing.T) {
+		t.Parallel()
+		h := newLaneHarness(t)
+		extra := []string{"--test_arg=a b", "x"}
+		if out, err := h.laneCommandArgs("full", false, extra).CombinedOutput(); err != nil {
+			t.Fatalf("lane: %v: %s", err, out)
+		}
+		got, err := os.ReadFile(filepath.Join(h.state, "just.args"))
+		if want := "test-full\n--test_arg=a b\nx\n"; err != nil || string(got) != want {
+			t.Fatalf("just args = %q (%v), want %q", got, err, want)
+		}
+	})
+	t.Run("failing_lane_exit_status_reaches_caller", func(t *testing.T) {
+		t.Parallel()
+		h := newLaneHarness(t)
+		out, err := h.command(false, "JUST_EXIT=7").CombinedOutput()
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 7 {
+			t.Fatalf("lane exit = %v, want 7: %s", err, out)
+		}
+		if meta := laneMetadata(t, out); !strings.Contains(meta, "lane_exit=7 tee_exit=0 ") {
+			t.Fatalf("metadata lacks lane_exit=7:\n%s", meta)
+		}
+	})
+	t.Run("killing_only_the_script_keeps_lock_until_lane_ends", func(t *testing.T) {
+		t.Parallel()
+		h := newLaneHarness(t)
+		cmd := h.command(true)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		just := h.waitFor("just.pid")
+		if err := cmd.Process.Kill(); err != nil {
+			t.Fatal(err)
+		}
+		_ = cmd.Wait()
+		if !h.alive(just) {
+			t.Fatalf("lane %d died with the script, so the check below would be vacuous", just)
+		}
+		if h.lockFree() {
+			t.Fatal("lock released while the killed script's lane is still running")
+		}
+		if err := syscall.Kill(just, syscall.SIGKILL); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; !h.lockFree(); i++ {
+			if i == 3000 {
+				t.Fatalf("lock still held after the lane ended (daemon %d alive=%v)", h.pid("daemon.pid"), h.alive(h.pid("daemon.pid")))
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if d := h.pid("daemon.pid"); d == 0 || !h.alive(d) {
+			t.Fatalf("daemon %d is not running, so the release check was vacuous", d)
+		}
+	})
+}
+
+// laneMetadata reads the evidence metadata of a lane run; the script prints the
+// evidence directory on its first output line.
+func laneMetadata(t *testing.T, out []byte) string {
+	t.Helper()
+	dir, _, _ := strings.Cut(string(out), "\n")
+	meta, err := os.ReadFile(filepath.Join(dir, "metadata"))
+	if err != nil {
+		t.Fatalf("evidence metadata: %v (output %q)", err, out)
+	}
+	return string(meta)
+}
+
+func ciJobStepRun(workflow, jobName, stepName string) (string, error) {
+	var wf struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Name string `yaml:"name"`
+				Run  string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal([]byte(workflow), &wf); err != nil {
+		return "", err
+	}
+	for _, s := range wf.Jobs[jobName].Steps {
+		if s.Name == stepName {
+			return s.Run, nil
+		}
+	}
+	return "", fmt.Errorf("missing step %q in job %q", stepName, jobName)
+}
+
+// TestCIQueryTargetGates verifies that the Java-conformance and race CI steps distinguish
+// a failed `bazelisk query` from a query that succeeds with zero targets, and includes a
+// positive-control mutation restoring `2>/dev/null | wc -l`.
+func TestCIQueryTargetGates(t *testing.T) {
+	t.Parallel()
+	workflow := readRepoFile(t, ".github/workflows/ci.yml")
+	javaStep, err := ciJobStepRun(workflow, "conformance-java", "Java conformance tests")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raceStep, err := ciJobStepRun(workflow, "race", "-race tests (SQL layer + client + cascades) — isolated output_base")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const bazelStub = `#!/bin/bash
+set -eu
+cmd=""
+for arg in "$@"; do
+  case "$arg" in
+    shutdown|query|test) cmd="$arg"; break ;;
+  esac
+done
+if [ "$cmd" = shutdown ]; then
+  exit 0
+fi
+if [ "$cmd" = query ]; then
+  case "$*" in
+    *--output=xml*) printf '<query/>\n'; exit 0 ;;
+    *conformance_java*) scope="java" ;;
+    *//pkg/relational/*) scope="relational" ;;
+    *//pkg/fdbgo/client/*) scope="client" ;;
+    *//pkg/recordlayer/query/plan/cascades/*) scope="cascades" ;;
+    *) echo "unexpected query: $*" >&2; exit 91 ;;
+  esac
+  if [ "${FAIL_SCOPE:-}" = "$scope" ]; then
+    echo "ERROR: fetch failed for $scope" >&2
+    exit 37
+  fi
+  if [ "${EMPTY_SCOPE:-}" = "$scope" ]; then
+    exit 0
+  fi
+  printf '//%s:a_test\n//%s:b_test\n' "$scope" "$scope"
+  exit 0
+fi
+if [ "$cmd" = test ]; then
+  printf '%s\n' "$*" >> "$TEST_CALLS"
+  exit 0
+fi
+exit 91
+`
+
+	runStep := func(t *testing.T, script string, env ...string) (string, string, error) {
+		t.Helper()
+		dir := t.TempDir()
+		writeBuildStub(t, filepath.Join(dir, "bazelisk"), bazelStub)
+		calls := filepath.Join(dir, "test.calls")
+		ghEnv := filepath.Join(dir, "github.env")
+		// ci.yml has no `defaults.run.shell`, so GitHub Actions runs `/usr/bin/bash -e {0}`
+		// without `-o pipefail`.
+		cmd := exec.Command("bash", "-e", "-c", script)
+		cmd.Dir = dir
+		cmd.Env = append(append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "TEST_CALLS="+calls, "GITHUB_ENV="+ghEnv), env...)
+		out, runErr := cmd.CombinedOutput()
+		gotCalls, readErr := os.ReadFile(calls)
+		if readErr != nil && !os.IsNotExist(readErr) {
+			t.Fatal(readErr)
+		}
+		return string(out), string(gotCalls), runErr
+	}
+
+	t.Run("java_conformance", func(t *testing.T) {
+		t.Parallel()
+		out, calls, err := runStep(t, javaStep)
+		if err != nil || !strings.Contains(out, "conformance_java targets: 2\n") || !strings.Contains(calls, "--test_tag_filters=conformance_java,-stress") {
+			t.Fatalf("ok run: err=%v calls=%q out=\n%s", err, calls, out)
+		}
+		out, calls, err = runStep(t, javaStep, "EMPTY_SCOPE=java")
+		if err == nil || !strings.Contains(out, "::error::no conformance_java test targets — gate would be a no-op") || calls != "" {
+			t.Fatalf("empty run: err=%v calls=%q out=\n%s", err, calls, out)
+		}
+		out, calls, err = runStep(t, javaStep, "FAIL_SCOPE=java")
+		if err == nil || !strings.Contains(out, "::error::conformance_java target query failed") || !strings.Contains(out, "ERROR: fetch failed for java") || strings.Contains(out, "gate would be a no-op") || calls != "" {
+			t.Fatalf("fail run: err=%v calls=%q out=\n%s", err, calls, out)
+		}
+		const oldJava = "if ! targets=$(bazelisk query --config=ci 'attr(tags, conformance_java, tests(//...))'); then\n  echo \"::error::conformance_java target query failed\"\n  exit 1\nfi\nN=$(printf '%s\\n' \"$targets\" | sed '/^$/d' | wc -l)"
+		if strings.Count(javaStep, oldJava) != 1 {
+			t.Fatalf("javaStep did not match mutation target once:\n%s", javaStep)
+		}
+		mutated := strings.Replace(javaStep, oldJava, "N=$(bazelisk query --config=ci 'attr(tags, conformance_java, tests(//...))' 2>/dev/null | wc -l)", 1)
+		out, _, err = runStep(t, mutated, "FAIL_SCOPE=java")
+		if err == nil || !strings.Contains(out, "gate would be a no-op") {
+			t.Fatalf("mutated javaStep did not misreport query failure as no-op: err=%v out=\n%s", err, out)
+		}
+	})
+
+	t.Run("race_scopes", func(t *testing.T) {
+		t.Parallel()
+		out, calls, err := runStep(t, raceStep)
+		if err != nil || !strings.Contains(out, "race scope: relational=2 client=2 cascades=2 test targets\n") || len(strings.Split(strings.TrimSpace(calls), "\n")) != 3 {
+			t.Fatalf("ok run: err=%v calls=%q out=\n%s", err, calls, out)
+		}
+		for _, scope := range []string{"relational", "client", "cascades"} {
+			out, calls, err := runStep(t, raceStep, "EMPTY_SCOPE="+scope)
+			wantEmpty := "::error::" + scope + " race scope resolved 0 test targets — gate would be a no-op"
+			if err == nil || !strings.Contains(out, wantEmpty) || calls != "" {
+				t.Fatalf("empty %s: err=%v calls=%q out=\n%s", scope, err, calls, out)
+			}
+			out, calls, err = runStep(t, raceStep, "FAIL_SCOPE="+scope)
+			wantFail := "::error::" + scope + " race scope target query failed"
+			if err == nil || !strings.Contains(out, wantFail) || !strings.Contains(out, "ERROR: fetch failed for "+scope) || strings.Contains(out, "gate would be a no-op") || calls != "" {
+				t.Fatalf("fail %s: err=%v calls=%q out=\n%s", scope, err, calls, out)
+			}
+		}
+		const oldQ = "q() {\n  local targets\n  if ! targets=$(bazelisk --output_base=\"$RACE_BASE\" --host_jvm_args=-Xmx3g query --config=ci \"tests($(qexpr \"$2\"))\"); then\n    echo \"::error::$1 race scope target query failed\" >&2\n    exit 1\n  fi\n  printf '%s\\n' \"$targets\" | sed '/^$/d' | wc -l\n}"
+		if strings.Count(raceStep, oldQ) != 1 {
+			t.Fatalf("raceStep did not match mutation target once:\n%s", raceStep)
+		}
+		mutated := strings.Replace(raceStep, oldQ, "q() { bazelisk --output_base=\"$RACE_BASE\" --host_jvm_args=-Xmx3g query --config=ci \"tests($(qexpr \"$2\"))\" 2>/dev/null | wc -l; }", 1)
+		out, _, err = runStep(t, mutated, "FAIL_SCOPE=client")
+		if err == nil || !strings.Contains(out, "gate would be a no-op") {
+			t.Fatalf("mutated raceStep did not misreport query failure as no-op: err=%v out=\n%s", err, out)
+		}
+	})
 }

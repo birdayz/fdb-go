@@ -89,8 +89,7 @@ tests:
 
   # Single-element IN with ORDER BY — equality promotion sets
   # naturalOrder = pkCols, so ORDER BY on PK is eliminated. (LIMIT
-  # was incidental; rejected at parse time as of
-  # fdb-relational 4.11.1.0.)
+  # was incidental; Java rejects every LIMIT, 0AF00.)
   - query: SELECT id, name FROM t WHERE id IN (3) ORDER BY id
     rows:
       - [3, 'three']
@@ -169,8 +168,8 @@ tests:
       - [5]
 
   # -------------------------------------------------------------------
-  # IN with subquery — rejected (Java NPEs in
-  # AstNormalizer.visitInPredicate; CLAUDE.md #10 alignment). The
+  # IN with subquery — rejected, as by Java (0AF00 "IN predicate does not
+  # support nested SELECT"; CLAUDE.md #10 alignment). The
   # IN-list pushdown extractor never sees the subquery shape because
   # rejection happens at predicate eval time before any pushdown
   # decision. Type mismatch (which previously surfaced via the scan
@@ -366,7 +365,7 @@ tests:
 
   # Single-element IN on a secondary index with ORDER BY on PK — the
   # equality promotion sets naturalOrder = pkCols. (LIMIT was
-  # incidental; rejected at parse time as of fdb-relational 4.11.1.0.)
+  # incidental; Java rejects every LIMIT, 0AF00.)
   - query: SELECT id, status FROM t2 WHERE status IN ('active') ORDER BY id
     rows:
       - [1, 'active']

@@ -2,6 +2,9 @@ package cascades
 
 import (
 	"errors"
+	"fmt"
+	"slices"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -61,13 +64,8 @@ func plannerFuzzSameResultType(left, right expressions.Quantifier) bool {
 	return leftType.Equals(rightType)
 }
 
-// FuzzPlanner_Determinism pins that the task-stack Planner produces
-// the SAME final Reference state on identical inputs. Two fresh
-// Planner instances, same expression tree, same rules, same order →
-// same member count.
-//
-// Catches non-determinism bugs (map iteration order leaking into
-// results, pointer-address-dependent behavior, etc.).
+// FuzzPlanner_Determinism pins that two fresh Planners over two copies of the
+// same tree explore the same memo (members in order) and choose the same plan.
 //
 // Note: the Planner is NOT rule-order-independent — the Memo's
 // cross-Reference sharing makes earlier rules' yields visible to
@@ -76,35 +74,158 @@ func plannerFuzzSameResultType(left, right expressions.Quantifier) bool {
 // order, deterministic result). The invariant tested here is: given
 // the same inputs and same rule order, the result is identical.
 func FuzzPlanner_Determinism(f *testing.F) {
-	f.Add([]byte{0, 1, 2, 3, 4, 5})
-	f.Add(make([]byte, 8))
+	for _, seed := range plannerDeterminismSeeds {
+		f.Add(seed)
+	}
 	f.Fuzz(func(t *testing.T, b []byte) {
 		if len(b) < 4 {
 			return
 		}
-		exprA := buildFuzzExpression(b, 0, 0)
-		exprB := buildFuzzExpression(b, 0, 0)
-		refA := expressions.InitialOf(exprA)
-		refB := expressions.InitialOf(exprB)
 		rules := selectRules(b)
-
-		// Driver A: fresh Planner.
-		pA := NewPlanner(rules, nil)
-		if _, convA := exploreRewriting(pA, refA); !convA {
-			t.Fatal("Planner A did not converge — possible non-terminating rule interaction")
+		explore := func() string {
+			ref := expressions.InitialOf(buildFuzzExpression(b, 0, 0))
+			if _, converged := exploreRewriting(NewPlanner(rules, nil), ref); !converged {
+				t.Fatal("exploration did not converge — possible non-terminating rule interaction")
+			}
+			return renderMemoForDeterminism(ref)
+		}
+		if a, b := explore(), explore(); a != b {
+			t.Fatalf("two explorations of the same tree differ:\n--- A ---\n%s\n--- B ---\n%s", a, b)
 		}
 
-		// Driver B: fresh Planner, same rules same order.
-		pB := NewPlanner(rules, nil)
-		if _, convB := exploreRewriting(pB, refB); !convB {
-			t.Fatal("Planner B did not converge on input where Planner A did")
+		plan := func() string {
+			best, err := planFuzzTree(b, expressions.InitialOf(buildFuzzExpression(b, 0, 0)), nil)
+			if err != nil {
+				return "<error: " + err.Error() + ">"
+			}
+			return canonicalPipelineExplain(ExplainPhysicalPlan(best))
 		}
-
-		// Member counts must be identical (determinism).
-		if a, b := len(refA.Members()), len(refB.Members()); a != b {
-			t.Fatalf("run A produced %d members; run B produced %d — non-determinism", a, b)
+		if a, b := plan(), plan(); a != b {
+			t.Fatalf("two plannings of the same tree chose different plans:\n  A: %s\n  B: %s", a, b)
 		}
 	})
+}
+
+var plannerDeterminismSeeds = [][]byte{
+	{0, 1, 2, 3, 4, 5},
+	make([]byte, 8),
+	{0xff, 5, 1, 3, 2, 7},
+	{0xff, 6, 3, 1, 4, 8, 2},
+	{35, 4, 4, 1},
+	{8, 1, 2, 3},
+}
+
+// plannerFuzzIndexDef is a value index over the fuzz row, so the full scan has
+// an index-scan alternative for the cost model to rank.
+type plannerFuzzIndexDef struct{ stubIndexDef }
+
+func (d *plannerFuzzIndexDef) IndexRowType() values.Type { return plannerFuzzRowType() }
+func (d *plannerFuzzIndexDef) IndexKeyComponentTypes() []values.Type {
+	return []values.Type{values.NullableLong}
+}
+
+// planFuzzTree plans root, built from b, over an index on T.g; compared, when
+// set, sees every pair of final members the cost model ranks.
+func planFuzzTree(
+	b []byte, root *expressions.Reference, compared func(x, y expressions.RelationalExpression),
+) (expressions.RelationalExpression, error) {
+	ctx := NewPlanContextFromIndexDefs([]IndexDef{&plannerFuzzIndexDef{stubIndexDef{
+		name: "planner_fuzz_idx_g", columns: []string{"g"}, recordTypes: []string{"T"},
+	}}})
+	p := NewPlanner(selectRules(b), ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
+	p.MaxTasks = 100_000
+	if compared != nil {
+		less := p.costModel
+		p.costModel = func(x, y expressions.RelationalExpression) bool {
+			compared(x, y)
+			return less(x, y)
+		}
+	}
+	best, _, err := p.Plan(root)
+	return best, err
+}
+
+// TestPlannerDeterminismSeedsFaceAChoice: the fuzzer's plan comparison is
+// vacuous unless its seeds plan and the cost model ranks alternatives.
+func TestPlannerDeterminismSeedsFaceAChoice(t *testing.T) {
+	t.Parallel()
+
+	rootChoices := 0
+	for _, seed := range plannerDeterminismSeeds {
+		root := expressions.InitialOf(buildFuzzExpression(seed, 0, 0))
+		comparisons := 0
+		best, err := planFuzzTree(seed, root, func(x, y expressions.RelationalExpression) {
+			comparisons++
+			finals := root.FinalMembers()
+			if slices.Contains(finals, x) && slices.Contains(finals, y) {
+				rootChoices++
+			}
+		})
+		if err != nil || best == nil {
+			t.Fatalf("seed %v: plan %v, err %v; want a plan", seed, best, err)
+		}
+		if comparisons == 0 {
+			t.Errorf("seed %v: the cost model ranked no alternatives for %s", seed, ExplainPhysicalPlan(best))
+		}
+	}
+	if rootChoices == 0 {
+		t.Fatal("no seed's root group held two plans to rank")
+	}
+}
+
+// renderMemoForDeterminism renders each Reference reachable from root in first-visit order,
+// as its members in insertion order (type, record types, plan, values, children).
+func renderMemoForDeterminism(root *expressions.Reference) string {
+	ids := map[*expressions.Reference]int{}
+	var refs []*expressions.Reference
+	var visit func(*expressions.Reference) int
+	visit = func(ref *expressions.Reference) int {
+		if id, ok := ids[ref]; ok {
+			return id
+		}
+		ids[ref] = len(refs)
+		refs = append(refs, ref)
+		for _, member := range ref.AllMembers() {
+			for _, q := range member.GetQuantifiers() {
+				if child := q.GetRangesOver(); child != nil {
+					visit(child)
+				}
+			}
+		}
+		return ids[ref]
+	}
+	visit(root)
+
+	var out strings.Builder
+	for id, ref := range refs {
+		fmt.Fprintf(&out, "R%d:\n", id)
+		for _, member := range ref.AllMembers() {
+			fmt.Fprintf(&out, "  %T", member)
+			if source, ok := member.(interface{ GetRecordTypes() []string }); ok {
+				fmt.Fprintf(&out, " types=%v", source.GetRecordTypes())
+			}
+			if plan := ExplainPhysicalPlan(member); plan != "" {
+				fmt.Fprintf(&out, " plan=%s", plan)
+			}
+			if rv := member.GetResultValue(); rv != nil {
+				fmt.Fprintf(&out, " result=%s", values.ExplainValue(rv))
+			}
+			if wp, ok := member.(expressions.RelationalExpressionWithPredicates); ok {
+				for _, pred := range wp.GetPredicates() {
+					fmt.Fprintf(&out, " pred=%s", pred.Explain())
+				}
+			}
+			for _, q := range member.GetQuantifiers() {
+				if child := q.GetRangesOver(); child != nil {
+					fmt.Fprintf(&out, " %s->R%d", q.GetAlias(), ids[child])
+				}
+			}
+			out.WriteByte('\n')
+		}
+	}
+	return canonicalPipelineExplain(out.String())
 }
 
 // FuzzPlanner_Idempotence pins that exploration is idempotent: a
@@ -361,4 +482,36 @@ func selectRules(b []byte) []ExpressionRule {
 		return all[:1]
 	}
 	return out
+}
+
+// TestRenderMemoForDeterminism pins the fuzzer's oracle: two builds of one tree render alike
+// despite their generated aliases, and the same members in another order do not.
+func TestRenderMemoForDeterminism(t *testing.T) {
+	t.Parallel()
+
+	tree := func(first, second string) *expressions.Reference {
+		scan := func(name string) expressions.RelationalExpression {
+			return mustPlannerFuzzConstruct(expressions.NewFullUnorderedScanExpression([]string{name}, plannerFuzzRowType()))
+		}
+		group := expressions.InitialOf(scan(first))
+		if !group.Insert(scan(second)) {
+			t.Fatalf("fixture: %s did not join the group of %s", second, first)
+		}
+		filter := mustPlannerFuzzConstruct(expressions.NewLogicalFilterExpression(
+			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+			expressions.ForEachQuantifier(group)))
+		return expressions.InitialOf(filter)
+	}
+
+	first, again, reordered := renderMemoForDeterminism(tree("T", "U")),
+		renderMemoForDeterminism(tree("T", "U")), renderMemoForDeterminism(tree("U", "T"))
+	if !strings.Contains(first, "q$0") {
+		t.Fatalf("fixture: rendering carries no generated alias:\n%s", first)
+	}
+	if first != again {
+		t.Fatalf("two builds of one tree render differently:\n%s\n---\n%s", first, again)
+	}
+	if first == reordered {
+		t.Fatalf("member order does not reach the rendering:\n%s", first)
+	}
 }

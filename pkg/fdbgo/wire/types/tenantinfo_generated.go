@@ -21,21 +21,14 @@ const TenantInfoMaxAlign = 8
 type TenantInfo struct {
 	TenantId int64  // slot 0
 	HasToken bool   // slot 1, optional tag
-	Token    []byte // slot 2, optional value
+	Token    []byte // slot 2, optional table: decoded as presence only, do not set
 	Arena    []byte // slot 3
 }
 
-func (m *TenantInfo) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(TenantInfoSlotTenantId) {
-		m.TenantId = r.ReadInt64(TenantInfoSlotTenantId)
-	}
-	if r.FieldPresent(TenantInfoSlotToken) && r.ReadUint8(TenantInfoSlotToken) > 0 {
-		m.Token = r.ReadBytes(TenantInfoSlotToken + 1)
-		m.HasToken = true
-	}
-	if r.FieldPresent(TenantInfoSlotArena) {
-		m.Arena = r.ReadBytes(TenantInfoSlotArena)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *TenantInfo) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *TenantInfo) UnmarshalFDB(data []byte) error {
@@ -43,15 +36,23 @@ func (m *TenantInfo) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *TenantInfo) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(TenantInfoSlotTenantId) {
 		m.TenantId = r.ReadInt64(TenantInfoSlotTenantId)
 	}
-	if r.FieldPresent(TenantInfoSlotToken) && r.ReadUint8(TenantInfoSlotToken) > 0 {
-		m.Token = r.ReadBytes(TenantInfoSlotToken + 1)
+	if r.FieldPresent(TenantInfoSlotToken) && r.ReadUint8(TenantInfoSlotToken) == 1 && r.FieldPresent(TenantInfoSlotToken+1) {
+		_ = r.ReadUint32(TenantInfoSlotToken + 1)
 		m.HasToken = true
 	}
 	if r.FieldPresent(TenantInfoSlotArena) {
 		m.Arena = r.ReadBytes(TenantInfoSlotArena)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "TenantInfo", Err: err}
 	}
 	return nil
 }
@@ -100,21 +101,28 @@ func (m *TenantInfo) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl
 	return selfStart
 }
 
-// ParseTenantInfoVectorFromReader reads a FlatBuffers vector of TenantInfo.
-func ParseTenantInfoVectorFromReader(r *wire.Reader, slot int) []TenantInfo {
+// ParseTenantInfoVectorFromReader reads a FlatBuffers vector of TenantInfo under one decode budget.
+func ParseTenantInfoVectorFromReader(r *wire.Reader, slot int) ([]TenantInfo, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]TenantInfo, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]TenantInfo", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]TenantInfo, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]TenantInfo", Err: err}
 		}
-		var elem TenantInfo
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

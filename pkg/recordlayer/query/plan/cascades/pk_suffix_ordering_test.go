@@ -288,13 +288,9 @@ func TestComputeMatchedOrderingParts_PKSuffix(t *testing.T) {
 	}
 }
 
-// TestComputeMatchedOrderingParts_NoSuffixForFanOut pins Go's conservative
-// PK-suffix limitation: an equality-fixed fan-out position contributes no
-// ordering part, and Go synthesizes no PK suffix for any fan-out candidate.
-// Java can skip that equality-bound duplicate-producing position and continue
-// through its full-key PK alias; Go keeps PK aliases outside sortParameterIDs
-// and cannot prove the same positional continuation here.
-func TestComputeMatchedOrderingParts_NoSuffixForFanOut(t *testing.T) {
+// Equality pins one fan-out element, exposing the PK suffix in both candidate
+// and plan ordering; an unbound or range-bound element must end that order.
+func TestComputeMatchedOrderingParts_SuffixPastBoundFanOut(t *testing.T) {
 	t.Parallel()
 
 	alias := values.UniqueCorrelationIdentifier()
@@ -311,9 +307,50 @@ func TestComputeMatchedOrderingParts_NoSuffixForFanOut(t *testing.T) {
 		map[values.CorrelationIdentifier]*predicates.ComparisonRange{alias: equalityRange(t, "x")},
 		nil, nil, nil, nil, nil, nil, nil)
 
+	displayName := func(v values.Value) string {
+		if f, ok := values.AsFieldValue(v); ok {
+			return f.DisplayName()
+		}
+		return ""
+	}
 	parts := cand.ComputeMatchedOrderingParts(mi, []values.CorrelationIdentifier{alias}, false)
-	if len(parts) != 0 {
-		t.Fatalf("fan-out index must expose neither TAGS nor a PK suffix: got %d parts", len(parts))
+	if len(parts) != 1 || displayName(parts[0].GetValue()) != "ID" {
+		t.Fatalf("fan-out index must expose the PK suffix past its bound element and not TAGS: got %v", parts)
+	}
+	unbound := cand.ComputeMatchedOrderingParts(
+		NewRegularMatchInfo(nil, nil, nil, nil, nil, nil, nil, nil),
+		[]values.CorrelationIdentifier{alias}, false)
+	if len(unbound) != 0 {
+		t.Fatalf("an unbound fan-out position must end the ordering: got %v", unbound)
+	}
+	rangeComparison := predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, "a")
+	rangeResult := predicates.EmptyComparisonRange().Merge(&rangeComparison)
+	if !rangeResult.Complete() || rangeResult.Range.GetRangeType() != predicates.ComparisonRangeInequality {
+		t.Fatal("failed to construct the fan-out element range")
+	}
+	rangeBindings := map[values.CorrelationIdentifier]*predicates.ComparisonRange{alias: rangeResult.Range}
+	rangeMatch := NewRegularMatchInfo(rangeBindings, nil, nil, nil, nil, nil, nil, nil)
+	t.Run("range-bound candidate", func(t *testing.T) {
+		if got := cand.ComputeMatchedOrderingParts(rangeMatch, []values.CorrelationIdentifier{alias}, false); len(got) != 0 {
+			t.Fatalf("range-bound fan-out element must end candidate ordering: %v", got)
+		}
+	})
+	t.Run("range-bound plan", func(t *testing.T) {
+		rangeFetch := cand.ToScanPlan(EmptyPlanContext(), rangeBindings, false).(*plans.RecordQueryFetchFromPartialRecordPlan)
+		if ordering := rangeFetch.GetInner().(*plans.RecordQueryIndexPlan).HintOrdering(); ordering.IsKnown {
+			t.Fatalf("range-bound fan-out element must not advertise plan ordering: %#v", ordering)
+		}
+	})
+	floatCandidate := newKnownDistinctValueIndexCandidate(
+		"IDX_TAGS", []string{"T"}, []string{"TAGS"},
+		[]values.CorrelationIdentifier{alias}, tagsIDRowType(), false, []string{"ID"})
+	floatCandidate.WithRootKeyExpression(candidateTestKeyField("TAGS", gen.Field_FAN_OUT)).
+		WithKeyComponentTypes([]values.Type{values.NullableDouble})
+	zeroMatch := NewRegularMatchInfo(
+		map[values.CorrelationIdentifier]*predicates.ComparisonRange{alias: equalityRange(t, float64(0))},
+		nil, nil, nil, nil, nil, nil, nil)
+	if got := floatCandidate.ComputeMatchedOrderingParts(zeroMatch, []values.CorrelationIdentifier{alias}, false); len(got) != 0 {
+		t.Fatalf("signed-zero fan-out equality cannot carry the PK suffix: %v", got)
 	}
 	fetch, ok := cand.ToScanPlan(
 		EmptyPlanContext(),
@@ -331,8 +368,13 @@ func TestComputeMatchedOrderingParts_NoSuffixForFanOut(t *testing.T) {
 	if pk := indexPlan.GetPKColumnNames(); len(pk) != 1 || pk[0] != "ID" {
 		t.Fatalf("fan-out plan lost coordinate-safe PK coverage names: %v", pk)
 	}
-	if ordering := indexPlan.HintOrdering(); ordering.IsKnown {
-		t.Fatalf("fan-out plan advertised ordering despite retained coverage PK: %#v", ordering)
+	if ordering := indexPlan.HintOrdering(); !ordering.IsKnown || len(ordering.Keys) != 1 ||
+		displayName(ordering.Keys[0]) != "ID" {
+		t.Fatalf("fan-out plan bound on its element must claim the PK order: %#v", ordering)
+	}
+	unboundFetch := cand.ToScanPlan(EmptyPlanContext(), nil, false).(*plans.RecordQueryFetchFromPartialRecordPlan)
+	if ordering := unboundFetch.GetInner().(*plans.RecordQueryIndexPlan).HintOrdering(); ordering.IsKnown {
+		t.Fatalf("fan-out plan with an unbound element advertised ordering: %#v", ordering)
 	}
 }
 
@@ -530,4 +572,173 @@ func typeFilterOver(t *testing.T, inner plans.RecordQueryPlan) plans.RecordQuery
 	t.Helper()
 	value, err := plans.NewRecordQueryTypeFilterPlan([]string{"AB"}, inner)
 	return mustConstruct(t, value, err)
+}
+
+func TestFanOutOrderingUsesStructuralElementTypes(t *testing.T) {
+	t.Parallel()
+	for _, nested := range []bool{false, true} {
+		name := "A"
+		element := values.NewRecordType("Attr", false, []values.Field{{Name: "ID", FieldType: values.NullableDouble, Ordinal: 0}})
+		arrayType := values.Type(values.NewArrayType(true, values.NullableDouble))
+		root := candidateTestKeyField("A", gen.Field_FAN_OUT)
+		if nested {
+			name = "ID"
+			arrayType = values.NewArrayType(true, element)
+			parent := "A"
+			root = &gen.KeyExpression{Nesting: &gen.Nesting{
+				Parent: &gen.Field{FieldName: &parent, FanType: gen.Field_FAN_OUT.Enum()},
+				Child:  candidateTestKeyField("ID", gen.Field_SCALAR),
+			}}
+		}
+		row := values.NewRecordType("T", false, []values.Field{
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+			{Name: "B", FieldType: values.NullableDouble, Ordinal: 1},
+			{Name: "A", FieldType: arrayType, Ordinal: 2},
+		})
+		root = &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{root, candidateTestKeyField("B", gen.Field_SCALAR)}}}
+		for _, tc := range []struct {
+			name    string
+			typ     values.Type
+			before  bool
+			resolve bool
+		}{
+			{"inferred", nil, false, false},
+			{"explicit float before root", values.NullableFloat, true, false},
+			{"explicit float after root", values.NullableFloat, false, false},
+			{"explicit float after inference", values.NullableFloat, false, true},
+			{"unknown before root", values.UnknownType, true, false},
+			{"unknown after root", values.UnknownType, false, false},
+			{"unknown after inference", values.UnknownType, false, true},
+		} {
+			t.Run(map[bool]string{false: "scalar array/", true: "nested array/"}[nested]+tc.name, func(t *testing.T) {
+				aliases := []values.CorrelationIdentifier{values.UniqueCorrelationIdentifier(), values.UniqueCorrelationIdentifier()}
+				duplicates := true
+				candidate := NewValueIndexScanMatchCandidateWithFunctions("AB", []string{"T"}, []string{name, "B"}, nil,
+					aliases, row, false, []string{"ID"}, &duplicates).
+					WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong})
+				if tc.typ != nil && tc.before {
+					candidate.WithKeyComponentTypes([]values.Type{tc.typ, values.NullableDouble})
+				}
+				candidate.WithRootKeyExpression(root)
+				if tc.resolve {
+					if inferred := candidate.GetKeyComponentTypes()[0]; inferred.Code() != values.TypeCodeDouble {
+						t.Fatalf("structural fallback = %v, want DOUBLE before override", inferred)
+					}
+				}
+				if tc.typ != nil && !tc.before {
+					candidate.WithKeyComponentTypes([]values.Type{tc.typ, values.NullableDouble})
+				}
+				wantType := values.Type(values.NullableDouble)
+				if tc.typ != nil {
+					wantType = tc.typ
+				}
+				if got := candidate.GetKeyComponentTypes(); len(got) != 2 || got[0].Code() != wantType.Code() {
+					t.Fatalf("element types = %v, want %v, DOUBLE", got, wantType)
+				}
+				for _, bound := range []struct {
+					element, scalar float64
+					parts           int
+				}{{0, 0, 0}, {1, 0, 1}, {1, 1, 2}} {
+					bindings := map[values.CorrelationIdentifier]*predicates.ComparisonRange{
+						aliases[0]: equalityRange(t, bound.element), aliases[1]: equalityRange(t, bound.scalar),
+					}
+					match := NewRegularMatchInfo(bindings, nil, nil, nil, nil, nil, nil, nil)
+					wantParts := bound.parts
+					if wantType.Code() == values.TypeCodeUnknown {
+						wantParts = 0
+					}
+					for _, reverse := range []bool{false, true} {
+						parts := candidate.ComputeMatchedOrderingParts(match, aliases, reverse)
+						if len(parts) != wantParts {
+							t.Fatalf("bounds=%v reverse=%t: candidate parts = %v, want %d", bound, reverse, parts, wantParts)
+						}
+						prefix := candidate.ComputeBoundParameterPrefixMap(bindings)
+						fetch := candidate.ToScanPlan(EmptyPlanContext(), prefix, reverse).(*plans.RecordQueryFetchFromPartialRecordPlan)
+						index := fetch.GetInner().(*plans.RecordQueryIndexPlan)
+						if got := index.GetKeyComponentTypes()[0].Code(); got != wantType.Code() {
+							t.Fatalf("plan element type = %v, want %v", got, wantType.Code())
+						}
+						rich := index.HintRichOrdering()
+						if len(rich.GetKeys()) != wantParts {
+							t.Fatalf("bounds=%v reverse=%t: rich keys = %v, want %d", bound, reverse, rich.GetKeys(), wantParts)
+						}
+						for i, part := range parts {
+							if !orderingValuesEqualIn(rich.GetKeys()[i], part.GetValue()) {
+								t.Fatalf("candidate and rich ordering disagree at %d", i)
+							}
+						}
+						wantPlain := 0
+						if wantParts == 2 {
+							wantPlain = 1
+						}
+						if plain := index.HintOrdering(); len(plain.Keys) != wantPlain || plain.IsKnown != (wantPlain > 0) {
+							t.Fatalf("bounds=%v reverse=%t: plain ordering = %#v, want %d keys", bound, reverse, plain, wantPlain)
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestFanOutElementNameDoesNotTrimRootPrimaryKey(t *testing.T) {
+	t.Parallel()
+	element := values.NewRecordType("Attr", false, []values.Field{{Name: "ID", FieldType: values.NullableLong, Ordinal: 0}})
+	row := values.NewRecordType("T", false, []values.Field{
+		{Name: "ID", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "B", FieldType: values.NullableLong, Ordinal: 1},
+		{Name: "ATTRS", FieldType: values.NewArrayType(true, element), Ordinal: 2},
+	})
+	alias := values.UniqueCorrelationIdentifier()
+	attrs := "ATTRS"
+	candidate := newKnownDistinctValueIndexCandidate("ATTR_ID", []string{"T"}, []string{"ID"},
+		[]values.CorrelationIdentifier{alias}, row, false, []string{"ID", "B"}).
+		WithRootKeyExpression(&gen.KeyExpression{Nesting: &gen.Nesting{
+			Parent: &gen.Field{FieldName: &attrs, FanType: gen.Field_FAN_OUT.Enum()},
+			Child:  candidateTestKeyField("ID", gen.Field_SCALAR),
+		}})
+	bindings := map[values.CorrelationIdentifier]*predicates.ComparisonRange{alias: equalityRange(t, int64(7))}
+	match := NewRegularMatchInfo(bindings, nil, nil, nil, nil, nil, nil, nil)
+	parts := candidate.ComputeMatchedOrderingParts(match, []values.CorrelationIdentifier{alias}, false)
+	if len(parts) != 2 {
+		t.Fatalf("matched suffix = %v, want root ID,B", parts)
+	}
+	for i, name := range []string{"ID", "B"} {
+		field, ok := values.AsFieldValue(parts[i].GetValue())
+		if !ok || field.DisplayName() != name {
+			t.Fatalf("matched suffix[%d] = %v, want root %s", i, parts[i].GetValue(), name)
+		}
+	}
+	partial := NewPartialMatch(nil, candidate, nil, nil, nil,
+		NewRegularMatchInfo(bindings, nil, nil, parts, nil, nil, nil, nil))
+	for _, tc := range []struct {
+		columns   []string
+		satisfied bool
+	}{
+		{[]string{"ID", "B"}, true}, {[]string{"B"}, false},
+	} {
+		requested := properties.NewRequestedOrdering(requestedParts(t, row,
+			map[string]properties.RequestedSortOrder{"ID": properties.RequestedSortOrderAscending, "B": properties.RequestedSortOrderAscending}, tc.columns),
+			properties.DistinctnessPreserveDistinctness, false)
+		if got := SatisfiesRequestedOrdering(partial, requested) != nil; got != tc.satisfied {
+			t.Fatalf("satisfies %v = %t, want %t", tc.columns, got, tc.satisfied)
+		}
+	}
+	fetch, ok := candidate.ToScanPlan(EmptyPlanContext(), bindings, false).(*plans.RecordQueryFetchFromPartialRecordPlan)
+	if !ok {
+		t.Fatal("expected fetch over the fan-out index")
+	}
+	index, ok := fetch.GetInner().(*plans.RecordQueryIndexPlan)
+	if !ok {
+		t.Fatal("expected index scan under fetch")
+	}
+	keys := index.HintOrdering().Keys
+	if len(keys) != 2 {
+		t.Fatalf("physical suffix = %v, want root ID,B", keys)
+	}
+	for i, key := range keys {
+		if !orderingValuesEqualIn(key, parts[i].GetValue()) {
+			t.Fatalf("physical and matched suffix disagree at %d", i)
+		}
+	}
 }

@@ -1,0 +1,40 @@
+# G3 at the merge-base, 2026-11-08 03:53-04:04 UTC, on a fresh container otelg3mb (foundationdb/foundationdb:7.3.77, configure new single ssd-redwood-1, port 4530, G3's environment: FDB_KNOB_min_available_space_ratio=0, host networking).
+# head: otelbench at 8d3959aa6 (PR #1035 head), sha256 75e2c7ad759d263add7010e90baafef75fdc32c01356e67de32039e44d8c406a
+# base: otelbench at the merge-base 839cc5d3f plus base-harness-839cc5d3f.patch (fts-perf/base-harness.patch, its BUILD hunk re-placed; see the section), run with --backend fdb, sha256 30f96fd59137d25143a2ac93d6003287bfe0bedaed25d907c511aa8e8c7bde2c
+# Both built with bazelisk build //layers/otel/cmd/otelbench in detached worktrees (go1.27.3).
+# Every measured command ran through measured.sh: it waited until the 1-minute load was < 12 and the storage and log queues were < 1 MB on two polls (quiet.sh), then held /tmp/fdb-heavy-lane.lock and /tmp/otelcmp/justtest.lock, rechecked the load, and ran.
+# quiet=[load queue_bytes] at the wait's end; load = 1-minute load average at start/end inside the locks; time = user sys real (s) of the whole command (bash time); at = UTC time at the end.
+# Collector bench (campaign-cb.sh, cb.sh): per run, full-*: default collector-bench --conversations 1000 on a fresh run (post-ingest queries, not gated); qo-*: --query-only on that run, every class x100 (gated). *_off_*: --enable-message-deltas=false --enable-message-fts=false.
+# G2A suite (campaign-g2a.sh): g2a-ing-*/g2a-aud-*: 50k-span ingest and audit; base --backend fdb --posting-value-format tuple --hash-bytes 8 --record-compression brotli-4 --bulk-index-conflicts, head --backend sql --record-compression zlib-1 --sql-ingest direct --sql-rows compiled; g2a-q-*: suite all x1200 on run 1 of each arm (head adds --sql-query direct); query receipts have their per-sample arrays removed.
+g3mbbase_fts_1 full rc=0 quiet=[10.68 1998] load 4.30/7.64 time 102.311 7.290 20.814 at 03:54:13Z
+g3mbbase_fts_1 query-only rc=0 quiet=[7.19 2386] load 6.61/6.59 time 31.069 5.406 11.564 at 03:54:30Z
+g3mbhead_fts_1 full rc=0 quiet=[6.06 1382] load 6.06/6.11 time 72.737 4.296 14.914 at 03:54:50Z
+g3mbhead_fts_1 query-only rc=0 quiet=[6.10 22711] load 6.10/5.86 time 8.406 1.213 4.443 at 03:55:05Z
+g3mbbase_off_1 full rc=0 quiet=[5.47 2004] load 5.47/5.59 time 38.071 2.430 5.448 at 03:55:15Z
+g3mbbase_off_1 query-only rc=0 quiet=[4.78 2118] load 4.78/4.78 time 1.509 0.271 1.203 at 03:55:42Z
+g3mbhead_off_1 full rc=0 quiet=[4.47 112] load 4.47/5.24 time 28.048 1.638 4.399 at 03:55:52Z
+g3mbhead_off_1 query-only rc=0 quiet=[3.91 2161] load 3.91/3.68 time 1.066 0.156 0.874 at 03:56:13Z
+g3mbhead_fts_2 full rc=0 quiet=[3.38 196] load 3.38/3.65 time 70.643 4.121 14.952 at 03:56:34Z
+g3mbhead_fts_2 query-only rc=0 quiet=[3.09 4859] load 3.09/3.09 time 8.044 1.093 4.017 at 03:56:48Z
+g3mbbase_fts_2 full rc=0 quiet=[2.68 1996] load 2.68/3.44 time 100.822 7.594 21.119 at 03:57:14Z
+g3mbbase_fts_2 query-only rc=0 quiet=[3.16 276331] load 3.16/3.29 time 31.037 5.301 11.635 at 03:57:31Z
+g3mbhead_off_2 full rc=0 quiet=[3.03 197] load 3.03/3.10 time 27.146 1.456 4.088 at 03:57:40Z
+g3mbhead_off_2 query-only rc=0 quiet=[2.29 2044] load 2.29/2.29 time 1.079 0.177 0.919 at 03:58:02Z
+g3mbbase_off_2 full rc=0 quiet=[2.11 179] load 2.11/2.58 time 38.227 2.482 5.389 at 03:58:13Z
+g3mbbase_off_2 query-only rc=0 quiet=[2.35 4774] load 2.35/2.35 time 1.397 0.267 1.162 at 03:58:34Z
+g2amb_fdbp_1 ingest rc=0 quiet=[2.06 196] load 2.06/4.25 time 18.840 3.743 8.149 at 03:58:55Z
+g2amb_fdbp_1 audit rc=0 quiet=[3.22 1434] load 3.22/4.25 time 4.757 1.027 5.789 at 03:59:42Z
+g2amb_sqlz1_1 ingest rc=0 quiet=[4.95 795] load 4.95/4.96 time 12.872 1.154 5.978 at 03:59:53Z
+g2amb_sqlz1_1 audit rc=0 quiet=[4.03 2299] load 4.03/4.03 time 1.771 0.172 1.444 at 04:00:20Z
+g2amb_sqlz1_2 ingest rc=0 quiet=[3.79 934] load 3.79/4.05 time 12.107 1.077 5.848 at 04:00:31Z
+g2amb_sqlz1_2 audit rc=0 quiet=[2.86 318] load 2.86/2.71 time 1.677 0.174 1.383 at 04:00:59Z
+g2amb_fdbp_2 ingest rc=0 quiet=[2.57 19420] load 2.57/3.41 time 16.054 2.986 5.763 at 04:01:09Z
+g2amb_fdbp_2 audit rc=0 quiet=[3.95 3436] load 3.95/3.79 time 3.882 0.716 4.566 at 04:01:50Z
+g2amb_fdbp_3 ingest rc=0 quiet=[3.49 1645] load 3.49/3.77 time 15.969 3.005 5.947 at 04:02:02Z
+g2amb_fdbp_3 audit rc=0 quiet=[4.19 222] load 4.19/4.09 time 4.087 0.844 4.947 at 04:02:43Z
+g2amb_sqlz1_3 ingest rc=0 quiet=[4.00 119] load 4.00/4.32 time 12.720 1.091 6.262 at 04:02:54Z
+g2amb_sqlz1_3 audit rc=0 quiet=[3.67 3735] load 3.67/3.67 time 1.754 0.178 1.447 at 04:03:21Z
+g2amb_q_fdbp_a rc=0 quiet=[3.46 868] load 3.46/3.46 time 0.643 0.273 1.094 at 04:03:28Z
+g2amb_q_sqld_a rc=0 quiet=[3.34 1997] load 3.34/3.31 time 0.478 0.152 0.636 at 04:03:34Z
+g2amb_q_sqld_b rc=0 quiet=[3.21 47] load 3.21/3.21 time 0.477 0.159 0.647 at 04:03:40Z
+g2amb_q_fdbp_b rc=0 quiet=[3.03 1613] load 3.03/3.03 time 0.624 0.244 1.046 at 04:03:46Z

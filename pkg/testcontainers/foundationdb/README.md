@@ -1,11 +1,11 @@
 # FoundationDB Testcontainer
 
-Testcontainer module for FoundationDB. Spins up a single-node FDB instance for testing with direct bridge IP connectivity — no port mapping, no socat proxy, no DNAT.
+Testcontainer module for FoundationDB. Spins up a single-node FDB instance for testing, with a published coordinator port for host clients and a bridge-IP cluster file for containers on the same network. Clients must also be able to reach the server-advertised bridge addresses. No socat proxy is provided.
 
 ## Installation
 
 ```bash
-go get github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb
+go get fdb.dev/pkg/testcontainers/foundationdb@master
 ```
 
 ## Quick Start
@@ -13,7 +13,11 @@ go get github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb
 ```go
 import (
     "context"
-    foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+    "testing"
+    "time"
+
+    "fdb.dev/pkg/fdbgo/fdb"
+    foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 )
 
 func TestSomething(t *testing.T) {
@@ -25,11 +29,20 @@ func TestSomething(t *testing.T) {
     if err != nil {
         t.Fatal(err)
     }
-    defer container.Terminate(ctx)
+    t.Cleanup(func() { foundationdbtc.TeardownT(t, container) })
 
     // Get cluster file path for your FDB client.
-    path, _ := container.ClusterFilePath(ctx)
-    db, _ := fdb.OpenDatabase(path)
+    path, err := container.ClusterFilePath(ctx)
+    if err != nil {
+        t.Fatal(err)
+    }
+    fdb.MustAPIVersion(730)
+    db, err := fdb.OpenDatabase(path)
+    if err != nil {
+        t.Fatal(err)
+    }
+    defer db.Close()
+    // Use db in your test.
 }
 ```
 
@@ -38,12 +51,19 @@ func TestSomething(t *testing.T) {
 1. Starts FDB container with Docker port mapping (4500/tcp exposed)
 2. Waits for `FDBD joined cluster` log
 3. Reads the cluster file from inside the container (via `Exec` with multiplexed stream demuxing)
-4. Constructs external cluster file using `localhost:mappedPort`
+4. Constructs an external cluster file using the Docker host's address and mapped port (usually `localhost:mappedPort`)
 5. Runs `fdbcli configure new single memory tenant_mode=optional_experimental`
 6. Returns ready-to-use container
 
-External clients (host, Bazel sandbox, CI) connect via `localhost:mappedPort`.
-Internal clients (containers on same Docker network) connect via `containerIP:4500`.
+External clients use `ClusterFile` or `ClusterFilePath` to bootstrap through the published
+Docker-host port. The fixture rewrites only the cluster file's coordinator address; it does not
+change the server's advertised GRV, commit, or storage addresses. Clients must also route to those
+bridge-IP endpoints to execute transactions (`foundationdb.go`, `run`). A reachable published port
+alone is insufficient: the default fixture does not support Docker Desktop or remote-daemon
+setups whose bridge addresses are unreachable from the test process.
+
+Internal clients (containers on the same Docker network) use `InternalClusterFile` to connect via
+`containerIP:4500` (or the configured FDB port).
 
 ## Options
 
@@ -71,6 +91,10 @@ foundationdbtc.WithFDBPort(4500)
 
 // Attach to an existing Docker network (for multi-container setups).
 foundationdbtc.WithNetwork(nw, "fdb-node-1")
+
+// Use the bridge-IP coordinator address instead of the published Docker-host port.
+// This changes bootstrap only; both modes require routing to advertised bridge endpoints.
+foundationdbtc.WithDirectIP()
 
 // Startup timeout (default: 60s).
 foundationdbtc.WithStartupTimeout(2 * time.Minute)
@@ -145,5 +169,6 @@ err = container.Unpause(ctx)
 
 ## Requirements
 
-- Docker (Linux recommended — bridge IP connectivity required)
+- Docker, with the coordinator address in the selected cluster file reachable from the test process
+- Routing from the test process to all server-advertised bridge-IP endpoints, with or without `WithDirectIP`; Docker Desktop and remote daemons without that routing are not supported by the default fixture
 - No FDB client libraries needed on host (pure Go client or connects via cluster file)

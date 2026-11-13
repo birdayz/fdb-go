@@ -1,12 +1,14 @@
 // Package foundationdb provides a testcontainers module for FoundationDB.
 //
 // This module creates a single FoundationDB container (no socat proxy) and
-// provides two connectivity modes:
+// provides two coordinator bootstrap addresses:
 //
-//   - External (host/sandbox): via Docker port mapping (localhost:mappedPort).
-//     Works from Bazel sandboxes, CI runners, Docker Desktop, etc.
+//   - External: via Docker port mapping (usually localhost:mappedPort).
 //   - Internal (cross-container): via Docker bridge IP (containerIP:4500).
 //     Used by sidecar containers on the same Docker network.
+//
+// Both modes require routing to advertised bridge-IP transaction endpoints;
+// publishing the coordinator alone is insufficient on Docker Desktop or remote daemons.
 //
 // The container is auto-initialized by default (configured for single-node
 // operation with tenant support). Use [WithoutInit] to skip.
@@ -61,8 +63,8 @@ func fdbVersion() string {
 
 // Container represents a running FoundationDB container.
 //
-// External clients (host, Bazel sandbox) connect via localhost:mappedPort.
-// Internal clients (containers on the same Docker network) connect via containerIP:4500.
+// External clients bootstrap via the mapped port; internal clients use containerIP:4500.
+// Both need routing to the server-advertised bridge-IP transaction endpoints.
 type Container struct {
 	testcontainers.Container
 	network     *testcontainers.DockerNetwork // user-provided network, nil if default bridge
@@ -75,16 +77,28 @@ type Container struct {
 
 // Run creates, starts, and (by default) initializes a FoundationDB container.
 //
-// The container exposes FDB port 4500 via Docker port mapping. External clients
-// (including Bazel sandbox tests) connect via localhost:mappedPort. For cross-container
-// communication, use [InternalClusterFile] with a shared network via [WithNetwork].
+// The mapped coordinator port also needs advertised bridge-IP routing for transactions.
+// Cross-container clients use [InternalClusterFile] with a shared [WithNetwork].
 //
 // By default, the database is auto-initialized for single-node operation with
 // tenant_mode=optional_experimental. Use [WithoutInit] to skip initialization.
 //
 // The image parameter can be empty ("") to use the default image with the version
 // from FDB_VERSION env var or the built-in default.
+//
+// With no reachable Docker daemon, Run returns a [*DockerUnavailableError];
+// [SkipWithoutDocker] decides whether a suite may skip.
 func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (*Container, error) {
+	return run(ctx, tcProber, img, opts...)
+}
+
+func run(ctx context.Context, prober *dockerProber, img string, opts ...testcontainers.ContainerCustomizer) (*Container, error) {
+	if err := prober.check(ctx); err != nil {
+		return nil, err
+	}
+	if err := holdReaper(ctx); err != nil {
+		return nil, err
+	}
 	return retryContainerStart(ctx, maxContainerStartAttempts,
 		func(attempt int) time.Duration { return time.Duration(attempt) * time.Second },
 		func() (*Container, error) { return runOnce(ctx, img, opts...) })
@@ -267,14 +281,14 @@ func runOnce(ctx context.Context, img string, opts ...testcontainers.ContainerCu
 	}
 	prefix := rawCF[:atIdx+1] // "docker:docker@"
 
-	// External: use localhost:mappedPort (works from Bazel sandbox, CI, Docker Desktop)
+	// External bootstrap uses the mapped port; advertised role addresses stay unchanged.
 	externalCF := fmt.Sprintf("%s%s:%s", prefix, host, mapped.Port())
 
 	// Internal: use containerIP:port (works from containers on same Docker network)
 	internalCF := rawCF // already has containerIP:port
 
 	// WithDirectIP: use internal (bridge IP) cluster file for external clients too.
-	// Avoids DNAT assertion spam but requires direct bridge IP routing.
+	// Avoids DNAT assertion spam for bootstrap; advertised role addresses are unchanged.
 	primaryCF := externalCF
 	if cfg.directIP {
 		primaryCF = internalCF
@@ -322,8 +336,8 @@ func runOnce(ctx context.Context, img string, opts ...testcontainers.ContainerCu
 	return c, nil
 }
 
-// ClusterFile returns the cluster file content for external clients.
-// Uses localhost:mappedPort, which works from Bazel sandboxes, CI runners, etc.
+// ClusterFile returns the mapped-port bootstrap address, or bridge IP with [WithDirectIP].
+// Both modes require routing to the advertised bridge-IP transaction endpoints.
 func (c *Container) ClusterFile(_ context.Context) (string, error) {
 	return c.clusterFile, nil
 }

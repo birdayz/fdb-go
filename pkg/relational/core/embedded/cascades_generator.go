@@ -50,6 +50,7 @@ import (
 	"fdb.dev/pkg/relational/core/query/expr"
 	"fdb.dev/pkg/relational/core/query/logical"
 	"fdb.dev/pkg/relational/core/query/semantic"
+	"fdb.dev/pkg/relational/core/resultset"
 	"fdb.dev/pkg/relational/core/rowstruct"
 	"fdb.dev/pkg/relational/core/session"
 	"google.golang.org/protobuf/proto"
@@ -67,6 +68,9 @@ type cascadesGenerator struct {
 	// INSERT keeps concrete bindings; SELECT and cached DML extract runtime
 	// constants and constrain only the assumptions used by their cached plan.
 	args []driver.NamedValue
+	// programs are the binding walks compiled over the statement's cached
+	// parse tree (parse_cache.go).
+	programs *statementPrograms
 }
 
 func newCascadesGenerator(c *EmbeddedConnection) *cascadesGenerator {
@@ -114,12 +118,28 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 		return nil, err
 	}
 	if cs, _ := g.c.Options().Get(api.OptCaseSensitiveIdentifiers).(bool); cs {
-		sql = caseSensitiveIdentifiers(sql)
+		sql = caseSensitiveIdentifiers(sql, func(name string) bool {
+			if g.c.ensureMetaData(ctx) != nil {
+				return false
+			}
+			md := g.c.cachedMetaData()
+			if md == nil {
+				return false
+			}
+			for _, function := range md.UserDefinedFunctions() {
+				if macro := function.GetUserDefinedMacroFunction(); macro != nil && unicode15.EqualFold(macro.GetFunctionName(), name) {
+					return true
+				}
+			}
+			return false
+		})
 	}
-	root, err := parser.Parse(sql)
+	st, err := g.c.parseStatement(sql)
 	if err != nil {
 		return nil, err
 	}
+	root := st.root
+	g.programs = &st.programs
 	if err := checkDecimalConstants(root); err != nil {
 		return nil, err
 	}
@@ -129,9 +149,11 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 			return nil, err
 		}
 		if changed {
-			if root, err = parser.Parse(expanded); err != nil {
+			if st, err = g.c.parseStatement(expanded); err != nil {
 				return nil, err
 			}
+			root = st.root
+			g.programs = &st.programs
 		}
 	}
 	release, err := bindStatementParameters(root, g.args)
@@ -154,6 +176,11 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	all := stmts.AllStatement()
 	if len(all) == 1 {
 		return g.planOne(ctx, all[0])
+	}
+	// A batch may hold only DDL and DML, none of which a read-only connection
+	// runs.
+	if g.c.readOnly {
+		return nil, errReadOnlyStatement()
 	}
 
 	// Multi-statement batch: every child must be an update plan
@@ -181,6 +208,9 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 // SHOW, DDL, or transaction.
 func (g *cascadesGenerator) planOne(ctx context.Context, stmt antlrgen.IStatementContext) (query.Plan, error) {
 	c := g.c
+	if c.readOnly && !readOnlyAdmits(stmt) {
+		return nil, errReadOnlyStatement()
+	}
 	if statementOptionsFor(stmt, c.Options()).snapshot && !snapshotAdmits(stmt) {
 		return nil, errSnapshotOnlySelect()
 	}
@@ -396,8 +426,9 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// licenses anything when the WHOLE result comes from one read version.
 	// fetchPage routes on exactly this condition: with an explicit transaction
 	// every page joins it and shares its read version; without one each page
-	// runs its own auto-commit transaction and takes a fresh one, so a value
-	// can move between pages and be emitted twice. See
+	// after the first runs its own auto-commit transaction at a fresh one (the
+	// first may share the planning transaction's, statement_read.go), so a
+	// value can move between pages and be emitted twice. See
 	// PlannerConfiguration.SingleReadVersion.
 	popts.config.SingleReadVersion = g.c.activeTx != nil
 	// Plan-cache key parts: a VERBATIM schema+version+planner-options scope
@@ -405,7 +436,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	if so.rightDeep {
 		popts.config.ShouldJoinRightDeep = true
 	}
-	bindings, releaseBindings, bindErr := normalizeQueryBindings(q, md)
+	bindings, releaseBindings, bindErr := normalizeQueryBindingsWith(q, md, g.programs)
 	if bindErr != nil {
 		return nil, bindErr
 	}
@@ -959,7 +990,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	bindings := queryBindings{text: planCacheText(dml)}
 	if dml.InsertStatement() == nil {
 		var releaseBindings func()
-		bindings, releaseBindings, err = normalizeQueryBindings(dml, md)
+		bindings, releaseBindings, err = normalizeQueryBindingsWith(dml, md, g.programs)
 		if err != nil {
 			return nil, err
 		}
@@ -1436,7 +1467,7 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		return query.Result{}, api.NewError(api.ErrCodeUnsupportedOperation,
 			"statement continuations are not supported: Go SQL tokens are engine-private and no resume entry point exists")
 	}
-	ss, ssErr := c.sess.Keyspace.SchemaSubspaceIn(ctx, configuredRunner{c.sess.DB, c.Options()}, c.sess.DBPath, c.sess.Schema)
+	ss, ssErr := c.sessionSchemaSubspace(ctx)
 	if ssErr != nil {
 		return query.Result{}, ssErr
 	}
@@ -1538,23 +1569,14 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	// page. The captured transaction and ownership are separate: a statement
 	// must never commit or abort an application's explicit transaction.
 	if pr.isUpdate && pr.tx == nil {
-		tx, err := c.beginTransaction()
+		tx, err := c.beginTransaction(ctx)
 		if err != nil {
 			pr.statsErr = err
 			pr.Close()
 			return query.Result{}, err
 		}
 		pr.tx, pr.ownsTx = tx, true
-		cancelDone := make(chan struct{})
-		stop := context.AfterFunc(ctx, func() {
-			tx.rctx.Cancel()
-			close(cancelDone)
-		})
-		pr.stopTxCancellation = func() {
-			if !stop() {
-				<-cancelDone
-			}
-		}
+		tx.bindContext(ctx)
 		defer pr.Close()
 		if err := c.ensureMetaData(ctx); err != nil {
 			pr.statsErr = err
@@ -1584,7 +1606,7 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	if pr.isUpdate {
 		n, err := pr.countAll()
 		if pr.ownsTx {
-			pr.detachTxCancellation()
+			pr.tx.detachContext() // a dispatched commit's outcome must not become ctx's error
 			if err != nil && ctx.Err() != nil {
 				err = translateExecErrorCtx(ctx, ctx.Err())
 			}
@@ -1649,7 +1671,7 @@ type paginatingRows struct {
 	plan             plans.RecordQueryPlan
 	md               *recordlayer.RecordMetaData
 	scalarSubqueries []PlannedScalarSubquery
-	cols             []executor.ColumnDef
+	cols             []resultset.ColumnDef
 
 	// Carried from cascadesPlan; revalidated at the top of every page's
 	// transaction. Empty means the plan depends on no index.
@@ -1725,8 +1747,11 @@ type paginatingRows struct {
 	bufPos       int
 	continuation []byte
 	exhausted    bool
-	closed       bool
-	fetchErr     error
+	// finished records that the caller was handed io.EOF: the statement read
+	// to its end.
+	finished bool
+	closed   bool
+	fetchErr error
 
 	// tx is either the explicit transaction that was open when Execute ran, the
 	// statement-owned auto-commit DML transaction, or nil for auto-commit SELECT.
@@ -1750,9 +1775,6 @@ type paginatingRows struct {
 	// after the complete DML drain; ambiguity is reported, never replayed.
 	// Borrowed explicit transactions remain application-owned.
 	ownsTx bool
-	// stopTxCancellation detaches and drains the pre-commit cancellation hook.
-	// It is consumed exactly once before commit or during terminal cleanup.
-	stopTxCancellation func()
 
 	// isUpdate is the statement-kind fact that used to share a field with the
 	// routing decision above (`respectActiveTx`), conflating two independent
@@ -1775,22 +1797,19 @@ func (r *paginatingRows) Columns() []string {
 	return cols
 }
 
-func (r *paginatingRows) detachTxCancellation() {
-	if stop := r.stopTxCancellation; stop != nil {
-		r.stopTxCancellation = nil
-		stop()
-	}
-}
-
-func (r *paginatingRows) Close() error {
+func (r *paginatingRows) Close() (err error) {
+	defer r.conn.recoverInto(&err)
 	if r.closed {
 		return nil
 	}
 	r.closed = true
-	r.detachTxCancellation()
-	if r.ownsTx && !r.tx.terminated.Load() {
-		// Commit terminates on every outcome, including ambiguity. Reaching
-		// this arm means execution ended before commit and must be aborted.
+	if r.tx != nil && !r.ownsTx && !r.finished && r.ctx.Err() != nil {
+		// database/sql closes the rows of an ended context itself, so no later
+		// page reaches runInCapturedTx; end the transaction here instead.
+		r.tx.abort(r.ctx)
+	}
+	if r.ownsTx {
+		// Aborts it before commit; afterwards only releases it.
 		if err := r.tx.Rollback(); err != nil {
 			r.statsErr = errors.Join(r.statsErr, err)
 		}
@@ -1820,7 +1839,7 @@ func (r *paginatingRows) Close() error {
 // metaData is the result set's metadata (api.WithResultSetMetaDataObserver):
 // the labelled columns with their full types.
 func (r *paginatingRows) metaData() api.ResultSetMetaData {
-	return executor.NewResultSetMetaData(r.cols)
+	return resultset.NewResultSetMetaData(r.cols)
 }
 
 func (r *paginatingRows) ColumnTypeDatabaseTypeName(index int) string {
@@ -1881,17 +1900,14 @@ func (r *paginatingRows) Next(dest []driver.Value) (err error) {
 	// execution (an invariant trip, or any residual eval panic) must become an error
 	// here, not crash the shared multi-tenant process.
 	defer func() {
-		if rec := recover(); rec != nil {
-			err = recoveredPanicError(rec)
-		}
 		// RFC-211: stage whatever ended this statement for the record Close
-		// emits. io.EOF is exhaustion, not failure. Registered in the SAME
-		// defer as the panic recovery and AFTER it, so a recovered panic is
-		// recorded as the statement's outcome too.
+		// emits. io.EOF is exhaustion, not failure. It runs after recoverInto,
+		// so a recovered panic is recorded as the statement's outcome too.
 		if err != nil && err != io.EOF && r.statsErr == nil {
 			r.statsErr = err
 		}
 	}()
+	defer r.conn.recoverInto(&err)
 	if r.closed {
 		return io.EOF
 	}
@@ -1901,6 +1917,7 @@ func (r *paginatingRows) Next(dest []driver.Value) (err error) {
 	// setMaxRows semantics. SQL LIMIT is no longer applied here; it is the
 	// RecordQueryLimitPlan operator's job inside the plan (RFC-128).
 	if r.maxRows > 0 && r.emitted >= r.maxRows {
+		r.finished = true
 		return io.EOF
 	}
 
@@ -1968,6 +1985,7 @@ func (r *paginatingRows) nextRow() ([]driver.Value, error) {
 
 	// Buffer exhausted. If source is done, we're done.
 	if r.exhausted {
+		r.finished = true
 		return nil, io.EOF
 	}
 	if r.fetchErr != nil {
@@ -1987,6 +2005,7 @@ func (r *paginatingRows) nextRow() ([]driver.Value, error) {
 			break
 		}
 		if r.exhausted {
+			r.finished = true
 			return nil, io.EOF
 		}
 	}
@@ -2243,10 +2262,11 @@ func materializeDriverValue(v any) any {
 	}
 }
 
-// fetchPage opens a fresh FDB transaction, creates the cursor hierarchy
-// (or recreates it from the continuation), drains the cursor until it
-// stops, and buffers the results. Everything happens INSIDE DB.Run so
-// FDB reads are against a live transaction.
+// fetchPage runs one page in a live transaction (the explicit one, an
+// auto-commit statement's shared first transaction for its first page, or a
+// fresh DB.Run one: runPage), creates the cursor hierarchy (or recreates it
+// from the continuation), drains the cursor until it stops, and buffers the
+// results.
 //
 // This matches Java's architecture: each transaction creates a fresh
 // cursor hierarchy from the plan + continuation. The continuation
@@ -2267,8 +2287,9 @@ func (r *paginatingRows) fetchPage() error {
 	// The page's OUTCOME is staged in locals and published to r only after the
 	// page's transaction has succeeded.
 	//
-	// In auto-commit the closure below is the body of a DB.Run retry loop, so it
-	// may run more than once, and it RESUMES FROM r.continuation while clearing
+	// In auto-commit the closure below may run more than once (the body of a
+	// DB.Run retry loop, or a first page rerun in DB.Run after its shared
+	// transaction failed), and it RESUMES FROM r.continuation while clearing
 	// r.buf at its top. Any position it writes to r before its transaction
 	// commits is therefore position a re-execution inherits — and a re-execution
 	// that inherits an already-advanced continuation resumes PAST the rows the
@@ -2321,11 +2342,13 @@ func (r *paginatingRows) fetchPage() error {
 	// Every statement kind joins the explicit transaction captured at Execute
 	// time (r.tx) — SELECT included, which is what gives an explicit
 	// transaction read-your-writes and read conflict ranges (RFC-198
-	// Decision 1). With no explicit transaction (r.tx == nil) each page runs
-	// in its own auto-commit transaction via DB.Run, unchanged. A captured
+	// Decision 1). With no explicit transaction (r.tx == nil) the first page
+	// runs in the transaction its planning read in when that is still usable
+	// (statement_read.go), and commits it before the page is published; every
+	// other page runs in its own auto-commit transaction via DB.Run. A captured
 	// transaction that has since ended is a loud 25F01, never a silent fresh
 	// transaction (Decision 3).
-	_, txErr := c.runInCapturedTx(r.ctx, r.tx, r.options(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	_, txErr := c.runPage(r.ctx, r.tx, r.options(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		if attempts > 0 {
 			// Java's ThrottledRetryingIterator decreases work on every failed
 			// attempt. SQL pages use time rather than its scanned-row quota:
@@ -2358,8 +2381,10 @@ func (r *paginatingRows) fetchPage() error {
 		r.scratch.BeginPage()
 
 		// One store per subspace per transaction, reused by every page
-		// (RFC-198 Decision 10) — in auto-commit this still builds a fresh
-		// store per page, because there each page IS a transaction.
+		// (RFC-198 Decision 10). In auto-commit a first page in the shared
+		// transaction reuses the store planning opened there
+		// (statement_read.go); any other page, its own transaction, builds a
+		// fresh one.
 		store, storeErr := c.storeIn(rctx, r.tx, r.ss)
 		if storeErr != nil {
 			return nil, storeErr
@@ -2461,7 +2486,7 @@ func (r *paginatingRows) fetchPage() error {
 			return nil, translateExecErrorCtx(r.ctx, execErr)
 		}
 
-		rs := executor.NewRecordLayerResultSet(r.ctx, cursor, r.cols)
+		rs := resultset.NewRecordLayerResultSet(r.ctx, cursor, r.cols)
 		defer rs.Close()
 
 		for rs.Next() {
@@ -2541,8 +2566,8 @@ func (r *paginatingRows) fetchPage() error {
 // public columns made a successful write fail afterwards with "no positional
 // output row aligned to column ID".
 func materializePageRow(
-	rs *executor.RecordLayerResultSet,
-	cols []executor.ColumnDef,
+	rs *resultset.RecordLayerResultSet,
+	cols []resultset.ColumnDef,
 	isUpdate bool,
 ) ([]driver.Value, error) {
 	if isUpdate {
@@ -2769,13 +2794,14 @@ func translateExecError(err error) error {
 	if errors.As(err, &slotErr) {
 		return api.NewError(api.ErrCodeUnknown, slotErr.Error())
 	}
+	// Java's SemanticException message, once; the typed error stays the cause.
 	var enumErr *values.InvalidEnumValueError
 	if errors.As(err, &enumErr) {
-		return api.WrapError(api.ErrCodeInternalError, enumErr.Error(), err)
+		return api.WrapStatedError(api.ErrCodeInternalError, enumErr.Error(), err)
 	}
 	var uuidErr *values.InvalidUUIDValueError
 	if errors.As(err, &uuidErr) {
-		return api.WrapError(api.ErrCodeInternalError, uuidErr.Error(), err)
+		return api.WrapStatedError(api.ErrCodeInternalError, uuidErr.Error(), err)
 	}
 	var invalidArg *values.InvalidArgumentError
 	if errors.As(err, &invalidArg) {
@@ -2785,6 +2811,15 @@ func translateExecError(err error) error {
 	if errors.As(err, &aggEval) {
 		return api.NewError(api.ErrCodeGroupingError, aggEval.Error())
 	}
+	var execErr *executor.ExecutionError
+	if errors.As(err, &execErr) {
+		return api.NewError(executionErrorCode(execErr.Kind), execErr.Message)
+	}
+	// Java's RecordCoreException from checkValidRange: XXXXX, its message once.
+	var rangeErr *values.RangeBoundsError
+	if errors.As(err, &rangeErr) {
+		return api.WrapStatedError(api.ErrCodeUnknown, rangeErr.Message, err)
+	}
 	// FDB tail: page ≥ 2 errors reach the application through THIS function,
 	// not through the QueryContext/ExecContext translateFDBError wrap (which
 	// only sees the eagerly-fetched first page). An in-transaction page fetch
@@ -2792,6 +2827,19 @@ func translateExecError(err error) error {
 	// would otherwise escape raw (RFC-198 criterion 9). translateFDBError is
 	// idempotent on *api.Error, so double translation is harmless.
 	return translateFDBError(err)
+}
+
+// executionErrorCode is an executor failure kind's SQLSTATE.
+func executionErrorCode(kind executor.ExecutionErrorKind) api.ErrorCode {
+	switch kind {
+	case executor.ExecNotNullViolation:
+		return api.ErrCodeNotNullViolation
+	case executor.ExecCardinalityViolation:
+		return api.ErrCodeCardinalityViolation
+	case executor.ExecSubqueryColumnCount:
+		return api.ErrCodeSyntaxError
+	}
+	return api.ErrCodeInternalError
 }
 
 // likeErrorCode is ExceptionUtil's mapping of the LIKE semantic errors
@@ -2840,13 +2888,13 @@ func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *record
 	if !recordlayer.IsRecordTypeExpression(countKey) {
 		return nil
 	}
-	ss, err := c.sess.Keyspace.SchemaSubspaceIn(ctx, configuredRunner{c.sess.DB, c.Options()}, c.sess.DBPath, c.sess.Schema)
+	ss, err := c.sessionSchemaSubspace(ctx)
 	if err != nil {
 		return nil
 	}
 
 	countSubspace := ss.Sub(recordlayer.RecordCountKey)
-	result, runErr := configuredRunner{c.sess.DB, c.Options()}.RunRead(ctx, func(rtx fdb.ReadTransaction) (any, error) {
+	result, runErr := c.runner(c.Options()).RunRead(ctx, func(rtx fdb.ReadTransaction) (any, error) {
 		counts := make(map[string]float64)
 		for name := range md.RecordTypes() {
 			rt := md.GetRecordType(name)
@@ -2928,7 +2976,7 @@ func (g *cascadesGenerator) fetchIndexStateSnapshot(
 	if len(md.GetAllIndexes()) == 0 {
 		return nil, nil
 	}
-	ss, err := c.sess.Keyspace.SchemaSubspaceIn(ctx, configuredRunner{c.sess.DB, c.Options()}, c.sess.DBPath, c.sess.Schema)
+	ss, err := c.sessionSchemaSubspace(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -3213,6 +3261,17 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 		// non-filtering; a closure is opaque and cannot be proved tautological,
 		// so it fails closed.
 		sparse := idx.HasFilteringPredicate()
+		if idx.Type == recordlayer.IndexTypeText {
+			if layout, err := recordlayer.DescribeTextIndex(idx); !sparse && err == nil && !layout.TokenizedPrimaryKey {
+				columns, direct := textIndexScalarColumns(idx.RootExpression.ToKeyExpression())
+				if !direct {
+					continue
+				}
+				def := &metadataIndexDef{idx: idx, md: c.md}
+				candidates = append(candidates, &cascades.TextIndexMatchCandidate{Name: idx.Name, Columns: columns, RecordTypes: def.IndexRecordTypes(), GroupingCount: layout.TextPosition, TokenizerName: layout.Tokenizer.Name(), TokenizerVersion: layout.TokenizerVersion, TokenizerMaxVersion: layout.Tokenizer.MaxVersion(), OmitPositions: idx.GetBooleanOption(recordlayer.IndexOptionTextOmitPositions, false), CreatesDuplicates: idx.RootExpressionCreatesDuplicates(), RowType: def.IndexRowType(), KeyTypes: def.IndexKeyComponentTypes()})
+			}
+			continue
+		}
 		if !sparse {
 			// A SPARSE aggregate/vector index must not become a candidate that
 			// ignores its predicate: the maintained aggregates cover only the
@@ -3226,6 +3285,7 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 			// (ValueIndexExpansionVisitor.java:138-162).
 			if aggCand := tryAggregateIndexCandidate(idx, c.md); aggCand != nil {
 				candidates = append(candidates, aggCand)
+				// Unlike Java, this aggregate-first path omits PermutedMinMax BY_VALUE.
 				continue
 			}
 			if vecCand := tryVectorIndexCandidate(idx, c.md); vecCand != nil {
@@ -3243,18 +3303,8 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 				continue
 			}
 		}
-		// Atomic-mutation / aggregate-only index types (COUNT/SUM totals,
-		// MAX_EVER/MIN_EVER running extrema, BITMAP_VALUE bitsets) must not become
-		// VALUE-index scan candidates: their entries are aggregated/running values,
-		// not per-record values, so a plain ordered scan (e.g. StreamingAgg over the
-		// index) reads stale data. In Java these types have no value-scan candidate
-		// (AtomicMutationIndexMaintainerFactory / BitmapValueIndexMaintainerFactory
-		// never call expandValueIndexMatchCandidate). The subset with a legitimate
-		// aggregate use was already claimed by tryAggregateIndexCandidate above.
-		// Dropping the remaining atomic types here leaves a plain MAX/MIN over only such
-		// an index to fall back to a base-record StreamingAgg, which computes the
-		// correct current extremum.
-		if idx.IsAtomicMutationIndex() {
+		// Java-compatible VALUE-layout eligibility; custom and atomic types fail closed.
+		if !recordlayer.IsValueScanCandidateIndexType(idx.Type) {
 			continue
 		}
 		if sparse && idx.Type != recordlayer.IndexTypeValue && idx.Type != recordlayer.IndexTypeVersion {
@@ -4291,7 +4341,7 @@ func vectorDistanceOperator(m vectorindex.VectorMetric) values.DistanceOperator 
 // resultColumns are the columns Java reports for a plan: the fields of its
 // result row type (QueryPlan.getResultType). The SQL labels come from the
 // logical output row and are applied by Execute.
-func resultColumns(plan plans.RecordQueryPlan) []executor.ColumnDef {
+func resultColumns(plan plans.RecordQueryPlan) []resultset.ColumnDef {
 	switch t := plan.GetResultType().(type) {
 	case *values.RecordType:
 		return columnsOfRowType(t)
@@ -4302,11 +4352,11 @@ func resultColumns(plan plans.RecordQueryPlan) []executor.ColumnDef {
 	return nil
 }
 
-func columnsOfRowType(rowType *values.RecordType) []executor.ColumnDef {
+func columnsOfRowType(rowType *values.RecordType) []resultset.ColumnDef {
 	if rowType == nil {
 		return nil
 	}
-	cols := make([]executor.ColumnDef, len(rowType.Fields))
+	cols := make([]resultset.ColumnDef, len(rowType.Fields))
 	for ordinal, field := range rowType.Fields {
 		typeName := cascadesTypeName(field.FieldType)
 		if typeName == "" {
@@ -4316,7 +4366,7 @@ func columnsOfRowType(rowType *values.RecordType) []executor.ColumnDef {
 		if field.FieldType.IsNullable() {
 			nullable = api.ColumnNullable
 		}
-		cols[ordinal] = executor.ColumnDef{
+		cols[ordinal] = resultset.ColumnDef{
 			Name:     field.Name,
 			TypeName: typeName,
 			Nullable: nullable,
@@ -5311,6 +5361,9 @@ func isAllowedFunction(name string) bool {
 		"BITMAP_BUCKET_OFFSET", "BITMAP_BIT_POSITION",
 		// Vector distances are DistanceValues (expr.distanceOperatorForFunc).
 		"EUCLIDEAN_DISTANCE", "EUCLIDEAN_SQUARE_DISTANCE", "COSINE_DISTANCE", "DOT_PRODUCT_DISTANCE",
+		// Text predicates are text ComparisonPredicates (expr.walkTextFunction).
+		"TEXT_CONTAINS_ALL", "TEXT_CONTAINS_ALL_WITHIN", "TEXT_CONTAINS_ANY", "TEXT_CONTAINS_PHRASE",
+		"TEXT_CONTAINS_PREFIX", "TEXT_CONTAINS_ALL_PREFIXES", "TEXT_CONTAINS_ANY_PREFIX",
 		`"` + expr.SQLFunctionArgument + `"`:
 		return true
 	}

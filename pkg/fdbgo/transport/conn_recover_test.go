@@ -24,9 +24,9 @@ func TestRecoverLoop_ContainsPanicAndFailsConnection(t *testing.T) {
 	defer srv.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	c := &Conn{ctx: ctx, cancel: cancel, conn: cli, pending: make(map[UID]pendingEntry)}
+	c := &Conn{ctx: ctx, cancel: cancel, conn: cli}
 	pending := make(chan Response, 1)
-	c.pending[UID{First: 1}] = pendingEntry{ch: pending}
+	c.putPending(UID{First: 1}, pendingEntry{ch: pending})
 
 	// Reaching the assertions at all proves containment: without recoverLoop, this
 	// closure's panic would propagate and crash the test goroutine.

@@ -286,7 +286,7 @@ func partlyBuiltAdvice(partly *recordlayer.PartlyBuiltError) error {
 		"invocation would stamp %q; a partial build of another method is continued automatically where it "+
 		"can be, so this one is blocked (unblock it first) or was begun by a mutual or multi-target build, "+
 		"which the fleet cannot continue (finish it with the builder that began it); or start from scratch "+
-		"with `frl index rebuild`",
+		"with `fdb rl index rebuild`",
 		partly.IndexName, reason, partly.SavedStamp, partly.ExpectedStamp)
 }
 

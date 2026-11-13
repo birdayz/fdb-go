@@ -284,8 +284,10 @@ func TestTracerWriteOnlyCommit(t *testing.T) {
 	defer cancel()
 	db, sr := openTracedDB(t, ctx, 1, sdktrace.AlwaysSample())
 	var wireSpan types.SpanContext
+	var escaped *Transaction
 	key := []byte(t.Name())
 	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		escaped = tx
 		wireSpan = tx.currentSpan()
 		tx.Set(key, []byte("committed"))
 		return nil, nil
@@ -307,6 +309,32 @@ func TestTracerWriteOnlyCommit(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if !escaped.spanNeedsRegen.Load() || escaped.spanContext.Load() != nil {
+		t.Fatal("managed write commit did not defer successor span generation")
+	}
+	type readResult struct {
+		value []byte
+		err   error
+	}
+	done := make(chan readResult, 1)
+	go func() {
+		value, err := escaped.Get(ctx, key)
+		done <- readResult{value, err}
+	}()
+	select {
+	case result := <-done:
+		defer escaped.Cancel()
+		if result.err != nil || string(result.value) != "committed" {
+			t.Fatalf("escaped-handle read=%q, %v", result.value, result.err)
+		}
+	case <-ctx.Done():
+		t.Fatal("escaped-handle read stalled during lazy span regeneration")
+	}
+	if escaped.currentSpan().TraceID == wireSpan.TraceID {
+		t.Fatal("escaped-handle read reused the committed trace identity")
+	}
+	escaped.Cancel()
+	checkEndedSpans(t, sr, "Transaction", "Transaction", "fdbgo.getValue")
 }
 
 type observingSpanTracer struct {

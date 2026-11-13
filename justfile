@@ -25,23 +25,44 @@ ensure-buf:
         exit 0
     fi
     mkdir -p .tools
-    curl -fsSL -o "$BUF" "https://github.com/bufbuild/buf/releases/download/v{{BUF_VERSION}}/buf-$(uname -s)-$(uname -m)"
-    chmod +x "$BUF"
+    # Built from the checksum-verified module proxy, not a GitHub release; staged so a failed build keeps $BUF.
+    tmp=$(mktemp -d .tools/buf.XXXXXX)
+    trap 'rm -rf "$tmp"' EXIT
+    GOBIN="$PWD/$tmp" go install "github.com/bufbuild/buf/cmd/buf@v{{BUF_VERSION}}"
+    mv -f "$tmp/buf" "$BUF"
 
 # Regenerate protobuf code + gomock mocks + ANTLR parser. All three are
 # committed to git (clean + regenerate, same pattern). CI re-runs
 # `just generate` and fails on any diff, so CI is the source of truth.
-generate: ensure-buf generate-mocks generate-parser generate-frl generate-unicode15
+generate: ensure-buf generate-mocks generate-parser generate-fdb generate-cli-example generate-unicode15
     rm -rf gen/
     .tools/buf generate
     bazelisk run //:gazelle
+    # genotelv1 builds against gen/, so it runs once gazelle has given gen/
+    # its BUILD files.
+    just generate-otelv1
+    bazelisk run //:gazelle
 
-# Regenerate protobuf code for the `frl` CLI (its own buf.yaml under cmd/frl/).
-# Output goes to cmd/frl/gen/, consumed by the CLI only — never by the library
+# Regenerate protobuf code for the `fdb` CLI (its own buf.yaml under cmd/fdb/).
+# Output goes to cmd/fdb/gen/, consumed by the CLI only — never by the library
 # packages.
-generate-frl: ensure-buf
-    rm -rf cmd/frl/gen/
-    cd cmd/frl && ../../.tools/buf generate
+generate-fdb: ensure-buf
+    rm -rf cmd/fdb/gen/
+    cd cmd/fdb && ../../.tools/buf generate
+
+# Regenerate the compiled OTEL_V1 record types (layers/otel/otelsql/otelv1pb)
+# from otelsql.TemplateBody, formatted as `just fmt` formats it; the drift test
+# fails until this runs after a template change.
+generate-otelv1:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    GOFUMPT=$(bazelisk run --run_under="echo" @cc_mvdan_gofumpt//:gofumpt 2>/dev/null)
+    bazelisk run //layers/otel/otelsql/cmd/genotelv1 -- "$PWD/layers/otel/otelsql/otelv1pb"
+    "$GOFUMPT" -w layers/otel/otelsql/otelv1pb/*.go
+
+# Sync the website's standalone annotated-proto example and source archive.
+generate-cli-example:
+    python3 scripts/sync-website-cli-example.py
 
 # Regenerate FEATURE_MATRIX.md from the yamsql conformance corpus. The
 # TestFeatureMatrixUpToDate guard fails the build if this is not run after
@@ -81,12 +102,11 @@ generate-mocks:
     # go.mod's direct/indirect tags accurate after each regen.
     go mod tidy
 
-# Smoke-test Relational SQL grammar coverage against the vendored Java
-# yamsql corpus (fdb-record-layer/yaml-tests/...). Runs directly via `go
-# test` — Bazel's test sandbox can't see the submodule tree. Only the
-# files tagged with `//go:build yamsql` are picked up.
+# Parse every statement of the vendored Java yamsql corpus
+# (third_party/apple/fdb-record-layer/yaml-tests). Part of `just test` too.
 smoke-yamsql:
-    go test -tags=yamsql -count=1 -v -run TestYamsqlCorpus ./pkg/relational/core/parser
+    bazelisk test //pkg/relational/core/parser:parser_test --test_filter=TestYamsqlCorpus \
+        --test_output=streamed --nocache_test_results
 
 # Regenerate the Relational SQL parser from grammar/*.g4 via Bazel. The
 # ANTLR4 complete jar is fetched + cached as a Bazel external repo
@@ -122,12 +142,13 @@ test-race *args:
 sqltest *args:
     bazelisk test //pkg/relational/sqldriver:all //pkg/relational/sqltest/... {{args}}
 
-# Thorough lane: all Bazel test targets, including manual stress/oracle targets.
+# Thorough lane: all Bazel test targets, including manual stress/oracle targets,
+# except those tagged realcluster (they need a real FDB cluster; see stress-10m).
 # Query explicitly: //... alone silently omits manual targets. Cache stays enabled.
 test-full *args:
     #!/usr/bin/env bash
     set -euo pipefail
-    all=$(bazelisk query 'kind(".*_test", //...)' --output=label)
+    all=$(bazelisk query 'kind(".*_test", //...) except attr(tags, "realcluster", //...)' --output=label)
     test -n "$all" || { echo 'No test targets found' >&2; exit 1; }
     targets=$( { for t in {{test_full_first}}; do grep -Fx -- "$t" <<<"$all" || true; done; grep -Fvx -f <(tr ' ' '\n' <<<"{{test_full_first}}") <<<"$all"; } )
     test "$(wc -l <<<"$targets")" -eq "$(wc -l <<<"$all")" || { echo 'test-full reordering lost targets' >&2; exit 1; }
@@ -145,6 +166,15 @@ factory-corpus:
 # the findings dir. -date is required: generation must never read the clock.
 factory-run date seeds="1200" quota="1000":
     go run ./cmd/factory-run -seeds {{seeds}} -quota {{quota}} -date {{date}}
+
+# Run the 10M-row stress scales against a real FoundationDB cluster; a testcontainer
+# cannot sustain them, so the target refuses to start one.
+#   just stress-10m /etc/foundationdb/fdb.cluster
+stress-10m cluster_file:
+    bazelisk test //pkg/relational/sqldriver/stress:stress_10m_test \
+        --test_env=FDB_STRESS_CLUSTER_FILE="$(realpath {{cluster_file}})" \
+        --test_filter='TestFDB_(Stress|Ingest)_10M' --test_timeout=10800 \
+        --test_output=streamed --nocache_test_results
 
 # Run the full real-FDB stress family: raw/record-layer ingest and read scaling,
 # 10K/100K/1M SQL assertions, and the large vector rebalance proofs. The tests
@@ -177,8 +207,13 @@ golden:
 # architectural review gate covers it). Capture is deterministic over SimFDB, so a rerun with
 # no engine change is a no-op.
 golden-update:
-    GOLDEN_UPDATE=1 go test ./pkg/simfdb/hunt/golden/ -run TestGolden -count=1
+    GOLDEN_UPDATE=1 bazelisk run //pkg/simfdb/hunt/golden:golden_test -- -test.run '^TestGolden$'
     @echo "review the baseline diff:  git diff pkg/simfdb/hunt/golden/testdata/"
+
+# Re-resolve the Java oracle's Maven dependencies into maven_install.json after changing
+# maven.install in MODULE.bazel; commit both. A stale lock file fails the build.
+maven-repin:
+    REPIN=1 bazelisk run @maven//:pin
 
 # Regenerate the frozen compatibility data, never host/compiler Unicode tables.
 generate-unicode15:
@@ -204,12 +239,22 @@ clean:
 tidy:
     go mod tidy
 
+# Grafana datasource backend: a nested Go module outside Bazel (.bazelignore).
+# The plugin SDK's mage targets build dist/gpx_foundationdb_{linux_amd64,linux_arm64,
+# darwin_arm64}; the executable name comes from src/plugin.json.
+grafana-build:
+    cd layers/otel/grafana && go run github.com/magefile/mage -v
+
+# Vet and test the Grafana backend's nested module only, never the root module.
+grafana-test *args:
+    cd layers/otel/grafana && go vet ./pkg/... ./cmd/... && go test ./pkg/... ./cmd/... {{args}}
+
 # Format Go source files using Bazel-managed gofumpt (same version as nogo linter)
 fmt:
     #!/usr/bin/env bash
     set -euo pipefail
     GOFUMPT=$(bazelisk run --run_under="echo" @cc_mvdan_gofumpt//:gofumpt 2>/dev/null)
-    find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './cmd/frl/gen/*' -not -path './pkg/relational/core/parser/gen/*' -not -path './.claude/*' -exec "$GOFUMPT" -w {} +
+    find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './cmd/fdb/gen/*' -not -path './pkg/relational/core/parser/gen/*' -not -path './.claude/*' -exec "$GOFUMPT" -w {} +
 
 # Check Go formatting (fails if any file needs formatting)
 # Uses Bazel-managed gofumpt — same version as nogo linter, no drift.
@@ -217,7 +262,7 @@ lint:
     #!/usr/bin/env bash
     set -euo pipefail
     GOFUMPT=$(bazelisk run --run_under="echo" @cc_mvdan_gofumpt//:gofumpt 2>/dev/null)
-    unformatted=$("$GOFUMPT" -l $(find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './cmd/frl/gen/*' -not -path './pkg/relational/core/parser/gen/*' -not -path './.claude/*'))
+    unformatted=$("$GOFUMPT" -l $(find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './cmd/fdb/gen/*' -not -path './pkg/relational/core/parser/gen/*' -not -path './.claude/*'))
     if [ -n "$unformatted" ]; then
         echo "Unformatted files:"
         echo "$unformatted"
@@ -521,7 +566,7 @@ race-all:
     bazelisk --output_base={{race_base}} test //pkg/fdbgo/client:client_test //pkg/recordlayer:recordlayer_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/chaos:chaos_test //conformance:conformance_test //conformance:conformance_corpora_test //pkg/recordlayer/query/plan/cascades/... --@rules_go//go/config:race --test_timeout=900
 
 # Extended verification: full suite + race detector + bounded fuzz smoke.
-# Nightly workflows retain their larger exploration budgets.
+# No CI lane runs active fuzzing; this recipe's smoke is the only routine one.
 verify:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -636,7 +681,7 @@ test-fresh target *args:
 vanity-modules:
     bash scripts/gen-vanity-modules.sh
 
-# Convenience wrapper for the frl CLI (Phase A skeleton — see cmd/frl/).
-# Example: `just frl version` or `just frl config schema`.
-frl *args:
-    bazelisk run //cmd/frl -- {{args}}
+# Run the fdb CLI from source.
+# Example: `just fdb version` or `just fdb rl store info`.
+fdb *args:
+    bazelisk run //cmd/fdb -- {{args}}

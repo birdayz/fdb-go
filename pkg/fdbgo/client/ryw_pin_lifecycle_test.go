@@ -1,11 +1,11 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,33 +19,29 @@ import (
 
 // fingerprint is a deep, deterministic dump of a version: entries with their
 // atomic stacks and bytes, the slices, the flags and the nodes. The lazy derived
-// indexes (sortedKeys, the node build) are built first, so whether a reader has
+// indexes (the sorted store, the node build) are built first, so whether a reader has
 // built them does not change it.
 func (w *rywWrites) fingerprint() string {
 	w.ensureSorted()
 	var b strings.Builder
-	keys := make([]string, 0, len(w.writes))
-	for k := range w.writes {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := w.writeKeys()
 	for _, k := range keys {
-		e := w.writes[k]
+		e, _ := w.entry(k)
 		fmt.Fprintf(&b, "%q=%q abs=%t dep=%t atom=%t unr=%t [", k, e.value, e.absent, e.dependent, e.hasAtomics, e.unreadable)
 		for _, m := range e.atomics {
 			fmt.Fprintf(&b, "%d:%x ", m.typ, m.param)
 		}
 		b.WriteString("]\n")
 	}
-	fmt.Fprintf(&b, "sorted=%q\ncleared=", w.sortedKeys)
-	for _, r := range w.cleared {
+	fmt.Fprintf(&b, "sorted=%q\ncleared=", keys)
+	for _, r := range rangeList(&w.cleared) {
 		fmt.Fprintf(&b, "[%q,%q)", r.begin, r.end)
 	}
 	b.WriteString("\nunreadable=")
-	for _, r := range w.unreadableRanges {
+	for _, r := range rangeList(&w.unreadableRanges) {
 		fmt.Fprintf(&b, "[%q,%q)", r.begin, r.end)
 	}
-	fmt.Fprintf(&b, "\nunreadableKeys=%q bypass=%t\n", w.unreadableKeys, w.bypassUnreadable)
+	fmt.Fprintf(&b, "\nunreadableKeys=%q bypass=%t\n", w.unreadableKeys.appendTo(nil), w.bypassUnreadable)
 	w.nodes.build()
 	b.WriteString(w.nodes.dump())
 	return b.String()
@@ -260,18 +256,18 @@ func TestRYWWalkRejectsPrivateSpan(t *testing.T) {
 				for _, w := range []*rywWrites{nil, c.w, pinned} {
 					c.newIterLocked(w).skip([]byte("a")) // snapshot, live and pinned remain valid
 				}
-				if span.nodes.sorted != nil || span.nodes.log != nil {
+				if span.nodes.built || span.nodes.log != nil {
 					t.Fatal("private-span precondition: nodes are not empty")
 				}
 				func() {
 					defer func() {
-						if got := recover(); got != "rywCache.newIterLocked: the write-map version is neither live nor pinned" {
+						if got := recover(); got != "rywCache.checkViewLocked: the write-map version is neither live nor pinned" {
 							t.Errorf("private span panic = %v, want the version-ownership guard", got)
 						}
 					}()
 					c.newIterLocked(span).skip([]byte("a"))
 				}()
-				if span.nodes.sorted != nil || span.nodes.log != nil {
+				if span.nodes.built || span.nodes.log != nil {
 					t.Fatal("private span reached the node builder before rejection")
 				}
 			})
@@ -313,6 +309,131 @@ func TestRYWPinSharedThenCloned(t *testing.T) {
 	tr.quiesced(t)
 }
 
+// Reads answered at issue pin the version they read and release it in their Start
+// call: a write before Get changes the live version in place, and Get returns the read as issued.
+func TestRYWLocalStartReleasesItsPin(t *testing.T) {
+	t.Parallel()
+	tx := &Transaction{}
+	tx.nativeRange = func(context.Context, KeySelector, KeySelector, rangeLimits, bool) (nativeRangeResult, error) {
+		return nativeRangeResult{}, errors.New("a local read reached storage")
+	}
+	tr := trackPins(&tx.ryw)
+	ctx := context.Background()
+	if err := tx.ClearRange([]byte("a"), []byte("z")); err != nil {
+		t.Fatal(err)
+	}
+	tx.Set([]byte("b"), []byte("1"))
+	issued := liveOf(&tx.ryw)
+	rangeRead := tx.StartGetRangeSelectors(ctx, firstGreaterOrEqual([]byte("a")), firstGreaterOrEqual([]byte("z")), 0, 0, false)
+	keyRead := tx.StartGetKey(ctx, fgtSel("a"))
+	tr.mu.Lock()
+	pinned := tr.pins[issued]
+	tr.mu.Unlock()
+	if pinned != 2 || pinsOf(&tx.ryw, issued) != 0 {
+		t.Fatalf("the reads pinned the version %d times and hold %d pins, want 2 and 0", pinned, pinsOf(&tx.ryw, issued))
+	}
+	tx.Set([]byte("c"), []byte("2"))
+	if liveOf(&tx.ryw) != issued || tr.cloneCount() != 0 {
+		t.Fatalf("a write after the reads cloned the version (clones %d)", tr.cloneCount())
+	}
+	if kvs, _, err := rangeRead.Get(); err != nil || keysOf(kvs) != "b" {
+		t.Fatalf("range read = %s, %v; want b, as issued", keysOf(kvs), err)
+	}
+	if k, err := keyRead.Get(); err != nil || string(k) != "b" {
+		t.Fatalf("key read = %q, %v; want b, as issued", k, err)
+	}
+	tr.quiesced(t)
+}
+
+// A local read keeps its rows in write-map storage until Get, unpinned: the in-place
+// writes to the row's own key between Start and Get must leave its bytes as issued.
+func TestRYWLocalStartRowSurvivesInPlaceWrites(t *testing.T) {
+	t.Parallel()
+	key := []byte("b")
+	// Each issue state makes b's row alias bytes a later write may extend in place.
+	issues := map[string]struct {
+		issue func(tx *Transaction)
+		want  []byte
+	}{
+		"value with spare capacity": {func(tx *Transaction) {
+			tx.Set(key, []byte("v0"))
+			tx.Atomic(MutAppendIfFits, key, []byte("x"))
+		}, []byte("v0x")},
+		"append stack over a known absence": {func(tx *Transaction) {
+			tx.Atomic(MutAppendIfFits, key, []byte("p1"))
+			tx.Atomic(MutAppendIfFits, key, []byte("p2"))
+		}, []byte("p1p2")},
+		"add stack over a known absence": {func(tx *Transaction) {
+			tx.Atomic(MutAddValue, key, pinNum(1))
+			tx.Atomic(MutAddValue, key, pinNum(2))
+		}, pinNum(3)},
+	}
+	later := map[string]func(tx *Transaction){
+		"set":    func(tx *Transaction) { tx.Set(key, []byte("late")) },
+		"append": func(tx *Transaction) { tx.Atomic(MutAppendIfFits, key, []byte("y")) },
+		"fold": func(tx *Transaction) {
+			tx.Atomic(MutAppendIfFits, key, []byte("y"))
+			tx.Atomic(MutAddValue, key, pinNum(4))
+		},
+		"set, append, fold": func(tx *Transaction) {
+			tx.Set(key, []byte("late"))
+			tx.Atomic(MutAppendIfFits, key, []byte("y"))
+			tx.Atomic(MutAppendIfFits, key, []byte("z"))
+		},
+	}
+	ctx := context.Background()
+	begin, end := firstGreaterOrEqual([]byte("a")), firstGreaterOrEqual([]byte("d"))
+	inPlace := map[string]bool{}
+	for issueName, is := range issues {
+		for laterName, write := range later {
+			name := issueName + "/" + laterName
+			m := newMemStorage("a", "c") // b is absent from storage
+			tx := &Transaction{}
+			tx.nativeRange = m.native
+			if _, _, err := tx.Snapshot().GetRangeSelectors(ctx, begin, end, 0, 0, false); err != nil {
+				t.Fatal(err) // the cache now knows [a, d)
+			}
+			is.issue(tx)
+			tr := trackPins(&tx.ryw)
+			p := tx.StartGetRangeSelectors(ctx, begin, end, 0, 0, false)
+			if p.done != closedDone || len(p.kvs) != 3 || !bytes.Equal(p.kvs[1].Value, is.want) {
+				t.Fatalf("%s: the read was not answered at issue with b=%x: %v", name, is.want, p.kvs)
+			}
+			held := p.kvs[1].Value
+			write(tx)
+			tx.ryw.mu.Lock()
+			entry, _ := tx.ryw.liveLocked().entry(string(key))
+			tx.ryw.mu.Unlock()
+			for _, v := range append([][]byte{entry.value}, paramsOf(entry.atomics)...) {
+				if cap(v) > 0 && cap(held) > 0 && &v[:1][0] == &held[:1][0] {
+					inPlace[issueName] = true // the write extended the row's own bytes
+				}
+			}
+			kvs, _, err := p.Get()
+			if err != nil || keysOf(kvs) != "a,b,c" || !bytes.Equal(kvs[1].Value, is.want) {
+				t.Fatalf("%s: Get = %s b=%x, %v; want b=%x as issued", name, keysOf(kvs), kvs[1].Value, err, is.want)
+			}
+			if tr.cloneCount() != 0 {
+				t.Fatalf("%s: %d clones, want 0 (the read holds no pin)", name, tr.cloneCount())
+			}
+			tr.quiesced(t)
+		}
+	}
+	for _, issueName := range []string{"value with spare capacity", "append stack over a known absence"} {
+		if !inPlace[issueName] {
+			t.Errorf("%s: no later write extended the bytes the row holds", issueName)
+		}
+	}
+}
+
+func paramsOf(stack []rywMutation) [][]byte {
+	var out [][]byte
+	for _, m := range stack {
+		out = append(out, m.param)
+	}
+	return out
+}
+
 // S4.2: a writer folding a same-type atomic over a pinned stack leaves the pinned
 // version unchanged.
 func TestRYWPinnedAtomicStackUnchanged(t *testing.T) {
@@ -330,7 +451,7 @@ func TestRYWPinnedAtomicStackUnchanged(t *testing.T) {
 	tx.Atomic(MutAddValue, []byte("k"), pinNum(2)) // coalesceOverAtomics rewrites the top
 	tx.ryw.mu.Lock()
 	after := pinned.fingerprint()
-	live := tx.ryw.liveLocked().writes["k"]
+	live, _ := tx.ryw.liveLocked().entry("k")
 	tx.ryw.mu.Unlock()
 	if before != after {
 		t.Fatalf("pinned version changed:\n%s\n%s", before, after)
@@ -369,7 +490,7 @@ func TestRYWMergeBatchOnlyOnPrivateSpan(t *testing.T) {
 	if before != after {
 		t.Fatalf("mergeBatch changed the pinned live version")
 	}
-	if !span.writes["k"].hasAtomics && span.writes["k"].value == nil {
+	if merged, _ := span.entry("k"); !merged.hasAtomics && merged.value == nil {
 		t.Fatalf("the span did not take the merge")
 	}
 	for name, w := range map[string]*rywWrites{"live": c.w, "pinned": pinned} {
@@ -405,7 +526,7 @@ func TestRYWResetWhileAwaitingStorage(t *testing.T) {
 		c.mu.Lock()
 		view := c.pinWritesLocked()
 		w := c.newGetKeyWalkLocked(view, fgtSel("a"), []byte("\xff"))
-		w.startLocked()
+		w.start()
 		c.mu.Unlock()
 		native := func(ctx context.Context, b, e KeySelector, l rangeLimits, rev bool) (nativeRangeResult, error) {
 			c.reset() // the transaction resets while the request is in flight
@@ -461,7 +582,7 @@ func TestRYWCancelDuringNestedGetKey(t *testing.T) {
 	// begin FGE(n) > end (c, false, 5): P2 does not apply (offsets 1 < 5), so P3
 	// resolves end with a nested getKey (RYW:621).
 	w := c.newRangeWalkLocked(view, firstGreaterOrEqual([]byte("n")), KeySelector{Key: []byte("c"), Offset: 5}, rangeLimits{rows: -1, minRows: 1, bytes: -1}, false, []byte("\xff"))
-	w.startLocked()
+	w.start()
 	c.mu.Unlock()
 	if w.pc != pcAwaitPreKey || w.sub == nil || w.sub.pc != pcAwaitStorage {
 		t.Fatalf("walk pc %d, want a nested getKey awaiting storage", w.pc)

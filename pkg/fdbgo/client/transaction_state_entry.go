@@ -33,7 +33,8 @@ func (tx *Transaction) Clear(key []byte) {
 // ClearRange deletes all keys in [begin, end).
 // Returns inverted_range (2005) if begin > end; C++ ThreadSafeTransaction::clear
 // raises it as the transaction's deferred error (ThreadSafeTransaction.cpp:626-640).
-// Zero-width ranges (begin == end) are silently ignored, matching C++.
+// A zero-width range inside the legal range is ignored; outside it, it defers
+// key_outside_legal_range (2004) as C++ does (ReadYourWrites.actor.cpp:2370-2372, 2396).
 func (tx *Transaction) ClearRange(begin, end []byte) error {
 	lease := tx.enterState()
 	defer lease.release()
@@ -385,7 +386,7 @@ func (tx *Transaction) GetTagThrottledDuration() float64 {
 // AddReadConflictRange adds an explicit read conflict range [begin, end).
 // If any key in this range is modified by another transaction between
 // this transaction's read version and commit, the commit will fail.
-// Returns inverted_range (2005) if begin > end. Matches C++ fdb_transaction_add_conflict_range.
+// Returns only inverted_range (2005); key_outside_legal_range is deferred, as in libfdb_c (RFC-268).
 func (tx *Transaction) AddReadConflictRange(begin, end []byte) error {
 	lease := tx.enterState()
 	defer lease.release()
@@ -395,7 +396,7 @@ func (tx *Transaction) AddReadConflictRange(begin, end []byte) error {
 // AddReadConflictKey adds a read conflict on a single key. Like AddReadConflictRange it is filtered
 // through the RYW write-map (C++ addReadConflictRange over [key, keyAfter(key)) → updateConflictMap,
 // ReadYourWrites.actor.cpp:1986): a self-written independent key adds no conflict; rywDisabled adds
-// the full single-key conflict directly (:1979).
+// the full single-key conflict directly (:1979). An illegal key defers 2004 (RFC-268).
 func (tx *Transaction) AddReadConflictKey(key []byte) {
 	lease := tx.enterState()
 	defer lease.release()
@@ -403,14 +404,17 @@ func (tx *Transaction) AddReadConflictKey(key []byte) {
 }
 
 // AddWriteConflictRange adds an explicit write conflict range [begin, end).
-// Returns inverted_range (2005) if begin > end. Matches C++ fdb_transaction_add_conflict_range.
+// Returns inverted_range (2005) if begin > end. As in libfdb_c, an endpoint past the
+// maximum write key is not returned here: key_outside_legal_range (2004) becomes the
+// deferred error that the next operation and Commit return.
 func (tx *Transaction) AddWriteConflictRange(begin, end []byte) error {
 	lease := tx.enterState()
 	defer lease.release()
 	return tx.stateAddWriteConflictRange(begin, end)
 }
 
-// AddWriteConflictKey adds a write conflict on a single key.
+// AddWriteConflictKey adds a write conflict on a single key. A key past the maximum
+// write key defers key_outside_legal_range (2004) as AddWriteConflictRange does.
 func (tx *Transaction) AddWriteConflictKey(key []byte) {
 	lease := tx.enterState()
 	defer lease.release()

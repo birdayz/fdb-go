@@ -25,15 +25,19 @@ type replyPanicProbe struct {
 }
 
 func (p *replyPanicProbe) observe() {
-	p.conn.pendingMu.Lock()
-	defer p.conn.pendingMu.Unlock()
-	p.registrations = len(p.conn.pending)
-	for token, entry := range p.conn.pending {
-		p.token, p.channel = token, entry.ch
-		if p.publish {
-			entry.ch <- Response{Body: []byte("published")}
-			delete(p.conn.pending, token)
+	p.registrations = 0
+	for i := range p.conn.pendingShards {
+		s := &p.conn.pendingShards[i]
+		s.mu.Lock()
+		p.registrations += len(s.m)
+		for token, entry := range s.m {
+			p.token, p.channel = token, entry.ch
+			if p.publish {
+				entry.ch <- Response{Body: []byte("published")}
+				delete(s.m, token)
+			}
 		}
+		s.mu.Unlock()
 	}
 }
 
@@ -153,38 +157,12 @@ func (c *replyPanicContext) Err() error {
 	return c.Context.Err()
 }
 
-func TestPingWaiterCancelsOwnedReply(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	conn := &Conn{ctx: ctx, cancel: cancel, pending: make(map[UID]pendingEntry), writeCh: make(chan writeReq, 1)}
-	done := conn.sendPingWithReply()
-	if done == nil {
-		t.Fatal("ping was not enqueued")
-	}
-	request := <-conn.writeCh
-	conn.queued.Add(-1)
-	token, ok := extractPingReplyToken(request.body)
-	if !ok || !conn.HasPendingReply(token) {
-		t.Fatal("positive control: ping waiter never owned a registration")
-	}
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("cancelled ping waiter did not release ownership")
-	}
-	if conn.HasPendingReply(token) {
-		t.Fatal("cancelled ping waiter retained its reply registration")
-	}
-}
-
 func TestPingRegistrationPanicReleasesReply(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	probe := &replyPanicProbe{}
-	conn := &Conn{ctx: &replyPanicContext{Context: ctx, probe: probe}, cancel: cancel, pending: make(map[UID]pendingEntry), writeCh: make(chan writeReq, 1)}
+	conn := &Conn{ctx: &replyPanicContext{Context: ctx, probe: probe}, cancel: cancel, writeCh: make(chan writeReq, 1)}
 	probe.conn = conn
 	requireReplyPanic(t, func() { conn.sendPingWithReply() })
 	if probe.registrations != 1 || probe.channel == nil {
@@ -193,28 +171,24 @@ func TestPingRegistrationPanicReleasesReply(t *testing.T) {
 	if conn.HasPendingReply(probe.token) || conn.IsClosed() {
 		t.Fatal("ping panic retained its registration or closed the connection")
 	}
-	done := conn.sendPingWithReply()
-	if done == nil {
+	reply, handle := conn.sendPingWithReply()
+	if reply == nil || handle == nil {
 		t.Fatal("the same connection could not enqueue a ping after panic cleanup")
 	}
-	defer func() { cancel(); <-done }()
 	request := <-conn.writeCh
 	conn.queued.Add(-1)
 	token, ok := extractPingReplyToken(request.body)
 	if !ok || !conn.HasPendingReply(token) {
 		t.Fatal("reused ping did not register its encoded reply token")
 	}
-	conn.pendingMu.Lock()
-	entry := conn.pending[token]
-	entry.ch <- Response{}
-	delete(conn.pending, token)
-	conn.pendingMu.Unlock()
+	conn.deliverPending(token, Response{})
 	select {
-	case <-done:
+	case <-reply:
 	case <-ctx.Done():
-		t.Fatal("ping waiter did not complete after its reply")
+		t.Fatal("ping reply was not delivered to its owner")
 	}
+	handle.Release() // received: the monitor's release
 	if conn.HasPendingReply(token) {
-		t.Fatal("ping waiter left its reply registered")
+		t.Fatal("ping owner left its reply registered")
 	}
 }

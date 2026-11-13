@@ -222,12 +222,8 @@ func (m *timeWindowLeaderboardIndexMaintainer) updateRankedSet(
 				}
 				return nil
 			}
-			prefixBytes := m.indexSubspace.Pack(fullKey)
-			r, err := fdb.PrefixRange(prefixBytes)
-			if err != nil {
-				return err
-			}
-			kvs, err := m.tx.GetRange(r, fdb.RangeOptions{Limit: 1}).GetSliceWithError()
+			// Java's indexSubspace.range(valueKey) (RankedSetIndexHelper.updateRankedSet).
+			kvs, err := m.tx.GetRange(m.indexSubspace.Sub(fullKey...), fdb.RangeOptions{Limit: 1}).GetSliceWithError()
 			if err != nil {
 				return err
 			}
@@ -1098,10 +1094,12 @@ func (m *timeWindowLeaderboardIndexMaintainer) EvaluateTimeWindowAggregate(
 		if len(values) == 0 {
 			return nil, fmt.Errorf("score_for_time_window_rank requires rank value")
 		}
-		rankVal, ok := asInt64(values[0])
-		if !ok {
-			return nil, fmt.Errorf("score_for_time_window_rank: rank must be int64")
+		// Java's (Number) cast and scoreForRank, as for SCORE_FOR_RANK: a null rank answers null.
+		rank, err := javaRank(values[0])
+		if err != nil || rank == nil {
+			return nil, err
 		}
+		rankVal := *rank
 		scoreBytes, err := rankedSet.GetNth(m.tx, rankVal)
 		if err != nil {
 			return nil, err

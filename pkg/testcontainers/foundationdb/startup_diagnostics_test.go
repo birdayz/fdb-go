@@ -47,14 +47,17 @@ func TestCancelledStartupKeepsDiagnosticsAndCleansUp(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	cli, err := testcontainers.NewDockerClientWithOpts(ctx)
+	if err := tcProber.check(ctx); err != nil {
+		if SkipWithoutDocker(err) {
+			t.Skipf("FDB not available (no Docker): %v", err)
+		}
+		t.Fatal(err)
+	}
+	cli, err := tcDockerClient(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cli.Close()
-	if _, err := cli.Ping(ctx); err != nil {
-		t.Skipf("FDB not available (no Docker): %v", err)
-	}
 
 	const marker = "startup-diagnostic-log-marker"
 	const oldMarker = "old-startup-log-must-not-be-in-tail"
@@ -65,9 +68,7 @@ func TestCancelledStartupKeepsDiagnosticsAndCleansUp(t *testing.T) {
 	var cleanupContextOK bool
 	t.Cleanup(func() {
 		if captured != nil {
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cleanupCancel()
-			TerminateT(t, cleanupCtx, &Container{Container: captured})
+			TeardownT(t, &Container{Container: captured})
 		}
 	})
 	_, err = Run(ctx, "", testcontainers.WithEnv(map[string]string{"STARTUP_CANARY": canary}),
@@ -94,7 +95,7 @@ func TestCancelledStartupKeepsDiagnosticsAndCleansUp(t *testing.T) {
 			}},
 			PreTerminates: []testcontainers.ContainerHook{func(cleanupCtx context.Context, _ testcontainers.Container) error {
 				deadline, bounded := cleanupCtx.Deadline()
-				cleanupContextOK = cleanupCtx.Err() == nil && bounded && time.Until(deadline) <= 30*time.Second
+				cleanupContextOK = cleanupCtx.Err() == nil && bounded && deadline.Sub(faultAt) >= TerminateTimeout && time.Until(deadline) <= TerminateTimeout
 				return nil
 			}},
 		}))
@@ -119,11 +120,11 @@ func TestCancelledStartupKeepsDiagnosticsAndCleansUp(t *testing.T) {
 	if strings.Contains(err.Error(), canary) || strings.Contains(err.Error(), oldMarker) || len(err.Error()) > 10*1024 {
 		t.Errorf("startup diagnostics exposed environment or unbounded output: %v", err)
 	}
-	if elapsed := time.Since(faultAt); elapsed > 45*time.Second {
-		t.Errorf("diagnostics/cleanup outlived their short budgets: %v", elapsed)
+	if elapsed := time.Since(faultAt); elapsed > startupDiagnosticTimeout+TerminateTimeout+10*time.Second {
+		t.Errorf("diagnostics/cleanup outlived their budgets: %v", elapsed)
 	}
 	if !cleanupContextOK {
-		t.Error("cleanup reused the cancelled startup context or had no short deadline")
+		t.Error("cleanup reused the cancelled startup context or lacked the TerminateTimeout budget")
 	}
 	checkCtx, checkCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer checkCancel()

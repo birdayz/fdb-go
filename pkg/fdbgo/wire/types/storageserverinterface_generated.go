@@ -32,17 +32,10 @@ type StorageServerInterface struct {
 	Field_5    bool     // slot 5
 }
 
-func (m *StorageServerInterface) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(StorageServerInterfaceSlotWatchValue) {
-		m.WatchValue = r.ReadUID(StorageServerInterfaceSlotWatchValue)
-	}
-	if r.FieldPresent(StorageServerInterfaceSlotField_3) && r.ReadUint8(StorageServerInterfaceSlotField_3) > 0 {
-		copy(m.Field_3[:], r.ReadRelOffRaw(StorageServerInterfaceSlotField_3+1, 16))
-		m.HasField_3 = true
-	}
-	if r.FieldPresent(StorageServerInterfaceSlotField_5) {
-		m.Field_5 = r.ReadBool(StorageServerInterfaceSlotField_5)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *StorageServerInterface) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *StorageServerInterface) UnmarshalFDB(data []byte) error {
@@ -50,15 +43,23 @@ func (m *StorageServerInterface) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *StorageServerInterface) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(StorageServerInterfaceSlotWatchValue) {
 		m.WatchValue = r.ReadUID(StorageServerInterfaceSlotWatchValue)
 	}
-	if r.FieldPresent(StorageServerInterfaceSlotField_3) && r.ReadUint8(StorageServerInterfaceSlotField_3) > 0 {
+	if r.FieldPresent(StorageServerInterfaceSlotField_3) && r.ReadUint8(StorageServerInterfaceSlotField_3) == 1 && r.FieldPresent(StorageServerInterfaceSlotField_3+1) {
 		copy(m.Field_3[:], r.ReadRelOffRaw(StorageServerInterfaceSlotField_3+1, 16))
 		m.HasField_3 = true
 	}
 	if r.FieldPresent(StorageServerInterfaceSlotField_5) {
 		m.Field_5 = r.ReadBool(StorageServerInterfaceSlotField_5)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "StorageServerInterface", Err: err}
 	}
 	return nil
 }
@@ -107,21 +108,28 @@ func (m *StorageServerInterface) writeToBuffer(wb *wire.WriteToBuffer, vtableSta
 	return selfStart
 }
 
-// ParseStorageServerInterfaceVectorFromReader reads a FlatBuffers vector of StorageServerInterface.
-func ParseStorageServerInterfaceVectorFromReader(r *wire.Reader, slot int) []StorageServerInterface {
+// ParseStorageServerInterfaceVectorFromReader reads a FlatBuffers vector of StorageServerInterface under one decode budget.
+func ParseStorageServerInterfaceVectorFromReader(r *wire.Reader, slot int) ([]StorageServerInterface, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]StorageServerInterface, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]StorageServerInterface", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]StorageServerInterface, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]StorageServerInterface", Err: err}
 		}
-		var elem StorageServerInterface
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

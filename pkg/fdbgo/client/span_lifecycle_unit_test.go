@@ -158,6 +158,57 @@ func TestTracerRetryKeepsMetricsButRestartsSpan(t *testing.T) {
 	}
 }
 
+func TestTracerManagedCommitLazyReuse(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sr := tracetest.NewSpanRecorder()
+	db := traceUnitDB(t, sr)
+	db.db.timeouts = newTimeoutQueue()
+	var tx *Transaction
+	var before [16]byte
+	_, err := db.Transact(ctx, func(attempt *Transaction) (any, error) {
+		tx = attempt
+		tx.SetTimeout(60000)
+		tx.SetReadVersion(123)
+		tx.ensureTxSpan(ctx)
+		before = tx.currentSpan().TraceID
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertTraceBalance(t, sr, 1)
+	if !tx.spanNeedsRegen.Load() || tx.spanContext.Load() != nil {
+		t.Fatal("managed commit did not leave lazy span regeneration")
+	}
+	tx.readErrMu.Lock()
+	released := !tx.transactScoped && tx.designEntry == nil && !tx.timeoutArmed
+	tx.readErrMu.Unlock()
+	if !released {
+		t.Fatal("managed helper did not release its timeout while ending its span")
+	}
+
+	// Reusing the committed handle must regenerate under traceMu only once.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		tx.ensureTxSpan(ctx)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("lazy span regeneration deadlocked")
+	}
+	defer tx.Cancel()
+	after := tx.currentSpan()
+	if after.TraceID == before || !spanContextValid(after) || tx.spanNeedsRegen.Load() {
+		t.Fatal("escaped handle did not acquire a fresh wire span")
+	}
+	tx.endTxSpan()
+	assertTraceBalance(t, sr, 2)
+}
+
 type traceWaitContext struct {
 	context.Context
 	waiting chan<- struct{}

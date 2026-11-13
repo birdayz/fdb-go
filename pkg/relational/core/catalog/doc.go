@@ -13,6 +13,6 @@
 // Commit across two live transactions may interleave in ways a
 // real FDB-backed impl wouldn't.
 //
-// The Java-compatible FDB-backed catalog (RecordLayerStoreCatalog)
-// is deferred to a later shift.
+// The Java-compatible FDB-backed catalog is RecordLayerStoreCatalog
+// (fdb_store_catalog.go).
 package catalog

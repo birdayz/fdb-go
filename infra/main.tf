@@ -37,8 +37,8 @@ variable "github_runner_token" {
 # --- Runner mode ---
 #
 # The fleet runs 'classic': every box registers itself once and listens. The scale-set
-# supervisor ('scaleset') is retired but kept buildable because its variables and
-# cloud-init branch are still referenced; do not point the fleet back at it without
+# supervisor ('scaleset') is retired: its source (tools/bazelscaleset) is in git history
+# at 86f05ccf8, and its variables and cloud-init branch remain; do not point the fleet back at it without
 # fixing the two defects that retired it — JIT runners were never unregistered (1907
 # offline registrations against 5 live slots) and one supervisor process gated every
 # box in the fleet.
@@ -126,7 +126,7 @@ locals {
     just_sha256  = "9293e553ce401d1b524bf4e104918f72f268e3f9c6827e0055fe98d84a1b2522"
     # FoundationDB clients .deb — host libfdb_c for the cgo differential harness. The
     # version lives HERE (not a tofu variable) so it is LOCKED to its checksum: overriding
-    # the version without updating the SHA would make fetch-verified.sh abort (codex). MUST
+    # the version without updating the SHA would make fetch-verified.sh abort. MUST
     # match MODULE.bazel + the testcontainers default (RFC-108 §2) — a bump is one reviewed
     # edit of both fields.
     fdb_version        = "7.3.77"
@@ -223,8 +223,8 @@ resource "hcloud_server" "runner" {
 #
 # Every pool box registers itself and listens, same as the box above; the pool exists
 # to add capacity, not a different kind of runner. Each serves one job at a time, which
-# is what the box can actually do: .bazelrc caps --local_test_jobs=4 because each test
-# job runs its own FoundationDB container, and a 4-core box is saturated by one such job.
+# is what the box can actually do: a test job runs many FoundationDB containers at once,
+# up to .bazelrc's memory budget, and a 4-core box is saturated by one such job.
 #
 # Scale up: raise runner_count and apply with a fresh registration token:
 #   TOKEN=$(gh api repos/birdayz/fdb-go/actions/runners/registration-token -X POST --jq .token)

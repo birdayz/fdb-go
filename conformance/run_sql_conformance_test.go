@@ -119,8 +119,7 @@ var _ = Describe("RunSql Harness", func() {
 		//
 		// Coverage: BIGINT (long), DOUBLE, STRING (varchar), BOOLEAN.
 		// Skipped (not supported by fdb-relational CREATE TABLE in
-		// 4.12.11.0): BYTES NOT NULL, DATE, TIMESTAMP — these wait
-		// on a follow-up shift.
+		// 4.12.11.0): BYTES NOT NULL, DATE, TIMESTAMP.
 		runner, ok := plandiff.NewJavaRunnerHTTP(javaBaseURL(java), env.ClusterFile).(plandiff.SetupRunner)
 		Expect(ok).To(BeTrue(), "javaRunner must satisfy SetupRunner")
 

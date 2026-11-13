@@ -13,8 +13,8 @@ import (
 )
 
 // Full-stack integration: parse SQL → BuildScopeFromFromClause →
-// WalkPredicate → Simplify → evaluate. Exercises every new seam
-// landed this shift (semantic.Catalog, semantic.Analyzer,
+// WalkPredicate → Simplify → evaluate. Exercises every seam
+// (semantic.Catalog, semantic.Analyzer,
 // semantic.Scope, expr.Resolver, expr walker, cascades.Simplify).
 // No stubs, no synthetic scaffolding beyond the catalog definition.
 func TestFullStack_Pipeline(t *testing.T) {

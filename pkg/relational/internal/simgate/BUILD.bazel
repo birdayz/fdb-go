@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "simgate",
+    # keep: a test seam over SimFDB; testonly keeps it out of production binaries.
+    testonly = True,
+    srcs = ["simgate.go"],
+    importpath = "fdb.dev/pkg/relational/internal/simgate",
+    visibility = ["//pkg/relational:__subpackages__"],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/simfdb",
+    ],
+)

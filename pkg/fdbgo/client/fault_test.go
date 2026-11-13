@@ -77,9 +77,9 @@ func (d *faultDialer) disarm() {
 
 // newTestDatabase creates a Database from a ClusterFile with custom dialer,
 // bootstrapping the connection against the provided context.
-func newTestDatabase(t *testing.T, ctx context.Context, cf *ClusterFile, dialFn transport.DialFunc) *Database {
+func newTestDatabase(t *testing.T, ctx context.Context, cf *ClusterFile, dialFn transport.DialFunc, opts ...Option) *Database {
 	t.Helper()
-	db, err := OpenDatabaseFromConfig(ctx, cf, WithDialFunc(dialFn), WithAPIVersion(730))
+	db, err := OpenDatabaseFromConfig(ctx, cf, append([]Option{WithDialFunc(dialFn), WithAPIVersion(730)}, opts...)...)
 	if err != nil {
 		t.Fatalf("newTestDatabase: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestPeerDisconnect_FailsInFlightReplyImmediately(t *testing.T) {
 	_, replyCh, replyHandle := conn.PrepareReply()
 	// Cleanup discipline (conn.go ReplyHandle): a SUCCESSFUL receive leaves Release
 	// to pool the (drained) channel — failAllPending does its non-blocking send and
-	// the token delete in one pendingMu-held iteration and visits each token exactly
+	// the token delete in one shard-lock-held iteration and visits each token exactly
 	// once, so once we have received the value no further send can race the pool Put.
 	// A NOT-received outcome (the 2s arm) MUST Cancel() first: Cancel removes the
 	// still-pending token and nils h.ch so the deferred Release does not pool a channel
@@ -314,11 +314,7 @@ func startProxyFDBContainer(t *testing.T, ctx context.Context) (*ClusterFile, *t
 	if err != nil {
 		t.Fatalf("start FDB container: %v", err)
 	}
-	t.Cleanup(func() {
-		termCtx, termCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer termCancel()
-		tcfdb.TerminateT(t, termCtx, container)
-	})
+	t.Cleanup(func() { tcfdb.TeardownT(t, container) })
 
 	connStr, err := container.ClusterFile(ctx)
 	if err != nil {
@@ -637,7 +633,7 @@ func TestPipelinedGet_IllegalKeyRejectedAtEnqueue(t *testing.T) {
 // TestPipelinedGet_BatchResolvesCorrectly verifies pipelining still works after
 // the #3 retry change: N deferred sends followed by N Resolves return the right
 // values. The retry logic only activates on error, so the happy-path batched
-// send/flush is structurally unchanged — this pins that end to end.
+// send/resolve path is structurally unchanged — this pins that end to end.
 func TestPipelinedGet_BatchResolvesCorrectly(t *testing.T) {
 	t.Parallel()
 
@@ -661,7 +657,7 @@ func TestPipelinedGet_BatchResolvesCorrectly(t *testing.T) {
 	}
 
 	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		// Enqueue all N pipelined gets (deferred sends, no flush yet)...
+		// Enqueue all N pipelined gets...
 		pendings := make([]*PendingGet, n)
 		for i := 0; i < n; i++ {
 			_, p, err := tx.GetPipelined(ctx, keys[i])
@@ -673,7 +669,7 @@ func TestPipelinedGet_BatchResolvesCorrectly(t *testing.T) {
 			}
 			pendings[i] = p
 		}
-		// ...then resolve them; the first Resolve flushes the batch.
+		// ...then resolve them (first Resolve checks liveness on D-NG or flushes on legacy).
 		for i := 0; i < n; i++ {
 			got, err := pendings[i].Resolve()
 			if err != nil {
@@ -860,20 +856,17 @@ func TestPipelinedGet_Resolve_TimeoutRetries(t *testing.T) {
 }
 
 // TestPipelinedGet_Resolve_FlushErrorRetries covers PendingGet.resolve's
-// flush-error arm (RFC-118 Gap 2, transaction.go:858-869): when conn.Flush()
-// fails, the request never reached the server, so the arm marks the connection
-// bad (handleConnError) and re-drives through the full getValue path.
+// flush-error arm (RFC-118 Gap 2): when conn.FlushContext() fails (connection
+// liveness failure on D-NG or flush failure on legacy), the arm marks the
+// connection bad (handleConnError) and re-drives through the full getValue path.
 //
 // The flush error is driven through a REAL conn deterministically: a conn dialed
-// to the storage server, then Close()d (joins the loops), so Resolve()'s flush
-// finds a dead connection and returns errConnClosed — a faithful flush error (a
-// conn torn down between the deferred send and the flush). resolveFull then
-// re-dials a clean conn (the pool self-heals on a closed entry) and returns the value.
-//
-// Revert-proof: with the flush-error arm removed, the ignored flush error falls
-// through to the select, whose replyCh never fires and whose timer is set far
-// beyond ctx, so the ctx.Done arm (transaction.go:904) returns ctx.Err() — the
-// test reddens (Resolve surfaces an error instead of the value).
+// to the storage server, then Close()d (joins the loops), so Resolve()'s
+// FlushContext finds a closed connection and returns errConnClosed; resolveFull
+// then re-dials a clean conn (the pool self-heals on a closed entry) and returns
+// the value. Revert-proof: with the flush-error arm in pending_get.go removed,
+// the ignored flush error falls through to the select, whose replyCh never fires
+// and whose timer is set far beyond ctx, so the ctx.Done arm returns ctx.Err().
 func TestPipelinedGet_Resolve_FlushErrorRetries(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -920,6 +913,78 @@ func TestPipelinedGet_Resolve_FlushErrorRetries(t *testing.T) {
 	}
 	if string(got) != string(want) {
 		t.Fatalf("got %q, want %q (flush error must re-drive through getValue)", got, want)
+	}
+}
+
+// A pipelined read resolved after its connection A died and the pool redialed B
+// reports A from its flush and reply arms; B must stay open and its address alive.
+func TestPipelinedGet_LateFailureKeepsReplacement(t *testing.T) {
+	t.Parallel()
+	for _, arm := range []string{"flush", "reply"} {
+		t.Run(arm, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			db := openTestDB(t, ctx)
+			defer db.Close()
+
+			key := []byte(t.Name() + "_key")
+			want := []byte("value")
+			if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+				tx.Set(key, want)
+				return nil, nil
+			}); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			tx := db.CreateTransaction()
+			if err := tx.ensureReadVersion(ctx); err != nil {
+				t.Fatalf("read version: %v", err)
+			}
+
+			addr := storageAddrFor(t, db, ctx, key)
+			a, err := db.db.getOrDial(ctx, addr)
+			if err != nil {
+				t.Fatalf("dial %s: %v", addr, err)
+			}
+			a.Close()
+			b, err := db.db.getOrDial(ctx, addr) // the pool replaces the dead connection
+			if err != nil || b == a {
+				t.Fatalf("redial %s: %v (same connection: %v)", addr, err, b == a)
+			}
+
+			p := &PendingGet{
+				key:         key,
+				tx:          tx,
+				addr:        addr,
+				conn:        a,
+				replyHandle: &transport.ReplyHandle{},
+				ctx:         ctx,
+				timer:       getTimer(10 * time.Minute),
+			}
+			if arm == "flush" {
+				_ = a.SendFrameDeferred(transport.UID{First: 1}, []byte{0}) // the flush finds A dead
+				p.replyCh = make(chan transport.Response)
+			} else {
+				replies := make(chan transport.Response, 1)
+				replies <- transport.Response{Err: transport.ErrConnClosed}
+				p.replyCh = replies
+				p.flushed = true
+			}
+			failures := db.db.metrics.Snapshot().ClientConnectionFailures
+			got, err := p.Resolve()
+			if err != nil || string(got) != string(want) {
+				t.Fatalf("Resolve = %q, %v; want %q", got, err, want)
+			}
+			if n := db.db.metrics.Snapshot().ClientConnectionFailures - failures; n != 1 {
+				t.Fatalf("ClientConnectionFailures grew by %d, want 1: the read must report A", n)
+			}
+			if b.IsClosed() {
+				t.Fatal("the late report about A closed its replacement B")
+			}
+			if db.db.failMon.isFailed(addr) {
+				t.Fatal("the late report about A marked the reachable address failed")
+			}
+		})
 	}
 }
 
@@ -1045,4 +1110,10 @@ func TestRead_BoundedByTimeout_NoHang(t *testing.T) {
 		t.Fatalf("want transaction_timed_out (%d), got %v (%T)", ErrTransactionTimedOut, err, err)
 	}
 	t.Logf("read against wedged cluster bounded in %v: %v (no hang)", elapsed, err)
+}
+
+// withLegacyWriter pins the legacy transport writer (write acknowledgments, writer
+// turns) for tests of those mechanics, whatever FDBGO_NET_DESIGN selects.
+func withLegacyWriter() Option {
+	return func(o *openOptions) { o.dialOpts = append(o.dialOpts, transport.WithLegacyWriter()) }
 }

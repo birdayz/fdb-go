@@ -1,17 +1,70 @@
 package recordlayer
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
 	"testing"
 
+	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
 // intCompKey extracts an int as the comparison key.
 func intCompKey(v int) (tuple.Tuple, error) {
 	return tuple.Tuple{v}, nil
+}
+
+func TestSharedUnionContinuationCodec(t *testing.T) {
+	t.Parallel()
+	yes, no := true, false
+	children := []RecordCursorContinuation{
+		&StartContinuation{}, NewBytesContinuation([]byte("second")),
+		&EndContinuation{}, &StartContinuation{}, NewBytesContinuation([]byte("fifth")),
+	}
+	want, err := (&gen.UnionContinuation{
+		SecondContinuation: []byte("second"),
+		OtherChildState: []*gen.UnionContinuation_CursorState{
+			{Exhausted: &yes}, {Exhausted: &no}, {Continuation: []byte("fifth")},
+		},
+	}).MarshalVT()
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := EncodeUnionContinuation(children)
+	if err != nil || !bytes.Equal(encoded, want) {
+		t.Fatalf("encoded %x, want %x: %v", encoded, want, err)
+	}
+	decoded, err := DecodeUnionContinuation(want, len(children))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, child := range children {
+		before, err := child.ToBytes()
+		if err != nil {
+			t.Fatal(err)
+		}
+		after, err := decoded[i].ToBytes()
+		if err != nil || child.IsEnd() != decoded[i].IsEnd() || !bytes.Equal(before, after) {
+			t.Fatalf("child %d changed on round trip: %v", i, err)
+		}
+	}
+	if _, err := DecodeUnionContinuation(want, 4); err == nil {
+		t.Fatal("accepted wrong child count")
+	}
+	if _, err := DecodeUnionContinuation([]byte{0xff}, 2); err == nil {
+		t.Fatal("accepted malformed protobuf")
+	}
+	if states, err := DecodeUnionContinuation(nil, 3); err != nil || len(states) != 3 {
+		t.Fatalf("nil must start three children: %v", err)
+	}
+	if _, err := DecodeUnionContinuation([]byte{}, 3); err == nil {
+		t.Fatal("non-nil empty protobuf must retain the two-slot framing policy")
+	}
+	if end, err := EncodeUnionContinuation([]RecordCursorContinuation{&EndContinuation{}, &EndContinuation{}}); err != nil || end != nil {
+		t.Fatalf("all-END encoding = %x: %v", end, err)
+	}
 }
 
 func TestIntersectionCursorBasic(t *testing.T) {

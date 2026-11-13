@@ -15,6 +15,7 @@ import (
 // smoothOutstanding contribution leaks permanently.
 type rpcAccount struct {
 	addr  string
+	conn  *transport.Conn // the connection the request was sent on
 	delta float64
 	start time.Time
 	err   error // transport failure of this request, for the caller to report
@@ -32,92 +33,103 @@ type rpcAccount struct {
 type hedgeResult struct {
 	body    []byte
 	addr    string
+	conn    *transport.Conn
 	delta   float64
 	start   time.Time
 	err     error
 	connErr bool // true if connection error (not a reply error)
 	others  []rpcAccount
+	// triedSecondary reports that the secondary send was attempted.
+	triedSecondary  bool
+	failureObserved bool
 }
 
-// sendFrameWithHedge sends an RPC to the primary server and, after hedgeDelay,
-// sends the same RPC to a secondary server. Whichever replies first wins;
-// the other's reply is discarded.
-//
-// This is the core of the speculative second request (secondDelay) optimization
-// from C++ LoadBalance.actor.h. It improves p99 latency by racing two servers
-// when the primary is slow.
-//
-// The caller provides two pre-built request functions (one per server).
-// Each function dials, sends, and returns the reply channel + cleanup.
-//
-// Returns the winning result. The losing server's reply is cancelled.
+// sendFrameWithHedge races the primary against a budget-funded secondary, or
+// advances a failed lone primary (LoadBalance.actor.h:687-719; RFC-281).
 func sendFrameWithHedge(
 	ctx context.Context,
+	model *QueueModel,
 	hedgeDelay time.Duration,
 	primary sendFunc,
 	secondary sendFunc, // may be nil if only 1 server
 	timeout time.Duration,
 ) hedgeResult {
+	return sendFrameWithHedgePaced(ctx, model, hedgeDelay, primary, secondary, timeout, nil)
+}
+
+// The failure callback runs before advancing an internally failed alternative.
+func sendFrameWithHedgePaced(ctx context.Context, model *QueueModel, hedgeDelay time.Duration, primary, secondary sendFunc, timeout time.Duration, failed func(error)) (out hedgeResult) {
+	defer func() { observeHedgeFailure(&out, failed) }()
 	// Send to primary immediately.
 	pResult := primary()
 	primaryCleanup := replyGuard{handle: pResult.replyHandle}
 	defer primaryCleanup.close()
 	if pResult.err != nil {
-		// Primary failed to send — try secondary immediately (no hedge delay).
-		if secondary != nil {
+		noteLoneSendFailure(ctx, model)
+		if failed != nil {
+			failed(pResult.err)
+		}
+		if secondary != nil && ctx.Err() == nil {
 			sResult := secondary()
 			if sResult.err != nil {
-				return hedgeResult{err: sResult.err, connErr: true}
+				noteLoneSendFailure(ctx, model)
+				return hedgeResult{err: sResult.err, connErr: true, triedSecondary: true}
 			}
-			return waitForReply(ctx, sResult, timeout)
+			out := waitLoneReply(ctx, model, sResult, timeout)
+			out.triedSecondary = true
+			return out
 		}
-		return hedgeResult{err: pResult.err, connErr: true}
+		return hedgeResult{err: pResult.err, connErr: true, failureObserved: true}
 	}
 
 	if secondary == nil {
-		// No secondary — just wait for primary.
 		primaryCleanup.transfer()
-		return waitForReply(ctx, pResult, timeout)
+		return waitLoneReply(ctx, model, pResult, timeout)
 	}
 
-	// Start hedge timer.
 	timer := getTimer(hedgeDelay)
 	defer putTimer(timer)
 
-	// Wait for primary reply or hedge timer.
 	select {
 	case resp := <-pResult.replyCh:
-		// Primary replied before hedge timer. Use it.
 		primaryCleanup.release()
-		res := processReply(pResult, resp)
-		if res.err == nil || !movesToNextAlternative(ctx, res.err) {
-			return res
-		}
-		// A failed alternative is not a tried secondary: C++ loadBalance moves on
-		// to the next one (LoadBalance.actor.h:703-708, nextAlt at :728).
-		sResult := secondary()
-		if sResult.err != nil {
-			return res
-		}
-		out := waitForReply(ctx, sResult, timeout)
-		out.others = append(out.others, rpcAccount{addr: res.addr, delta: res.delta, start: res.start, err: res.err})
-		return out
+		return primaryReplied(ctx, model, pResult, resp, secondary, timeout, failed)
 
 	case <-timer.C:
-		// Hedge timer fired — send to secondary.
-		sResult := secondary()
-		if sResult.err != nil {
-			// Secondary failed to send — wait for primary only.
-			primaryCleanup.transfer()
-			return waitForReply(ctx, pResult, timeout)
+		// choose takes the first request's reply before the delay (:694, :710).
+		select {
+		case resp := <-pResult.replyCh:
+			primaryCleanup.release()
+			return primaryReplied(ctx, model, pResult, resp, secondary, timeout, failed)
+		default:
 		}
-
-		// Race both replies.
+		if ctx.Err() != nil {
+			primaryCleanup.transfer()
+			return waitLoneReply(ctx, model, pResult, timeout)
+		}
+		if !model.spendSecond() {
+			primaryCleanup.transfer()
+			return retryPrimaryReply(ctx, model, waitLoneReply(ctx, model, pResult, timeout), secondary, timeout, failed)
+		}
+		sResult := secondary()
 		primaryCleanup.transfer()
-		return raceReplies(ctx, pResult, sResult, timeout)
+		if sResult.err != nil {
+			if failed != nil {
+				failed(sResult.err)
+			}
+			// Paid for but unsent: the primary is waited for alone without
+			// accruing, as loadBalance's !stream branch (:640-647).
+			out := waitForReply(ctx, pResult, timeout)
+			out.triedSecondary = true
+			return out
+		}
+		out := raceReplies(ctx, pResult, sResult, timeout)
+		out.triedSecondary = true
+		return out
 
 	case <-ctx.Done():
 		if result, ready := readyReplyOwned(pResult, &primaryCleanup); ready {
+			model.firstReplied()
 			return result
 		}
 		pResult.replyHandle.Cancel()
@@ -126,7 +138,64 @@ func sendFrameWithHedge(
 		// waitForReply's ctx.Done branch. Dropping it (returning a bare {err}) leaked the started
 		// request's QueueModel delta permanently, biasing server selection (RFC-010 #5; C++
 		// LoadBalance's ModelHolder RAII releases on cancel too).
-		return hedgeResult{addr: pResult.addr, delta: pResult.delta, start: pResult.start, err: ctx.Err()}
+		return hedgeResult{addr: pResult.addr, conn: pResult.conn, delta: pResult.delta, start: pResult.start, err: ctx.Err()}
+	}
+}
+
+// primaryReplied accrues a lone reply and advances a failed alternative
+// (LoadBalance.actor.h:694-708, nextAlt at :728).
+func primaryReplied(ctx context.Context, model *QueueModel, p inFlightRPC, resp transport.Response, secondary sendFunc, timeout time.Duration, failed func(error)) hedgeResult {
+	model.firstReplied()
+	return retryPrimaryReply(ctx, model, processReply(p, resp), secondary, timeout, failed)
+}
+
+func retryPrimaryReply(ctx context.Context, model *QueueModel, res hedgeResult, secondary sendFunc, timeout time.Duration, failed func(error)) hedgeResult {
+	if res.err == nil || !res.connErr || !movesToNextAlternative(ctx, res.err) {
+		return res
+	}
+	observeHedgeFailure(&res, failed)
+	if ctx.Err() != nil {
+		return res
+	}
+	sResult := secondary()
+	if sResult.err != nil {
+		noteLoneSendFailure(ctx, model)
+		if failed != nil {
+			failed(sResult.err)
+		}
+		res.triedSecondary = true
+		return res
+	}
+	out := waitLoneReply(ctx, model, sResult, timeout)
+	out.triedSecondary = true
+	out.others = append(out.others, rpcAccount{addr: res.addr, conn: res.conn, delta: res.delta, start: res.start, err: res.err})
+	return out
+}
+
+func observeHedgeFailure(result *hedgeResult, failed func(error)) {
+	if result.err != nil && !result.failureObserved {
+		result.failureObserved = true
+		if failed != nil {
+			failed(result.err)
+		}
+	}
+}
+
+// waitLoneReply accrues a lone reply or transport failure, but not a timeout
+// or caller cancellation.
+func waitLoneReply(ctx context.Context, model *QueueModel, inflight inFlightRPC, timeout time.Duration) hedgeResult {
+	res := waitForReply(ctx, inflight, timeout)
+	if res.err == nil || res.connErr {
+		model.firstReplied()
+	}
+	return res
+}
+
+// A failed lone send completes as request_maybe_delivered in C++ (fdbrpc.h:775-794).
+// A caller-cancelled send is not a reply and earns nothing.
+func noteLoneSendFailure(ctx context.Context, model *QueueModel) {
+	if ctx.Err() == nil {
+		model.firstReplied()
 	}
 }
 
@@ -155,6 +224,7 @@ type inFlightRPC struct {
 	replyCh     <-chan transport.Response
 	replyHandle *transport.ReplyHandle
 	addr        string
+	conn        *transport.Conn
 	delta       float64
 	start       time.Time
 	err         error
@@ -175,14 +245,14 @@ func waitForReply(ctx context.Context, inflight inFlightRPC, timeout time.Durati
 		replyCleanup.release()
 		// Internal reply timeout, distinct from a caller deadline: the read
 		// path re-sends (libfdb_c loadBalance has no per-read client timeout).
-		return hedgeResult{addr: inflight.addr, delta: inflight.delta, start: inflight.start, err: errReplyTimeout}
+		return hedgeResult{addr: inflight.addr, conn: inflight.conn, delta: inflight.delta, start: inflight.start, err: errReplyTimeout}
 	case <-ctx.Done():
 		if result, ready := readyReplyOwned(inflight, &replyCleanup); ready {
 			return result
 		}
 		inflight.replyHandle.Cancel()
 		replyCleanup.release()
-		return hedgeResult{addr: inflight.addr, delta: inflight.delta, start: inflight.start, err: ctx.Err()}
+		return hedgeResult{addr: inflight.addr, conn: inflight.conn, delta: inflight.delta, start: inflight.start, err: ctx.Err()}
 	}
 }
 
@@ -241,7 +311,7 @@ func raceReplies(ctx context.Context, a, b inFlightRPC, timeout time.Duration) h
 // accountOf captures the QueueModel bookkeeping for an in-flight request so the
 // caller can endRequest it exactly once.
 func accountOf(r inFlightRPC) rpcAccount {
-	return rpcAccount{addr: r.addr, delta: r.delta, start: r.start}
+	return rpcAccount{addr: r.addr, conn: r.conn, delta: r.delta, start: r.start}
 }
 
 // readyReplyOwned preserves a queued response when cancellation and reply
@@ -260,6 +330,7 @@ func processReply(inflight inFlightRPC, resp transport.Response) hedgeResult {
 	if resp.Err != nil {
 		return hedgeResult{
 			addr:    inflight.addr,
+			conn:    inflight.conn,
 			delta:   inflight.delta,
 			start:   inflight.start,
 			err:     resp.Err,
@@ -269,6 +340,7 @@ func processReply(inflight inFlightRPC, resp transport.Response) hedgeResult {
 	return hedgeResult{
 		body:  resp.Body,
 		addr:  inflight.addr,
+		conn:  inflight.conn,
 		delta: inflight.delta,
 		start: inflight.start,
 	}

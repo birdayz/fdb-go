@@ -9,7 +9,7 @@
 //   Then type-specific fields (see readXxx functions)
 //
 // Binary protocol (stdout):
-//   4 bytes LE: response length (0 = error, skip this input)
+//   4 bytes LE: response length (0 = error; the Go client returns it as an error)
 //   N bytes: serialized FDB message (protocol version prefix stripped,
 //            reply token zeroed)
 //

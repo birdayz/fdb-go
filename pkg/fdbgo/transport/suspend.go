@@ -10,8 +10,9 @@ import (
 // context: the point where a flow actor would suspend at its first wait that is
 // not ready. The client's NativeAPI getRange fallback starts end's resolveKey
 // there, after begin's (NativeAPI.actor.cpp:4465-4469). Every wait on a request's
-// path fires it before blocking: the dial wait, a full write queue, the flush
-// acknowledgment, the writer turn's coalescing delay, the reply wait, and delays.
+// path fires it before blocking: the dial wait, high-water backpressure (or on
+// the legacy writer a full write queue, the flush acknowledgment, and the writer
+// turn's coalescing delay), the reply wait, and delays.
 type SuspendSignal struct {
 	once       sync.Once
 	ch         chan struct{}

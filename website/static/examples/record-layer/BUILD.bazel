@@ -1,0 +1,47 @@
+load("@protobuf//bazel:proto_library.bzl", "proto_library")
+load("//cmd/fdb/internal/meta/testdata:descriptor_set.bzl", "descriptor_set")
+
+filegroup(
+    name = "example_files",
+    srcs = [
+        "LICENSE",
+        "NOTICE",
+        "buf.yaml",
+        "record-layer.tar.gz",
+        "record_key_expression.proto",
+        "record_metadata.proto",
+        "record_metadata_options.proto",
+        "record_query_plan.proto",
+        "records.proto",
+    ],
+    visibility = ["//cmd/fdb:__subpackages__"],
+)
+
+proto_library(
+    name = "imports_proto",
+    srcs = [
+        "record_key_expression.proto",
+        "record_metadata.proto",
+        "record_metadata_options.proto",
+        "record_query_plan.proto",
+    ],
+    strip_import_prefix = "/website/static/examples/record-layer",
+    deps = [
+        "@protobuf//:any_proto",
+        "@protobuf//:descriptor_proto",
+    ],
+)
+
+proto_library(
+    name = "records_proto",
+    srcs = ["records.proto"],
+    strip_import_prefix = "/website/static/examples/record-layer",
+    deps = [":imports_proto"],
+)
+
+descriptor_set(
+    name = "descriptor_set",
+    out = "schema.binpb",
+    visibility = ["//cmd/fdb:__subpackages__"],
+    deps = [":records_proto"],
+)

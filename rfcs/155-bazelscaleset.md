@@ -1,6 +1,8 @@
 # RFC-155: bazelscaleset — a bazel-warm, dependency-isolated runner scale set for the single CI box
 
-**Status:** IMPLEMENTED + cutting over. The supervisor (`tools/bazelscaleset/`) is built, reviewed
+**Status:** RETIRED. The fleet runs `runner_mode=classic` (infra/main.tf records why), and the
+supervisor's source was removed from the tree; it is `tools/bazelscaleset/` at 86f05ccf8. The
+rest of this RFC is the record as written. Original status: IMPLEMENTED + cutting over. The supervisor (`tools/bazelscaleset/`) is built, reviewed
 (bazel-pro-from-google + Torvalds + codex), and merged (PR #384); it is deployed on the live box
 as a GitHub App–authenticated scale set named `hetzner-fdb` (App + repo secrets created;
 `--disk_cache`/`--repository_cache` wired in the box's `/etc/bazel.bazelrc`). The cutover — flipping

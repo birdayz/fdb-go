@@ -334,7 +334,7 @@ func ownOrderPrefixLen(comps []*predicates.ComparisonRange, n int) int {
 // instead; see its comment for why a burden-of-proof direction cannot be
 // inverted.
 func IndexColumnCouldBeFloat(
-	keyTypes []values.Type, layout values.Type, columnNames []string,
+	keyTypes []values.Type, layout values.Type, columnNames []string, duplicateColumns []bool,
 ) func(int) bool {
 	return func(i int) bool {
 		if i < 0 || i >= len(columnNames) {
@@ -352,6 +352,10 @@ func IndexColumnCouldBeFloat(
 		if i < len(keyTypes) && keyTypes[i] != nil &&
 			keyTypes[i].Code() != values.TypeCodeUnknown {
 			return values.TypeTerminatesOrderingClaim(keyTypes[i])
+		}
+		// An exploded element is not the root field with the same name.
+		if i < len(duplicateColumns) && duplicateColumns[i] {
+			return true
 		}
 		// No physical type for this coordinate: fall back to resolving the
 		// column name against the flowed layout, which fails CLOSED when it
@@ -759,7 +763,7 @@ func splitKeyOrder(
 	comps []*predicates.ComparisonRange,
 	keyColumns, suffix []string,
 	keyTypes []values.Type, layout values.Type,
-	nestedPath func(int) []string,
+	nestedPath func(int) []string, duplicateColumns []bool,
 ) keyOrderSplit {
 	split := keyOrderSplit{fixedLen: ownOrderPrefixLen(comps, len(keyColumns))}
 	// A nested leaf's name is not a top-level column of the layout, so it is
@@ -773,7 +777,7 @@ func splitKeyOrder(
 			}
 		}
 	}
-	couldBeFloat := IndexColumnCouldBeFloat(keyTypes, layout, floatNames)
+	couldBeFloat := IndexColumnCouldBeFloat(keyTypes, layout, floatNames, duplicateColumns)
 	split.pins = make([]bool, split.fixedLen)
 	for i := range split.pins {
 		split.pins[i] = EqualityPinsSinglePhysicalKeyOnColumn(comps[i], couldBeFloat(i))
@@ -852,20 +856,13 @@ func (p *RecordQueryIndexPlan) HintOrdering() properties.Ordering {
 	if !p.orderingKeyNamesKnown || !p.orderingKeyNamesSafe {
 		return properties.Ordering{}
 	}
-	// A fan-out index key contains exploded elements, while columnNames names
-	// the logical record fields. Synthesizing an ordering from those names
-	// would advertise the original array (and any later flat columns) as
-	// ordered Values. The candidate-level match path can reason positionally
-	// about an equality-fixed fan-out element; this plan-level hint lacks that
-	// structural key-expression information, so it must abstain.
-	if p.distinctRecordsKnown && p.createsDuplicates {
+	columnNames, suffix, _, ok := p.orderingKeyColumns()
+	if !ok {
 		return properties.Ordering{}
 	}
-	columnNames, pkColumnNames := p.GetColumnNames(), p.GetPKColumnNames()
 	rev := p.IsReverse()
-	split := splitKeyOrder(p.GetScanComparisons(), columnNames,
-		TrimmedPKSuffix(p.injectiveKeyColumnNames(), pkColumnNames), p.GetKeyComponentTypes(), p.GetFlowedType(),
-		p.NestedKeyColumnPath)
+	split := splitKeyOrder(p.GetScanComparisons(), columnNames, suffix, p.GetKeyComponentTypes(), p.GetFlowedType(),
+		p.NestedKeyColumnPath, p.keyColumnDuplicates)
 	sorted := split.tail
 	if len(sorted) == 0 {
 		return properties.Ordering{}
@@ -1482,7 +1479,7 @@ func (p *RecordQueryAggregateIndexPlan) aggregateOrderSplit(cols []string, ordin
 		// The permuted coordinates are named by the result row's slots.
 		layout, nestedPath = p.GetResultType(), nil
 	}
-	return splitKeyOrder(p.groupingScanComparisons(), cols, nil, types, layout, nestedPath)
+	return splitKeyOrder(p.groupingScanComparisons(), cols, nil, types, layout, nestedPath, nil)
 }
 
 // aggregateOrderingColumns maps physical key coordinates to logical output
@@ -1820,10 +1817,11 @@ func (p *RecordQueryIndexPlan) hintRichOrdering() *properties.RichOrdering {
 	if !p.orderingKeyNamesKnown || !p.orderingKeyNamesSafe {
 		return properties.EmptyOrdering()
 	}
-	if p.distinctRecordsKnown && p.createsDuplicates {
+	columnNames, suffix, fixedSkip, ok := p.orderingKeyColumns()
+	if !ok {
 		return properties.EmptyOrdering()
 	}
-	columnNames, pkColumnNames := p.GetColumnNames(), p.GetPKColumnNames()
+	pkColumnNames := p.GetPKColumnNames()
 	comps := p.GetScanComparisons()
 	bm := make(map[values.Value][]properties.OrderingBinding)
 	keys := make([]values.Value, 0, len(columnNames)+len(pkColumnNames))
@@ -1843,8 +1841,8 @@ func (p *RecordQueryIndexPlan) hintRichOrdering() *properties.RichOrdering {
 	// satisfied only in the direction the scan runs. The loop below binds it
 	// accordingly; EqualityBoundCoordinateClaimsOwnOrder explains why tie-class
 	// vacuity does not apply.
-	split := splitKeyOrder(comps, columnNames, TrimmedPKSuffix(p.injectiveKeyColumnNames(), pkColumnNames),
-		p.GetKeyComponentTypes(), p.GetFlowedType(), p.NestedKeyColumnPath)
+	split := splitKeyOrder(comps, columnNames, suffix,
+		p.GetKeyComponentTypes(), p.GetFlowedType(), p.NestedKeyColumnPath, p.keyColumnDuplicates)
 	tail := split.tail
 	// The coordinates below are the whole storage key exactly when the tail was
 	// neither dropped wholesale (a signed-zero equality that restarts the order
@@ -1852,13 +1850,16 @@ func (p *RecordQueryIndexPlan) hintRichOrdering() *properties.RichOrdering {
 	// primary-key suffix both make physical uniqueness mean logical uniqueness.
 	// Every one of those facts is settled right here; stamping it is what keeps
 	// a consumer from asking a second property to agree with this one by hand.
-	storageComplete := !split.tailDropped && len(tail) == split.untruncated &&
+	storageComplete := fixedSkip == nil && !split.tailDropped && len(tail) == split.untruncated &&
 		len(p.GetRecordTypes()) == 1 &&
 		properties.TupleKeyUniquenessMatchesLogicalEquality(
 			p.GetKeyComponentTypes(), len(columnNames)) &&
 		properties.TupleKeyUniquenessMatchesLogicalEquality(
 			p.GetPrimaryKeyComponentTypes(), len(pkColumnNames))
 	for i, col := range columnNames[:split.fixedLen] {
+		if i < len(fixedSkip) && fixedSkip[i] {
+			continue
+		}
 		key := p.orderingKeyOf(i, col)
 		if key == nil {
 			return properties.EmptyOrdering()
@@ -1942,7 +1943,7 @@ func (p *RecordQueryIndexPlan) primaryKeyBeginsWithRecordType() bool {
 // record identity.
 func (p *RecordQueryIndexPlan) recordIdentityCoordinates() []values.Value {
 	pkColumnNames := p.GetPKColumnNames()
-	if !p.ProducesDistinctRecords() || len(p.GetRecordTypes()) != 1 || len(pkColumnNames) == 0 ||
+	if !(p.ProducesDistinctRecords() || p.fanOutPinned()) || len(p.GetRecordTypes()) != 1 || len(pkColumnNames) == 0 ||
 		!properties.TupleKeyUniquenessMatchesLogicalEquality(p.GetPrimaryKeyComponentTypes(), len(pkColumnNames)) {
 		return nil
 	}
@@ -2051,6 +2052,9 @@ func (p *RecordQueryFetchFromPartialRecordPlan) HintRichOrdering() *properties.R
 func (p *RecordQueryIndexPlan) injectiveKeyColumnNames() []string {
 	names := make([]string, 0, len(p.GetColumnNames()))
 	for i, name := range p.GetColumnNames() {
+		if i < len(p.keyColumnDuplicates) && p.keyColumnDuplicates[i] {
+			continue
+		}
 		if i < len(p.orderingColumns) && (p.orderingColumns[i].Cardinality || p.orderingColumns[i].Key != nil) {
 			continue
 		}
@@ -2060,6 +2064,53 @@ func (p *RecordQueryIndexPlan) injectiveKeyColumnNames() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// orderingKeyColumns skips physically pinned fan-out elements, stopping at
+// unbound/range elements; unknown fan-out classification fails closed.
+func (p *RecordQueryIndexPlan) orderingKeyColumns() (columns, suffix []string, skip []bool, ok bool) {
+	columns = p.GetColumnNames()
+	if !p.distinctRecordsKnown || !p.createsDuplicates {
+		return columns, TrimmedPKSuffix(p.injectiveKeyColumnNames(), p.GetPKColumnNames()), nil, true
+	}
+	if len(p.keyColumnDuplicates) != len(columns) {
+		return nil, nil, nil, false
+	}
+	comps := p.GetScanComparisons()
+	prefix := ownOrderPrefixLen(comps, len(columns))
+	couldBeFloat := IndexColumnCouldBeFloat(p.GetKeyComponentTypes(), p.GetFlowedType(), columns, p.keyColumnDuplicates)
+	limit := len(columns)
+	for i, duplicate := range p.keyColumnDuplicates {
+		if duplicate && (i >= prefix || !EqualityPinsSinglePhysicalKeyOnColumn(comps[i], couldBeFloat(i))) {
+			limit = i
+			break
+		}
+	}
+	if limit == len(columns) {
+		suffix = TrimmedPKSuffix(p.injectiveKeyColumnNames(), p.GetPKColumnNames())
+	}
+	return columns[:limit], suffix, p.keyColumnDuplicates, true
+}
+
+// fanOutPinned requires one physical key per fan-out coordinate, so entries
+// for two different element values cannot both match a record.
+func (p *RecordQueryIndexPlan) fanOutPinned() bool {
+	columns := p.GetColumnNames()
+	if !p.distinctRecordsKnown || !p.createsDuplicates || len(p.keyColumnDuplicates) != len(columns) {
+		return false
+	}
+	comps := p.GetScanComparisons()
+	prefix := ownOrderPrefixLen(comps, len(columns))
+	couldBeFloat := IndexColumnCouldBeFloat(p.GetKeyComponentTypes(), p.GetFlowedType(), columns, p.keyColumnDuplicates)
+	for i, duplicate := range p.keyColumnDuplicates {
+		if !duplicate {
+			continue
+		}
+		if i >= prefix || !EqualityPinsSinglePhysicalKeyOnColumn(comps[i], couldBeFloat(i)) {
+			return false
+		}
+	}
+	return true
 }
 
 // orderingKeyOf is the value key column i (or, past the key, the primary-key

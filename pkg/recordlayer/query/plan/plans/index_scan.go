@@ -85,18 +85,8 @@ type RecordQueryIndexPlan struct {
 	// drives the ordering the scan provides: the non-equality-bound suffix
 	// of these columns is sorted.
 	columnNames []string
-	// pkColumnNames is the record type's primary-key column list, used to
-	// extend the ordering past the index key: a value index's entries are
-	// (index key, primary key), so the scan's output order covers the
-	// trimmed PK suffix too. Mirrors Java's
-	// ValueIndexExpansionVisitor.fullKey(index, primaryKey) — the ordering in
-	// ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons is
-	// derived over the FULL key (index root + trimPrimaryKey'd PK), which is
-	// what lets an equality-prefixed scan (status = ?) satisfy ORDER BY pk.
-	// Retained for coordinate-safe covering reconstruction even on fan-out
-	// indexes. Fan-out ordering is suppressed independently by the stamped
-	// createsDuplicates signal, because positions after an exploded key part
-	// are not one globally sorted logical stream.
+	// pkColumnNames retains coordinate-safe PK coverage even for fan-out keys;
+	// suffix ordering continues only past physically equality-pinned elements.
 	pkColumnNames []string
 	// unique reports whether the index is declared UNIQUE. A full equality
 	// bind then has a bounded physical-key multiplicity only when component
@@ -135,6 +125,9 @@ type RecordQueryIndexPlan struct {
 	// (WithDistinctRecordsSignal), mirroring Java's empty-candidate default.
 	createsDuplicates    bool
 	distinctRecordsKnown bool
+	// keyColumnDuplicates marks FAN_OUT coordinates parallel to columnNames;
+	// nil classification prevents an ordering claim.
+	keyColumnDuplicates []bool
 	// commonPrimaryKeyValues is the index's common primary key translated to
 	// STRUCTURE-encoding Values (RFC-189 B3 / Java PrimaryKeyProperty.visitIndexPlan
 	// via ScalarTranslationVisitor): record-type-key prefixes and nesting are
@@ -144,8 +137,8 @@ type RecordQueryIndexPlan struct {
 	// conflating Field("ID") with Concat(RecordTypeKey(), Field("ID")). nil = the
 	// property abstains (no dedup); populated REGARDLESS of fan-out (index entries
 	// always carry the PK). pkColumnNames is also retained for coordinate-safe
-	// coverage on fan-out scans; the duplicate signal independently suppresses
-	// its use as an ordering suffix.
+	// coverage on fan-out scans; use as an ordering suffix additionally requires
+	// physically equality-pinned element coordinates.
 	commonPrimaryKeyValues []values.Value
 	// resultValue is the stable per-instance QuantifiedObjectValue standing for
 	// the rows this leaf emits — minted once at construction, returned by
@@ -403,6 +396,14 @@ func (p *RecordQueryIndexPlan) WithDistinctRecordsSignal(createsDuplicates bool)
 	cp := *p
 	cp.createsDuplicates = createsDuplicates
 	cp.distinctRecordsKnown = true
+	return &cp
+}
+
+// WithKeyColumnDuplicates returns a copy carrying, per key column, whether the
+// column lies below a FAN_OUT. Like the names, a function of the index.
+func (p *RecordQueryIndexPlan) WithKeyColumnDuplicates(duplicates []bool) *RecordQueryIndexPlan {
+	cp := *p
+	cp.keyColumnDuplicates = slices.Clone(duplicates)
 	return &cp
 }
 

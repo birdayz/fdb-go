@@ -1,5 +1,3 @@
-//go:build yamsql
-
 package parser
 
 import (
@@ -22,9 +20,8 @@ import (
 // it walks the vendored Java yamsql corpus, extracts every SQL statement
 // (schema templates + test-block queries) and runs it through Parse().
 //
-// The corpus lives under fdb-record-layer/yaml-tests/src/test/resources/
-// in the gitignored Java source tree. If the directory is missing (CI
-// machines that don't check out the submodule) the test skips.
+// The corpus is the vendored copy under third_party/apple/fdb-record-layer,
+// a data dependency of this test, so a missing corpus is a failure.
 //
 // This is not a correctness check — parse trees are not inspected. The
 // assertion is "the grammar recognises every statement the Java test
@@ -35,7 +32,7 @@ func TestYamsqlCorpus_ParsesEveryStatement(t *testing.T) {
 
 	root := findCorpusRoot(t)
 	if root == "" {
-		t.Skip("yamsql corpus not found at fdb-record-layer/yaml-tests/src/test/resources (Java submodule likely missing)")
+		t.Fatalf("yamsql corpus not found: no %s above the working directory", yamsqlCorpusSubdir)
 	}
 
 	var (
@@ -75,8 +72,8 @@ func TestYamsqlCorpus_ParsesEveryStatement(t *testing.T) {
 		t.Fatalf("walk: %v", err)
 	}
 
-	if filesParsed == 0 {
-		t.Skip("no .yamsql files found")
+	if filesParsed == 0 || stmtsTotal == 0 {
+		t.Fatalf("parsed %d files and %d statements under %s: the check ran over nothing", filesParsed, stmtsTotal, root)
 	}
 	t.Logf("parsed %d files, %d statements, %d failed", filesParsed, stmtsTotal, stmtsFailed)
 	if stmtsFailed > 0 {
@@ -85,16 +82,18 @@ func TestYamsqlCorpus_ParsesEveryStatement(t *testing.T) {
 	}
 }
 
+// yamsqlCorpusSubdir is the vendored corpus, relative to the repository root.
+const yamsqlCorpusSubdir = "third_party/apple/fdb-record-layer/yaml-tests/src/test/resources"
+
 func findCorpusRoot(t *testing.T) string {
 	t.Helper()
-	// Walk up from CWD looking for fdb-record-layer/yaml-tests.
-	// `go test` runs in the package dir; the repo root is a few levels up.
+	// Walk up from the working directory: the package dir, or the Bazel runfiles tree.
 	dir, err := os.Getwd()
 	if err != nil {
 		return ""
 	}
 	for i := 0; i < 8; i++ {
-		cand := filepath.Join(dir, "fdb-record-layer", "yaml-tests", "src", "test", "resources")
+		cand := filepath.Join(dir, filepath.FromSlash(yamsqlCorpusSubdir))
 		if fi, err := os.Stat(cand); err == nil && fi.IsDir() {
 			return cand
 		}

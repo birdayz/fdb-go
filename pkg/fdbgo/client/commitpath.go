@@ -116,7 +116,7 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 		if ctx.Err() != nil {
 			return result, ctx.Err()
 		}
-		input.db.handleConnError(proxy.Address)
+		input.db.handleConnError(proxy.Address, conn)
 		return result, input.unknownResult(ctx)
 	}
 
@@ -129,7 +129,7 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 	replyCleanup.release()
 	if resp.Err != nil {
 		if !isEndpointNotFound(resp.Err) {
-			input.db.handleConnError(proxy.Address)
+			input.db.handleConnError(proxy.Address, conn)
 		}
 		return result, input.unknownResult(ctx)
 	}
@@ -137,6 +137,18 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 	outcome, commitErr := parseCommitOutcome(resp.Body)
 	outcome.epoch = result.epoch
 	result = outcome
+	if result.conflictReply && result.hasConflictIndices {
+		// The indices name the read_conflict_ranges this request shipped (NativeAPI.actor.cpp:6711-6716).
+		result.conflictingKeys = newConflictingKeyMap(result.conflictIndices, input.readConflicts)
+	}
+	if commitErr != nil {
+		var fdbErr *wire.FDBError
+		if !errors.As(commitErr, &fdbErr) {
+			// An undecodable post-send reply cannot establish whether the commit applied.
+			// Fence it like a lost reply before reporting commit_unknown_result.
+			return result, input.unknownResult(ctx)
+		}
+	}
 	// An IN-BAND maybeDelivered error means the commit proxy died while
 	// answering, so whether the mutation landed is UNKNOWN. It arrives here and
 	// not in the four transport arms above, which already map their failures to
@@ -494,6 +506,8 @@ func buildCommitInputRequest(input *commitInput, replyToken transport.UID) (body
 			WriteConflictRanges: writeCRs,
 			Mutations:           mutations,
 			ReadSnapshot:        readSnapshotVersion,
+			// NativeAPI.actor.cpp:6887-6889.
+			Report_conflicting_keys: input.reportConflictingKeys,
 			// Lock_aware is intentionally NOT set: libfdb_c sets only the request FLAG
 			// (FLAG_IS_LOCK_AWARE below; NativeAPI.actor.cpp:6878) and the commit proxy re-derives
 			// transaction.lock_aware from the flag server-side (CommitProxyServer.actor.cpp:221).
@@ -555,7 +569,9 @@ func parseCommitOutcome(data []byte) (commitOutcome, error) {
 		return commitOutcome{}, fmt.Errorf("commit: %w", err)
 	}
 	var reply types.CommitID
-	reply.UnmarshalFromReader(&r)
+	if err := reply.UnmarshalFromReader(&r); err != nil {
+		return commitOutcome{}, fmt.Errorf("commit: %w", err)
+	}
 	// A conflict can arrive IN-BAND: with report_conflicting_keys set, the
 	// proxy replies CommitID{version: invalidVersion, conflictingKRIndices}
 	// instead of an ErrorOr not_committed (CommitProxyServer.actor.cpp:
@@ -563,7 +579,11 @@ func parseCommitOutcome(data []byte) (commitOutcome, error) {
 	// 6653 success-gate, :6726 throw). Without this check a conflict-shaped
 	// CommitID would read as a SUCCESSFUL commit at version -1.
 	if reply.Version == InvalidVersion {
-		return commitOutcome{}, &wire.FDBError{Code: ErrNotCommitted}
+		return commitOutcome{
+			conflictReply:      true,
+			conflictIndices:    reply.ConflictingKRIndices,
+			hasConflictIndices: reply.HasConflictingKRIndices,
+		}, &wire.FDBError{Code: ErrNotCommitted}
 	}
 	return commitOutcome{version: reply.Version, batchID: reply.TxnBatchId}, nil
 }

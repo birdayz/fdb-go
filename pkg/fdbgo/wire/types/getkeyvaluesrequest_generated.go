@@ -60,47 +60,10 @@ type GetKeyValuesRequest struct {
 	Arena                  []byte         // slot 13
 }
 
-func (m *GetKeyValuesRequest) UnmarshalFromReader(r *wire.Reader) {
-	if nr, err := r.ReadNestedReader(GetKeyValuesRequestSlotBegin); err == nil {
-		m.Begin.UnmarshalFromReader(nr)
-	}
-	if nr, err := r.ReadNestedReader(GetKeyValuesRequestSlotEnd); err == nil {
-		m.End.UnmarshalFromReader(nr)
-	}
-	if r.FieldPresent(GetKeyValuesRequestSlotVersion) {
-		m.Version = r.ReadInt64(GetKeyValuesRequestSlotVersion)
-	}
-	if r.FieldPresent(GetKeyValuesRequestSlotLimit) {
-		m.Limit = r.ReadInt32(GetKeyValuesRequestSlotLimit)
-	}
-	if r.FieldPresent(GetKeyValuesRequestSlotLimitBytes) {
-		m.LimitBytes = r.ReadInt32(GetKeyValuesRequestSlotLimitBytes)
-	}
-	if r.FieldPresent(GetKeyValuesRequestSlotTags) && r.ReadUint8(GetKeyValuesRequestSlotTags) > 0 {
-		m.Tags = r.ReadBytes(GetKeyValuesRequestSlotTags + 1)
-		m.HasTags = true
-	}
-	if nr, err := r.ReadNestedReader(GetKeyValuesRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nr)
-	}
-	if nr, err := r.ReadNestedReader(GetKeyValuesRequestSlotSpanContext); err == nil {
-		m.SpanContext.UnmarshalFromReader(nr)
-	}
-	if nr, err := r.ReadNestedReader(GetKeyValuesRequestSlotTenantInfo); err == nil {
-		m.TenantInfo.UnmarshalFromReader(nr)
-	}
-	if r.FieldPresent(GetKeyValuesRequestSlotOptions) && r.ReadUint8(GetKeyValuesRequestSlotOptions) > 0 {
-		if nr, err := r.ReadNestedReader(GetKeyValuesRequestSlotOptions + 1); err == nil {
-			m.Options.UnmarshalFromReader(nr)
-		}
-		m.HasOptions = true
-	}
-	if r.FieldPresent(GetKeyValuesRequestSlotSsLatestCommitVersions) {
-		m.SsLatestCommitVersions = r.ReadBytes(GetKeyValuesRequestSlotSsLatestCommitVersions)
-	}
-	if r.FieldPresent(GetKeyValuesRequestSlotArena) {
-		m.Arena = r.ReadBytes(GetKeyValuesRequestSlotArena)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *GetKeyValuesRequest) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *GetKeyValuesRequest) UnmarshalFDB(data []byte) error {
@@ -108,11 +71,28 @@ func (m *GetKeyValuesRequest) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if nr, err := r.ReadNestedReader(GetKeyValuesRequestSlotBegin); err == nil {
-		m.Begin.UnmarshalFromReader(nr)
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *GetKeyValuesRequest) decode(r *wire.Reader, b *wire.DecodeBudget) error {
+	if r.FieldPresent(GetKeyValuesRequestSlotBegin) {
+		nr, err := r.ReadNestedReader(GetKeyValuesRequestSlotBegin)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetKeyValuesRequest", Field: "Begin", Err: err}
+		}
+		if err := m.Begin.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if nr, err := r.ReadNestedReader(GetKeyValuesRequestSlotEnd); err == nil {
-		m.End.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetKeyValuesRequestSlotEnd) {
+		nr, err := r.ReadNestedReader(GetKeyValuesRequestSlotEnd)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetKeyValuesRequest", Field: "End", Err: err}
+		}
+		if err := m.End.decode(nr, b); err != nil {
+			return err
+		}
 	}
 	if r.FieldPresent(GetKeyValuesRequestSlotVersion) {
 		m.Version = r.ReadInt64(GetKeyValuesRequestSlotVersion)
@@ -123,22 +103,44 @@ func (m *GetKeyValuesRequest) UnmarshalFDB(data []byte) error {
 	if r.FieldPresent(GetKeyValuesRequestSlotLimitBytes) {
 		m.LimitBytes = r.ReadInt32(GetKeyValuesRequestSlotLimitBytes)
 	}
-	if r.FieldPresent(GetKeyValuesRequestSlotTags) && r.ReadUint8(GetKeyValuesRequestSlotTags) > 0 {
+	if r.FieldPresent(GetKeyValuesRequestSlotTags) && r.ReadUint8(GetKeyValuesRequestSlotTags) == 1 && r.FieldPresent(GetKeyValuesRequestSlotTags+1) {
 		m.Tags = r.ReadBytes(GetKeyValuesRequestSlotTags + 1)
 		m.HasTags = true
 	}
-	if nr, err := r.ReadNestedReader(GetKeyValuesRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetKeyValuesRequestSlotReply) {
+		nr, err := r.ReadNestedReader(GetKeyValuesRequestSlotReply)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetKeyValuesRequest", Field: "Reply", Err: err}
+		}
+		if err := m.Reply.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if nr, err := r.ReadNestedReader(GetKeyValuesRequestSlotSpanContext); err == nil {
-		m.SpanContext.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetKeyValuesRequestSlotSpanContext) {
+		nr, err := r.ReadNestedReader(GetKeyValuesRequestSlotSpanContext)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetKeyValuesRequest", Field: "SpanContext", Err: err}
+		}
+		if err := m.SpanContext.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if nr, err := r.ReadNestedReader(GetKeyValuesRequestSlotTenantInfo); err == nil {
-		m.TenantInfo.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetKeyValuesRequestSlotTenantInfo) {
+		nr, err := r.ReadNestedReader(GetKeyValuesRequestSlotTenantInfo)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetKeyValuesRequest", Field: "TenantInfo", Err: err}
+		}
+		if err := m.TenantInfo.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if r.FieldPresent(GetKeyValuesRequestSlotOptions) && r.ReadUint8(GetKeyValuesRequestSlotOptions) > 0 {
-		if nr, err := r.ReadNestedReader(GetKeyValuesRequestSlotOptions + 1); err == nil {
-			m.Options.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetKeyValuesRequestSlotOptions) && r.ReadUint8(GetKeyValuesRequestSlotOptions) == 1 && r.FieldPresent(GetKeyValuesRequestSlotOptions+1) {
+		nr, err := r.ReadNestedReader(GetKeyValuesRequestSlotOptions + 1)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetKeyValuesRequest", Field: "Options", Err: err}
+		}
+		if err := m.Options.decode(nr, b); err != nil {
+			return err
 		}
 		m.HasOptions = true
 	}
@@ -147,6 +149,9 @@ func (m *GetKeyValuesRequest) UnmarshalFDB(data []byte) error {
 	}
 	if r.FieldPresent(GetKeyValuesRequestSlotArena) {
 		m.Arena = r.ReadBytes(GetKeyValuesRequestSlotArena)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "GetKeyValuesRequest", Err: err}
 	}
 	return nil
 }
@@ -353,21 +358,28 @@ func (m *GetKeyValuesRequest) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseGetKeyValuesRequestVectorFromReader reads a FlatBuffers vector of GetKeyValuesRequest.
-func ParseGetKeyValuesRequestVectorFromReader(r *wire.Reader, slot int) []GetKeyValuesRequest {
+// ParseGetKeyValuesRequestVectorFromReader reads a FlatBuffers vector of GetKeyValuesRequest under one decode budget.
+func ParseGetKeyValuesRequestVectorFromReader(r *wire.Reader, slot int) ([]GetKeyValuesRequest, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]GetKeyValuesRequest, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]GetKeyValuesRequest", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]GetKeyValuesRequest, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]GetKeyValuesRequest", Err: err}
 		}
-		var elem GetKeyValuesRequest
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

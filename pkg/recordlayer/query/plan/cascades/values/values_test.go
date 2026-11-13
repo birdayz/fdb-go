@@ -579,7 +579,7 @@ func TestCastValue(t *testing.T) {
 var _ Value = (*AggregateValue)(nil)
 
 // ArithmeticOp.Symbol pins all five operators including OpMod
-// (added this shift) and the unknown-Op fallback.
+// and the unknown-Op fallback.
 func TestArithmeticOp_Symbol(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

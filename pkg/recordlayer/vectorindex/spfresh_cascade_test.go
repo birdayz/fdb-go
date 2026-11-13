@@ -657,7 +657,7 @@ var _ = Describe("SPFresh sealed-row lifecycle edges", func() {
 		total, rerr := RebalanceSPFreshIndex(ctx, sharedDB, tenant.StoreBuilder, tenant.IndexName)
 		Expect(rerr).To(HaveOccurred(), "the poisoned task must surface in the joined error")
 		Expect(total).To(BeNumerically(">", 0),
-			"the balloon's split committed behind the poison — reporting 0 hides real work (codex delta P2)")
+			"the balloon's split committed behind the poison — reporting 0 hides real work")
 		// The eager refresh ran on the error path: the global cache routes on
 		// the post-split topology.
 		Expect(spfreshCacheFor(sub, 1).ready(1)).To(BeTrue(),

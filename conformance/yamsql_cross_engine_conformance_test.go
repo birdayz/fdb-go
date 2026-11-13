@@ -397,13 +397,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		// bucket as the GROUP BY / DISTINCT / LIMIT Java limitations above.
 		unionColumnsScenario(),
 		inListNullScenario(),
-		// joinOptimizationProbesScenario is NOT cross-engine: it probes the
-		// multi-way-join cost frontier (RFC-042), where Go's join enumeration is
-		// still non-deterministic on some arithmetic-predicate shapes (a 3-way /
-		// arithmetic-join can return a different row count across runs). That is
-		// a tracked Go bug, not an RFC-082 column/conformance issue, and a
-		// non-deterministic spec must not gate. Tracked under RFC-042; the
-		// builder stays for the Go-only determinism follow-up.
+		joinOptimizationProbesScenario(),
 		// recursiveCteAdvancedScenario is NOT cross-engine: its tests order a
 		// recursive CTE's result (`... SELECT label FROM desc_tree ORDER BY
 		// id`), which fdb-relational 4.12.11.0 rejected with "order by is not
@@ -440,21 +434,8 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		// cannot be made stateless. The NULL-safe DML semantics are covered
 		// Go-only via the dml_with_null_safe yamsql corpus (which runs statefully).
 		insertSelectScenario(),
-		// recursiveCteBaseScenario is NOT cross-engine: it is a showcase of
-		// Go-only recursive-CTE EXTENSIONS that fdb-relational 4.12.11.0 cannot
-		// plan, so there is no cross-engine equivalence to assert (these are
-		// welcome Go-beyond-Java read-side capabilities, not divergences):
-		//   - the `TRAVERSAL ORDER pre_order|post_order|level_order` clause —
-		//     Java's grammar has no such production at all;
-		//   - an outer `ORDER BY` over a recursive CTE (`… SELECT id FROM
-		//     ancestors ORDER BY id DESC`) — Java deterministically rejects with
-		//     "order by is not supported in subquery" (the WITH body is treated
-		//     as a subquery), the same limitation noted on
-		//     recursiveCteAdvancedScenario;
-		// The cross-engine-valid recursive-CTE basics (anchor + recursive UNION,
-		// COUNT, empty seed) are asserted by recursiveCteCountScenario. The full
-		// Go-only surface is covered by the recursive_cte yamsql corpus. (Builder
-		// kept for that Go-only coverage.)
+		// recursiveCteBaseScenario includes outer ORDER BY forms Java cannot plan;
+		// traversal order itself is shared and pinned by DocClaimsJavaProbe.
 		//
 		// dmlSubqueryScenario is NOT cross-engine: it is STATEFUL in the same way
 		// as dmlWithNullSafeScenario. Its Setup runs a full MUTATING DML chain
@@ -558,11 +539,8 @@ func unionStarScenario() *yamsql.Scenario {
 	}
 }
 
-// caseInsensitiveKeywordsScenario mirrors testdata/case_insensitive_keywords.yaml.
-// SQL standard: keywords are case-insensitive. Drops NOT NULL on PK.
-// Skips tests using LIMIT (unsupported), GROUP BY (unsupported), DESC
-// in ORDER BY (uncertain natural-order continuation), explicit INNER
-// JOIN (broken). Lifts the safe SELECT/WHERE/AND/OR/IS NOT NULL forms.
+// caseInsensitiveKeywordsScenario keeps the simple SELECT forms; omitted groupings
+// lack an ordering index. DocClaimsJavaProbe covers ordered grouping and joins.
 func caseInsensitiveKeywordsScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "case_insensitive_keywords",
@@ -901,17 +879,8 @@ func orderByEliminationScenario() *yamsql.Scenario {
 	}
 }
 
-// aggregateExpressionSelectScenario mirrors testdata/
-// aggregate_expression_select.yaml — SELECT-list expressions wrapping
-// aggregate function calls (post-aggregation evaluation). Drops NOT NULL
-// on PK. Skips GROUP BY tests (planner unsupported per CLAUDE.md
-// gotcha) and the COALESCE-wrapping-aggregate / CASE-wrapping-aggregate
-// forms — fdb-relational 4.12.11.0's planner raises
-// `IllegalStateException: unable to eval an aggregation function with
-// eval()` because the post-aggregation rewrite for scalar-function-of-
-// aggregate isn't implemented. Aggregate-of-expression
-// (`SUM(CASE WHEN ...)` covered by aggregate_expr) works; the inverse
-// direction does not. New CLAUDE.md gotcha.
+// aggregateExpressionSelectScenario omits grouping over unordered input and
+// scalar-function-of-aggregate forms; ordered grouping is shared (DocClaimsJavaProbe).
 func aggregateExpressionSelectScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "aggregate_expression_select",
@@ -958,17 +927,8 @@ func derivedTableRenamedScenario() *yamsql.Scenario {
 	}
 }
 
-// aggregateExprScenario mirrors testdata/aggregate_expr.yaml — the no-
-// GROUP-BY no-DISTINCT subset. Drops NOT NULL on PK. Drops the GROUP BY,
-// SUM(DISTINCT), error_code, and aggregate-of-aggregate-with-ORDER-BY
-// tests (planner gotchas: GROUP BY unsupported, DISTINCT unsupported,
-// ORDER BY <aggregate> requires the natural-order continuation).
-//
-// `SUM(BIGINT) / COUNT(*)` integer-division parity: Go's SUM now
-// preserves int64 when every observed
-// value is integral (see `pkg/relational/core/embedded/aggregate.go`
-// `sumIntOnly`), so `SUM(qty) / COUNT(*)` integer-divides Java-style
-// rather than float-dividing.
+// aggregateExprScenario omits unordered grouping, DISTINCT aggregates and
+// aggregate ordering without a supporting index (DocClaimsJavaProbe).
 func aggregateExprScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "aggregate_expr",
@@ -1299,7 +1259,7 @@ func compositeSecondaryIndexPrefixPushdownScenario() *yamsql.Scenario {
 // tests (CLAUDE.md gotcha — LIMIT not supported by fdb-relational).
 // Skip the range-over-secondary-index ORDER-BY-PK tests where the
 // planner can't reconcile index order with PK order (ORDER BY natural-
-// order continuation gotcha from earlier in this shift).
+// order continuation gotcha).
 func secondaryIndexPushdownScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "secondary_index_pushdown",
@@ -1350,7 +1310,7 @@ func secondaryIndexPushdownScenario() *yamsql.Scenario {
 // Excludes tests that require rows added via mid-stream INSERT (the
 // ESCAPE-clause subset depends on a runtime INSERT of x_ray / y%lo).
 // Excludes ORDER BY non-PK / non-index-leading column forms (planner
-// natural-order gotcha from earlier in this shift).
+// natural-order gotcha).
 func likePrefixPushdownScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "like_prefix_pushdown",
@@ -1759,8 +1719,8 @@ func betweenScenario() *yamsql.Scenario {
 // but got FieldValue". Re-enabled after threading
 // allowBareField=true through evalExprPredicateTri's value-context
 // callers (eval_predicate.go) so operands of AND/OR/NOT/XOR and
-// projection-context expressions accept bare FieldValue and convert
-// via IsTruthy. WHERE-top-level `WHERE flag` still rejects to match
+// projection-context expressions accept bare FieldValue and evaluate
+// it as a value. WHERE-top-level `WHERE flag` still rejects to match
 // Java.
 func booleanScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
@@ -1982,9 +1942,8 @@ func coalesceNullifScenario() *yamsql.Scenario {
 	}
 }
 
-// bareColWithAggScenario mirrors testdata/bare_col_with_agg.yaml. Drops
-// NOT NULL on PK. Drops the DISTINCT test (CLAUDE.md gotcha — fdb-
-// relational's planner doesn't support SELECT DISTINCT).
+// bareColWithAggScenario mirrors bare_col_with_agg.yaml, without NOT NULL on PK
+// or DISTINCT: Java 4.14.2.0 returns duplicates (DocClaimsJavaProbe).
 func bareColWithAggScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "bare_col_with_agg",
@@ -2056,7 +2015,7 @@ func unionColumnsRenamedScenario() *yamsql.Scenario {
 
 // countDistinctJoinPositiveScenario lifts the one COUNT(*) test from
 // testdata/count_distinct_join.yaml that doesn't use COUNT(DISTINCT)
-// (which NPEs in fdb-relational 4.12.11.0 per CLAUDE.md gotcha).
+// (which both engines refuse with 0AF00).
 // Drops NOT NULL on PK + composite PK on the join-side table.
 func countDistinctJoinPositiveScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
@@ -3387,9 +3346,9 @@ func coalesceTypePromotionScenario() *yamsql.Scenario {
 // minMaxBigintBoundaryScenario pins MIN/MAX over int64 boundary values
 // without overflowing arithmetic. Both engines already agree on
 // arithmetic-overflow rejection (Java raises `ArithmeticException:
-// long overflow`; Go's `ApplyMathOp` raises
-// `ErrCodeNumericValueOutOfRange` via `AddInt64Checked`-family
-// helpers — only the error message text differs). MIN/MAX/COUNT
+// long overflow`; Go's `ArithmeticValue` raises
+// `ErrCodeNumericValueOutOfRange` — only the error message text
+// differs). MIN/MAX/COUNT
 // over stored boundary values doesn't trigger overflow either way.
 // Net-new.
 func minMaxBigintBoundaryScenario() *yamsql.Scenario {
@@ -3872,12 +3831,8 @@ func expectScalarEqual(actual, expected any, msgAndArgs ...any) {
 	}
 }
 
-// joinOptimizationProbesScenario mirrors testdata/join_optimization_probes.yaml.
-// Drops NOT NULL on PK cols (fdb-relational restriction). Converts
-// explicit INNER JOIN ... ON to comma-join + WHERE (fdb-relational
-// rejects fully-qualified column names in JOIN ON clause). The GROUP BY
-// aggregate-through-join test is included as-is — it surfaces the
-// Java limitation.
+// joinOptimizationProbesScenario mirrors testdata/join_optimization_probes.yaml as comma
+// joins, unordered and grouped by e.did: Java has no in-memory sort (0AF00).
 func joinOptimizationProbesScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "join_optimization_probes",
@@ -3889,20 +3844,27 @@ func joinOptimizationProbesScenario() *yamsql.Scenario {
 			"INSERT INTO emp VALUES (10, 1, 'Alice', 100), (20, 1, 'Bob', 90), (30, 2, 'Charlie', 80), (40, 2, 'Diana', 110), (50, 3, 'Eve', 95)",
 		},
 		Tests: []yamsql.Test{
-			// Single-side filter pushdown: dept filter pushed below join.
-			// Converted from INNER JOIN to comma-join.
-			{Query: "SELECT e.ename FROM emp AS e, dept AS d WHERE e.did = d.did AND d.dname = 'eng' ORDER BY e.ename", Rows: [][]any{{"Alice"}, {"Bob"}}},
-			// Cross-side predicate stays above join.
-			{Query: "SELECT e.ename FROM emp AS e, dept AS d WHERE e.did = d.did AND e.salary > d.did * 50 ORDER BY e.ename", Rows: [][]any{{"Alice"}, {"Bob"}, {"Diana"}, {"Eve"}}},
+			// Single-side filter pushdown.
+			{Query: "SELECT e.ename FROM emp AS e, dept AS d WHERE e.did = d.did AND d.dname = 'eng'", Unordered: true, Rows: [][]any{{"Alice"}, {"Bob"}}},
+			// Cross-side arithmetic predicate. Eve does not qualify: 95 > 3 * 50 is false.
+			{Query: "SELECT e.ename FROM emp AS e, dept AS d WHERE e.did = d.did AND e.salary > d.did * 50", Unordered: true, Rows: [][]any{{"Alice"}, {"Bob"}, {"Diana"}}},
 			// Both sides filtered.
-			{Query: "SELECT e.ename FROM emp AS e, dept AS d WHERE e.did = d.did AND d.dname = 'eng' AND e.salary >= 95 ORDER BY e.ename", Rows: [][]any{{"Alice"}}},
-			// ORDER BY through join — should work even with filter pushdown.
-			{Query: "SELECT e.ename, d.dname FROM emp AS e, dept AS d WHERE e.did = d.did AND d.dname != 'hr' ORDER BY e.salary DESC", Rows: [][]any{{"Diana", "sales"}, {"Alice", "eng"}, {"Bob", "eng"}, {"Charlie", "sales"}}},
+			{Query: "SELECT e.ename FROM emp AS e, dept AS d WHERE e.did = d.did AND d.dname = 'eng' AND e.salary >= 95", Unordered: true, Rows: [][]any{{"Alice"}}},
+			// Projection from both legs.
+			{Query: "SELECT e.ename, d.dname FROM emp AS e, dept AS d WHERE e.did = d.did AND d.dname != 'hr'", Unordered: true, Rows: [][]any{{"Diana", "sales"}, {"Alice", "eng"}, {"Bob", "eng"}, {"Charlie", "sales"}}},
 			// Self-join with filter.
-			{Query: "SELECT a.ename, b.ename FROM emp AS a, emp AS b WHERE a.did = b.did AND a.eid < b.eid ORDER BY a.eid, b.eid", Rows: [][]any{{"Alice", "Bob"}, {"Charlie", "Diana"}}},
-			// Aggregate through join — uses GROUP BY (unsupported in
-			// fdb-relational); included as-is to surface the divergence.
-			{Query: "SELECT d.dname, COUNT(*), MAX(e.salary) FROM emp AS e, dept AS d WHERE e.did = d.did GROUP BY d.dname ORDER BY d.dname", Rows: [][]any{{"eng", 2, 100}, {"hr", 1, 95}, {"sales", 2, 110}}},
+			{Query: "SELECT a.ename, b.ename FROM emp AS a, emp AS b WHERE a.did = b.did AND a.eid < b.eid", Unordered: true, Rows: [][]any{{"Alice", "Bob"}, {"Charlie", "Diana"}}},
+			// Aggregate through join, grouped on the indexed join column.
+			{Query: "SELECT e.did, COUNT(*), MAX(e.salary) FROM emp AS e, dept AS d WHERE e.did = d.did GROUP BY e.did", Unordered: true, Rows: [][]any{{1, 2, 100}, {2, 2, 110}, {3, 1, 95}}},
+			// Three-way joins with cross-leg arithmetic predicates.
+			{Query: "SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d WHERE a.did = d.did AND b.did = d.did AND a.salary - b.salary > d.did * 5", Unordered: true, Rows: [][]any{{"Alice", "Bob"}, {"Diana", "Charlie"}}},
+			{Query: "SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d WHERE a.did = d.did AND b.did = d.did AND a.salary > b.salary + (d.did * 5)", Unordered: true, Rows: [][]any{{"Alice", "Bob"}, {"Diana", "Charlie"}}},
+			{Query: "SELECT e.ename, d.dname, m.ename FROM emp AS e, dept AS d, emp AS m WHERE e.did = d.did AND m.did = d.did AND m.eid < e.eid AND e.salary - m.salary > d.did * 10", Unordered: true, Rows: [][]any{{"Diana", "sales", "Charlie"}}},
+			{Query: "SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d WHERE a.did = d.did AND b.did = d.did AND a.eid < b.eid AND a.salary + b.salary > d.did * 95", Unordered: true, Rows: [][]any{{"Alice", "Bob"}}},
+			// Flat left-associative arithmetic in both grammars: (b.salary + d.did) * 5.
+			{Query: "SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d WHERE a.did = d.did AND b.did = d.did AND a.salary > b.salary + d.did * 5", Unordered: true, Rows: [][]any{}},
+			// An ORDER BY the join column's index provides; rows tied on e.did are equal.
+			{Query: "SELECT e.did, d.dname FROM emp AS e, dept AS d WHERE e.did = d.did ORDER BY e.did", Rows: [][]any{{1, "eng"}, {1, "eng"}, {2, "sales"}, {2, "sales"}, {3, "hr"}}},
 		},
 	}
 }
@@ -3960,7 +3922,7 @@ func unionColumnsScenario() *yamsql.Scenario {
 			// branch) and is likewise not cross-engine.
 			// ORDER BY on right-side column name fails — result schema is left's names only.
 			{Query: "SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY w", ErrorCode: "42703"},
-			// LIMIT/OFFSET on UNION rejected at parse time.
+			// LIMIT/OFFSET on UNION rejected (0AF00).
 			{Query: "SELECT v FROM a UNION ALL SELECT w FROM b ORDER BY v LIMIT 2 OFFSET 1", ErrorCode: "0AF00"},
 			// Plain UNION (without ALL) rejected.
 			{Query: "SELECT v FROM a UNION SELECT v FROM a ORDER BY v", ErrorCode: "0AF00"},
@@ -4108,12 +4070,8 @@ func compositePKCrossScenario() *yamsql.Scenario {
 func uniqueViolationScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "unique_violation",
-		// NOT NULL dropped from `name`: fdb-relational 4.12.11.0 allows NOT NULL
-		// only on ARRAY columns ("NOT NULL is only allowed for ARRAY column
-		// type") — scalar NOT NULL is a Go-only extension Java cannot CREATE, so
-		// keeping it makes the schema un-creatable in Java (fails deterministically
-		// on a fresh per-scenario server). The unique-constraint behaviour under
-		// test (PK + UNIQUE INDEX on email) is unaffected; the data is non-null.
+		// No NOT NULL on `name`: neither engine accepts it on a scalar column
+		// (0A000). The unique-constraint behaviour under test is unaffected.
 		SchemaTemplate: "CREATE TABLE t (id BIGINT, name STRING, email STRING, PRIMARY KEY (id))" +
 			" CREATE UNIQUE INDEX t_email ON t (email)",
 		Setup: []string{
@@ -4148,11 +4106,8 @@ func uniqueViolationScenario() *yamsql.Scenario {
 func notNullViolationScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "not_null_violation",
-		// NOT NULL dropped: fdb-relational 4.12.11.0 allows NOT NULL only on ARRAY
-		// columns, so scalar NOT NULL is a Go-only extension Java cannot CREATE.
-		// The 23502 NOT-NULL-violation tests are error_code (skipped cross-engine,
-		// covered Go-only via the yamsql twin); the cross-engine SELECT below is
-		// unaffected by the dropped constraint (its row is non-null).
+		// No scalar NOT NULL: neither engine accepts it (0A000). The 23502 tests are
+		// error_code (skipped cross-engine, covered Go-only via the yamsql twin).
 		SchemaTemplate: "CREATE TABLE t (id BIGINT, name STRING, PRIMARY KEY (id))",
 		Setup: []string{
 			"INSERT INTO t VALUES (1, 'alice')",
@@ -4213,7 +4168,7 @@ func inSubqueryDecompositionScenario() *yamsql.Scenario {
 
 // subqueryInScenario mirrors testdata/subquery_in.yaml.
 // `col IN (subquery)` and `col NOT IN (subquery)` are rejected
-// (Java NPEs in AstNormalizer; Go emits 0AF00). EXISTS / NOT EXISTS
+// (0AF00 in both: Java "IN predicate does not support nested SELECT"). EXISTS / NOT EXISTS
 // and comma-join are the supported rewrites. Drops NOT NULL on PK.
 func subqueryInScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
@@ -4521,10 +4476,7 @@ func dmlWithNullSafeScenario() *yamsql.Scenario {
 func insertSelectScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "insert_select",
-		// NOT NULL dropped from dst.v: fdb-relational 4.12.11.0 allows NOT NULL
-		// only on ARRAY columns (scalar NOT NULL is a Go-only extension Java
-		// cannot CREATE). The INSERT…SELECT under test copies non-null values, so
-		// the constraint is immaterial to the cross-engine result.
+		// No NOT NULL on dst.v: neither engine accepts it on a scalar column (0A000).
 		SchemaTemplate: "CREATE TABLE src (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
 			"\nCREATE TABLE dst (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 		Setup: []string{
@@ -4804,7 +4756,7 @@ func orderByLimitScenario() *yamsql.Scenario {
 		Tests: []yamsql.Test{
 			// Multi-column ORDER BY: rejected by Java's Cascades (no multi-key sort rule).
 			{Query: "SELECT id, grp, v FROM t ORDER BY grp, v DESC", ErrorCode: "0AF00"},
-			// LIMIT clause rejected at parse time (0AF00).
+			// LIMIT clause rejected (0AF00).
 			{Query: "SELECT id FROM t ORDER BY id LIMIT 3", ErrorCode: "0AF00"},
 			{Query: "SELECT id FROM t ORDER BY id LIMIT 100", ErrorCode: "0AF00"},
 			{Query: "SELECT id FROM t ORDER BY id LIMIT 0", ErrorCode: "0AF00"},
@@ -4815,7 +4767,7 @@ func orderByLimitScenario() *yamsql.Scenario {
 			// the sort, is what its planner rejects. Go plans both and returns the
 			// correct rows; with no Java equivalence to assert they are not
 			// cross-engine. Covered Go-only by the order_by_limit yamsql corpus.
-			// ORDER BY on aggregate with GROUP BY — rejected by Java (no GROUP BY rule).
+			// ORDER BY on aggregate with GROUP BY — Java cannot plan it (0AF00).
 			{Query: "SELECT grp, SUM(v) FROM t GROUP BY grp ORDER BY 2 DESC", ErrorCode: "0AF00"},
 			// Out-of-range positional ORDER BY (22023).
 			{Query: "SELECT id FROM t ORDER BY 99", ErrorCode: "22023"},

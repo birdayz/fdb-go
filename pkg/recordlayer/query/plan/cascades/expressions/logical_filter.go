@@ -25,8 +25,8 @@ import (
 // The Java class supports PlannerGraph rendering, TranslationMap
 // rebasing, and a memoised conjuncted-predicate accessor. Seed exposes
 // the structural surface — predicates + inner Quantifier, plus the
-// RelationalExpression interface methods — and defers PlannerGraph /
-// rebasing to subsequent shifts.
+// RelationalExpression interface methods; PlannerGraph rendering is
+// not ported.
 //
 // CanCorrelate returns false: a LogicalFilter has exactly one
 // Quantifier, so there's no second Quantifier whose evaluation could

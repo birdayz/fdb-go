@@ -342,7 +342,7 @@ func TestRecurseQueryResultValue_InProgressCycleIsPathLocal(t *testing.T) {
 
 	queryValue := maxMatchTestField(t, "cycle")
 	candidateValue := maxMatchTestField(t, "cycle")
-	memoMap := make(map[values.Value]map[values.Value]matchResult)
+	memoMap := make(map[values.Value]matchResults)
 	inProgress := map[values.Value]struct{}{queryValue: {}}
 
 	// Model the exact re-entry created when a record QOV expands to resolved
@@ -358,7 +358,7 @@ func TestRecurseQueryResultValue_InProgressCycleIsPathLocal(t *testing.T) {
 		memoMap,
 		inProgress,
 	)
-	blockedResult, ok := blocked[queryValue]
+	blockedResult, ok := blocked.get(queryValue)
 	if !ok || len(blockedResult.valueMap) != 0 {
 		t.Fatalf("expected the in-progress branch to decline, got %#v", blocked)
 	}
@@ -380,7 +380,7 @@ func TestRecurseQueryResultValue_InProgressCycleIsPathLocal(t *testing.T) {
 		memoMap,
 		inProgress,
 	)
-	retriedResult, ok := retried[queryValue]
+	retriedResult, ok := retried.get(queryValue)
 	if !ok || len(retriedResult.valueMap) != 1 {
 		t.Fatalf("expected the released value to match on retry, got %#v", retried)
 	}
@@ -943,4 +943,134 @@ func TestComputeMaxMatchMap_NewMaxMatchMap_NilInputs(t *testing.T) {
 	if len(gotMap) != 0 {
 		t.Fatal("map should be empty when input is nil")
 	}
+}
+
+// TestComputeMaxMatchMap_TiedVariantsKeepTheFirstFound: q and its expansion tie, so the
+// parent keeps the first found, as Java does: the unexpanded query with q -> q.
+func TestComputeMaxMatchMap_TiedVariantsKeepTheFirstFound(t *testing.T) {
+	t.Parallel()
+
+	rowType := values.NewRecordType("MaxMatchTie", false, []values.Field{
+		{Name: "a", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "b", FieldType: values.NullableLong, Ordinal: 1},
+	})
+	qAlias := values.NamedCorrelationIdentifier("max_match_tie_q")
+	q := maxMatchTestQOV(t, qAlias, rowType)
+	w := maxMatchTestQOV(t, values.NamedCorrelationIdentifier("max_match_tie_w"), rowType)
+	field := func(ordinal int) values.Value {
+		v, err := values.ResolveFieldOrdinals(q, []int{ordinal})
+		return mustConstruct(t, v, err)
+	}
+	expanded := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "a", Value: field(0)},
+		values.RecordConstructorField{Name: "b", Value: field(1)},
+	)
+	query := values.NewRecordConstructorValue(values.RecordConstructorField{Name: "f", Value: q})
+	candidate := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "x", Value: q},
+		values.RecordConstructorField{Name: "y", Value: expanded},
+		values.RecordConstructorField{Name: "z", Value: values.NewRecordConstructorValue(
+			values.RecordConstructorField{Name: "f", Value: w})},
+	)
+	rangedOver := map[values.CorrelationIdentifier]struct{}{qAlias: {}}
+
+	for run := range 64 {
+		mmm := ComputeMaxMatchMap(query, candidate, rangedOver)
+		if got := mmm.GetQueryValue(); got != query {
+			t.Fatalf("run %d: matched variant %s, want the unexpanded %s",
+				run, values.ExplainValue(got), values.ExplainValue(query))
+		}
+		mapping := mmm.GetMap()
+		if len(mapping) != 1 || mapping[q] != q {
+			t.Fatalf("run %d: mapping has %d entries, want exactly q -> q", run, len(mapping))
+		}
+	}
+}
+
+// TestMatchResults_PutKeysByStructuralEquality: a structurally equal variant
+// replaces the stored result in place, as Java's map keyed by semanticEquals.
+func TestMatchResults_PutKeysByStructuralEquality(t *testing.T) {
+	t.Parallel()
+
+	field := maxMatchTestField(t, "A")
+	a := values.NewRecordConstructorValue(values.RecordConstructorField{Name: "x", Value: field})
+	aAgain := values.NewRecordConstructorValue(values.RecordConstructorField{Name: "x", Value: field})
+	b := values.NewRecordConstructorValue(values.RecordConstructorField{Name: "y", Value: field})
+	if a == aAgain || !values.ValuesStructurallyEqual(a, aAgain) {
+		t.Fatal("fixture: want two distinct, structurally equal variants")
+	}
+
+	var results matchResults
+	results = results.put(a, matchResultOf(nil, 1))
+	results = results.put(b, matchResultOf(nil, 0))
+	results = results.put(aAgain, matchResultOf(nil, 0))
+
+	if len(results) != 2 || results[0].value != a || results[1].value != b {
+		t.Fatalf("results = %d entries, want [a, b] in insertion order", len(results))
+	}
+	if results[0].result.maxDepth != 0 {
+		t.Fatalf("a's result has depth %d, want the replacing put's 0", results[0].result.maxDepth)
+	}
+	got, ok := results.get(aAgain)
+	if !ok || got.maxDepth != 0 {
+		t.Fatalf("get(aAgain) = %+v, %v; want depth 0", got, ok)
+	}
+}
+
+// TestRecurseQueryResultValue_FoldedVariantSharesAnEntry: under an open parent
+// matcher, q.a over q's expansion folds to a distinct copy of q.a; the frame keeps one entry.
+func TestRecurseQueryResultValue_FoldedVariantSharesAnEntry(t *testing.T) {
+	t.Parallel()
+
+	rowType := values.NewRecordType("MaxMatchFold", false, []values.Field{
+		{Name: "a", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "b", FieldType: values.NullableLong, Ordinal: 1},
+	})
+	qAlias := values.NamedCorrelationIdentifier("max_match_fold_q")
+	q := maxMatchTestQOV(t, qAlias, rowType)
+	w := maxMatchTestQOV(t, values.NamedCorrelationIdentifier("max_match_fold_w"), rowType)
+	fieldA := func(root values.Value) values.Value {
+		v, err := values.ResolveFieldOrdinals(root, []int{0})
+		return mustConstruct(t, v, err)
+	}
+	qa := fieldA(q)
+	query := values.NewRecordConstructorValue(values.RecordConstructorField{Name: "f", Value: qa})
+	candidate := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "x", Value: qa},
+		values.RecordConstructorField{Name: "z", Value: values.NewRecordConstructorValue(
+			values.RecordConstructorField{Name: "f", Value: fieldA(w)})},
+	)
+	rangedOver := map[values.CorrelationIdentifier]struct{}{qAlias: {}}
+
+	expansions := expandValueForMatching(q)
+	if len(expansions) != 1 {
+		t.Fatalf("fixture: q expands to %d values, want 1", len(expansions))
+	}
+	folded := values.WithChildren(qa, []values.Value{expansions[0]})
+	if folded == qa || !values.ValuesStructurallyEqual(folded, qa) {
+		t.Fatalf("fixture: q.a over q's expansion is %s, want a distinct copy of q.a", values.ExplainValue(folded))
+	}
+	parent := initialMatcher(query, candidate)
+	if !parent.anyMatches() {
+		t.Fatal("fixture: the parent matcher must stay open on z")
+	}
+
+	results := recurseQueryResultValue(qa, candidate, rangedOver, 0,
+		[]*incrementalValueMatcher{parent}, math.MaxInt32,
+		map[values.Value]matchResults{}, map[values.Value]struct{}{})
+	if len(results) != 1 || results[0].value != qa {
+		t.Fatalf("frame returned %d entries, want q.a once, as first found", len(results))
+	}
+	if results[0].result.maxDepth != 0 {
+		t.Fatalf("q.a's result has depth %d, want 0", results[0].result.maxDepth)
+	}
+}
+
+func (m matchResults) get(v values.Value) (matchResult, bool) {
+	for _, entry := range m {
+		if values.ValuesStructurallyEqual(entry.value, v) {
+			return entry.result, true
+		}
+	}
+	return matchResult{}, false
 }
