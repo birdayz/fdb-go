@@ -5,6 +5,7 @@ exports_files([
     "Cargo.Bazel.lock",
     "Cargo.lock",
     "Cargo.toml",
+    "crate_extension.bzl",
 ])
 
 filegroup(

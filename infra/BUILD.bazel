@@ -65,6 +65,7 @@ go_test(
         "//cmd/fdb-diff-oracle:BUILD.bazel",
         "//cmd/fdb-schema-extract:BUILD.bazel",
         "//cmd/fdb-schema-extract:fdb_cpp_build.bzl",
+        "//layers/otel/rust:crate_extension.bzl",
     ],
     env = {"EVIDENCE_TEST_REPORTER": "$(rootpath //cmd/test-report)"},
     deps = ["@in_gopkg_yaml_v3//:yaml_v3"],

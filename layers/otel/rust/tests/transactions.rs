@@ -600,16 +600,18 @@ fn count_limit_and_cumulative_estimate_partition_at_inclusive_boundaries() {
 
     // Pin the measured cost of these concrete inputs, not merely a relation
     // between two estimates. No attributes contribute extra fan-out costs.
+    // estimate = 2048 + 45 (other columns) + 2 + 3 (OTLP tag, len; len is 1 byte unpadded) + 41
+    //   (span envelope) + 5 (padding tag, len) + padding: 147_856 -> 150_000; unpadded -> 2_137.
     for (extra, batches) in [(0, vec![4, 1]), (1, vec![2, 3])] {
         let source = vec![
-            minimal_span(1, 1, 0, 147_861),
-            minimal_span(2, 1, 0, 147_861 + extra),
+            minimal_span(1, 1, 0, 147_856),
+            minimal_span(2, 1, 0, 147_856 + extra),
             minimal_span(3, 1, 0, 0),
         ];
         let prepared = schema.prepare(&source).unwrap();
         assert_eq!(prepared[0].estimate, 150_000);
         assert_eq!(prepared[1].estimate, 150_000 + extra);
-        assert_eq!(prepared[2].estimate, 2_134);
+        assert_eq!(prepared[2].estimate, 2_137);
         let db = database();
         let writer = Writer::new(db.clone(), &layout(), 64, RecordCompression::None).unwrap();
         let (stats, result) = writer.write(&Context::default(), &source);
