@@ -3,7 +3,6 @@
 package conformance_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/hex"
@@ -113,8 +112,10 @@ func recordKeyInteropAssertFraming(page recordKeyInteropPage, bare bool) {
 		if bare {
 			ExpectWithOffset(1, leaf.InnerContinuation).To(Equal(pk))
 		} else {
-			ExpectWithOffset(1, bytes.HasPrefix(leaf.InnerContinuation, pk)).To(BeTrue())
-			ExpectWithOffset(1, len(leaf.InnerContinuation)).To(BeNumerically(">", len(pk)))
+			physical, err := tuple.Unpack(leaf.InnerContinuation)
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			ExpectWithOffset(1, physical).NotTo(BeEmpty())
+			ExpectWithOffset(1, physical[:len(physical)-1].Pack()).To(Equal(pk))
 		}
 	}
 	if page.ExceptionClass != "" {
@@ -353,6 +354,103 @@ var _ = Describe("Record-key opaque continuation Java interchange", func() {
 			}
 		}
 	})
+
+	for _, tc := range []struct {
+		name                       string
+		pks                        [][]byte
+		start, stopped, next, prev string
+	}{
+		{
+			name: "integer", pks: [][]byte{{0x15, 0}, {0x15, 1}, {0x16, 0, 2}},
+			start:   "0a0f0a041501150111accd7398dd42005e1203160001",
+			stopped: "0a0f0a041501150211accd7398dd42005e1203160001",
+			next:    "0a100a05160002150111accd7398dd42005e12021502",
+			prev:    "0a0f0a041500150111accd7398dd42005e120114",
+		},
+		{
+			name: "nested integer", pks: [][]byte{{0x05, 0x15, 0, 0x00}, {0x05, 0x15, 1, 0x00}, {0x05, 0x16, 0, 2, 0x00}},
+			start:   "0a110a0605150100150111accd7398dd42005e12050516000100",
+			stopped: "0a110a0605150100150211accd7398dd42005e12050516000100",
+			next:    "0a120a070516000200150111accd7398dd42005e120405150200",
+			prev:    "0a110a0605150000150111accd7398dd42005e1203051400",
+		},
+	} {
+		for _, reverse := range []bool{false, true} {
+			It(fmt.Sprintf("exchanges noncanonical %s restored bytes across duplicate-only stops, reverse=%t", tc.name, reverse), func() {
+				_, err := env.RecordDB.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+					_, err := recordlayer.NewStoreBuilder().SetContext(rc).SetSubspace(ks.Sub("split")).
+						SetFormatVersion(14).SetMetaDataProvider(recordScanMetadata(true, false, false)).CreateOrOpen()
+					if err != nil {
+						return nil, err
+					}
+					for _, position := range []struct{ id, suffix int }{{0, 1}, {1, 1}, {1, 2}, {2, 1}} {
+						key := append(append([]byte(nil), ks.Sub("split").Sub(recordlayer.RecordKey).Bytes()...), tc.pks[position.id]...)
+						rc.Transaction().Set(fdb.Key(append(key, 0x15, byte(position.suffix))), []byte{0x61})
+					}
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+				startHex, stoppedHex, replacedHex, wantID := tc.start, tc.stopped, tc.next, 2
+				if reverse {
+					startHex, stoppedHex, replacedHex, wantID = tc.stopped, tc.start, tc.prev, 0
+				}
+				decode := func(encoded string) []byte {
+					raw, err := hex.DecodeString(encoded)
+					Expect(err).NotTo(HaveOccurred())
+					return raw
+				}
+				req := recordKeyInteropRequest{Layout: "split", Reverse: reverse, ScannedLimit: 1, Continuation: recordKeyInteropBytes(decode(startHex))}
+				jp, gp := javaPage(req), goPage(req)
+				Expect(gp).To(Equal(jp))
+				for _, page := range []recordKeyInteropPage{jp, gp} {
+					Expect(page.ExceptionClass).To(BeEmpty())
+					Expect(page.Rows).To(BeEmpty())
+					Expect(page.Reason).To(Equal("SCAN_LIMIT_REACHED"))
+					Expect(page.End).To(BeFalse())
+					Expect(recordKeyInteropDecode(page.Continuation)).To(Equal(decode(stoppedHex)))
+					Expect(page.ScannedRecords).To(Equal(2))
+					Expect(page.ScannedBytes).To(Equal(int64(len(ks.Sub("split").Sub(recordlayer.RecordKey).Bytes()) + len(tc.pks[1]) + 3)))
+					recordKeyInteropAssertFraming(page, false)
+				}
+				req.ScannedLimit, req.RowLimit = 0, 1
+				req.Continuation = jp.Continuation
+				goNext := goPage(req)
+				req.Continuation = gp.Continuation
+				javaNext := javaPage(req)
+				Expect(goNext).To(Equal(javaNext))
+				for _, page := range []recordKeyInteropPage{goNext, javaNext} {
+					Expect(page.ExceptionClass).To(BeEmpty())
+					Expect(page.Rows).To(HaveLen(1))
+					pk := []byte{0x15, 2}
+					if wantID == 0 {
+						pk = []byte{0x14}
+					}
+					if tc.name == "nested integer" {
+						pk = append(append([]byte{0x05}, pk...), 0x00)
+					}
+					Expect(page.Rows[0].PrimaryKey).To(Equal(base64.StdEncoding.EncodeToString(pk)))
+					Expect(recordKeyInteropDecode(page.Continuation)).To(Equal(decode(replacedHex)))
+					Expect(page.Reason).To(Equal("RETURN_LIMIT_REACHED"))
+					Expect(page.ScannedRecords).To(Equal(1))
+					recordKeyInteropAssertFraming(page, false)
+				}
+				req.RowLimit = 0
+				req.Continuation = javaNext.Continuation
+				goEnd := goPage(req)
+				req.Continuation = goNext.Continuation
+				javaEnd := javaPage(req)
+				Expect(goEnd).To(Equal(javaEnd))
+				for _, page := range []recordKeyInteropPage{goEnd, javaEnd} {
+					Expect(page.ExceptionClass).To(BeEmpty())
+					Expect(page.Rows).To(BeEmpty())
+					Expect(page.Reason).To(Equal("SOURCE_EXHAUSTED"))
+					Expect(page.End).To(BeTrue())
+					Expect(page.Continuation).To(BeNil())
+					recordKeyInteropAssertFraming(page, false)
+				}
+			})
+		}
+	}
 
 	It("pins the deliberate eager Go rejection versus Java's lazy versionstamp packing", func() {
 		type boundary struct {

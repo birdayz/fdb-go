@@ -289,6 +289,10 @@ limits apply to physical keys, so a page can advance past only duplicate chunks
 or inline versions, return no rows, and still have a non-end continuation. Keep
 resuming until `IsEnd`, not until the first empty page. Skip is physical and is
 reapplied on each resume; it does not skip logical deduplicated primary keys.
+Accepted restored `lastValue` bytes are retained across duplicate-only stops,
+including noncanonical integer encodings and nested tuples, as in Java. An equal
+physical key does not replace them; a distinct key replaces them with that mapped
+primary key's ordinary packed bytes. EOF still has no continuation.
 
 Restored Dedup `lastValue` tuples require terminated nested tuples and valid
 UTF-8 strings, matching Java's restoration checks. Malformed values return

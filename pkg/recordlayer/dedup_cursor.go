@@ -7,6 +7,7 @@
 package recordlayer
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
@@ -31,6 +32,7 @@ type dedupCursor[T any] struct {
 	pack         func(T) []byte
 	unpack       func([]byte) (T, bool)
 	lastValue    T
+	lastPacked   []byte
 	hasLast      bool
 	closed       bool
 	// lastNoNext replays the terminal result on a contract-violating re-call
@@ -78,6 +80,8 @@ func Dedup[T any](
 			if unpack == nil {
 				return &errorCursor[T]{err: fmt.Errorf("dedup continuation carries lastValue but no unpack function was provided")}
 			}
+			// Java's restored Tuple retains its bytes until a distinct value replaces it.
+			c.lastPacked = bytes.Clone(lv)
 			val, ok := unpack(lv)
 			if !ok {
 				return &errorCursor[T]{err: fmt.Errorf("dedup continuation: unpack lastValue failed (raw_bytes=%x)", lv)}
@@ -131,6 +135,7 @@ func (c *dedupCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], err
 
 		// New unique value
 		c.lastValue = val
+		c.lastPacked = nil
 		c.hasLast = true
 
 		innerCont := result.GetContinuation()
@@ -159,6 +164,9 @@ func (c *dedupCursor[T]) wrapContinuation(inner RecordCursorContinuation) (Recor
 func (c *dedupCursor[T]) packLast() []byte {
 	if !c.hasLast || c.pack == nil {
 		return nil
+	}
+	if c.lastPacked != nil {
+		return c.lastPacked
 	}
 	return c.pack(c.lastValue)
 }

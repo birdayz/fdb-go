@@ -1,8 +1,11 @@
 package recordlayer
 
 import (
+	"bytes"
 	"context"
 	"testing"
+
+	"fdb.dev/gen"
 )
 
 func TestDedupCursorBasic(t *testing.T) {
@@ -175,6 +178,68 @@ func TestDedupCursorContinuation(t *testing.T) {
 	}
 	if r3.GetValue() != 3 {
 		t.Fatalf("result 3: got %d, want 3", r3.GetValue())
+	}
+}
+
+func TestDedupCursorRestoredBytes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		raw  []byte
+		omit bool
+	}{
+		{name: "noncanonical", raw: []byte{0, 1}},
+		{name: "present empty", raw: []byte{}},
+		{name: "nil pack", raw: []byte{0, 1}, omit: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			raw, err := (&gen.DedupContinuation{InnerContinuation: []byte{}, LastValue: tc.raw}).MarshalVT()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pack := func(v int) []byte { return []byte{byte(v)} }
+			if tc.omit {
+				pack = nil
+			}
+			cursor := Dedup(func([]byte) RecordCursor[int] { return FromListWithContinuation([]int{2}, nil) },
+				intEqual, pack, func(b []byte) (int, bool) {
+					if len(b) > 0 {
+						b[0] = 0xff
+					}
+					return 1, true
+				}, raw)
+			defer cursor.Close()
+			old, err := cursor.(*dedupCursor[int]).wrapContinuation(&BytesContinuation{bytes: []byte{1}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := func(cont RecordCursorContinuation, want []byte) {
+				t.Helper()
+				encoded, err := cont.ToBytes()
+				if err != nil {
+					t.Fatal(err)
+				}
+				var decoded gen.DedupContinuation
+				if err := decoded.UnmarshalVT(encoded); err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(decoded.LastValue, want) || (decoded.LastValue == nil) != (want == nil) {
+					t.Fatalf("lastValue=%x (nil=%t), want %x (nil=%t)", decoded.LastValue, decoded.LastValue == nil, want, want == nil)
+				}
+			}
+			wantOld, wantNew := tc.raw, []byte{2}
+			if tc.omit {
+				wantOld, wantNew = nil, nil
+			}
+			check(old, wantOld)
+			next, err := cursor.OnNext(context.Background())
+			if err != nil || !next.HasNext() || next.GetValue() != 2 {
+				t.Fatalf("distinct replacement: result=%+v, err=%v", next, err)
+			}
+			check(next.GetContinuation(), wantNew)
+			check(old, wantOld)
+		})
 	}
 }
 

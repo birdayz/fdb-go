@@ -1309,6 +1309,76 @@ var _ = Describe("Record-key scan argument boundaries", func() {
 		}
 	}
 
+	for _, tc := range []struct {
+		name                       string
+		pks                        [][]byte
+		start, stopped, next, prev string
+		nested                     bool
+	}{
+		{
+			name: "integer", pks: [][]byte{{0x15, 0}, {0x15, 1}, {0x16, 0, 2}},
+			start:   "0a0f0a041501150111accd7398dd42005e1203160001",
+			stopped: "0a0f0a041501150211accd7398dd42005e1203160001",
+			next:    "0a100a05160002150111accd7398dd42005e12021502",
+			prev:    "0a0f0a041500150111accd7398dd42005e120114",
+		},
+		{
+			name: "nested integer", pks: [][]byte{{0x05, 0x15, 0, 0x00}, {0x05, 0x15, 1, 0x00}, {0x05, 0x16, 0, 2, 0x00}}, nested: true,
+			start:   "0a110a0605150100150111accd7398dd42005e12050516000100",
+			stopped: "0a110a0605150100150211accd7398dd42005e12050516000100",
+			next:    "0a120a070516000200150111accd7398dd42005e120405150200",
+			prev:    "0a110a0605150000150111accd7398dd42005e1203051400",
+		},
+	} {
+		for _, reverse := range []bool{false, true} {
+			It(fmt.Sprintf("preserves noncanonical %s restored bytes across duplicate-only stops, reverse=%t", tc.name, reverse), func() {
+				ss := specSubspace()
+				md := recordKeyTestMetadata(true, false)
+				keys := [][]byte{}
+				for _, position := range []struct{ id, suffix int }{{0, 1}, {1, 1}, {1, 2}, {2, 1}} {
+					keys = append(keys, append(append([]byte(nil), tc.pks[position.id]...), 0x15, byte(position.suffix)))
+				}
+				recordKeySeedRaw(ss, md, keys)
+				startHex, stoppedHex, replacedHex := tc.start, tc.stopped, tc.next
+				wantID := int64(2)
+				if reverse {
+					startHex, stoppedHex, replacedHex, wantID = tc.stopped, tc.start, tc.prev, 0
+				}
+				decode := func(encoded string) []byte {
+					raw, err := hex.DecodeString(encoded)
+					Expect(err).NotTo(HaveOccurred())
+					return raw
+				}
+				props := ForwardScan().WithReverse(reverse)
+				props.ExecuteProperties.ScannedRecordsLimit = 1
+				stopped := recordKeyTestRead(ss, md, 14, props, decode(startHex))
+				Expect(stopped.keys).To(BeEmpty())
+				Expect(stopped.reason).To(Equal(ScanLimitReached))
+				Expect(stopped.end).To(BeFalse())
+				Expect(stopped.token).To(Equal(decode(stoppedHex)))
+				Expect(stopped.records).To(Equal(2))
+				Expect(stopped.bytes).To(Equal(int64(len(ss.Sub(RecordKey).Bytes()) + len(tc.pks[1]) + 3)))
+				props.ExecuteProperties.ScannedRecordsLimit = 0
+				props.ExecuteProperties.ReturnedRowLimit = 1
+				replaced := recordKeyTestRead(ss, md, 14, props, stopped.token)
+				want := tuple.Tuple{wantID}
+				if tc.nested {
+					want = tuple.Tuple{want}
+				}
+				Expect(replaced.keys).To(Equal([]tuple.Tuple{want}))
+				Expect(replaced.rowTokens).To(Equal([][]byte{decode(replacedHex)}))
+				Expect(replaced.token).To(Equal(decode(replacedHex)))
+				Expect(replaced.reason).To(Equal(ReturnLimitReached))
+				Expect(replaced.records).To(Equal(1))
+				ended := recordKeyTestRead(ss, md, 14, ForwardScan().WithReverse(reverse), replaced.token)
+				Expect(ended.keys).To(BeEmpty())
+				Expect(ended.reason).To(Equal(SourceExhausted))
+				Expect(ended.end).To(BeTrue())
+				Expect(ended.token).To(BeNil())
+			})
+		}
+	}
+
 	It("restores nested primary keys to suppress duplicates without dropping a different key", func() {
 		ss := specSubspace()
 		md := recordKeyTestMetadata(true, false)

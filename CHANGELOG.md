@@ -123,7 +123,9 @@ below; neither publication nor readiness is asserted.
 - `ScanRecordKeys` composes a physical key scan, adjacent-primary-key deduplication
   and an outer row limit for suffixed layouts, matching Java 4.14.2.0's cursor
   structure. Resource-limited duplicate-only pages retain progress, and an exact
-  row-limit boundary returns a non-end token without reading ahead. Physical
+  row-limit boundary returns a non-end token without reading ahead. Restored
+  `lastValue` bytes, including accepted noncanonical tuple encodings, survive
+  duplicate-only stops until a distinct primary key replaces them. Physical
   suffix validation follows Java's numeric conversion; corrupt tuples return
   typed argument errors preserving the original decoder cause through `Unwrap`.
   Malformed restored state exposes `tuple.DecodeError` (including its byte offset

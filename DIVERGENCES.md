@@ -1799,7 +1799,11 @@ retains leaf-only framing. No persisted record layout changes.
 
 Exact row boundaries return a non-end token without lookahead, requiring a
 subsequent resume to observe EOF. Physical resource limits can yield an empty
-but progressing non-end page inside a chunk/version run. The new Go/FDB
+but progressing non-end page inside a chunk/version run. Accepted restored
+`lastValue` bytes, including noncanonical tuple encodings, survive such stops until
+a distinct logical key replaces them, matching Java's cached restored tuple bytes.
+Equal physical keys leave that state intact; EOF discards the continuation.
+The new Go/FDB
 regressions and Java-interchange fixture are not a claim of a completed live
 Java run; the new fixture requires heavyweight CI acceptance. See
 [compatibility guidance](docs/compatibility.md#record-key-continuations--unreleased-post-v020).
