@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -23,6 +24,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	foundationdb "fdb.dev/pkg/testcontainers/foundationdb"
@@ -32,154 +34,74 @@ const perSeedTimeout = 5 * time.Minute
 
 // SeedResult is the per-seed result written to the JSON report.
 type SeedResult struct {
-	Seed     int     `json:"seed"`
-	Pass     bool    `json:"pass"`
-	FDBAlive bool    `json:"fdb_alive"`
-	Duration float64 `json:"duration_s"`
-	Error    string  `json:"error,omitempty"`
+	Workload workload `json:"workload"`
+	Command  []string `json:"command"`
+	Seed     int      `json:"seed"`
+	Pass     bool     `json:"pass"`
+	FDBAlive bool     `json:"fdb_alive"`
+	Duration float64  `json:"duration_s"`
+	Error    string   `json:"error,omitempty"`
 }
 
 // Report is the top-level JSON report.
 type Report struct {
-	StartedAt string       `json:"started_at"`
-	Finished  string       `json:"finished_at"`
-	Elapsed   string       `json:"elapsed"`
-	Ops       int          `json:"ops_per_seed"`
-	Total     int          `json:"total_seeds"`
-	Pass      int          `json:"pass"`
-	Fail      int          `json:"fail"`
-	FDBDeaths int          `json:"fdb_deaths"`
-	Seeds     []SeedResult `json:"seeds"`
+	Revision       string       `json:"revision"`
+	FDBVersion     string       `json:"fdb_version"`
+	Scheduled      bool         `json:"scheduled"`
+	CompleteCycles int          `json:"complete_cycles"`
+	Error          string       `json:"error,omitempty"`
+	StartedAt      string       `json:"started_at"`
+	Finished       string       `json:"finished_at"`
+	Elapsed        string       `json:"elapsed"`
+	Ops            int          `json:"ops_per_seed"`
+	Total          int          `json:"total_seeds"`
+	Pass           int          `json:"pass"`
+	Fail           int          `json:"fail"`
+	FDBDeaths      int          `json:"fdb_deaths"`
+	Seeds          []SeedResult `json:"seeds"`
 }
 
 func main() {
-	seeds := flag.Int("seeds", 100, "number of seeds to run (0 = use -duration)")
+	seeds := flag.Int("seeds", 100, "number of seeds (unless -duration is set)")
 	ops := flag.Int("ops", 1000, "operations per seed")
-	duration := flag.Duration("duration", 0, "run for this long (e.g. 2h); overrides -seeds")
-	seedStart := flag.Int("seed-start", 1, "first seed number")
-	outDir := flag.String("out", "", "output directory (default: binding-stress-out/<timestamp>)")
-	testName := flag.String("test-name", "api", "binding tester test name (api, directory, directory_hca)")
+	duration := flag.Duration("duration", 0, "wall-time budget; overrides -seeds")
+	seedStart := flag.Int("seed-start", 1, "first exploration seed")
+	outDir := flag.String("out", "", "output directory (must not exist)")
+	testName := flag.String("test-name", "api", "scripted, api, directory, or directory_hca")
+	concurrency := flag.Int("concurrency", 1, "concurrent tester count")
+	compare := flag.Bool("compare-python", false, "compare results with the official Python binding")
+	apiVersion := flag.Int("api-version", 730, "FDB API version")
+	scheduled := flag.Bool("scheduled", false, "replay regression corpus then cycle all correctness modes")
 	flag.Parse()
-
-	stacktester, btRunDir := setup()
-
-	// Create timestamped output directory.
+	w := workload{Test: *testName, Ops: *ops, Concurrency: *concurrency, Compare: *compare, APIVersion: *apiVersion}
+	if err := validateRun(*seeds, *seedStart, *duration, *scheduled, w); err != nil {
+		log.Fatal(err)
+	}
 	if *outDir == "" {
-		*outDir = filepath.Join("binding-stress-out", time.Now().Format("20060102-150405"))
+		*outDir = filepath.Join("binding-stress-out", time.Now().Format("20060102-150405.000000000"))
 	}
-	os.MkdirAll(*outDir, 0o755)
-
-	report := Report{
-		StartedAt: time.Now().Format(time.RFC3339),
-		Ops:       *ops,
+	if err := os.MkdirAll(filepath.Dir(*outDir), 0o755); err != nil {
+		log.Fatal(err)
 	}
-
-	startTime := time.Now()
-
-	if *duration > 0 {
-		fmt.Printf("binding-stress: timed run, %d ops/seed, duration=%s\n", *ops, *duration)
-	} else {
-		fmt.Printf("binding-stress: %d seeds × %d ops, start=%d\n", *seeds, *ops, *seedStart)
+	if err := os.Mkdir(*outDir, 0o755); err != nil {
+		log.Fatal(err)
 	}
-	fmt.Printf("Output: %s/\n\n", *outDir)
-
-	pass, fail, dead := 0, 0, 0
-	seed := *seedStart - 1
-
-	for {
-		seed++
-		if *duration > 0 {
-			if time.Since(startTime) >= *duration {
-				break
-			}
-		} else if seed >= *seedStart+*seeds {
-			break
-		}
-
-		seedDir := filepath.Join(*outDir, fmt.Sprintf("seed-%d", seed))
-		os.MkdirAll(seedDir, 0o755)
-
-		t0 := time.Now()
-		r := runSeed(seed, *ops, *testName, stacktester, btRunDir, seedDir)
-		r.Duration = time.Since(t0).Seconds()
-
-		report.Seeds = append(report.Seeds, r)
-
-		if r.Pass {
-			pass++
-			if !r.FDBAlive {
-				dead++
-				fmt.Printf("WARN seed %d: PASS but FDB=DEAD (%.1fs)\n", seed, r.Duration)
-			}
-		} else {
-			fail++
-			if !r.FDBAlive {
-				dead++
-			}
-			alive := "ALIVE"
-			if !r.FDBAlive {
-				alive = "DEAD"
-			}
-			errMsg := r.Error
-			if errMsg == "" {
-				errMsg = "TIMEOUT/HANG"
-			}
-			fmt.Printf("FAIL seed %d: %s (FDB=%s, %.1fs)\n", seed, errMsg, alive, r.Duration)
-		}
-
-		if seed%10 == 0 {
-			elapsed := time.Since(startTime)
-			if *duration > 0 {
-				remaining := *duration - elapsed
-				fmt.Printf("--- seed %d (pass=%d fail=%d dead=%d) %s remaining ---\n",
-					seed, pass, fail, dead, remaining.Truncate(time.Second))
-			} else {
-				fmt.Printf("--- seed %d/%d (pass=%d fail=%d dead=%d) %s elapsed ---\n",
-					seed, *seedStart+*seeds-1, pass, fail, dead, elapsed.Truncate(time.Second))
-			}
-		}
-
-		// Write JSON report after every seed (crash-safe).
-		report.Total = pass + fail
-		report.Pass = pass
-		report.Fail = fail
-		report.FDBDeaths = dead
-		report.Finished = time.Now().Format(time.RFC3339)
-		report.Elapsed = time.Since(startTime).Truncate(time.Second).String()
-		writeJSON(filepath.Join(*outDir, "report.json"), report)
-	}
-
-	// Final summary.
-	total := pass + fail
-	fmt.Printf("\nFinished: %s (elapsed: %s)\n", time.Now().Format(time.RFC3339),
-		time.Since(startTime).Truncate(time.Second))
-	fmt.Println("=========================================")
-	fmt.Printf("binding-stress: %d/%d pass, %d fail, %d FDB deaths (%d ops/seed)\n",
-		pass, total, fail, dead, *ops)
-	if fail > 0 {
-		var failSeeds []string
-		for _, r := range report.Seeds {
-			if !r.Pass {
-				failSeeds = append(failSeeds, fmt.Sprintf("%d", r.Seed))
-			}
-		}
-		fmt.Printf("Failed seeds: %s\n", strings.Join(failSeeds, ", "))
-	}
-	fmt.Printf("Output: %s/\n", *outDir)
-	fmt.Println("=========================================")
-
-	if fail > 0 {
+	stacktester, btRunDir := setup()
+	if err := executeRun(*outDir, *seeds, *seedStart, *duration, *scheduled, w, stacktester, btRunDir); err != nil {
+		os.RemoveAll(btRunDir)
+		log.Print(err)
 		os.Exit(1)
 	}
+	os.RemoveAll(btRunDir)
 }
 
-func runSeed(seed, ops int, testName, stacktester, btRunDir, seedDir string) (r SeedResult) {
-	r = SeedResult{Seed: seed}
+func runSeed(parent context.Context, seed int, w workload, stacktester, btRunDir, seedDir string) (r SeedResult) {
+	r = SeedResult{Seed: seed, Workload: w}
 
 	// Start FDB via testcontainers. WithDirectIP avoids Docker DNAT which
 	// confuses FDB's canonicalRemotePort tracking in the C binding (used by
 	// the Python tester), triggering assertion spam at FlowTransport.actor.cpp.
-	ctx, cancel := context.WithTimeout(context.Background(), perSeedTimeout)
+	ctx, cancel := context.WithTimeout(parent, perSeedTimeout)
 	defer cancel()
 
 	container, err := foundationdb.Run(ctx, "",
@@ -191,8 +113,10 @@ func runSeed(seed, ops int, testName, stacktester, btRunDir, seedDir string) (r 
 		return r
 	}
 	defer func() {
-		collectLogs(ctx, container, seedDir)
-		if err := foundationdb.Terminate(ctx, container); err != nil {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		collectLogs(cleanupCtx, container, seedDir)
+		if err := foundationdb.Terminate(cleanupCtx, container); err != nil {
 			fmt.Fprintf(os.Stderr, "seed %d: %v\n", seed, err)
 			r.Pass = false
 			if r.Error != "" {
@@ -220,18 +144,11 @@ func runSeed(seed, ops int, testName, stacktester, btRunDir, seedDir string) (r 
 	}
 
 	// Run bindingtester.
-	cmd := exec.CommandContext(ctx, "python3",
-		filepath.Join(btRunDir, "bindingtester/bindingtester.py"),
-		"--cluster-file", clusterFile,
-		"--test-name", testName,
-		"--api-version", "730",
-		"--num-ops", fmt.Sprintf("%d", ops),
-		"--seed", fmt.Sprintf("%d", seed),
-		"--timeout", fmt.Sprintf("%d", int(perSeedTimeout.Seconds())),
-		"--no-threads",
-		"--no-tenants",
-		stacktester,
-	)
+	args := testerArgs(seed, w, clusterFile, btRunDir)
+	r.Command = append([]string{"python3"}, args...)
+	cmd := exec.CommandContext(ctx, "python3", args...)
+	configureTesterProcess(cmd)
+	defer killTesterGroup(cmd)
 	cmd.Dir = btRunDir
 	cmd.Env = append(os.Environ(), "PYTHONPATH="+btRunDir)
 	var buf bytes.Buffer
@@ -240,16 +157,41 @@ func runSeed(seed, ops int, testName, stacktester, btRunDir, seedDir string) (r 
 	err = cmd.Run()
 
 	output := buf.String()
-	os.WriteFile(filepath.Join(seedDir, "tester.log"), []byte(output), 0o644)
+	if writeErr := os.WriteFile(filepath.Join(seedDir, "tester.log"), []byte(output), 0o644); writeErr != nil {
+		r.Error = "save tester output: " + writeErr.Error()
+		return r
+	}
 
 	r.FDBAlive = isFDBAlive(ctx, container)
-	r.Pass = err == nil && strings.Contains(output, "had 0 incorrect result(s) and 0 error(s)")
+	r.Pass = successfulVerdict(output, err) && r.FDBAlive
 
 	if !r.Pass && r.Error == "" {
 		r.Error = summarizeFailure(output, err)
+		if !r.FDBAlive {
+			r.Error += "; FDB liveness check failed"
+		}
 	}
 
 	return r
+}
+
+// The Python harness spawns both bindings. Killing just its PID leaves those
+// children holding output pipes open and can make CommandContext wait forever.
+func configureTesterProcess(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return killTesterGroup(cmd) }
+	cmd.WaitDelay = 5 * time.Second
+}
+
+func killTesterGroup(cmd *exec.Cmd) error {
+	if cmd.Process == nil {
+		return nil
+	}
+	err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	if errors.Is(err, syscall.ESRCH) {
+		return os.ErrProcessDone
+	}
+	return err
 }
 
 // maxTailLines bounds how much of the tester's output a failure summary carries.
@@ -328,7 +270,7 @@ func setup() (stacktester string, btRunDir string) {
 	}
 
 	fmt.Println("Building stacktester...")
-	cmd := exec.Command("bazelisk", "build",
+	cmd := exec.Command("bazelisk", "build", "--config=ci",
 		"//cmd/fdb-stacktester:fdb-stacktester",
 		"//cmd/fdb-binding-stress:python_fdb_tar")
 	cmd.Stdout = os.Stderr
@@ -354,7 +296,10 @@ func setup() (stacktester string, btRunDir string) {
 		log.Fatalf("stacktester not found at %s", stacktester)
 	}
 
-	btRunDir = "/tmp/bt-run"
+	btRunDir, err = os.MkdirTemp("", "fdb-binding-harness-")
+	if err != nil {
+		log.Fatalf("create private harness directory: %v", err)
+	}
 	btDir, err := findBindingTesterDir()
 	if err != nil {
 		log.Fatalf("find bindingtester: %v", err)
@@ -374,6 +319,24 @@ func setup() (stacktester string, btRunDir string) {
 	s = strings.ReplaceAll(s, "import util", "from bindingtester import util")
 	s = strings.ReplaceAll(s, "from fdb import LATEST_API_VERSION", "LATEST_API_VERSION = 730")
 	os.WriteFile(initPy, []byte(s), 0o644)
+
+	// The oracle stack machine is upstream test code, not part of the Python sdist.
+	pythonTests := filepath.Join(filepath.Dir(btDir), "python", "tests")
+	if out, err := exec.Command("cp", "-r", pythonTests, filepath.Join(btRunDir, "python")).CombinedOutput(); err != nil {
+		log.Fatalf("copy Python oracle: %s: %v", out, err)
+	}
+	known := filepath.Join(btRunDir, "bindingtester", "known_testers.py")
+	f, err := os.OpenFile(known, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		log.Fatal(err)
+	}
+	_, err = fmt.Fprintf(f, "\ntesters['python'] = Tester('python', 'python3 %s', 2040, 23, 730, types=ALL_TYPES, tenants_enabled=True)\ntesters['pure_go'] = Tester('pure_go', '%s', 2040, 23, 730, types=ALL_TYPES)\n", filepath.Join(btRunDir, "python", "tester.py"), stacktester)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	installPythonFDB(btRunDir)
 	preflightPythonFDB(btRunDir)
@@ -399,8 +362,7 @@ func installPythonFDB(btRunDir string) {
 		log.Fatalf("resolve python fdb tar symlinks: %v", err)
 	}
 
-	// Remove any package left by an earlier run: /tmp/bt-run persists across
-	// invocations, so a stale fdb/ would outlive a version bump.
+	// Refuse to mix a partial install with the pinned archive.
 	if err := os.RemoveAll(filepath.Join(btRunDir, "fdb")); err != nil {
 		log.Fatalf("remove stale python fdb: %v", err)
 	}
@@ -448,7 +410,7 @@ func preflightPythonFDB(btRunDir string) {
 }
 
 func findBindingTesterDir() (string, error) {
-	cmd := exec.Command("bazelisk", "info", "output_base")
+	cmd := exec.Command("bazelisk", "info", "--config=ci", "output_base")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("bazelisk info: %w", err)
@@ -458,14 +420,18 @@ func findBindingTesterDir() (string, error) {
 	if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
 		return dir, nil
 	}
-	matches, _ := filepath.Glob(os.Getenv("HOME") + "/.cache/bazel/_bazel_*/*/external/foundationdb+/bindings/bindingtester")
-	if len(matches) > 0 {
-		return matches[0], nil
-	}
 	return "", fmt.Errorf("bindingtester dir not found (run bazelisk build first)")
 }
 
 func writeJSON(path string, v any) {
-	data, _ := json.MarshalIndent(v, "", "  ")
-	os.WriteFile(path, data, 0o644)
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := os.WriteFile(path+".tmp", data, 0o644); err != nil {
+		log.Fatal(err)
+	}
+	if err := os.Rename(path+".tmp", path); err != nil {
+		log.Fatal(err)
+	}
 }

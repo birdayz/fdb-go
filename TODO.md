@@ -27,6 +27,15 @@ git show 13d5a3d1e:rfcs/257-java-upgrade-audit/ws-e-design.md
 Verify remaining audit claims against current Go and Java before changing code.
 Never mark a whole workstream complete because one of its subitems passed.
 
+## Go client scheduled correctness — hosted acceptance pending
+
+- [ ] After landing `.github/workflows/client-correctness.yml`, inspect its first
+  hosted run: require all 14 borrowed regression cases plus at least one complete
+  five-mode exploration cycle, matching input hashes, and uploaded per-case
+  evidence. Record actual completed populations and investigate every failure;
+  source/unit validation is not a live BindingTester pass. This lane covers only
+  the Go FDB client, not Record Layer or SQL. See `docs/client-correctness.md`.
+
 ## Pending acceptance: ingest-20k conformance gate corrections
 
 - [ ] Run the supported full stacked-tree acceptance lane and fresh native review
