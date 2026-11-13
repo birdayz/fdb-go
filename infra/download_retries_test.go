@@ -545,28 +545,39 @@ type starlarkCall struct {
 	line    int
 	kwargs  map[string]bool
 	strings []string // every string literal inside the call, nested ones included
+	// values holds each keyword argument's value tokens; a repeated keyword maps to nil.
+	values map[string][]starlarkToken
+	stmt   int // index of the statement holding the call
+}
+
+type starlarkToken struct {
+	text      string
+	str       bool
+	line, end int // first and last line; they differ only for multi-line strings
+	col       int // byte column of the token's first character
 }
 
 func isIdentByte(c byte) bool {
 	return c == '_' || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || ('0' <= c && c <= '9')
 }
 
-// starlarkCalls lists every call in src with its keyword arguments, skipping comments and
-// string literals, which in MODULE.bazel hold whole BUILD files.
-func starlarkCalls(src string) ([]*starlarkCall, error) {
-	type token struct {
-		text string
-		str  bool
-		line int
-	}
-	var toks []token
-	for i, line := 0, 1; i < len(src); {
+func isName(s string) bool { return s != "" && isIdentByte(s[0]) && (s[0] < '0' || s[0] > '9') }
+
+// starlarkTokens splits src into string literals, identifiers (dotted names included) and
+// operators, skipping comments; continued marks the lines a backslash continues.
+func starlarkTokens(src string) (toks []starlarkToken, continued map[int]bool, err error) {
+	continued = map[int]bool{}
+	for i, line, lineStart := 0, 1, 0; i < len(src); {
 		c := src[i]
 		switch {
 		case c == '\n':
 			line++
 			i++
-		case c == ' ' || c == '\t' || c == '\r' || c == '\\':
+			lineStart = i
+		case c == '\\':
+			continued[line] = true
+			i++
+		case c == ' ' || c == '\t' || c == '\r':
 			i++
 		case c == '#':
 			for i < len(src) && src[i] != '\n' {
@@ -580,7 +591,7 @@ func starlarkCalls(src string) ([]*starlarkCall, error) {
 			j := i + len(quote)
 			for {
 				if j >= len(src) || (len(quote) == 1 && src[j] == '\n') {
-					return nil, fmt.Errorf("line %d: unterminated string", line)
+					return nil, nil, fmt.Errorf("line %d: unterminated string", line)
 				}
 				if strings.HasPrefix(src[j:], quote) {
 					break
@@ -590,27 +601,112 @@ func starlarkCalls(src string) ([]*starlarkCall, error) {
 				}
 				j++
 			}
-			toks = append(toks, token{src[i+len(quote) : j], true, line})
-			line += strings.Count(src[i:j], "\n")
+			tok := starlarkToken{text: src[i+len(quote) : j], str: true, line: line, col: i - lineStart}
+			if n := strings.Count(src[i:j], "\n"); n > 0 {
+				line += n
+				lineStart = i + strings.LastIndexByte(src[i:j], '\n') + 1
+			}
+			tok.end = line
+			toks = append(toks, tok)
 			i = j + len(quote)
 		case isIdentByte(c):
 			j := i
 			for j < len(src) && (isIdentByte(src[j]) || src[j] == '.') {
 				j++
 			}
-			toks = append(toks, token{src[i:j], false, line})
+			toks = append(toks, starlarkToken{text: src[i:j], line: line, end: line, col: i - lineStart})
 			i = j
 		default:
 			n := 1
 			if i+1 < len(src) && src[i+1] == '=' && strings.IndexByte("=!<>+-*/%|&^", c) >= 0 {
 				n = 2
 			}
-			toks = append(toks, token{src[i : i+n], false, line})
+			toks = append(toks, starlarkToken{text: src[i : i+n], line: line, end: line, col: i - lineStart})
 			i += n
 		}
 	}
+	return toks, continued, nil
+}
+
+// starlarkStatements returns the first token index of each statement: one starts after a
+// ';' or a newline at bracket depth 0 that no backslash continues.
+func starlarkStatements(toks []starlarkToken, continued map[int]bool) []int {
+	var starts []int
+	depth := 0
+	for k, tok := range toks {
+		if k == 0 {
+			starts = append(starts, 0)
+		} else if prev := toks[k-1]; depth == 0 && ((!prev.str && prev.text == ";") || newLogicalLine(prev, tok, continued)) {
+			starts = append(starts, k)
+		}
+		if !tok.str {
+			switch tok.text {
+			case "(", "[", "{":
+				depth++
+			case ")", "]", "}":
+				depth--
+			}
+		}
+	}
+	return starts
+}
+
+func newLogicalLine(prev, tok starlarkToken, continued map[int]bool) bool {
+	if tok.line <= prev.end {
+		return false
+	}
+	for l := prev.end; l < tok.line; l++ {
+		if continued[l] {
+			return false
+		}
+	}
+	return true
+}
+
+// starlarkCalls lists every call in src with its keyword arguments, skipping comments and
+// string literals, which in MODULE.bazel hold whole BUILD files.
+func starlarkCalls(src string) ([]*starlarkCall, error) {
+	calls, _, err := starlarkParse(src)
+	return calls, err
+}
+
+// starlarkParse is starlarkCalls plus what src's statements bind (see starlarkBindings).
+func starlarkParse(src string) ([]*starlarkCall, map[string]*starlarkBinding, error) {
+	toks, continued, err := starlarkTokens(src)
+	if err != nil {
+		return nil, nil, err
+	}
+	starts := starlarkStatements(toks, continued)
+	stmtOf := make([]int, len(toks))
+	for s, start := range starts {
+		for k := start; k < len(toks) && (s+1 == len(starts) || k < starts[s+1]); k++ {
+			stmtOf[k] = s
+		}
+	}
+	type kwarg struct {
+		name  string
+		start int
+	}
 	var calls, open []*starlarkCall
-	var depths []int // bracket depth of each open call's arguments
+	var depths []int       // bracket depth of each open call's arguments
+	var pending []kwarg    // the keyword argument each open call is reading, if any
+	refs := map[int]bool{} // token index of each whole `sha256s = name` argument's name
+	closeKwarg := func(i int) {
+		p := &pending[len(pending)-1]
+		if p.name == "" {
+			return
+		}
+		if p.name == "sha256s" && i == p.start+1 {
+			refs[p.start] = true
+		}
+		c := open[len(open)-1]
+		if _, dup := c.values[p.name]; dup {
+			c.values[p.name] = nil
+		} else {
+			c.values[p.name] = toks[p.start:i]
+		}
+		p.name = ""
+	}
 	depth := 0
 	for i, tok := range toks {
 		if tok.str {
@@ -619,7 +715,7 @@ func starlarkCalls(src string) ([]*starlarkCall, error) {
 			}
 			continue
 		}
-		prev := token{}
+		prev := starlarkToken{}
 		if i > 0 {
 			prev = toks[i-1]
 		}
@@ -627,26 +723,153 @@ func starlarkCalls(src string) ([]*starlarkCall, error) {
 		case "(", "[", "{":
 			depth++
 			if tok.text == "(" && !prev.str && prev.text != "" && isIdentByte(prev.text[0]) {
-				c := &starlarkCall{fn: prev.text, line: prev.line, kwargs: map[string]bool{}}
-				calls, open, depths = append(calls, c), append(open, c), append(depths, depth)
+				s := stmtOf[i]
+				c := &starlarkCall{fn: prev.text, line: prev.line, kwargs: map[string]bool{}, values: map[string][]starlarkToken{}, stmt: s}
+				calls, open, depths, pending = append(calls, c), append(open, c), append(depths, depth), append(pending, kwarg{})
 			}
 		case ")", "]", "}":
 			if len(open) > 0 && depths[len(depths)-1] == depth {
-				open, depths = open[:len(open)-1], depths[:len(depths)-1]
+				closeKwarg(i)
+				open, depths, pending = open[:len(open)-1], depths[:len(depths)-1], pending[:len(pending)-1]
 			}
 			if depth--; depth < 0 {
-				return nil, fmt.Errorf("line %d: unbalanced %s", tok.line, tok.text)
+				return nil, nil, fmt.Errorf("line %d: unbalanced %s", tok.line, tok.text)
+			}
+		case ",":
+			if len(open) > 0 && depths[len(depths)-1] == depth {
+				closeKwarg(i)
 			}
 		case "=":
 			if len(open) > 0 && depths[len(depths)-1] == depth && !prev.str {
 				open[len(open)-1].kwargs[prev.text] = true
+				pending[len(pending)-1] = kwarg{prev.text, i + 1}
 			}
 		}
 	}
 	if depth != 0 {
-		return nil, errors.New("unbalanced brackets at end of file")
+		return nil, nil, errors.New("unbalanced brackets at end of file")
 	}
-	return calls, nil
+	return calls, starlarkBindings(toks, starts, refs), nil
+}
+
+// starlarkBinding is what a file does with one name.
+type starlarkBinding struct {
+	uses  int             // its bindings and references, other than whole `sha256s = name` arguments
+	value []starlarkToken // value of a plain `name = value` statement when that is the name's first use
+	stmt  int             // that statement's index
+	top   bool            // it is the first statement of a line that starts in column 0
+}
+
+// starlarkBindings counts, per name, its bindings and references. Only a plain `name = value`
+// statement records a value. Every other occurrence of the name counts against it: a second
+// binding, an alias (`other = name`), any argument but a whole `sha256s = name` (refs), a load()
+// import or alias, a def, for or lambda name or parameter, a subscript, tuple or augmented
+// target, and an attribute use such as name.update(...). So a name that is rebound, mutated or
+// escapes into another value or call never resolves.
+func starlarkBindings(toks []starlarkToken, starts []int, refs map[int]bool) map[string]*starlarkBinding {
+	out := map[string]*starlarkBinding{}
+	use := func(name string) *starlarkBinding {
+		name, _, _ = strings.Cut(name, ".")
+		b := out[name]
+		if b == nil {
+			b = &starlarkBinding{}
+			out[name] = b
+		}
+		b.uses++
+		return b
+	}
+	targets := map[int]bool{} // token index of each plain binding's name
+	for s, start := range starts {
+		end := len(toks)
+		if s+1 < len(starts) {
+			end = starts[s+1]
+		}
+		st := toks[start:end]
+		if n := len(st); !st[n-1].str && st[n-1].text == ";" {
+			st = st[:n-1]
+		}
+		if len(st) == 0 {
+			continue
+		}
+		if !st[0].str && st[0].text == "load" && len(st) > 1 && st[1].text == "(" {
+			for k := 3; k < len(st); k++ { // load(label, "name") imports name; aliases are counted below
+				if st[k].str && !st[k-1].str && st[k-1].text == "," {
+					use(st[k].text)
+				}
+			}
+			continue
+		}
+		// A plain binding is `name = value` with that `=` the statement's only one at depth 0;
+		// chained, tuple, subscript, attribute and augmented forms never record a value.
+		var eqs []int
+		depth := 0
+		for k, t := range st {
+			if t.str {
+				continue
+			}
+			switch t.text {
+			case "(", "[", "{":
+				depth++
+			case ")", "]", "}":
+				depth--
+			case "=":
+				if depth == 0 {
+					eqs = append(eqs, k)
+				}
+			}
+		}
+		if len(eqs) == 1 && eqs[0] == 1 && !st[0].str && isName(st[0].text) && !strings.Contains(st[0].text, ".") {
+			targets[start] = true
+			if b := use(st[0].text); b.uses == 1 {
+				b.value, b.stmt, b.top = st[2:], s, st[0].col == 0
+			}
+		}
+	}
+	for k, t := range toks {
+		if !t.str && isName(t.text) && !refs[k] && !targets[k] {
+			use(t.text) // any other occurrence may rebind, mutate or alias the name
+		}
+	}
+	return out
+}
+
+var sha256Hex = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
+
+// sha256sChecked reports whether a call's sha256s argument is a checksum map: an inline dict
+// literal, or a bare name the same file binds exactly once, at top level and before the call,
+// to one. The dict must be non-empty, every key a string literal and every value a string
+// literal of 64 hex digits; any other expression, an empty dict included, does not count.
+func sha256sChecked(c *starlarkCall, bindings map[string]*starlarkBinding) bool {
+	v := c.values["sha256s"]
+	if len(v) == 1 && !v[0].str && isName(v[0].text) && !strings.Contains(v[0].text, ".") {
+		b := bindings[v[0].text]
+		if b == nil || b.uses != 1 || b.value == nil || !b.top || b.stmt >= c.stmt {
+			return false
+		}
+		v = b.value
+	}
+	return sha256sMap(v)
+}
+
+// sha256sMap reports whether toks are exactly {"key": "<64 hex digits>", ...}: at least one
+// entry, an optional trailing comma and nothing else.
+func sha256sMap(toks []starlarkToken) bool {
+	n := len(toks)
+	if n < 5 || toks[0].str || toks[0].text != "{" || toks[n-1].str || toks[n-1].text != "}" {
+		return false
+	}
+	for inner := toks[1 : n-1]; len(inner) > 0; {
+		if len(inner) < 3 || !inner[0].str || inner[1].str || inner[1].text != ":" || !inner[2].str || !sha256Hex.MatchString(inner[2].text) {
+			return false
+		}
+		if inner = inner[3:]; len(inner) > 0 {
+			if inner[0].str || inner[0].text != "," {
+				return false
+			}
+			inner = inner[1:]
+		}
+	}
+	return true
 }
 
 type remoteDownload struct {
@@ -699,14 +922,15 @@ func remoteDownloads(module string, read func(string) (string, error)) ([]remote
 		}
 		return nil
 	}
-	calls, err := starlarkCalls(module)
+	calls, bindings, err := starlarkParse(module)
 	if err != nil {
 		return nil, fmt.Errorf("MODULE.bazel: %w", err)
 	}
 	for _, c := range calls {
 		switch {
 		case c.kwargs["url"] || c.kwargs["urls"]:
-			found = append(found, remoteDownload{"MODULE.bazel", c.fn, c.line, c.kwargs["sha256"] || c.kwargs["integrity"]})
+			checked := c.kwargs["sha256"] || c.kwargs["integrity"] || sha256sChecked(c, bindings)
+			found = append(found, remoteDownload{"MODULE.bazel", c.fn, c.line, checked})
 		case (c.fn == "use_repo_rule" || c.fn == "use_extension") && len(c.strings) > 0:
 			if err := scanRules("MODULE.bazel", c.strings[0]); err != nil {
 				return nil, err
@@ -784,6 +1008,98 @@ def _impl(ctx):
 	}
 }
 
+// TestSha256sChecksumMaps drives every accept and reject arm of sha256sChecked through
+// remoteDownloads: every url-bearing call a fixture declares must have the wanted verdict.
+func TestSha256sChecksumMaps(t *testing.T) {
+	t.Parallel()
+	hex := strings.Repeat("0123456789abcdef", 4)
+	pin := func(v string) string { return `{"a.tar.xz": "` + v + `"}` }
+	fetch := func(arg string) string {
+		return "rust.repository_set(\n    name = \"r\",\n    sha256s = " + arg + ",\n    urls = [\"https://example.invalid/{}.tar.xz\"],\n)\n"
+	}
+	bind := "pins = " + pin(hex) + "\n"
+	indent := func(src string) string {
+		return "    " + strings.ReplaceAll(strings.TrimSuffix(src, "\n"), "\n", "\n    ") + "\n"
+	}
+	read := func(path string) (string, error) { return "", fmt.Errorf("%s is not a fixture", path) }
+	for _, tc := range []struct {
+		name, module string
+		checked      bool
+	}{
+		{"accept-inline-literal", fetch(pin(hex)), true},
+		{"accept-inline-uppercase-hex", fetch(pin(strings.ToUpper(hex))), true},
+		{"accept-inline-multiline-comments-trailing-comma", fetch("{\n        # pinned\n        \"a.tar.xz\": \"" + hex + "\",  # a\n        '''b.tar.xz''': '" + hex + "',\n    }"), true},
+		{"accept-single-top-level-binding", bind + fetch("pins"), true},
+		{"accept-binding-over-lines-with-comments", "pins = {\n    # pinned\n    \"a.tar.xz\": \"" + hex + "\",\n}\n\n" + fetch("pins"), true},
+		{"accept-singular-sha256-unchanged", "http_archive(name = \"h\", sha256 = \"x\", urls = [\"https://example.invalid/h\"])\n", true},
+		{"accept-semicolon-terminated-binding", "pins = " + pin(hex) + ";\n" + fetch("pins"), true},
+		{"accept-binding-before-semicolon-statement", "pins = " + pin(hex) + "; x = 1\n" + fetch("pins"), true},
+		{"accept-binding-continued-by-backslash", "pins = \\\n    " + pin(hex) + "\n" + fetch("pins"), true},
+		{"accept-binding-between-multiline-string-and-comments", "doc = \"\"\"\npins = {}\npins.update(x)\n\"\"\"\n# pins = {}\n" + bind + "# pins.update({})\n" + fetch("pins"), true},
+		{"accept-two-sha256s-arguments", bind + fetch("pins") + fetch("pins"), true},
+		{"accept-name-in-def-body-call", bind + "def f():\n" + indent(fetch("pins")), true},
+		{"reject-no-checksum", "http_file(name = \"f\", urls = [\"https://example.invalid/f\"])\n", false},
+		{"reject-unbound-name", fetch("pins"), false},
+		{"reject-bound-twice", bind + bind + fetch("pins"), false},
+		{"reject-bound-after-use", fetch("pins") + bind, false},
+		{"reject-rebound-after-use", bind + fetch("pins") + bind, false},
+		{"reject-semicolon-second-statement-binding", "x = 1; " + bind + fetch("pins"), false},
+		{"reject-compound-body-semicolon-binding", "if True: x = 1; " + bind + fetch("pins"), false},
+		{"reject-destructuring-binding", "pins, other = " + pin(hex) + ", " + pin(hex) + "\n" + fetch("pins"), false},
+		{"reject-def-name-shadow", bind + "def pins():\n    return 1\n" + fetch("pins"), false},
+		{"reject-def-parameter-shadow", bind + "def f(pins):\n    return pins\n" + fetch("pins"), false},
+		{"reject-for-variable-shadow", bind + "names = [pins for pins in [1]]\n" + fetch("pins"), false},
+		{"reject-lambda-parameter-shadow", bind + "g = lambda pins: pins\n" + fetch("pins"), false},
+		{"reject-augmented-shift", bind + "pins <<= 1\n" + fetch("pins"), false},
+		{"reject-alias-escape-mutation", bind + "other = pins\nother.update(" + pin(hex) + ")\n" + fetch("pins"), false},
+		{"reject-positional-reference", bind + "keep(pins)\n" + fetch("pins"), false},
+		{"reject-other-keyword-reference", bind + "keep(m = pins)\n" + fetch("pins"), false},
+		{"reject-augmented-union", bind + "pins |= " + pin(hex) + "\n" + fetch("pins"), false},
+		{"reject-subscript-mutation", bind + "pins[\"b.tar.xz\"] = \"" + hex + "\"\n" + fetch("pins"), false},
+		{"reject-method-mutation", bind + "pins.update(" + pin(hex) + ")\n" + fetch("pins"), false},
+		{"reject-chained-binding", "pins = other = " + pin(hex) + "\n" + fetch("pins"), false},
+		{"reject-load-imported", "load(\"//rules:pins.bzl\", \"pins\")\n" + fetch("pins"), false},
+		{"reject-load-alias", "load(\"//rules:pins.bzl\", pins = \"rust_pins\")\n" + fetch("pins"), false},
+		{"reject-nested-def-binding", "def f():\n" + indent(bind) + fetch("pins"), false},
+		{"reject-nested-if-binding", "if True:\n" + indent(bind) + fetch("pins"), false},
+		{"reject-binding-in-string", "doc = \"\"\"\n" + bind + "\"\"\"\n" + fetch("pins"), false},
+		{"reject-binding-in-comment", "# " + bind + fetch("pins"), false},
+		{"reject-bound-to-call", "pins = dict(a = \"" + hex + "\")\n" + fetch("pins"), false},
+		{"reject-bound-to-comprehension", "pins = {k: \"" + hex + "\" for k in [\"a.tar.xz\"]}\n" + fetch("pins"), false},
+		{"reject-bound-to-union", "pins = " + pin(hex) + " | " + pin(hex) + "\n" + fetch("pins"), false},
+		{"reject-bound-to-concatenation-across-continuation", "pins = " + pin(hex) + " \\\n    + " + pin(hex) + "\n" + fetch("pins"), false},
+		{"reject-bound-to-alias", "base = " + pin(hex) + "\npins = base\n" + fetch("pins"), false},
+		{"reject-bound-to-empty", "pins = {}\n" + fetch("pins"), false},
+		{"reject-inline-empty", fetch("{}"), false},
+		{"reject-inline-call", fetch("dict(a = \"" + hex + "\")"), false},
+		{"reject-inline-union", fetch(pin(hex) + " | " + pin(hex)), false},
+		{"reject-non-string-key", fetch("{a: \"" + hex + "\"}"), false},
+		{"reject-non-string-value", fetch("{\"a.tar.xz\": h}"), false},
+		{"reject-missing-value", fetch("{\"a.tar.xz\": }"), false},
+		{"reject-missing-colon", fetch("{\"a.tar.xz\" \"" + hex + "\"}"), false},
+		{"reject-short-value", fetch(pin(hex[:63])), false},
+		{"reject-long-value", fetch(pin(hex + "0")), false},
+		{"reject-non-hex-value", fetch(pin(hex[:63] + "g")), false},
+		{"reject-escaped-value", fetch(pin(`\x30` + hex[4:])), false},
+		{"reject-repeated-keyword", strings.Replace(fetch(pin(hex)), "    urls", "    sha256s = "+pin(hex)+",\n    urls", 1), false},
+	} {
+		found, err := remoteDownloads(tc.module, read)
+		if err != nil {
+			t.Errorf("%s: %v", tc.name, err)
+			continue
+		}
+		var got []string
+		bad := len(found) == 0
+		for _, d := range found {
+			got = append(got, fmt.Sprintf("%s checked=%t", d, d.checked))
+			bad = bad || d.checked != tc.checked
+		}
+		if bad {
+			t.Errorf("%s: found %q, want downloads with checked=%t", tc.name, got, tc.checked)
+		}
+	}
+}
+
 // uncheckedDownloads are fetches no committed checksum covers yet, keyed "file fn", with why.
 var uncheckedDownloads = map[string]string{
 	"sift_repo.bzl ctx.execute": "SIFT-1M is served only over FTP, which Bazel's downloader lacks; only a manual benchmark fetches it and no digest is recorded",
@@ -827,6 +1143,28 @@ func TestRemoteDownloadsAreChecksummed(t *testing.T) {
 	fdb := slices.ContainsFunc(found, func(d remoteDownload) bool { return d.fn == "archive_override" && d.checked })
 	if !fdb || len(found) < 2 {
 		t.Fatalf("scan missed the FoundationDB archive_override: %v", found)
+	}
+	// Positive control: the Rust toolchain fetches are in the scanned population and are
+	// checksummed through the single top-level otel_rust_sha256s map; unbound, both fail.
+	var rust []string
+	for _, d := range found {
+		if d.file == "MODULE.bazel" && (d.line == 109 || d.line == 129) {
+			rust = append(rust, fmt.Sprintf("%s checked=%t", d, d.checked))
+		}
+	}
+	wantRust := []string{"MODULE.bazel:109 rust.repository_set checked=true", "MODULE.bazel:129 otel_rust_host.host_tools checked=true"}
+	if !slices.Equal(rust, wantRust) {
+		t.Fatalf("Rust toolchain downloads:\n%s\nwant:\n%s", strings.Join(rust, "\n"), strings.Join(wantRust, "\n"))
+	}
+	binding := "otel_rust_sha256s = {"
+	if strings.Count(module, binding) != 1 {
+		t.Fatalf("%q is not bound exactly once in MODULE.bazel", binding)
+	}
+	unbound := strings.Replace(module, binding, "otel_rust_sha256s_moved = {", 1)
+	for _, want := range []string{"MODULE.bazel:109 rust.repository_set fetches", "MODULE.bazel:129 otel_rust_host.host_tools fetches"} {
+		if err := check(unbound); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("unbound-rust-sha256s: %v, want %q", err, want)
+		}
 	}
 	if err := check(module); err != nil {
 		t.Fatal(err)
