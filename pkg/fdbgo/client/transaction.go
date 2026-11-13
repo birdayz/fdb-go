@@ -50,8 +50,8 @@ const (
 	ErrBlobGranuleRequestFailed  = 1079 // blob_granule_request_failed (retryable, C++ NativeAPI.actor.cpp)
 	ErrTagThrottled              = 1213 // tag_throttled
 	ErrProxyTagThrottled         = 1223 // proxy_tag_throttled
-	ErrThrottledHotShard         = 1235 // transaction_throttled_hot_shard (FDB 7.4+, future-proof)
-	ErrRangeLocked               = 1242 // transaction_rejected_range_locked (FDB 7.4+, future-proof)
+	ErrThrottledHotShard         = 1235 // transaction_throttled_hot_shard (FDB 7.4+; not retried by pinned 7.3.77)
+	ErrRangeLocked               = 1242 // transaction_rejected_range_locked (FDB 7.4+; not retried by pinned 7.3.77)
 	ErrOperationFailed           = 4    // operation_failed (endpoint not supported)
 	ErrAllAlternativesFailed     = 1006 // all_alternatives_failed (Layer 2 only)
 	ErrRequestMaybeDelivered     = 1030 // request_maybe_delivered — an in-flight RPC's connection died (transport teardown); reads retry another alternative, commit maps it to 1021

@@ -134,6 +134,7 @@ func TestDirectoryChildrenJoinAfterContextCancellation(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) {
 				root, child := name+"/root", name+"/child"
+				barrier := []byte(name + "/parent-barrier")
 				program := []tuple.Tuple{{"PUSH", "uncreated-directory"}, {"PUSH", int64(1)}, {op}}
 				if op == "DIRECTORY_CREATE_OR_OPEN_DATABASE" {
 					program = append([]tuple.Tuple{{"PUSH", []byte{}}}, program...)
@@ -142,17 +143,20 @@ func TestDirectoryChildrenJoinAfterContextCancellation(t *testing.T) {
 					program = append(program[:len(program)-1], tuple.Tuple{"PUSH", int64(1)}, tuple.Tuple{op})
 				}
 				writeThreadInstructions(t, ctx, db, map[string][]tuple.Tuple{
-					root:  {{"PUSH", []byte(child)}, {"START_THREAD"}},
+					root:  {{"PUSH", []byte(child)}, {"START_THREAD"}, {"PUSH", barrier}, {"WAIT_EMPTY"}},
 					child: program,
-				}, nil)
+				}, barrier)
 				gate.arm()
 				defer gate.release()
 				runCtx, cancel := context.WithCancel(ctx)
 				defer cancel()
 				sm := NewStackMachine(db, []byte(root))
-				// Long enough to observe the held reply first; cancellation must
-				// then drain the child without releasing the network gate.
-				sm.childJoinTimeout = 2 * time.Second
+				// The parent cannot start its join timer until the test releases
+				// the barrier after observing the child's held directory read.
+				sm.childJoinTimeout = 30 * time.Second
+				if joinTimeout {
+					sm.childJoinTimeout = 2 * time.Second
+				}
 				errs := make(chan error, 1)
 				go func() { errs <- sm.Run(runCtx) }()
 				select {
@@ -162,7 +166,15 @@ func TestDirectoryChildrenJoinAfterContextCancellation(t *testing.T) {
 				case <-time.After(10 * time.Second):
 					t.Fatal("directory read did not reach real FDB")
 				}
-				if !joinTimeout {
+				if joinTimeout {
+					_, err := db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+						tx.Clear(barrier)
+						return nil, nil
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else {
 					cancel()
 				}
 				select {

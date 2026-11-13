@@ -37,7 +37,7 @@ var fdbErrorPredicateRetryable = map[int]bool{
 
 // TestIsRetryable_PinsFDBErrorPredicate exhaustively pins fdb.IsRetryable to the
 // 12-code C++ fdb_error_predicate(RETRYABLE) set. Adding or dropping any code
-// (e.g. leaking the onError-only 1079, or a forward-compat 1235) turns this red.
+// (e.g. leaking the onError-only 1079, or a post-7.3.77 code such as 1235) turns this red.
 func TestIsRetryable_PinsFDBErrorPredicate(t *testing.T) {
 	t.Parallel()
 	if len(fdbErrorPredicateRetryable) != 12 {
