@@ -1806,6 +1806,17 @@ Java run; the new fixture requires heavyweight CI acceptance. See
 The pre-existing missing Go format-below-3 refusal remains deferred in TODO.md;
 this patch does not promise parity for those formats.
 
+Go deliberately rejects incomplete versionstamps earlier than Java on suffixed
+key scans. A supplied Dedup `lastValue` containing one returns a typed
+`IncompleteVersionstampError` before any physical read, even for an empty range;
+Java 4.14.2.0 can exhaust that range without trying to pack the restored value.
+A corrupt physical PK containing one fails Go's `OnNext`, while Java can return
+the tuple and fail later during continuation serialization. This fail-closed,
+no-panic policy concerns malformed supplied state and corrupt keys, not tokens
+emitted by successful ordinary Java tuple packing. Complete versionstamps are
+supported. The committed Java fixture pins the differing error timing; execution
+and acceptance of that fixture remain a heavyweight CI requirement.
+
 ## Cursor/continuation surface — systematic hunt (RFC-180 wave 2)
 
 Four parallel Java-vs-Go sweeps (FlatMapPipelinedCursor; union/intersection

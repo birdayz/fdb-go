@@ -2183,10 +2183,10 @@ func (r *paginatingRows) executeProps() recordlayer.ExecuteProperties {
 // Reachability: positionReplayCursor resumes by deterministic replay rather than by position and
 // reports a no-next out-of-band+START when it has emitted nothing yet. Its recursive-CTE DISTINCT
 // callers cannot paginate a partial traversal, so 54F01 is intentional (pinned by
-// TestFDB_TimeBudgetCeiling_RecursionErrorsNotPartial). A bare recordKeyCursor can also stop before
-// its first physical read when tryScanLimits sees an already-spent shared budget; suffixed
-// ScanRecordKeys wraps that state in Dedup's non-end envelope. Other cursors with physical progress
-// generally carry BytesContinuation. Deciding exhaustion from IsEnd rather than bytes keeps all
+// TestFDB_TimeBudgetCeiling_RecursionErrorsNotPartial). Record-key scans instead allow an initial
+// attempt despite exhausted resource budgets, except that an exhausted record budget with fail mode
+// returns an error before reading. Their non-failing resource stops follow physical progress, not
+// a pre-read bare START or Dedup-START result. Deciding exhaustion from IsEnd rather than bytes keeps all
 // non-end resource stops distinct from both source exhaustion and the in-band LIMIT 0 case.
 func pageContinuationState(cont recordlayer.RecordCursorContinuation, reason recordlayer.NoNextReason) (exhausted bool, contBytes []byte, err error) {
 	if cont == nil || cont.IsEnd() {

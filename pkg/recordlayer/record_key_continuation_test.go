@@ -147,13 +147,13 @@ func (i recordKeyObservedIterator) Get() (fdb.KeyValue, error) {
 	return i.RangeIterator.Get()
 }
 
-func recordKeyObservedOpen(ss subspace.Subspace, md *RecordMetaData, env *dst.Env) (*FDBRecordStore, *recordKeyObservedTransaction) {
+func recordKeyObservedOpen(ss subspace.Subspace, md *RecordMetaData, format int32, env *dst.Env) (*FDBRecordStore, *recordKeyObservedTransaction) {
 	tx, err := sharedDB.CreateTransaction()
 	ExpectWithOffset(1, err).NotTo(HaveOccurred())
 	observed := &recordKeyObservedTransaction{WritableTransaction: tx}
 	rc := NewFDBRecordContext(observed, env)
 	DeferCleanup(rc.Cancel)
-	store := recordKeyTestOpen(rc, ss, md, 14)
+	store := recordKeyTestOpen(rc, ss, md, format)
 	observed.advances, observed.gets = 0, 0
 	return store, observed
 }
@@ -410,6 +410,294 @@ var _ = Describe("Record-key continuation framing", func() {
 	})
 })
 
+var _ = Describe("Suffix-only physical record keys", func() {
+	It("preserves a present-empty last PK through duplicate-only stops and resume", func() {
+		ss := specSubspace()
+		md := recordKeyTestMetadata(true, false)
+		physical := [][]byte{{0x13, 0xfe}, {0x14}, {0x15, 0x01}}
+		recordKeySeedRaw(ss, md, physical)
+		store, _ := recordKeyObservedOpen(ss, md, 14, nil)
+		kvs, err := store.context.Transaction().GetRange(ss.Sub(RecordKey), fdb.RangeOptions{}).GetSliceWithError()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(kvs).To(HaveLen(3))
+		for i, kv := range kvs {
+			Expect([]byte(kv.Key[len(ss.Sub(RecordKey).Bytes()):])).To(Equal(physical[i]))
+			Expect(kv.Value).To(Equal([]byte{0x61}))
+		}
+		for _, reverse := range []bool{false, true} {
+			firstHex, lastHex := "0a0d0a0213fe11accd7398dd42005e1200", "0a0d0a02150111accd7398dd42005e1200"
+			if reverse {
+				firstHex, lastHex = lastHex, firstHex
+			}
+			props := ForwardScan().WithReverse(reverse)
+			props.ExecuteProperties.ReturnedRowLimit = 1
+			page := recordKeyTestRead(ss, md, 14, props, nil)
+			Expect(page.keys).To(Equal([]tuple.Tuple{{}}))
+			Expect(page.reason).To(Equal(ReturnLimitReached))
+			Expect(page.end).To(BeFalse())
+			Expect(page.records).To(Equal(1))
+			Expect(hex.EncodeToString(page.token)).To(Equal(firstHex))
+			Expect(page.rowTokens).To(Equal([][]byte{page.token}))
+			var outer gen.DedupContinuation
+			Expect(outer.UnmarshalVT(page.token)).To(Succeed())
+			Expect(outer.LastValue).NotTo(BeNil())
+			Expect(outer.LastValue).To(HaveLen(0))
+			for _, budget := range []string{"records", "bytes"} {
+				token := page.token
+				for i, wantHex := range []string{"0a0c0a011411accd7398dd42005e1200", lastHex} {
+					store, pulls := recordKeyObservedOpen(ss, md, 14, nil)
+					limited := ForwardScan().WithReverse(reverse)
+					wantReason := ScanLimitReached
+					if budget == "records" {
+						limited.ExecuteProperties.ScannedRecordsLimit = 1
+					} else {
+						limited.ExecuteProperties.ScannedBytesLimit = 1
+						wantReason = ByteLimitReached
+					}
+					state := limited.ExecuteProperties.ScanState
+					cursor := store.ScanRecordKeys(token, limited)
+					DeferCleanup(func() { Expect(cursor.Close()).To(Succeed()) })
+					for range 3 {
+						next, err := cursor.OnNext(context.Background())
+						Expect(err).NotTo(HaveOccurred())
+						Expect(next.HasNext()).To(BeFalse(), "empty PK must not be re-emitted")
+						Expect(next.GetNoNextReason()).To(Equal(wantReason))
+						Expect(next.GetContinuation().IsEnd()).To(BeFalse())
+						raw, err := next.GetContinuation().ToBytes()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(hex.EncodeToString(raw)).To(Equal(wantHex))
+						Expect(raw).NotTo(Equal(token))
+						Expect(outer.UnmarshalVT(raw)).To(Succeed())
+						Expect(outer.LastValue).NotTo(BeNil())
+						Expect(outer.LastValue).To(HaveLen(0))
+					}
+					Expect(state.RecordsScanned()).To(Equal(2))
+					Expect(state.BytesScanned()).To(Equal(int64(len(ss.Sub(RecordKey).Bytes()) + (i + 1) + 1)))
+					Expect(pulls.advances).To(Equal(1))
+					Expect(pulls.gets).To(Equal(1))
+					token, err = hex.DecodeString(wantHex)
+					Expect(err).NotTo(HaveOccurred())
+				}
+				end := recordKeyTestRead(ss, md, 14, ForwardScan().WithReverse(reverse), token)
+				Expect(end.keys).To(BeEmpty())
+				Expect(end.reason).To(Equal(SourceExhausted))
+				Expect(end.end).To(BeTrue())
+				Expect(end.token).To(BeNil())
+				Expect(end.records).To(Equal(1))
+				Expect(end.bytes).To(BeZero())
+			}
+		}
+	})
+})
+
+var _ = Describe("Bare record-key physical limits", func() {
+	var ss subspace.Subspace
+	var md *RecordMetaData
+	BeforeEach(func() {
+		ss = specSubspace()
+		md = recordKeyTestMetadata(false, false)
+		_, err := sharedDB.Run(context.Background(), func(rc *FDBRecordContext) (any, error) {
+			recordKeyTestOpen(rc, ss, md, 4)
+			for id := byte(1); id <= 5; id++ {
+				key := append(append([]byte(nil), ss.Sub(RecordKey).Bytes()...), 0x15, id)
+				rc.Transaction().Set(fdb.Key(key), []byte{0x61})
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	for _, budget := range []string{"records", "bytes", "time"} {
+		for _, reverse := range []bool{false, true} {
+			for _, fail := range []bool{false, true} {
+				for _, rowLimit := range []int{0, 1} {
+					It(fmt.Sprintf("stops on %s before the row boundary, reverse=%t fail=%t rows=%d", budget, reverse, fail, rowLimit), func() {
+						clock := dst.NewSimClock(dst.Epoch)
+						env := &dst.Env{Clock: clock, Random: dst.NewSeededRandomness(151)}
+						store, pulls := recordKeyObservedOpen(ss, md, 4, env)
+						clock.Advance(time.Second)
+						props := NewScanProperties(DefaultExecutePropertiesIn(env)).WithReverse(reverse)
+						props.ExecuteProperties.ReturnedRowLimit = rowLimit
+						props.ExecuteProperties.FailOnScanLimitReached = fail
+						wantReason := ScanLimitReached
+						switch budget {
+						case "records":
+							props.ExecuteProperties.ScannedRecordsLimit = 1
+						case "bytes":
+							props.ExecuteProperties.ScannedBytesLimit = 1
+							wantReason = ByteLimitReached
+						case "time":
+							props.ExecuteProperties.TimeLimit = 100 * time.Millisecond
+							wantReason = TimeLimitReached
+						}
+						state := props.ExecuteProperties.ScanState
+						cursor := store.ScanRecordKeys(nil, props)
+						DeferCleanup(func() { Expect(cursor.Close()).To(Succeed()) })
+						first, err := cursor.OnNext(context.Background())
+						Expect(err).NotTo(HaveOccurred())
+						Expect(first.HasNext()).To(BeTrue()) // even the already-aged time budget permits this attempt
+						id := byte(1)
+						if reverse {
+							id = 5
+						}
+						Expect(first.GetValue()).To(Equal(tuple.Tuple{int64(id)}))
+						token, err := first.GetContinuation().ToBytes()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(token).To(Equal(recordKeyLiteralLeaf([]byte{0x15, id})))
+						Expect(state.RecordsScanned()).To(Equal(1))
+						last, err := cursor.OnNext(context.Background())
+						if fail {
+							var limit *ScanLimitReachedError
+							Expect(errors.As(err, &limit)).To(BeTrue(), "got %v, result=%+v", err, last)
+							Expect(limit.Reason).To(Equal(wantReason))
+						} else {
+							Expect(err).NotTo(HaveOccurred())
+							for range 3 {
+								Expect(last.HasNext()).To(BeFalse())
+								Expect(last.GetNoNextReason()).To(Equal(wantReason))
+								Expect(last.GetContinuation().IsEnd()).To(BeFalse())
+								raw, err := last.GetContinuation().ToBytes()
+								Expect(err).NotTo(HaveOccurred())
+								Expect(raw).To(Equal(token))
+								last, err = cursor.OnNext(context.Background())
+								Expect(err).NotTo(HaveOccurred())
+							}
+						}
+						// Bare cursors check resources before their physical row limit.
+						Expect(state.RecordsScanned()).To(Equal(2))
+						Expect(state.BytesScanned()).To(Equal(int64(len(ss.Sub(RecordKey).Bytes()) + 2 + 1)))
+						Expect(pulls.advances).To(Equal(1))
+						Expect(pulls.gets).To(Equal(1))
+						Expect(state.Elapsed()).To(BeZero())
+						rest := recordKeyTestRead(ss, md, 4, ForwardScan().WithReverse(reverse), token)
+						want := []tuple.Tuple{{int64(2)}, {int64(3)}, {int64(4)}, {int64(5)}}
+						if reverse {
+							want = []tuple.Tuple{{int64(4)}, {int64(3)}, {int64(2)}, {int64(1)}}
+						}
+						Expect(rest.keys).To(Equal(want))
+						Expect(rest.reason).To(Equal(SourceExhausted))
+						Expect(rest.end).To(BeTrue())
+					})
+				}
+			}
+		}
+	}
+
+	for _, budget := range []string{"records", "bytes"} {
+		It("applies the initial-pass exception to a spent shared "+budget+" budget", func() {
+			for _, reverse := range []bool{false, true} {
+				for _, fail := range []bool{false, true} {
+					store, pulls := recordKeyObservedOpen(ss, md, 4, nil)
+					props := ForwardScan().WithReverse(reverse)
+					props.ExecuteProperties.FailOnScanLimitReached = fail
+					state := props.ExecuteProperties.ScanState
+					wantReason, initialRecords, initialBytes := ScanLimitReached, 0, int64(0)
+					if budget == "records" {
+						props.ExecuteProperties.ScannedRecordsLimit = 1
+						state.AddRecordScanned()
+						initialRecords = 1
+					} else {
+						props.ExecuteProperties.ScannedBytesLimit = 1
+						state.AddBytesScanned(1)
+						wantReason, initialBytes = ByteLimitReached, 1
+					}
+					cursor := store.ScanRecordKeys(nil, props)
+					DeferCleanup(func() { Expect(cursor.Close()).To(Succeed()) })
+					first, err := cursor.OnNext(context.Background())
+					if budget == "records" && fail {
+						var limit *ScanLimitReachedError
+						Expect(errors.As(err, &limit)).To(BeTrue())
+						Expect(limit.Reason).To(Equal(ScanLimitReached))
+						Expect(state.RecordsScanned()).To(Equal(2))
+						Expect(state.BytesScanned()).To(BeZero())
+						Expect(pulls.advances).To(BeZero())
+						Expect(pulls.gets).To(BeZero())
+						continue
+					}
+					Expect(err).NotTo(HaveOccurred())
+					Expect(first.HasNext()).To(BeTrue())
+					id := byte(1)
+					if reverse {
+						id = 5
+					}
+					Expect(first.GetValue()).To(Equal(tuple.Tuple{int64(id)}))
+					token, err := first.GetContinuation().ToBytes()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(token).To(Equal(recordKeyLiteralLeaf([]byte{0x15, id})))
+					last, err := cursor.OnNext(context.Background())
+					if fail {
+						var limit *ScanLimitReachedError
+						Expect(errors.As(err, &limit)).To(BeTrue())
+						Expect(limit.Reason).To(Equal(wantReason))
+					} else {
+						Expect(err).NotTo(HaveOccurred())
+						Expect(last.HasNext()).To(BeFalse())
+						Expect(last.GetNoNextReason()).To(Equal(wantReason))
+						Expect(last.GetContinuation().IsEnd()).To(BeFalse())
+						raw, err := last.GetContinuation().ToBytes()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(raw).To(Equal(token))
+					}
+					Expect(state.RecordsScanned()).To(Equal(initialRecords + 2))
+					Expect(state.BytesScanned()).To(Equal(initialBytes + int64(len(ss.Sub(RecordKey).Bytes())+3)))
+					Expect(pulls.advances).To(Equal(1))
+					Expect(pulls.gets).To(Equal(1))
+				}
+			}
+		})
+	}
+
+	It("reapplies physical Skip after each leaf-token resume without charging skipped keys", func() {
+		for _, mode := range []CursorStreamingMode{StreamingModeSmall, StreamingModeWantAll} {
+			for _, reverse := range []bool{false, true} {
+				ids := []byte{2, 4}
+				if reverse {
+					ids = []byte{4, 2}
+				}
+				var token []byte
+				for _, id := range ids {
+					store, pulls := recordKeyObservedOpen(ss, md, 4, nil)
+					props := ForwardScan().WithReverse(reverse).WithStreamingMode(mode)
+					props.ExecuteProperties.Skip = 1
+					props.ExecuteProperties.ReturnedRowLimit = 1
+					state := props.ExecuteProperties.ScanState
+					cursor := store.ScanRecordKeys(token, props)
+					DeferCleanup(func() { Expect(cursor.Close()).To(Succeed()) })
+					first, err := cursor.OnNext(context.Background())
+					Expect(err).NotTo(HaveOccurred())
+					Expect(first.HasNext()).To(BeTrue())
+					Expect(first.GetValue()).To(Equal(tuple.Tuple{int64(id)}))
+					token, err = first.GetContinuation().ToBytes()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(token).To(Equal(recordKeyLiteralLeaf([]byte{0x15, id})))
+					for range 3 {
+						last, err := cursor.OnNext(context.Background())
+						Expect(err).NotTo(HaveOccurred())
+						Expect(last.HasNext()).To(BeFalse())
+						Expect(last.GetNoNextReason()).To(Equal(ReturnLimitReached))
+						Expect(last.GetContinuation().IsEnd()).To(BeFalse())
+						raw, err := last.GetContinuation().ToBytes()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(raw).To(Equal(token))
+					}
+					Expect(state.RecordsScanned()).To(Equal(2))
+					Expect(state.BytesScanned()).To(Equal(int64(len(ss.Sub(RecordKey).Bytes()) + 3)))
+					Expect(pulls.advances).To(Equal(1))
+					Expect(pulls.gets).To(Equal(1))
+				}
+				rest := recordKeyTestRead(ss, md, 4, ForwardScan().WithReverse(reverse), token)
+				lastID := int64(5)
+				if reverse {
+					lastID = 1
+				}
+				Expect(rest.keys).To(Equal([]tuple.Tuple{{lastID}}))
+				Expect(rest.reason).To(Equal(SourceExhausted))
+				Expect(rest.end).To(BeTrue())
+			}
+		}
+	})
+})
+
 var _ = Describe("Record-key public factory limit and corruption contracts", func() {
 	for _, budget := range []string{"records", "bytes"} {
 		for _, reverse := range []bool{false, true} {
@@ -424,7 +712,7 @@ var _ = Describe("Record-key public factory limit and corruption contracts", fun
 					startSuffix = []byte{0x15, 3}
 				}
 				for _, fail := range []bool{false, true} {
-					store, pulls := recordKeyObservedOpen(ss, md, nil)
+					store, pulls := recordKeyObservedOpen(ss, md, 14, nil)
 					props := ForwardScan().WithReverse(reverse)
 					props.ExecuteProperties.FailOnScanLimitReached = fail
 					wantReason := ScanLimitReached
@@ -472,7 +760,7 @@ var _ = Describe("Record-key public factory limit and corruption contracts", fun
 				startSuffix = []byte{0x15, 3}
 			}
 			for _, spent := range []bool{false, true} {
-				store, pulls := recordKeyObservedOpen(ss, md, nil)
+				store, pulls := recordKeyObservedOpen(ss, md, 14, nil)
 				props := ForwardScan().WithReverse(reverse)
 				props.ExecuteProperties.ScannedRecordsLimit = 1
 				props.ExecuteProperties.FailOnScanLimitReached = true
@@ -513,7 +801,7 @@ var _ = Describe("Record-key public factory limit and corruption contracts", fun
 			md := recordKeyTestMetadata(true, false)
 			recordKeySeedRaw(ss, md, [][]byte{{0x15, 1, 0x14}, corruption.key, {0x15, 3, 0x14}})
 			for _, reverse := range []bool{false, true} {
-				store, pulls := recordKeyObservedOpen(ss, md, nil)
+				store, pulls := recordKeyObservedOpen(ss, md, 14, nil)
 				persisted := append(append([]byte(nil), ss.Sub(RecordKey).Bytes()...), corruption.key...)
 				value, err := store.context.Transaction().Get(fdb.Key(persisted)).Get()
 				Expect(err).NotTo(HaveOccurred())
@@ -642,7 +930,7 @@ var _ = Describe("Record-key public factory limit and corruption contracts", fun
 			key := append([]byte{0x15, 2}, numeric.suffix...)
 			recordKeySeedRaw(ss, md, [][]byte{key})
 			for _, reverse := range []bool{false, true} {
-				store, pulls := recordKeyObservedOpen(ss, md, nil)
+				store, pulls := recordKeyObservedOpen(ss, md, 14, nil)
 				persisted := append(append([]byte(nil), ss.Sub(RecordKey).Bytes()...), key...)
 				value, err := store.context.Transaction().Get(fdb.Key(persisted)).Get()
 				Expect(err).NotTo(HaveOccurred())
@@ -689,7 +977,7 @@ var _ = Describe("Record-key public factory limit and corruption contracts", fun
 			for _, reverse := range []bool{false, true} {
 				clock := dst.NewSimClock(dst.Epoch)
 				env := &dst.Env{Clock: clock, Random: dst.NewSeededRandomness(151)}
-				store, pulls := recordKeyObservedOpen(ss, md, env)
+				store, pulls := recordKeyObservedOpen(ss, md, 14, env)
 				clock.Advance(time.Second)
 				props := NewScanProperties(DefaultExecutePropertiesIn(env).WithTimeLimit(100 * time.Millisecond)).WithReverse(reverse)
 				props.ExecuteProperties.FailOnScanLimitReached = fail
@@ -739,7 +1027,7 @@ var _ = Describe("Record-key public factory limit and corruption contracts", fun
 				Expect(state.Elapsed()).To(BeZero())
 
 				// A fresh context at the same frozen time has an unspent time budget.
-				resumedStore, resumedPulls := recordKeyObservedOpen(ss, md, env)
+				resumedStore, resumedPulls := recordKeyObservedOpen(ss, md, 14, env)
 				fresh := NewScanProperties(DefaultExecutePropertiesIn(env).WithTimeLimit(100 * time.Millisecond)).WithReverse(reverse)
 				fresh.ExecuteProperties.FailOnScanLimitReached = fail
 				resumed := resumedStore.ScanRecordKeys(token, fresh)
@@ -805,26 +1093,39 @@ var _ = Describe("Record-key scan argument boundaries", func() {
 		{"nested", "0533ffffffffffffffffffff000000", "0a00120f0533ffffffffffffffffffff000000"},
 		{"multiple nested", "0533ffffffffffffffffffff000033ffffffffffffffffffff000000", "0a00121c0533ffffffffffffffffffff000033ffffffffffffffffffff000000"},
 	} {
-		It("rejects "+tc.name+" incomplete-versionstamp continuation state before reading a healthy store", func() {
-			ss := specSubspace()
-			md := recordKeyTestMetadata(false, false)
-			recordKeySeedRaw(ss, md, [][]byte{{0x15, 1, 0x14}})
-			token, err := hex.DecodeString(tc.token)
-			Expect(err).NotTo(HaveOccurred())
-			for _, reverse := range []bool{false, true} {
-				store, pulls := recordKeyObservedOpen(ss, md, nil)
-				cursor := store.ScanRecordKeys(token, ForwardScan().WithReverse(reverse))
-				DeferCleanup(func() { Expect(cursor.Close()).To(Succeed()) })
-				_, err := cursor.OnNext(context.Background())
-				var incomplete *IncompleteVersionstampError
-				Expect(errors.As(err, &incomplete)).To(BeTrue(), "token=%x err=%v", token, err)
-				Expect(incomplete.Context).To(Equal("record-key continuation lastValue"))
-				_, repeated := cursor.OnNext(context.Background())
-				Expect(repeated).To(BeIdenticalTo(err))
-				Expect(pulls.advances).To(BeZero())
-				Expect(pulls.gets).To(BeZero())
-			}
-		})
+		for _, empty := range []bool{false, true} {
+			It(fmt.Sprintf("rejects %s incomplete-versionstamp continuation state before reading, empty=%t", tc.name, empty), func() {
+				ss := specSubspace()
+				md := recordKeyTestMetadata(false, false)
+				keys := [][]byte{{0x15, 1, 0x14}}
+				if empty {
+					keys = nil
+				}
+				recordKeySeedRaw(ss, md, keys)
+				token, err := hex.DecodeString(tc.token)
+				Expect(err).NotTo(HaveOccurred())
+				for _, reverse := range []bool{false, true} {
+					control := recordKeyTestRead(ss, md, 14, ForwardScan().WithReverse(reverse), nil)
+					Expect(control.keys).To(HaveLen(len(keys)))
+					Expect(control.reason).To(Equal(SourceExhausted))
+					Expect(control.end).To(BeTrue())
+					store, pulls := recordKeyObservedOpen(ss, md, 14, nil)
+					props := ForwardScan().WithReverse(reverse)
+					cursor := store.ScanRecordKeys(token, props)
+					DeferCleanup(func() { Expect(cursor.Close()).To(Succeed()) })
+					_, err := cursor.OnNext(context.Background())
+					var incomplete *IncompleteVersionstampError
+					Expect(errors.As(err, &incomplete)).To(BeTrue(), "token=%x err=%v", token, err)
+					Expect(incomplete.Context).To(Equal("record-key continuation lastValue"))
+					_, repeated := cursor.OnNext(context.Background())
+					Expect(repeated).To(BeIdenticalTo(err))
+					Expect(props.ExecuteProperties.ScanState.RecordsScanned()).To(BeZero())
+					Expect(props.ExecuteProperties.ScanState.BytesScanned()).To(BeZero())
+					Expect(pulls.advances).To(BeZero())
+					Expect(pulls.gets).To(BeZero())
+				}
+			})
+		}
 
 		It("rejects "+tc.name+" incomplete versionstamps in physical primary keys", func() {
 			ss := specSubspace()
@@ -833,7 +1134,7 @@ var _ = Describe("Record-key scan argument boundaries", func() {
 			Expect(err).NotTo(HaveOccurred())
 			recordKeySeedRaw(ss, md, [][]byte{append(pk, 0x14)})
 			for _, reverse := range []bool{false, true} {
-				store, pulls := recordKeyObservedOpen(ss, md, nil)
+				store, pulls := recordKeyObservedOpen(ss, md, 14, nil)
 				cursor := store.ScanRecordKeys(nil, ForwardScan().WithReverse(reverse))
 				DeferCleanup(func() { Expect(cursor.Close()).To(Succeed()) })
 				_, err := cursor.OnNext(context.Background())

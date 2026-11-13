@@ -19,10 +19,13 @@
 > the `LIMIT 0` handling explicit, not an emergency data-loss patch.
 
 The reachability account above is historical. `recordKeyCursor.OnNext` now uses
-`tryScanLimits` and can stop before its first read with an already-spent shared
-budget. Bare scans then retain START; suffixed `ScanRecordKeys` wraps that state
-in a non-end Dedup envelope. See `pageContinuationState` for the current handling,
-including the separate replay-cursor case. The exhaustion invariant is unchanged.
+`tryScanLimits`, whose initial pass allows an attempt despite an exhausted record,
+byte or time budget. The exception is an exhausted record budget with
+`FailOnScanLimitReached`: it returns a typed error before reading, not a no-next
+result. Non-failing resource stops therefore follow physical progress; this does
+not produce a pre-read bare START or Dedup-START result. The separate
+`positionReplayCursor` can return out-of-band+START before emitting a row; see
+`pageContinuationState` for its handling. The exhaustion invariant is unchanged.
 
 > **Reviews.** Graefe **ACK** (verified vs Java 4.11.1.0): exhaustion off `IsEnd()`/`SOURCE_EXHAUSTED`,
 > never bytes, is correct (`RecordLayerIterator.java:91`; the `withoutNextValue` invariant makes reason ⇔

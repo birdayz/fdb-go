@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 
@@ -229,6 +230,86 @@ var _ = Describe("Record-key opaque continuation Java interchange", func() {
 			req.Continuation = &empty
 			Expect(javaPage(req).ExceptionClass).To(Equal("RecordCoreException"))
 			Expect(goPage(req).ExceptionClass).To(Equal("RecordCoreException"))
+		}
+	})
+
+	It("pins the deliberate eager Go rejection versus Java's lazy versionstamp packing", func() {
+		type boundary struct {
+			HasNext                bool    `json:"hasNext"`
+			IncompletePK           bool    `json:"incompletePK"`
+			Reason                 string  `json:"reason"`
+			End                    bool    `json:"end"`
+			Continuation           *string `json:"continuation"`
+			ScanException          string  `json:"scanException"`
+			SerializationException string  `json:"serializationException"`
+			ScannedRecords         int     `json:"scannedRecords"`
+			ScannedBytes           int64   `json:"scannedBytes"`
+		}
+		javaBoundary := func(req recordKeyInteropRequest) boundary {
+			var result boundary
+			Expect(java.InvokeAs(ctx, "recordKeyVersionstampBoundary", map[string]any{
+				"clusterFile": env.ClusterFile, "tenantName": env.TenantName,
+				"subspace": BytesToIntArray(ks.Bytes()), "request": req,
+			}, &result)).To(Succeed())
+			return result
+		}
+		token, err := hex.DecodeString("0a00120d33ffffffffffffffffffff0000")
+		Expect(err).NotTo(HaveOccurred())
+		for _, reverse := range []bool{false, true} {
+			req := recordKeyInteropRequest{Layout: "unsplit", Reverse: reverse}
+			for _, control := range []recordKeyInteropPage{javaPage(req), goPage(req)} {
+				Expect(control.ExceptionClass).To(BeEmpty())
+				Expect(control.Rows).To(BeEmpty())
+				Expect(control.Reason).To(Equal("SOURCE_EXHAUSTED"))
+				Expect(control.End).To(BeTrue())
+				Expect(control.ScannedRecords).To(Equal(1))
+				Expect(control.ScannedBytes).To(BeZero())
+			}
+			req.Continuation = recordKeyInteropBytes(token)
+			jp := javaBoundary(req)
+			Expect(jp).To(Equal(boundary{Reason: "SOURCE_EXHAUSTED", End: true, ScannedRecords: 1}))
+			gp := goPage(req)
+			Expect(gp.ExceptionClass).To(Equal("*recordlayer.IncompleteVersionstampError"))
+			Expect(gp.Rows).To(BeEmpty())
+			Expect(gp.Repeats).To(BeEmpty())
+			Expect(gp.ScannedRecords).To(BeZero())
+			Expect(gp.ScannedBytes).To(BeZero())
+		}
+
+		// Commit literal corrupt bytes, not a versionstamped-key mutation or a
+		// token produced by Java's successful ordinary Tuple.pack().
+		physical, err := hex.DecodeString("33ffffffffffffffffffff000014")
+		Expect(err).NotTo(HaveOccurred())
+		key := append(append([]byte(nil), ks.Sub("unsplit").Sub(recordlayer.RecordKey).Bytes()...), physical...)
+		_, err = env.RecordDB.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+			_, err := recordlayer.NewStoreBuilder().SetContext(rc).SetSubspace(ks.Sub("unsplit")).
+				SetFormatVersion(14).SetMetaDataProvider(recordScanMetadata(false, false, false)).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			rc.Transaction().Set(fdb.Key(key), []byte{0x61})
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		tx, err := env.RecordDB.CreateTransaction()
+		Expect(err).NotTo(HaveOccurred())
+		kvs, err := tx.GetRange(ks.Sub("unsplit").Sub(recordlayer.RecordKey), fdb.RangeOptions{}).GetSliceWithError()
+		tx.Cancel()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(kvs).To(Equal([]fdb.KeyValue{{Key: fdb.Key(key), Value: []byte{0x61}}}))
+		for _, reverse := range []bool{false, true} {
+			req := recordKeyInteropRequest{Layout: "unsplit", Reverse: reverse}
+			jp := javaBoundary(req)
+			Expect(jp).To(Equal(boundary{
+				HasNext: true, IncompletePK: true, SerializationException: "IllegalArgumentException",
+				ScannedRecords: 1, ScannedBytes: int64(len(key) + 1),
+			}))
+			gp := goPage(req)
+			Expect(gp.ExceptionClass).To(Equal("*recordlayer.IncompleteVersionstampError"))
+			Expect(gp.Rows).To(BeEmpty())
+			Expect(gp.Repeats).To(BeEmpty())
+			Expect(gp.ScannedRecords).To(Equal(1))
+			Expect(gp.ScannedBytes).To(Equal(int64(len(key) + 1)))
 		}
 	})
 

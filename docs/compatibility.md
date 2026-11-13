@@ -290,6 +290,17 @@ or inline versions, return no rows, and still have a non-end continuation. Keep
 resuming until `IsEnd`, not until the first empty page. Skip is physical and is
 reapplied on each resume; it does not skip logical deduplicated primary keys.
 
+**Incomplete versionstamps are rejected eagerly in suffixed scans.** Go returns
+`IncompleteVersionstampError` before reading if a supplied Dedup `lastValue`
+contains an incomplete versionstamp, even on an empty range. Java 4.14.2.0
+unpacks that state but can return source exhaustion on an empty range without
+packing it. For a corrupt physical primary key containing an incomplete
+versionstamp, Go rejects `OnNext`; Java can return the tuple and fail only when
+its continuation is serialized. This is a deliberate fail-closed, no-panic
+boundary for malformed supplied state or corrupt keys, not a rejection of
+continuations emitted by successful ordinary Java tuple packing. Complete
+versionstamps retain ordinary continuation interchange.
+
 Go/FDB regressions pin literal continuation bytes and physical progress.
 `conformance/record_key_continuation_conformance_test.go` adds both directions
 of live Java interchange; that heavyweight CI gate must pass before claiming
