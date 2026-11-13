@@ -3,6 +3,7 @@
 package bench
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -43,14 +44,24 @@ func TestDifferential_SetReadVersionContract(t *testing.T) {
 			if err := tr.Options().SetTimeout(1); err != nil {
 				return err
 			}
-			time.Sleep(5 * time.Millisecond)
+			if err := observeReadTimeout(func() error {
+				_, err := tr.GetEstimatedRangeSizeBytes(gofdb.KeyRange{Begin: gofdb.Key("a"), End: gofdb.Key("b")}).Get()
+				return err
+			}, tr.Cancel); err != nil {
+				return err
+			}
 			tr.SetReadVersion(0)
 			return nil
 		}, func(tr cgofdb.Transaction) error {
 			if err := tr.Options().SetTimeout(1); err != nil {
 				return err
 			}
-			time.Sleep(5 * time.Millisecond)
+			if err := observeReadTimeout(func() error {
+				_, err := tr.GetEstimatedRangeSizeBytes(cgofdb.KeyRange{Begin: cgofdb.Key("a"), End: cgofdb.Key("b")}).Get()
+				return err
+			}, tr.Cancel); err != nil {
+				return err
+			}
 			tr.SetReadVersion(0)
 			return nil
 		}},
@@ -86,6 +97,24 @@ func TestDifferential_SetReadVersionContract(t *testing.T) {
 				t.Fatalf("valid version Go=%d C=%d want123", gv, cv)
 			}
 		})
+	}
+}
+
+// Non-tenant metrics check resetPromise without admitting a read version, so
+// observing timeout does not change the setter's expected invalid-version error.
+func observeReadTimeout(read func() error, cancel func()) error {
+	stop := time.AfterFunc(5*time.Second, cancel)
+	defer stop.Stop()
+	for {
+		err := read()
+		switch fdbErrorCode(err) {
+		case 1031:
+			return nil
+		case 0:
+			time.Sleep(time.Millisecond)
+		default:
+			return fmt.Errorf("observe timeout before invalid setter: %v", err)
+		}
 	}
 }
 

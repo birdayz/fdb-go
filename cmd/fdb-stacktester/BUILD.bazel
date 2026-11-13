@@ -32,6 +32,7 @@ go_test(
     name = "fdb-stacktester_test",
     srcs = [
         "directory_context_test.go",
+        "directory_remove_prefix_test.go",
         "directory_unpack_test.go",
         "metrics_test.go",
         "operations_test.go",

@@ -50,6 +50,24 @@ func TestCNetworkUsesSharedOpenOwnership(t *testing.T) {
 		t.Fatalf("open raw C database: %v", err)
 	}
 	defer raw.Close()
+	t.Run("terminal OnError preserves code with canceled context", func(t *testing.T) {
+		dead, stop := context.WithCancel(ctx)
+		stop()
+		for _, code := range []int{1235, 1242} {
+			for i := 0; i < 64; i++ {
+				tr, err := backend.(*database).db.CreateTransaction()
+				if err != nil {
+					t.Fatal(err)
+				}
+				err = backend.(*database).ctxOnError(dead, tr, code)
+				tr.Cancel()
+				var fe fdb.Error
+				if !errors.As(err, &fe) || fe.Code != code {
+					t.Fatalf("OnError(%d) with canceled context = %v at iteration %d", code, err, i)
+				}
+			}
+		}
+	})
 	if got := requireOpenRefs(t, clusterFile, 2); got != shared {
 		t.Fatal("mapped network did not retain the backend's shared handle")
 	}

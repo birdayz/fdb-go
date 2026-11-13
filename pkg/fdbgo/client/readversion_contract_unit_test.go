@@ -64,14 +64,27 @@ func TestSetReadVersionDeferredErrorPrecedesCancellationAndTimeout(t *testing.T)
 	t.Parallel()
 	for _, tc := range []struct {
 		name  string
-		setup func(*Transaction)
+		setup func(*testing.T, *Transaction)
 	}{
-		{"cancel", func(tx *Transaction) { tx.Cancel() }},
-		{"timeout", func(tx *Transaction) { tx.SetTimeout(1); time.Sleep(5 * time.Millisecond) }},
+		{"cancel", func(t *testing.T, tx *Transaction) {
+			tx.Cancel()
+			requireReadVersionCode(t, tx, ErrTransactionCancelled)
+		}},
+		{"timeout", func(t *testing.T, tx *Transaction) {
+			q, clock, _ := manualTimeoutQueue()
+			tx.db = &database{timeouts: q}
+			tx.SetTimeout(1)
+			if tx.timeoutNode == nil {
+				t.Fatal("timeout was not armed")
+			}
+			clock.Store(tx.timeoutNode.deadline + int64(time.Millisecond))
+			q.fire()
+			requireReadVersionCode(t, tx, ErrTransactionTimedOut)
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tx := &Transaction{}
-			tc.setup(tx)
+			tc.setup(t, tx)
 			tx.SetReadVersion(0)
 			requireReadVersionCode(t, tx, 2011)
 		})

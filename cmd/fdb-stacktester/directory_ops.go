@@ -132,12 +132,26 @@ func (sm *StackMachine) popBytesOrNil() []byte {
 	}
 	switch v := e.value.(type) {
 	case []byte:
+		// The tuple decoder represents b'' as a typed nil slice, not Python None.
+		if v == nil {
+			return []byte{}
+		}
 		return v
 	case string:
 		return []byte(v)
 	default:
 		panic(fmt.Sprintf("expected bytes or nil, got %T", e.value))
 	}
+}
+
+// Python treats an omitted or empty layer as a wildcard when opening a
+// directory; the Go directory facade represents that wildcard as nil.
+func (sm *StackMachine) popLayer() []byte {
+	layer := sm.popBytesOrNil()
+	if len(layer) == 0 {
+		return nil
+	}
+	return layer
 }
 
 // fdbDB returns an fdb.Database wrapping the stack machine's client.Database.
@@ -221,7 +235,7 @@ func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op stri
 
 	case "CREATE_OR_OPEN":
 		path := sm.popTupleAsPath()
-		layer := sm.popBytesOrNil()
+		layer := sm.popLayer()
 		tr := sm.getTransactor(ctx, isDatabase)
 		d := sm.currentDir()
 		if d.dir == nil {
@@ -239,7 +253,7 @@ func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op stri
 
 	case "CREATE":
 		path := sm.popTupleAsPath()
-		layer := sm.popBytesOrNil()
+		layer := sm.popLayer()
 		prefix := sm.popBytesOrNil()
 		tr := sm.getTransactor(ctx, isDatabase)
 		d := sm.currentDir()
@@ -264,7 +278,7 @@ func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op stri
 
 	case "OPEN":
 		path := sm.popTupleAsPath()
-		layer := sm.popBytesOrNil()
+		layer := sm.popLayer()
 		rt := sm.getReadTransactor(ctx, isDatabase, isSnapshot)
 		d := sm.currentDir()
 		if d.dir == nil {
@@ -338,8 +352,8 @@ func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op stri
 			sm.push(idx, []byte("DIRECTORY_ERROR"))
 			return true, nil
 		}
-		_, err := d.dir.Remove(tr, path)
-		if err != nil {
+		removed, err := d.dir.Remove(tr, path)
+		if err != nil || !removed {
 			sm.push(idx, []byte("DIRECTORY_ERROR"))
 		}
 
@@ -352,10 +366,12 @@ func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op stri
 		tr := sm.getTransactor(ctx, isDatabase)
 		d := sm.currentDir()
 		if d.dir == nil {
-			// If null, just no-op for if_exists variant.
+			sm.push(idx, []byte("DIRECTORY_ERROR"))
 			return true, nil
 		}
-		d.dir.Remove(tr, path) // ignore error for if_exists
+		if _, err := d.dir.Remove(tr, path); err != nil {
+			sm.push(idx, []byte("DIRECTORY_ERROR"))
+		}
 
 	case "LIST":
 		count := int(sm.popInt64())

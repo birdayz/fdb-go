@@ -2702,12 +2702,8 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 		}
 		return retryReset(nil)
 
-	case ErrProxyMemoryLimitExceeded, ErrGrvProxyMemoryLimit,
-		ErrThrottledHotShard, ErrRangeLocked:
-		// Resource-constrained: higher backoff cap (30s vs 1s).
-		// C++ RESOURCE_CONSTRAINED_MAX_BACKOFF for all four codes.
-		// hot_shard and range_locked use the same 30s cap to avoid
-		// hammering the hot shard with aggressive retries.
+	case ErrProxyMemoryLimitExceeded, ErrGrvProxyMemoryLimit:
+		// Resource-constrained: C++ RESOURCE_CONSTRAINED_MAX_BACKOFF (30s vs 1s).
 		tx.retryCount++
 		if cerr := logRetry(fdbErr.Code); cerr != nil {
 			return cerr
@@ -3848,8 +3844,8 @@ func (tx *Transaction) applyOptionDefaults(userReset bool) {
 // nextBackoff returns the current backoff duration with jitter, then grows
 // the backoff for the next call. Matches C++ getBackoff in NativeAPI.actor.cpp.
 // errCode determines the backoff cap: the resource-constrained bucket —
-// commit_proxy_memory_limit_exceeded (1042), grv_proxy_memory_limit_exceeded
-// (1078), throttled_hot_shard (1235), and range_locked (1242) — uses
+// commit_proxy_memory_limit_exceeded (1042) and grv_proxy_memory_limit_exceeded
+// (1078) — uses
 // RESOURCE_CONSTRAINED_MAX_BACKOFF (30s) and IGNORES the user's maxRetryDelay;
 // all other errors use the user's maxRetryDelay or DEFAULT_MAX_BACKOFF (1s). The
 // two branches are mutually exclusive (see the cap selection below).
@@ -3885,14 +3881,13 @@ func (tx *Transaction) nextBackoff(errCode int) time.Duration {
 		tx.proxyTagThrottledDuration += proxyMaxTagThrottleDuration.Seconds()
 	}
 
-	// C++ getBackoff(): the resource-constrained bucket (the four codes below) uses
+	// C++ getBackoff(): the resource-constrained bucket (the two codes below) uses
 	// RESOURCE_CONSTRAINED_MAX_BACKOFF exclusively (user's maxRetryDelay is IGNORED);
 	// all other errors use the user's maxRetryDelay (or DEFAULT_MAX_BACKOFF). The two
 	// branches are mutually exclusive — no min/max combining. (Code list + values are
 	// in the function doc-comment, the single authoritative description.)
 	var cap time.Duration
-	if errCode == ErrProxyMemoryLimitExceeded || errCode == ErrGrvProxyMemoryLimit ||
-		errCode == ErrThrottledHotShard || errCode == ErrRangeLocked {
+	if errCode == ErrProxyMemoryLimitExceeded || errCode == ErrGrvProxyMemoryLimit {
 		cap = resourceConstrainedMaxBackoff
 	} else {
 		cap = maxBackoff

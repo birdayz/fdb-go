@@ -460,10 +460,10 @@ func IsRetryable(code int) bool {
 // larger set than IsRetryable (the fdb_error_predicate RETRYABLE set): OnError additionally
 // retries blob_granule_request_failed (1079) — retried by C++ Transaction::onError
 // (NativeAPI.actor.cpp:7743-7768) but absent from the error-predicate set — plus the Go
-// extensions the pure-Go client documents (cluster_version_changed 1039 via the MVC layer,
-// and 7.4+ 1235/1242).
+// extension the pure-Go client documents (cluster_version_changed 1039 via the MVC layer).
+// FDB 7.4-only codes 1235/1242 are terminal with the pinned 7.3.77 client.
 //
-// MUST stay in sync with the pure-Go client's onErrorRetryable (client/commitpath.go:231),
+// MUST stay in sync with the pure-Go client's onErrorRetryable (client/commitpath.go),
 // which is the same set; both trace to C++ Transaction::onError + the documented MVC/Go
 // extensions. The duplication is forced: the cgo backend can't import client (fdb imports
 // client, so client can't import fdb), and this is the predicate that decides whether a
@@ -482,9 +482,7 @@ func IsOnErrorRetryable(code int) bool {
 		1078, // grv_proxy_memory_limit_exceeded
 		1079, // blob_granule_request_failed (retried by Transaction::onError; NOT in IsRetryable)
 		1213, // tag_throttled
-		1223, // proxy_tag_throttled
-		1235, // transaction_throttled_hot_shard (FDB 7.4+)
-		1242: // transaction_rejected_range_locked (FDB 7.4+)
+		1223: // proxy_tag_throttled
 		return true
 	}
 	return false

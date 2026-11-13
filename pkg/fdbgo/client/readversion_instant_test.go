@@ -198,7 +198,9 @@ func TestReadVersionInstant_RejectedUserVersionPreservesStamp(t *testing.T) {
 	}
 	tx.SetReadVersion(rv)
 
-	requireReadVersionCode(t, tx, 2010)
+	if _, err := tx.GetReadVersion(ctx); fdbCodeOf(err) != 2010 {
+		t.Fatalf("rejected setter error=%v, want 2010", err)
+	}
 	if inst, ok := tx.ReadVersionInstant(); !ok || !inst.Equal(before) {
 		t.Fatalf("rejected setter changed instant: got %v,%v want %v,true", inst, ok, before)
 	}
