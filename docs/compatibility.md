@@ -293,8 +293,13 @@ reapplied on each resume; it does not skip logical deduplicated primary keys.
 Restored Dedup `lastValue` tuples require terminated nested tuples and valid
 UTF-8 strings, matching Java's restoration checks. Malformed values return
 `IllegalArgumentError` before any physical range read, including on empty stores.
+Its unwrap chain preserves `tuple.DecodeError`, whose `Offset` identifies the
+containing top-level tuple element and whose `Cause` retains the decoder failure.
 This validation is specific to restored state; the pre-existing permissive
-physical-key decoder is not changed by it.
+physical-key decoder is not changed by it. Physical-key decode errors also retain
+the original decoder cause under `IllegalArgumentError`; bare layouts additionally
+wrap it in `RecordCoreArgumentError` with the physical key and subspace context.
+Error messages are unchanged.
 
 **Incomplete versionstamps are rejected eagerly in suffixed scans.** Go returns
 `IncompleteVersionstampError` before reading if a supplied Dedup `lastValue`

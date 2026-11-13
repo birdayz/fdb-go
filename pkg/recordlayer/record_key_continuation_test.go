@@ -991,6 +991,9 @@ var _ = Describe("Record-key public factory limit and corruption contracts", fun
 					var argument *IllegalArgumentError
 					Expect(errors.As(err, &argument)).To(BeTrue())
 					Expect(argument.Message).To(Equal("unknown tuple typecode 0xff at 2"))
+					Expect(argument.Cause).To(MatchError("unknown tuple typecode 0xff at 2"))
+					Expect(errors.Unwrap(argument)).To(BeIdenticalTo(argument.Cause))
+					Expect(errors.Is(err, argument.Cause)).To(BeTrue())
 					var coreArgument *RecordCoreArgumentError
 					Expect(errors.As(err, &coreArgument)).To(BeFalse())
 				} else {
@@ -1045,14 +1048,12 @@ var _ = Describe("Record-key public factory limit and corruption contracts", fun
 		})
 		Expect(err).NotTo(HaveOccurred())
 		for _, reverse := range []bool{false, true} {
-			tx, err := sharedDB.CreateTransaction()
-			Expect(err).NotTo(HaveOccurred())
-			DeferCleanup(tx.Cancel)
-			store := recordKeyTestOpen(sharedDB.NewRecordContext(tx), ss, md, 4)
-			value, err := tx.Get(fdb.Key(badKey)).Get()
+			store, pulls := recordKeyObservedOpen(ss, md, 4, nil)
+			value, err := store.context.Transaction().Get(fdb.Key(badKey)).Get()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(value).To(Equal([]byte{0x61}))
-			cursor := store.ScanRecordKeys(nil, ForwardScan().WithReverse(reverse))
+			props := ForwardScan().WithReverse(reverse)
+			cursor := store.ScanRecordKeys(nil, props)
 			DeferCleanup(func() { Expect(cursor.Close()).To(Succeed()) })
 			_, err = cursor.OnNext(context.Background())
 			var argument *RecordCoreArgumentError
@@ -1063,8 +1064,16 @@ var _ = Describe("Record-key public factory limit and corruption contracts", fun
 			var cause *IllegalArgumentError
 			Expect(errors.As(errors.Unwrap(argument), &cause)).To(BeTrue())
 			Expect(cause.Message).To(Equal("unknown tuple typecode 0xff at 2"))
+			Expect(cause.Cause).To(MatchError("unknown tuple typecode 0xff at 2"))
+			Expect(errors.Unwrap(cause)).To(BeIdenticalTo(cause.Cause))
+			Expect(errors.Is(err, cause.Cause)).To(BeTrue())
 			Expect(argument.Error()).To(ContainSubstring(fmt.Sprintf("key=%x", badKey)))
 			Expect(argument.Error()).To(ContainSubstring(fmt.Sprintf("subspace=%x", ss.Sub(RecordKey).Bytes())))
+			Expect(props.ExecuteProperties.ScanState.RecordsScanned()).To(Equal(1))
+			Expect(props.ExecuteProperties.ScanState.BytesScanned()).To(Equal(int64(len(badKey) + 1)))
+			Expect(pulls.ranges).To(HaveLen(1))
+			Expect(pulls.advances).To(Equal(1))
+			Expect(pulls.gets).To(Equal(1))
 		}
 	})
 
@@ -1250,9 +1259,13 @@ var _ = Describe("Record-key scan argument boundaries", func() {
 		})
 	}
 
-	for _, tc := range []struct{ name, token string }{
-		{"unterminated nested tuple", "0a001203051501"},
-		{"malformed UTF-8", "0a00120302ff00"},
+	for _, tc := range []struct {
+		name, token string
+		offset      int
+	}{
+		{"unterminated nested tuple", "0a001203051501", 0},
+		{"unterminated nested tuple after zero", "0a00120414051501", 1},
+		{"malformed UTF-8", "0a00120302ff00", 0},
 	} {
 		for _, empty := range []bool{false, true} {
 			It(fmt.Sprintf("rejects %s restored state before any range read, empty=%t", tc.name, empty), func() {
@@ -1278,6 +1291,12 @@ var _ = Describe("Record-key scan argument boundaries", func() {
 					_, err := cursor.OnNext(context.Background())
 					var argument *IllegalArgumentError
 					Expect(errors.As(err, &argument)).To(BeTrue(), "token=%x err=%v", token, err)
+					var decoding *tuple.DecodeError
+					Expect(errors.As(err, &decoding)).To(BeTrue())
+					Expect(decoding.Offset).To(Equal(tc.offset))
+					Expect(decoding.Cause).NotTo(BeNil())
+					Expect(errors.Unwrap(argument)).To(BeIdenticalTo(decoding))
+					Expect(errors.Is(err, decoding.Cause)).To(BeTrue())
 					_, repeated := cursor.OnNext(context.Background())
 					Expect(repeated).To(BeIdenticalTo(err))
 					Expect(props.ExecuteProperties.ScanState.RecordsScanned()).To(BeZero())

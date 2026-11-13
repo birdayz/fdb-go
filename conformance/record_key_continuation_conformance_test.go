@@ -190,10 +190,17 @@ var _ = Describe("Record-key opaque continuation Java interchange", func() {
 			next, err := cursor.OnNext(ctx)
 			if err != nil {
 				var parse *recordlayer.ContinuationParseError
-				if errors.As(err, &parse) {
+				var argument *recordlayer.IllegalArgumentError
+				var incomplete *recordlayer.IncompleteVersionstampError
+				switch {
+				case errors.As(err, &parse):
 					page.ExceptionClass = "RecordCoreException"
-				} else {
-					page.ExceptionClass = fmt.Sprintf("%T", err)
+				case errors.As(err, &argument):
+					page.ExceptionClass = "IllegalArgumentException"
+				case errors.As(err, &incomplete):
+					page.ExceptionClass = "IncompleteVersionstampError"
+				default:
+					Fail(fmt.Sprintf("unexpected record-key scan error: %T: %v", err, err))
 				}
 				break
 			}
@@ -293,13 +300,13 @@ var _ = Describe("Record-key opaque continuation Java interchange", func() {
 						}
 					}
 				}
-				for _, tokenHex := range []string{"0a001203051501", "0a00120302ff00"} {
+				for _, tokenHex := range []string{"0a001203051501", "0a00120414051501", "0a00120302ff00"} {
 					token, err := hex.DecodeString(tokenHex)
 					Expect(err).NotTo(HaveOccurred())
 					req.Continuation = recordKeyInteropBytes(token)
 					jp, gp := javaPage(req), goPage(req)
 					Expect(jp.ExceptionClass).To(Equal("IllegalArgumentException"))
-					Expect(gp.ExceptionClass).To(Equal("*recordlayer.IllegalArgumentError"))
+					Expect(gp.ExceptionClass).To(Equal("IllegalArgumentException"))
 					for _, page := range []recordKeyInteropPage{jp, gp} {
 						Expect(page.Rows).To(BeEmpty())
 						Expect(page.ScannedRecords).To(BeZero())
@@ -383,7 +390,7 @@ var _ = Describe("Record-key opaque continuation Java interchange", func() {
 			jp := javaBoundary(req)
 			Expect(jp).To(Equal(boundary{Reason: "SOURCE_EXHAUSTED", End: true, ScannedRecords: 1}))
 			gp := goPage(req)
-			Expect(gp.ExceptionClass).To(Equal("*recordlayer.IncompleteVersionstampError"))
+			Expect(gp.ExceptionClass).To(Equal("IncompleteVersionstampError"))
 			Expect(gp.Rows).To(BeEmpty())
 			Expect(gp.Repeats).To(BeEmpty())
 			Expect(gp.ScannedRecords).To(BeZero())
@@ -419,7 +426,7 @@ var _ = Describe("Record-key opaque continuation Java interchange", func() {
 				ScannedRecords: 1, ScannedBytes: int64(len(key) + 1),
 			}))
 			gp := goPage(req)
-			Expect(gp.ExceptionClass).To(Equal("*recordlayer.IncompleteVersionstampError"))
+			Expect(gp.ExceptionClass).To(Equal("IncompleteVersionstampError"))
 			Expect(gp.Rows).To(BeEmpty())
 			Expect(gp.Repeats).To(BeEmpty())
 			Expect(gp.ScannedRecords).To(Equal(1))

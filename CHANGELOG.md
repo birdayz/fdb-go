@@ -125,7 +125,9 @@ below; neither publication nor readiness is asserted.
   structure. Resource-limited duplicate-only pages retain progress, and an exact
   row-limit boundary returns a non-end token without reading ahead. Physical
   suffix validation follows Java's numeric conversion; corrupt tuples return
-  typed argument errors.
+  typed argument errors preserving the original decoder cause through `Unwrap`.
+  Malformed restored state exposes `tuple.DecodeError` (including its byte offset
+  and cause) through `IllegalArgumentError` before any range read.
 - The relational engine caches deserialized schema templates process-wide (up
   to 256, keyed by name, version and the row's exact bytes; each read still
   loads the row). A pooled connection keeps its loaded schema across

@@ -5,6 +5,9 @@ package javanum
 // matches one type.
 type IllegalArgumentError struct {
 	Message string
+	Cause   error
 }
 
 func (e *IllegalArgumentError) Error() string { return e.Message }
+
+func (e *IllegalArgumentError) Unwrap() error { return e.Cause }

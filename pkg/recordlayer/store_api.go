@@ -659,7 +659,7 @@ func (store *FDBRecordStore) ScanRecordKeys(
 	}, tuplesEqual, func(pk tuple.Tuple) []byte { return pk.Pack() }, func(raw []byte) (tuple.Tuple, bool) {
 		pk, err := tuple.UnpackStrict(raw)
 		if err != nil {
-			unpackErr = &IllegalArgumentError{Message: err.Error()}
+			unpackErr = &IllegalArgumentError{Message: err.Error(), Cause: err}
 		} else if incomplete, _ := pk.HasIncompleteVersionstamp(); incomplete {
 			unpackErr = &IncompleteVersionstampError{Context: "record-key continuation lastValue"}
 		}

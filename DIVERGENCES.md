@@ -1806,6 +1806,13 @@ Java run; the new fixture requires heavyweight CI acceptance. See
 The pre-existing missing Go format-below-3 refusal remains deferred in TODO.md;
 this patch does not promise parity for those formats.
 
+Malformed restored tuple state returns `IllegalArgumentError` before reads;
+`errors.As` also reaches the original `tuple.DecodeError` with its containing
+top-level element offset and decoder cause. Physical-key decode failures retain
+their original decoder cause under the same argument classification (additionally
+wrapped in `RecordCoreArgumentError` for bare layouts), without changing messages
+or making physical decoding strict.
+
 Go deliberately rejects incomplete versionstamps earlier than Java on suffixed
 key scans. A supplied Dedup `lastValue` containing one returns a typed
 `IncompleteVersionstampError` before any physical read, even for an empty range;

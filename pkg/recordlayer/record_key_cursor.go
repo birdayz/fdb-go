@@ -79,7 +79,7 @@ func (c *recordKeyCursor) OnNext(ctx context.Context) (RecordCursorResult[tuple.
 	c.scanState.AddBytesScanned(int64(len(kv.Key) + len(kv.Value)))
 	key, err := tuplefast.SubspaceUnpack(kv.Key, c.prefixLength)
 	if err != nil {
-		cause := &IllegalArgumentError{Message: err.Error()}
+		cause := &IllegalArgumentError{Message: err.Error(), Cause: err}
 		if c.omitUnsplitRecordSuffix {
 			return RecordCursorResult[tuple.Tuple]{}, &RecordCoreArgumentError{
 				Message: "unable to unpack key", Cause: cause,
