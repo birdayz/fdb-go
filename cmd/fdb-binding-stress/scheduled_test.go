@@ -19,9 +19,11 @@ func TestTesterTimeoutKillsChildrenHoldingOutputPipes(t *testing.T) {
 	defer cancel()
 	ready := filepath.Join(t.TempDir(), "ready")
 	cmd := exec.CommandContext(ctx, "python3", "-c", `
-import subprocess, sys, time
-subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
-open(sys.argv[1], 'w').close()
+import os, subprocess, sys, time
+child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+with open(sys.argv[1] + '.tmp', 'w') as ready:
+    ready.write(str(child.pid))
+os.replace(sys.argv[1] + '.tmp', sys.argv[1])
 time.sleep(60)
 `, ready)
 	configureTesterProcess(cmd)
@@ -41,6 +43,10 @@ time.sleep(60)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	childPID, err := os.ReadFile(ready)
+	if err != nil || len(childPID) == 0 {
+		t.Fatalf("child PID not recorded: %q %v", childPID, err)
+	}
 	cancel()
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
@@ -51,6 +57,18 @@ time.sleep(60)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("harness children retained inherited output pipes past cancellation")
+	}
+	deadline = time.Now().Add(time.Second)
+	for {
+		stat, err := os.ReadFile("/proc/" + string(childPID) + "/stat")
+		// A killed orphan can remain a zombie until the host's init reaps it.
+		if os.IsNotExist(err) || (err == nil && strings.Contains(string(stat), ") Z ")) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("child %s survived cancellation: %s (%v)", childPID, stat, err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

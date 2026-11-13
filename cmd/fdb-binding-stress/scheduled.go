@@ -35,9 +35,8 @@ func correctnessModes(ops int) []workload {
 	}
 }
 
-// Seeds borrowed from foundationdb-rs at 248b4de71b81327955f545d09b5cc91f72d4f898,
-// scripts/run_bindingtester.sh, not bugs previously found in this client. API
-// workloads use our pinned 730 surface; retain the original HCA API 610 case.
+// Borrowed Rust regression seeds, not bugs found in this client; provenance is in
+// docs/client-correctness.md. Use API 730 except the original HCA API 610 case.
 func regressionCases() []seedCase {
 	modes := correctnessModes(1000)
 	cases := []seedCase{{3534790651, modes[1]}, {3864917676, modes[1]}, {3153055325, modes[2]}}
@@ -121,7 +120,7 @@ func runVerdict(r Report, scheduled bool, regressionsDone bool) error {
 	return nil
 }
 
-func executeRun(out string, seeds, start int, duration time.Duration, scheduled bool, w workload, binary, harness string) error {
+func executeRun(out string, seeds, start int, duration time.Duration, scheduled bool, w workload, harness string) error {
 	revision, err := exec.Command("git", "rev-parse", "HEAD").Output()
 	if err != nil {
 		return fmt.Errorf("record revision: %w", err)
@@ -146,7 +145,7 @@ func executeRun(out string, seeds, start int, duration time.Duration, scheduled 
 			return err
 		}
 		t0 := time.Now()
-		result := runSeed(ctx, seed, mode, binary, harness, dir)
+		result := runSeed(ctx, seed, mode, harness, dir)
 		result.Duration = time.Since(t0).Seconds()
 		r.Seeds = append(r.Seeds, result)
 		r.Total++

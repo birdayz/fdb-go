@@ -71,9 +71,9 @@ Two causes produce that signature, and they are distinguishable:
   hard there is an untrustworthy count: a parse that finds no jobs, or a `strategy.matrix`
   it cannot size statically.
 
-No scheduled workflow runs today: every nightly was deleted on 2026-10-09, and which of
-them return is an open item in `TODO.md`. A scheduled lane that returns sits outside this
-budget: it is not racing a merge, so overlapping a push costs queueing rather than a gate.
+The [hourly Go-client BindingTester lane](../docs/client-correctness.md) runs on
+GitHub-hosted runners outside this self-hosted pool and budget. Other retired nightly
+lanes remain invocation-only; this client-only schedule does not restore them.
 
 ## Prerequisites
 

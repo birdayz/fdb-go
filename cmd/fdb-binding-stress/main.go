@@ -77,6 +77,7 @@ func main() {
 	if err := validateRun(*seeds, *seedStart, *duration, *scheduled, w); err != nil {
 		log.Fatal(err)
 	}
+	btRunDir := setup()
 	if *outDir == "" {
 		*outDir = filepath.Join("binding-stress-out", time.Now().Format("20060102-150405.000000000"))
 	}
@@ -86,8 +87,7 @@ func main() {
 	if err := os.Mkdir(*outDir, 0o755); err != nil {
 		log.Fatal(err)
 	}
-	stacktester, btRunDir := setup()
-	if err := executeRun(*outDir, *seeds, *seedStart, *duration, *scheduled, w, stacktester, btRunDir); err != nil {
+	if err := executeRun(*outDir, *seeds, *seedStart, *duration, *scheduled, w, btRunDir); err != nil {
 		os.RemoveAll(btRunDir)
 		log.Print(err)
 		os.Exit(1)
@@ -95,7 +95,7 @@ func main() {
 	os.RemoveAll(btRunDir)
 }
 
-func runSeed(parent context.Context, seed int, w workload, stacktester, btRunDir, seedDir string) (r SeedResult) {
+func runSeed(parent context.Context, seed int, w workload, btRunDir, seedDir string) (r SeedResult) {
 	r = SeedResult{Seed: seed, Workload: w}
 
 	// Start FDB via testcontainers. WithDirectIP avoids Docker DNAT which
@@ -262,11 +262,13 @@ func isFDBAlive(ctx context.Context, container *foundationdb.Container) bool {
 	return err == nil
 }
 
-func setup() (stacktester string, btRunDir string) {
+func setup() (btRunDir string) {
 	// When run via `bazelisk run`, cwd is the sandbox. Use workspace dir.
 	wsDir := os.Getenv("BUILD_WORKSPACE_DIRECTORY")
 	if wsDir != "" {
-		os.Chdir(wsDir)
+		if err := os.Chdir(wsDir); err != nil {
+			log.Fatalf("change to workspace: %v", err)
+		}
 	}
 
 	fmt.Println("Building stacktester...")
@@ -342,7 +344,7 @@ func setup() (stacktester string, btRunDir string) {
 	preflightPythonFDB(btRunDir)
 
 	fmt.Fprintf(os.Stderr, "Stacktester: %s\nHarness: %s\n\n", stacktester, btRunDir)
-	return stacktester, btRunDir
+	return btRunDir
 }
 
 // installPythonFDB unpacks the pinned FDB Python client into the harness dir,
