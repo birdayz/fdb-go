@@ -438,7 +438,7 @@ func TestOnErrorRetryable_RetryableSet(t *testing.T) {
 		ErrTransactionTooOld, ErrFutureVersion,
 		ErrNotCommitted, ErrDatabaseLocked, ErrProcessBehind,
 		ErrBatchTransactionThrottled, ErrTagThrottled, ErrProxyTagThrottled,
-		ErrThrottledHotShard, ErrRangeLocked, ErrBlobGranuleRequestFailed,
+		ErrBlobGranuleRequestFailed,
 		ErrCommitUnknownResult, ErrClusterVersionChanged,
 		ErrProxyMemoryLimitExceeded, ErrGrvProxyMemoryLimit,
 	}

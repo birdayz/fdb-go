@@ -2514,10 +2514,19 @@ func (tx *Transaction) borrowedOnErrorVerdict(caller context.Context, op *readOp
 		}
 		return cause
 	}
+	if fdbErr.Code == ErrTransactionTimedOut {
+		return err
+	}
+	if tx.hasRetryLimit && tx.retryCount >= tx.retryLimit {
+		if fdbErr.Code == 0 {
+			return &wire.FDBError{Code: ErrInternalError}
+		}
+		return err
+	}
 	if fdbErr.Code == 0 {
 		return &wire.FDBError{Code: ErrClientInvalidOperation}
 	}
-	if fdbErr.Code == ErrTransactionTimedOut || tx.hasRetryLimit && tx.retryCount >= tx.retryLimit || !onErrorRetryable(fdbErr.Code) {
+	if !onErrorRetryable(fdbErr.Code) {
 		return err
 	}
 	if callerErr := caller.Err(); callerErr != nil {
@@ -2640,12 +2649,6 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 		return cerr // the recorded cause: the timeout above, or one recorded since
 	}
 
-	// NativeAPI::onError rejects success as client_invalid_operation.
-	if fdbErr.Code == 0 {
-		tx.state.Store(int32(txStateErrored))
-		return &wire.FDBError{Code: ErrClientInvalidOperation}
-	}
-
 	// Transaction timeout is NEVER retryable — matches C++ behavior where
 	// OnError(1031) returns 1031 and the error escapes the retry loop.
 	if fdbErr.Code == ErrTransactionTimedOut {
@@ -2656,7 +2659,18 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 	// Check retry limit before allowing any retry.
 	if tx.hasRetryLimit && tx.retryCount >= tx.retryLimit {
 		tx.state.Store(int32(txStateErrored))
+		if fdbErr.Code == 0 {
+			// RYW throws success before NativeAPI can classify it; delivering
+			// that invalid error trips Flow's assertion and surfaces internal_error.
+			return &wire.FDBError{Code: ErrInternalError}
+		}
 		return err
+	}
+
+	// RYW checks the retry limit before NativeAPI rejects success as client_invalid_operation.
+	if fdbErr.Code == 0 {
+		tx.state.Store(int32(txStateErrored))
+		return &wire.FDBError{Code: ErrClientInvalidOperation}
 	}
 
 	// Single source of WHETHER to retry (RFC-105 — derive, don't mirror):
@@ -2764,11 +2778,26 @@ func (tx *Transaction) GetReadVersion(ctx context.Context) (int64, error) {
 }
 
 func (tx *Transaction) stateSetReadVersion(version int64) {
+	if tx.deferredErr.Load() != nil {
+		return
+	}
 	tx.readVersionMu.Lock()
+	// NativeAPI::setVersion rejects an existing (including pending) GRV
+	// before validating the supplied version. The void C API defers that error.
+	if tx.hasReadVersion || tx.pendingReadVersion != nil {
+		tx.readVersionMu.Unlock()
+		tx.deferredErr.CompareAndSwap(nil, &wire.FDBError{Code: 2010})
+		return
+	}
+	if version <= 0 {
+		tx.readVersionMu.Unlock()
+		tx.deferredErr.CompareAndSwap(nil, &wire.FDBError{Code: 2011})
+		return
+	}
 	tx.readVersion = version
 	tx.hasReadVersion = true
 	tx.userSetReadVersion = true
-	tx.pendingReadVersion = nil // an older GRV may finish, but cannot replace this explicit version
+	tx.pendingReadVersion = nil
 	// A caller-supplied version's MVCC window opened on the cluster at an instant
 	// this client never observed, so there is no anchor to report. Zeroing (rather
 	// than leaving a prior GRV's stamp) keeps "instant describes the CURRENT read

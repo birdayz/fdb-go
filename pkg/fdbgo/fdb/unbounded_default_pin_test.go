@@ -1,8 +1,33 @@
 package fdb
 
 import (
+	"context"
+	"errors"
 	"testing"
+
+	"fdb.dev/pkg/fdbgo/client"
 )
+
+func TestWrappedDatabaseContextReachesTransactionsAndSnapshots(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	db := WrapDatabaseContext(ctx, nil)
+	tr := WrapTransaction(&client.Transaction{}, db)
+	snapshot := tr.Snapshot().(Snapshot)
+	if db.d.ctx != ctx || tr.t.ctx != ctx || snapshot.tx.ctx != ctx {
+		t.Fatal("wrapped database/transaction/snapshot did not inherit the caller context")
+	}
+	cancel()
+	for _, inherited := range []context.Context{db.d.ctx, tr.t.ctx, snapshot.tx.ctx} {
+		if !errors.Is(inherited.Err(), context.Canceled) {
+			t.Fatalf("inherited context ignored cancellation: %v", inherited.Err())
+		}
+	}
+	if WrapDatabase(nil).d.ctx.Err() != nil {
+		t.Fatal("canceling contextual wrapper changed the default background wrapper")
+	}
+}
 
 // The fdb-layer half of the claim the package doc at fdb.dev/pkg/fdbgo makes: the
 // no-context Transact / ReadTransact carry NO internal deadline. Together with the

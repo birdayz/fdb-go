@@ -31,6 +31,9 @@ go_binary(
 go_test(
     name = "fdb-stacktester_test",
     srcs = [
+        "directory_context_test.go",
+        "directory_unpack_test.go",
+        "metrics_test.go",
         "operations_test.go",
         "thread_test.go",
         "tuple_directory_test.go",
@@ -40,6 +43,9 @@ go_test(
         "//pkg/fdbgo/client",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/directory",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/transport",
+        "//pkg/fdbgo/wire/types",
         "//pkg/testcontainers/foundationdb",
         "@com_github_apple_foundationdb_bindings_go//src/fdb/tuple",
     ],

@@ -496,6 +496,8 @@ func TestFDB_Unreadable_Matrix(t *testing.T) {
 		if err != nil {
 			t.Fatalf("baseline GRV: %v", err)
 		}
+		// A fetched GRV cannot be overwritten; start a fresh transaction incarnation.
+		tx.Reset()
 		tx.SetReadVersion(rv + 50_000_000)
 		k := append(append([]byte(nil), pfx...), []byte("drain1")...)
 		other := append(append([]byte(nil), pfx...), []byte("drain1-other")...)
@@ -521,6 +523,8 @@ func TestFDB_Unreadable_Matrix(t *testing.T) {
 		if err != nil {
 			t.Fatalf("baseline GRV: %v", err)
 		}
+		// A fetched GRV cannot be overwritten; start a fresh transaction incarnation.
+		tx.Reset()
 		tx.SetReadVersion(rv + 50_000_000)
 		k := append(append([]byte(nil), pfx...), []byte("stale1")...)
 		other := append(append([]byte(nil), pfx...), []byte("stale1-other")...)
@@ -556,6 +560,8 @@ func TestFDB_Unreadable_Matrix(t *testing.T) {
 		if err != nil {
 			t.Fatalf("baseline GRV: %v", err)
 		}
+		// A fetched GRV cannot be overwritten; start a fresh transaction incarnation.
+		tx.Reset()
 		tx.SetReadVersion(rv + 50_000_000)
 		k := append(append([]byte(nil), pfx...), []byte("watch1")...)
 		if _, _, _, _, _, err := tx.WatchSetup(ctx, k); err == nil {

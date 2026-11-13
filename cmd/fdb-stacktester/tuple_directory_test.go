@@ -211,14 +211,14 @@ func TestLogDirectoryStaleAndInvalidEntries(t *testing.T) {
 	db, ctx := stacktesterDatabase(t)
 	sm := NewStackMachine(db, []byte("stale-directory"))
 	root := sm.currentDir().dir
-	stale, err := root.CreateOrOpen(sm.fdbDB(), []string{"removed"}, nil)
+	stale, err := root.CreateOrOpen(sm.fdbDB(ctx), []string{"removed"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := stale.CreateOrOpen(sm.fdbDB(), []string{"child"}, nil); err != nil {
+	if _, err := stale.CreateOrOpen(sm.fdbDB(ctx), []string{"child"}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := root.Remove(sm.fdbDB(), []string{"removed"}); err != nil {
+	if _, err := root.Remove(sm.fdbDB(ctx), []string{"removed"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {

@@ -288,7 +288,7 @@ print('Test had 0 incorrect result(s) and 0 error(s)')
 				t.Fatal(err)
 			}
 			if tc.name == "insufficient_budget" {
-				if !report.Scheduled || report.Total != 0 || len(report.Seeds) != 0 || report.CompleteCycles != 0 || !strings.Contains(report.Error, "budget exhausted") {
+				if !report.Scheduled || report.Total != 0 || len(report.Seeds) != 0 || report.CompleteCycles != 0 || report.Error != "no completed cases" {
 					t.Fatalf("vacuous scheduled run accepted: %s", data)
 				}
 				return

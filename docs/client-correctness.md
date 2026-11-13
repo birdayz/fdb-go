@@ -109,7 +109,10 @@ failure and preserve its evidence rather than rerunning it away.
 
 Use the same checkout SHA and pinned dependencies, with an absolute output path
 outside the checkout. Preserve the original artifact before running anything
-again. To reproduce the scheduled run, use its saved seed start:
+again. Ensure `python3 --version` reports **3.11** before invoking the runner:
+Python 3.14 generated different instructions for the same seed during failure
+investigation. The Python version is part of the replay contract, not just an
+oracle-installation requirement. To reproduce the scheduled run, use its saved seed start:
 
 ```sh
 seed=123456 # replace with seed-start.txt from the artifact

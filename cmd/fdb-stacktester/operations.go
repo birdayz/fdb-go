@@ -477,15 +477,20 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		}
 
 	case "GET_ESTIMATED_RANGE_SIZE":
-		_ = sm.popBytes() // begin
-		_ = sm.popBytes() // end
-		sm.push(idx, []byte("GOT_ESTIMATED_RANGE_SIZE"))
+		begin, end := sm.popBytes(), sm.popBytes()
+		if _, err := sm.currentTr().GetEstimatedRangeSizeBytes(ctx, begin, end); err != nil {
+			sm.pushError(idx, err)
+		} else {
+			sm.push(idx, []byte("GOT_ESTIMATED_RANGE_SIZE"))
+		}
 
 	case "GET_RANGE_SPLIT_POINTS":
-		_ = sm.popBytes() // begin
-		_ = sm.popBytes() // end
-		_ = sm.popInt64() // chunkSize
-		sm.push(idx, []byte("GOT_RANGE_SPLIT_POINTS"))
+		begin, end, chunkSize := sm.popBytes(), sm.popBytes(), sm.popInt64()
+		if _, err := sm.currentTr().GetRangeSplitPoints(ctx, begin, end, chunkSize); err != nil {
+			sm.pushError(idx, err)
+		} else {
+			sm.push(idx, []byte("GOT_RANGE_SPLIT_POINTS"))
+		}
 
 	// --- Conflict ranges ---
 	case "READ_CONFLICT_RANGE":

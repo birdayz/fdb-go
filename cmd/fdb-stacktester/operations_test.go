@@ -17,7 +17,7 @@ import (
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 )
 
-func stacktesterDatabase(t *testing.T) (*client.Database, context.Context) {
+func stacktesterDatabase(t *testing.T, opts ...client.Option) (*client.Database, context.Context) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	t.Cleanup(cancel)
@@ -43,7 +43,7 @@ func stacktesterDatabase(t *testing.T) (*client.Database, context.Context) {
 	if err := os.WriteFile(path, []byte(cluster), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	db, err := client.OpenDatabase(ctx, path, client.WithAPIVersion(730))
+	db, err := client.OpenDatabase(ctx, path, append([]client.Option{client.WithAPIVersion(730)}, opts...)...)
 	if err != nil {
 		t.Fatal(err)
 	}

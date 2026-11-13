@@ -179,8 +179,6 @@ func TestOnError_AllRetryableCodes(t *testing.T) {
 		{"batch_transaction_throttled", ErrBatchTransactionThrottled},
 		{"tag_throttled", ErrTagThrottled},
 		{"proxy_tag_throttled", ErrProxyTagThrottled},
-		{"throttled_hot_shard", ErrThrottledHotShard},
-		{"range_locked", ErrRangeLocked},
 		// all_alternatives_failed (1006) is NOT retryable at OnError level.
 		// It's retried at Layer 2 (read path wrong-shard loop). If it
 		// escapes to OnError, it means the read path exhausted retries
@@ -216,10 +214,15 @@ func TestOnErrorSuccessCodeIsInvalidOperation(t *testing.T) {
 		if retryLimit {
 			tx.SetRetryLimit(0)
 		}
-		err := tx.OnError(context.Background(), fmt.Errorf("wrapped: %w", &wire.FDBError{Code: 0}))
+		input := fmt.Errorf("wrapped: %w", &wire.FDBError{Code: 0})
+		err := tx.OnError(context.Background(), input)
+		want := ErrClientInvalidOperation
+		if retryLimit {
+			want = ErrInternalError
+		}
 		var fdbErr *wire.FDBError
-		if !errors.As(err, &fdbErr) || fdbErr.Code != ErrClientInvalidOperation {
-			t.Fatalf("OnError(success), retryLimit=%v: got %v, want 2000", retryLimit, err)
+		if !errors.As(err, &fdbErr) || fdbErr.Code != want {
+			t.Fatalf("OnError(success), retryLimit=%v: got %v, want %d", retryLimit, err, want)
 		}
 		if tx.retryCount != 0 {
 			t.Fatalf("OnError(success) retried %d times", tx.retryCount)
@@ -229,16 +232,24 @@ func TestOnErrorSuccessCodeIsInvalidOperation(t *testing.T) {
 
 func TestBorrowedOnErrorSuccessCodeIsInvalidOperation(t *testing.T) {
 	t.Parallel()
-	tx := &Transaction{}
-	tx.SetReadVersion(123)
-	op := &readOperation{Context: tx.readLife.ctx, readAdmission: readAdmission{tx: tx, inc: tx.readLife, parent: context.Background()}}
-	err := tx.borrowedOnErrorVerdict(context.Background(), op, &wire.FDBError{Code: 0})
-	var fdbErr *wire.FDBError
-	if !errors.As(err, &fdbErr) || fdbErr.Code != ErrClientInvalidOperation {
-		t.Fatalf("borrowed OnError(success)=%v, want 2000", err)
-	}
-	if tx.retryCount != 0 || txState(tx.state.Load()) != txStateActive {
-		t.Fatal("borrowed OnError changed the owner's transaction")
+	for _, retryLimit := range []bool{false, true} {
+		tx := &Transaction{}
+		tx.SetReadVersion(123)
+		want := ErrClientInvalidOperation
+		if retryLimit {
+			tx.SetRetryLimit(0)
+			want = ErrInternalError
+		}
+		op := &readOperation{Context: tx.readLife.ctx, readAdmission: readAdmission{tx: tx, inc: tx.readLife, parent: context.Background()}}
+		input := &wire.FDBError{Code: 0}
+		err := tx.borrowedOnErrorVerdict(context.Background(), op, input)
+		var fdbErr *wire.FDBError
+		if !errors.As(err, &fdbErr) || fdbErr.Code != want {
+			t.Fatalf("borrowed OnError(success), retryLimit=%v: got %v, want %d", retryLimit, err, want)
+		}
+		if tx.retryCount != 0 || txState(tx.state.Load()) != txStateActive {
+			t.Fatal("borrowed OnError changed the owner's transaction")
+		}
 	}
 }
 

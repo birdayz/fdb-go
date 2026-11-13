@@ -306,7 +306,15 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *client.ClusterFile, opts ..
 // This is useful when code already has a client.Database handle and needs
 // to use the fdb facade layer (e.g., for the directory layer).
 func WrapDatabase(db *client.Database) Database {
-	return Database{d: &internalDB{inner: db, ctx: context.Background()}}
+	return WrapDatabaseContext(context.Background(), db)
+}
+
+// WrapDatabaseContext wraps an existing client.Database with a context for facade
+// reads and retry loops. Transactions wrapped with this database, including their
+// snapshots, inherit ctx. Explicit TransactCtx/ReadTransactCtx calls override it.
+// As with TransactCtx, cancellation does not end an already-dispatched commit's wait.
+func WrapDatabaseContext(ctx context.Context, db *client.Database) Database {
+	return Database{d: &internalDB{inner: db, ctx: ctx}}
 }
 
 // Open opens a database. The dbName parameter is ignored (legacy API compatibility).
