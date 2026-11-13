@@ -83,6 +83,7 @@ class CampaignTest(unittest.TestCase):
         self.plan = r3_plan.make_plan(self.args)
 
     def test_r3_recipe_and_counterbalance(self):
+        self.assertEqual(self.plan['go_version'], 'go1.27.4')
         self.assertEqual(self.plan['workloads'], [dict(name='batchset50', iterations=3000, warmup=200, workers=1)])
         self.assertEqual(self.plan['campaign_wall_cap_seconds'], 180)
         self.assertEqual(self.plan['environment']['GOMAXPROCS'], '8')
@@ -241,7 +242,7 @@ class CampaignTest(unittest.TestCase):
             backend = dict(backend=entry['arm'], native_library=native, executable=binary,
                            executable_sha256=pins[binary], api_version=730,
                            loaded_fdb_libraries_sha256={str(self.root / 'native'): plan['native_library_sha256']} if native else {})
-            manifest = dict(config=cfg, backend=backend, go_version='go1.27.3', gomaxprocs=8)
+            manifest = dict(config=cfg, backend=backend, go_version='go1.27.4', gomaxprocs=8)
             before = dict(process_user_cpu_us=100, process_system_cpu_us=50, go_total_alloc_bytes=0,
                           go_mallocs=0, go_gc_cycles=0, go_gc_pause_ns=0, process_high_water_rss_kb=1)
             identity = dict(before, process_user_cpu_us=25, process_system_cpu_us=10)
@@ -372,6 +373,7 @@ class CampaignTest(unittest.TestCase):
             ('empty_schedule', 'schedule.json', lambda x: x.clear()),
             ('bad_exit', 'result.json', lambda x: x.update(returncode=1)),
             ('wrong_source', 'manifest.json', lambda x: x['config'].update(source_revision='wrong')),
+            ('old_toolchain', 'manifest.json', lambda x: x.update(go_version='go1.27.3')),
             ('profiling', 'manifest.json', lambda x: x['config'].update(profile='cpu')),
             ('wrong_binary', 'manifest.json', lambda x: x['backend'].update(executable_sha256='0' * 64)),
             ('synthetic_native_counters', 'summary.json', lambda x: x['client_counters_delta'].update(observation='observed')),
@@ -399,6 +401,8 @@ class CampaignTest(unittest.TestCase):
                 mutate_json(folder / filename, mutate)
                 result = self.analyze(out)
                 self.assertNotEqual(result.returncode, 0, name)
+                if name == 'old_toolchain':
+                    self.assertIn('Go toolchain differs from plan', result.stderr)
                 self.assertFalse((out / 'analysis.json').exists(), name)
         for name, filename, column, value in [('duplicate_index', 'samples.csv', 1, '1'),
                                                ('bad_check', 'samples.csv', 7, 'error'),
