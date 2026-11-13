@@ -277,7 +277,9 @@ func TestWriteJSONRejectsPersistenceFailure(t *testing.T) {
 
 func TestWriteJSONProcess(t *testing.T) {
 	if path := os.Getenv("WRITE_JSON_PATH"); path != "" {
-		writeJSON(path, map[string]bool{"pass": true})
+		if err := writeJSON(path, map[string]bool{"pass": true}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

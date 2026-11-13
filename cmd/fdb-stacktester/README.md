@@ -96,9 +96,9 @@ pip3 install "foundationdb>=7.3,<7.3.99"
 # 3. Set up bindingtester
 BTDIR=$HOME/.cache/bazel/_bazel_birdy/*/external/foundationdb+/bindings/bindingtester
 mkdir -p /tmp/bt-run/bindingtester
-cp -r $BTDIR/* /tmp/bt-run/bindingtester/
+cp -rL $BTDIR/* /tmp/bt-run/bindingtester/
 sed -i "s|sys.path\[:0\].*||" /tmp/bt-run/bindingtester/__init__.py
-sed -i "s|import util|from bindingtester import util|" /tmp/bt-run/bindingtester/__init__.py
+sed -i "s|^import util$|from bindingtester import util|" /tmp/bt-run/bindingtester/__init__.py
 sed -i "s|from fdb import LATEST_API_VERSION|LATEST_API_VERSION = 730|" /tmp/bt-run/bindingtester/__init__.py
 
 # 4. Build and run

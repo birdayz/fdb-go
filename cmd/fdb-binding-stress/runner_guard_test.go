@@ -76,6 +76,51 @@ func TestExecuteRunRevisionFailureStartsNoCases(t *testing.T) {
 	}
 }
 
+func TestExecuteRunInitialReportFailureStartsNoSeed(t *testing.T) {
+	guardGit(t, false)
+	for _, mode := range []string{"write", "rename"} {
+		t.Run(mode, func(t *testing.T) {
+			out := t.TempDir()
+			blocked := filepath.Join(out, "report.json")
+			if mode == "write" {
+				blocked += ".tmp"
+				if err := os.WriteFile(filepath.Join(out, "report.json"), []byte("prior report"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Mkdir(blocked, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(blocked, "sentinel"), []byte("prior evidence"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			d := defaultRunnerDeps(func(context.Context, int, workload, string, string) SeedResult {
+				calls++
+				return SeedResult{Pass: true, FDBAlive: true}
+			})
+			err := executeRunWithDeps(context.Background(), out, 1, 146, 0, false, workload{"api", 20, 1, false, 730}, "unused", d)
+			if err == nil || calls != 0 || !strings.Contains(err.Error(), blocked) {
+				t.Fatalf("initial persistence err=%v calls=%d", err, calls)
+			}
+			cases, globErr := filepath.Glob(filepath.Join(out, "case-*"))
+			if globErr != nil || len(cases) != 0 {
+				t.Fatalf("initial persistence failure started cases: %v %v", cases, globErr)
+			}
+			data, readErr := os.ReadFile(filepath.Join(blocked, "sentinel"))
+			if readErr != nil || string(data) != "prior evidence" {
+				t.Fatalf("lost evidence: %q %v", data, readErr)
+			}
+			if mode == "write" {
+				data, readErr := os.ReadFile(filepath.Join(out, "report.json"))
+				if readErr != nil || string(data) != "prior report" {
+					t.Fatalf("lost prior report: %q %v", data, readErr)
+				}
+			}
+		})
+	}
+}
+
 func TestExecuteRunCaseMkdirFailureStartsNoSeed(t *testing.T) {
 	guardGit(t, false)
 	out := t.TempDir()

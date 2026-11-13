@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 go_library(
     name = "fdb-binding-stress_lib",
     srcs = [
+        "bindingtester_setup.go",
         "main.go",
         "scheduled.go",
     ],
@@ -66,12 +67,16 @@ go_test(
     name = "fdb-binding-stress_test",
     # Integration sources belong to the test-full target above.
     srcs = [
+        "bindingtester_setup_test.go",
         "main_test.go",
         "runner_guard_test.go",
         "scheduled_test.go",
         "setup_guard_test.go",
     ],  # keep
-    data = [":python_fdb_tar"],
+    data = [
+        ":python_fdb_tar",
+        "@foundationdb//:bindingtester",
+    ],
     embed = [":fdb-binding-stress_lib"],
     tags = ["resources:memory:400"],
 )

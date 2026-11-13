@@ -241,6 +241,18 @@ print('Test had 0 incorrect result(s) and 0 error(s)')
 				return
 			}
 			if strings.HasPrefix(tc.name, "report_") && strings.HasSuffix(tc.name, "_failure") {
+				harness := ""
+				for _, line := range strings.Split(string(out), "\n") {
+					if strings.HasPrefix(line, "Harness: ") {
+						harness = strings.TrimPrefix(line, "Harness: ")
+					}
+				}
+				if harness == "" {
+					t.Fatalf("runner never owned a harness: %s", out)
+				}
+				if _, err := os.Stat(harness); !os.IsNotExist(err) {
+					t.Fatalf("report failure leaked owned harness %s: %v", harness, err)
+				}
 				blocked := "report.json.tmp"
 				if tc.name == "report_rename_failure" {
 					blocked = "report.json"
@@ -399,7 +411,10 @@ func TestScheduledRunnerProcess(t *testing.T) {
 	if mode == "" {
 		return
 	}
-	harness := setup()
+	_, harness, err := setup()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer os.RemoveAll(harness)
 	if err := os.Mkdir("results", 0o755); err != nil {
 		t.Fatal(err)

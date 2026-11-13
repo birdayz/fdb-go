@@ -14,7 +14,11 @@ func TestSetupGuardProcess(t *testing.T) {
 	if os.Getenv("RUNNER_SETUP_GUARD_PROCESS") != "1" {
 		return
 	}
-	fmt.Println("SETUP_HARNESS=" + setup())
+	_, harness, err := setup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Println("SETUP_HARNESS=" + harness)
 }
 
 func TestSetupUsesExactNestedBazelArguments(t *testing.T) {

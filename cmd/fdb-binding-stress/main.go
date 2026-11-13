@@ -64,6 +64,10 @@ type Report struct {
 }
 
 func main() {
+	os.Exit(run(realRunSeed))
+}
+
+func run(seedRunner func(context.Context, int, workload, string, string) SeedResult) int {
 	seeds := flag.Int("seeds", 100, "number of seeds (unless -duration is set)")
 	ops := flag.Int("ops", 1000, "operations per seed")
 	duration := flag.Duration("duration", 0, "wall-time budget; overrides -seeds")
@@ -77,24 +81,31 @@ func main() {
 	flag.Parse()
 	w := workload{Test: *testName, Ops: *ops, Concurrency: *concurrency, Compare: *compare, APIVersion: *apiVersion}
 	if err := validateRun(*seeds, *seedStart, *duration, *scheduled, w); err != nil {
-		log.Fatal(err)
+		log.Print(err)
+		return 1
 	}
-	btRunDir := setup()
+	_, btRunDir, err := setup()
+	if err != nil {
+		log.Print(err)
+		return 1
+	}
+	defer os.RemoveAll(btRunDir)
 	if *outDir == "" {
 		*outDir = filepath.Join("binding-stress-out", time.Now().Format("20060102-150405.000000000"))
 	}
 	if err := os.MkdirAll(filepath.Dir(*outDir), 0o755); err != nil {
-		log.Fatal(err)
+		log.Print(err)
+		return 1
 	}
 	if err := os.Mkdir(*outDir, 0o755); err != nil {
-		log.Fatal(err)
-	}
-	if err := executeRun(*outDir, *seeds, *seedStart, *duration, *scheduled, w, btRunDir); err != nil {
-		os.RemoveAll(btRunDir)
 		log.Print(err)
-		os.Exit(1)
+		return 1
 	}
-	os.RemoveAll(btRunDir)
+	if err := executeRunWithDeps(context.Background(), *outDir, *seeds, *seedStart, *duration, *scheduled, w, btRunDir, defaultRunnerDeps(seedRunner)); err != nil {
+		log.Print(err)
+		return 1
+	}
+	return 0
 }
 
 func runSeed(parent context.Context, seed int, w workload, btRunDir, seedDir string) SeedResult {
@@ -280,12 +291,12 @@ func databaseAvailable(output string, err error) bool {
 	return json.Unmarshal([]byte(output), &status) == nil && status.Client.DatabaseStatus.Available
 }
 
-func setup() (btRunDir string) {
+func setup() (stacktester string, btRunDir string, err error) {
 	// When run via `bazelisk run`, cwd is the sandbox. Use workspace dir.
 	wsDir := os.Getenv("BUILD_WORKSPACE_DIRECTORY")
 	if wsDir != "" {
 		if err := os.Chdir(wsDir); err != nil {
-			log.Fatalf("change to workspace: %v", err)
+			return "", "", fmt.Errorf("change to workspace: %w", err)
 		}
 	}
 
@@ -296,12 +307,12 @@ func setup() (btRunDir string) {
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		log.Fatalf("bazelisk build failed: %v", err)
+		return "", "", fmt.Errorf("bazelisk build failed: %w", err)
 	}
 
-	stacktester, err := filepath.Abs("bazel-bin/cmd/fdb-stacktester/fdb-stacktester_/fdb-stacktester")
+	stacktester, err = filepath.Abs("bazel-bin/cmd/fdb-stacktester/fdb-stacktester_/fdb-stacktester")
 	if err != nil {
-		log.Fatalf("resolve stacktester path: %v", err)
+		return "", "", fmt.Errorf("resolve stacktester path: %w", err)
 	}
 	// Resolve symlinks to get the stable cache path. The bazel-bin/ symlink
 	// gets recreated on every Bazel invocation, so if a concurrent build runs
@@ -310,59 +321,54 @@ func setup() (btRunDir string) {
 	// cache which survives across builds.
 	stacktester, err = filepath.EvalSymlinks(stacktester)
 	if err != nil {
-		log.Fatalf("resolve stacktester symlinks: %v", err)
+		return "", "", fmt.Errorf("resolve stacktester symlinks: %w", err)
 	}
 	if _, err := os.Stat(stacktester); err != nil {
-		log.Fatalf("stacktester not found at %s", stacktester)
+		return "", "", fmt.Errorf("stacktester not found at %s: %w", stacktester, err)
 	}
 
-	btRunDir, err = os.MkdirTemp("", "fdb-binding-harness-")
-	if err != nil {
-		log.Fatalf("create private harness directory: %v", err)
-	}
 	btDir, err := findBindingTesterDir()
 	if err != nil {
-		log.Fatalf("find bindingtester: %v", err)
+		return "", "", fmt.Errorf("find bindingtester: %w", err)
 	}
 
-	os.MkdirAll(filepath.Join(btRunDir, "bindingtester"), 0o755)
-	cp := exec.Command("cp", "-r", btDir+"/.", filepath.Join(btRunDir, "bindingtester/"))
-	if out, err := cp.CombinedOutput(); err != nil {
-		log.Fatalf("copy bindingtester: %s: %v", out, err)
+	btRunDir, err = prepareBindingTester(btDir, os.TempDir())
+	if err != nil {
+		return "", "", fmt.Errorf("prepare bindingtester: %w", err)
 	}
-
-	// Patch Python imports for standalone use.
-	initPy := filepath.Join(btRunDir, "bindingtester/__init__.py")
-	data, _ := os.ReadFile(initPy)
-	s := string(data)
-	s = strings.ReplaceAll(s, "sys.path[:0]", "# patched")
-	s = strings.ReplaceAll(s, "import util", "from bindingtester import util")
-	s = strings.ReplaceAll(s, "from fdb import LATEST_API_VERSION", "LATEST_API_VERSION = 730")
-	os.WriteFile(initPy, []byte(s), 0o644)
+	defer func(dir string) {
+		if err != nil {
+			os.RemoveAll(dir)
+		}
+	}(btRunDir)
 
 	// The oracle stack machine is upstream test code, not part of the Python sdist.
 	pythonTests := filepath.Join(filepath.Dir(btDir), "python", "tests")
-	if out, err := exec.Command("cp", "-r", pythonTests, filepath.Join(btRunDir, "python")).CombinedOutput(); err != nil {
-		log.Fatalf("copy Python oracle: %s: %v", out, err)
+	if out, err := exec.Command("cp", "-rL", pythonTests, filepath.Join(btRunDir, "python")).CombinedOutput(); err != nil {
+		return "", "", fmt.Errorf("copy Python oracle: %s: %w", out, err)
 	}
 	known := filepath.Join(btRunDir, "bindingtester", "known_testers.py")
 	f, err := os.OpenFile(known, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
-		log.Fatal(err)
+		return "", "", fmt.Errorf("open known testers: %w", err)
 	}
 	_, err = fmt.Fprintf(f, "\ntesters['python'] = Tester('python', 'python3 %s', 2040, 23, 730, types=ALL_TYPES, tenants_enabled=True)\ntesters['pure_go'] = Tester('pure_go', '%s', 2040, 510, 730, types=ALL_TYPES)\n", filepath.Join(btRunDir, "python", "tester.py"), stacktester)
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}
 	if err != nil {
-		log.Fatal(err)
+		return "", "", fmt.Errorf("register testers: %w", err)
 	}
 
-	installPythonFDB(btRunDir)
-	preflightPythonFDB(btRunDir)
+	if err = installPythonFDB(btRunDir); err != nil {
+		return "", "", err
+	}
+	if err = preflightPythonFDB(btRunDir); err != nil {
+		return "", "", err
+	}
 
 	fmt.Fprintf(os.Stderr, "Stacktester: %s\nHarness: %s\n\n", stacktester, btRunDir)
-	return btRunDir
+	return stacktester, btRunDir, nil
 }
 
 // installPythonFDB unpacks the pinned FDB Python client into the harness dir,
@@ -371,25 +377,26 @@ func setup() (btRunDir string) {
 // and a developer laptop, and so the binding under test is version-locked to
 // the pinned C client instead of to whatever `pip install foundationdb` last
 // left behind.
-func installPythonFDB(btRunDir string) {
+func installPythonFDB(btRunDir string) error {
 	tar, err := filepath.Abs("bazel-bin/cmd/fdb-binding-stress/python-fdb.tar")
 	if err != nil {
-		log.Fatalf("resolve python fdb tar path: %v", err)
+		return fmt.Errorf("resolve python fdb tar path: %w", err)
 	}
 	// See the stacktester resolution above for why the symlink is resolved.
 	tar, err = filepath.EvalSymlinks(tar)
 	if err != nil {
-		log.Fatalf("resolve python fdb tar symlinks: %v", err)
+		return fmt.Errorf("resolve python fdb tar symlinks: %w", err)
 	}
 
 	// Refuse to mix a partial install with the pinned archive.
 	if err := os.RemoveAll(filepath.Join(btRunDir, "fdb")); err != nil {
-		log.Fatalf("remove stale python fdb: %v", err)
+		return fmt.Errorf("remove stale python fdb: %w", err)
 	}
 	untar := exec.Command("tar", "xf", tar, "-C", btRunDir)
 	if out, err := untar.CombinedOutput(); err != nil {
-		log.Fatalf("unpack python fdb (%s): %s: %v", tar, out, err)
+		return fmt.Errorf("unpack python fdb (%s): %s: %w", tar, out, err)
 	}
+	return nil
 }
 
 // preflightPythonProgram is the probe preflightPythonFDB runs in the tester's Python.
@@ -415,18 +422,19 @@ print(fdb.__file__)
 // preflight therefore has to touch something the real client defines —
 // api_version is the first thing the tester itself calls — and reject the
 // file-less namespace case explicitly.
-func preflightPythonFDB(btRunDir string) {
+func preflightPythonFDB(btRunDir string) error {
 	cmd := exec.Command("python3", "-c", preflightPythonProgram)
 	cmd.Dir = btRunDir
 	cmd.Env = append(os.Environ(), "PYTHONPATH="+btRunDir)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Fatalf("the binding tester's Python client is not importable — every seed "+
+		return fmt.Errorf("the binding tester's Python client is not importable — every seed "+
 			"would fail with an opaque exec status.\npython3 -c 'import fdb' under %s said:\n%s\n"+
 			"(the client is unpacked from //cmd/fdb-binding-stress:python_fdb_tar; it also "+
-			"needs libfdb_c on the system loader path)", btRunDir, out)
+			"needs libfdb_c on the system loader path): %w", btRunDir, out, err)
 	}
 	fmt.Fprintf(os.Stderr, "Python FDB client: %s", out)
+	return nil
 }
 
 func findBindingTesterDir() (string, error) {
@@ -443,15 +451,17 @@ func findBindingTesterDir() (string, error) {
 	return "", fmt.Errorf("bindingtester dir not found (run bazelisk build first)")
 }
 
-func writeJSON(path string, v any) {
+func writeJSON(path string, v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("marshal JSON %s: %w", path, err)
 	}
-	if err := os.WriteFile(path+".tmp", data, 0o644); err != nil {
-		log.Fatal(err)
+	temp := path + ".tmp"
+	if err := os.WriteFile(temp, data, 0o644); err != nil {
+		return fmt.Errorf("write JSON %s: %w", temp, err)
 	}
-	if err := os.Rename(path+".tmp", path); err != nil {
-		log.Fatal(err)
+	if err := os.Rename(temp, path); err != nil {
+		return fmt.Errorf("rename JSON %s to %s: %w", temp, path, err)
 	}
+	return nil
 }

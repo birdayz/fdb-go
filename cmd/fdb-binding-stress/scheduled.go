@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -170,12 +171,14 @@ func executeRunWithDeps(parent context.Context, out string, seeds, start int, du
 		ctx, cancel = context.WithTimeout(parent, duration)
 	}
 	defer cancel()
-	persist := func() {
+	persist := func() error {
 		r.Finished = deps.now().Format(time.RFC3339)
 		r.Elapsed = deps.now().Sub(started).String()
-		writeJSON(filepath.Join(out, "report.json"), r)
+		return writeJSON(filepath.Join(out, "report.json"), r)
 	}
-	persist()
+	if err := persist(); err != nil {
+		return err
+	}
 	run := func(seed int, mode workload) error {
 		dir := filepath.Join(out, fmt.Sprintf("case-%05d-%s-seed-%d", r.Total, mode.Test, seed))
 		if err := os.Mkdir(dir, 0o755); err != nil {
@@ -195,8 +198,7 @@ func executeRunWithDeps(parent context.Context, out string, seeds, start int, du
 			r.FDBDeaths++
 		}
 		fmt.Printf("%s seed=%d concurrency=%d compare=%v pass=%v (%.1fs) %s\n", mode.Test, seed, mode.Concurrency, mode.Compare, result.Pass, result.Duration, result.Error)
-		persist()
-		return nil
+		return persist()
 	}
 	// Do not start work we cannot give its full per-case timeout. The outer
 	// deadline still bounds all work, including startup and cleanup overhead.
@@ -212,7 +214,9 @@ func executeRunWithDeps(parent context.Context, out string, seeds, start int, du
 	if err != nil {
 		r.Error = err.Error()
 	}
-	persist()
+	if persistErr := persist(); persistErr != nil {
+		return errors.Join(err, persistErr)
+	}
 	fmt.Printf("binding-stress: %d/%d passed, cycles=%d; report=%s\n", r.Pass, r.Total, r.CompleteCycles, filepath.Join(out, "report.json"))
 	return err
 }

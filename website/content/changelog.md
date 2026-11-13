@@ -110,6 +110,9 @@ Each is described in full under Compatibility or Changed below.
   `CommitTransactionRef.Read_conflict_ranges_disabled` a `SpanContext` (RFC-276).
 
 ### Compatibility
+- **Go toolchain:** post-v0.2.0 development requires **Go 1.27.4** or newer for
+  GO-2026-6859 (`net/http` MaxBytesReader header race); no application API, SQL or
+  persisted-format change.
 - **Version-dependent record keys (RFC-275):** native `VersionKey()` primary-key columns are
   unsupported, as in Java; formerly accepted Go-only metadata is now refused. Complete supplied
   versions participate in maintained-count keys and reach primary-key functions such as
