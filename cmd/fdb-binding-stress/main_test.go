@@ -224,6 +224,63 @@ func TestPreflightRejectsAnEmptyNamespacePackage(t *testing.T) {
 	}
 }
 
+func TestWriteJSONRejectsPersistenceFailure(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"success", "write", "rename"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "report.json")
+			if mode != "success" {
+				blocked := path
+				if mode == "write" {
+					blocked += ".tmp"
+					if err := os.WriteFile(path, []byte("prior report"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := os.Mkdir(blocked, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(blocked, "sentinel"), []byte("prior evidence"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := exec.Command(os.Args[0], "-test.run=^TestWriteJSONProcess$")
+			cmd.Env = append(os.Environ(), "WRITE_JSON_PATH="+path)
+			out, err := cmd.CombinedOutput()
+			if (err == nil) != (mode == "success") {
+				t.Fatalf("mode=%s err=%v output=%s", mode, err, out)
+			}
+			if mode == "success" || mode == "write" {
+				want := "prior report"
+				if mode == "success" {
+					want = "{\n  \"pass\": true\n}"
+				}
+				data, err := os.ReadFile(path)
+				if err != nil || string(data) != want {
+					t.Fatalf("report=%q want=%q err=%v", data, want, err)
+				}
+			}
+			if mode != "success" {
+				blocked := path
+				if mode == "write" {
+					blocked += ".tmp"
+				}
+				data, err := os.ReadFile(filepath.Join(blocked, "sentinel"))
+				if err != nil || string(data) != "prior evidence" || !strings.Contains(string(out), blocked) {
+					t.Fatalf("evidence=%q err=%v output=%s", data, err, out)
+				}
+			}
+		})
+	}
+}
+
+func TestWriteJSONProcess(t *testing.T) {
+	if path := os.Getenv("WRITE_JSON_PATH"); path != "" {
+		writeJSON(path, map[string]bool{"pass": true})
+	}
+}
+
 func keys(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

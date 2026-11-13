@@ -616,15 +616,28 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 	case "START_THREAD":
 		prefix := sm.popBytes()
 		child := newStackMachine(sm.db, prefix, sm.transactionRegistry)
+		child.childJoinTimeout = sm.childJoinTimeout
 		sm.wg.Add(1)
 		go func() {
 			defer sm.wg.Done()
-			child.Run(ctx)
+			if err := child.Run(ctx); err != nil {
+				err = fmt.Errorf("child thread %q: %w", prefix, err)
+				sm.childMu.Lock()
+				if sm.childErr == nil {
+					sm.childErr = err
+				}
+				sm.childMu.Unlock()
+				if sm.cancelRun != nil {
+					sm.cancelRun(err)
+				}
+			}
 		}()
 
 	case "WAIT_EMPTY":
 		prefix := sm.popBytes()
-		sm.waitEmpty(ctx, prefix)
+		if err := sm.waitEmpty(ctx, prefix); err != nil {
+			return err
+		}
 		sm.push(idx, []byte("WAITED_FOR_EMPTY"))
 
 	case "DISABLE_WRITE_CONFLICT":
@@ -685,26 +698,28 @@ func (sm *StackMachine) logStack(ctx context.Context, idx int, prefix []byte) er
 	return nil
 }
 
-func (sm *StackMachine) waitEmpty(ctx context.Context, prefix []byte) {
+func (sm *StackMachine) waitEmpty(ctx context.Context, prefix []byte) error {
 	end := strinc(prefix)
 	for {
-		if ctx.Err() != nil {
-			return
+		if err := context.Cause(ctx); err != nil {
+			return err
 		}
 		result, err := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
 			kvs, _, err := tx.GetRange(ctx, prefix, end, 1)
 			return kvs, err
 		})
 		if err != nil {
-			continue
+			return err
 		}
 		kvs := result.([]client.KeyValue)
 		if len(kvs) == 0 {
-			return
+			return nil
 		}
 		// Not empty yet, retry via OnError with not_committed for backoff sleep.
 		tr := sm.db.CreateTransaction()
-		tr.OnError(ctx, &wire.FDBError{Code: client.ErrNotCommitted})
+		if err := tr.OnError(ctx, &wire.FDBError{Code: client.ErrNotCommitted}); err != nil {
+			return err
+		}
 	}
 }
 

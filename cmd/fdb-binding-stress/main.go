@@ -8,7 +8,9 @@
 //
 //	fdb-binding-stress -seeds 100 -ops 1000                  # 100 seeds
 //	fdb-binding-stress -duration 2h -ops 1000                # run for 2 hours
-//	fdb-binding-stress -seeds 1 -ops 1000 -seed-start 146    # reproduce one seed
+//	fdb-binding-stress -seeds 1 -ops 1000 -seed-start 146    # replay a default-mode seed
+//
+// For other modes, copy every workload setting from report.json; see docs/client-correctness.md.
 package main
 
 import (

@@ -552,8 +552,9 @@ Three recipes — **not interchangeable**; only two are true CLI seeds.
 
 1. **Fuzz corpus (fully deterministic, no engine):** `go test -run='FuzzX/<hash>' ./pkg/<path>/`. The
    input is the committed `testdata/fuzz/FuzzX/<hash>` file.
-2. **Binding-stress (real CLI seed):** `bazelisk run //cmd/fdb-binding-stress -- -seeds 1 -seed-start N
-   -ops <same-as-original> -test-name <same>`.
+2. **Binding-stress (real CLI seed):** follow the complete report-driven recipe in
+   [client correctness](../../../docs/client-correctness.md#reproduction), copying the seed,
+   test name, operation count, API version, concurrency, and Python-comparison setting.
 3. **Chaos (partial, source seed):** edit the test's `WithSeed(S)` / `RandomConfig{Seed:S}` and re-run
    with `--nocache_test_results`. Replays the op sequence but **not** fault interleaving / versions
    (real FDB, wall clock).

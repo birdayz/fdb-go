@@ -33,6 +33,11 @@ func TestRunnerAssemblesPinnedHarnessAndPersistsRealResults(t *testing.T) {
 		{"default_output", "api", "", true, true, true},
 		{"relative_output", "directory", "relative/results", true, true, true},
 		{"tester_failure", "api", "results", true, false, true},
+		{"failed_child", "api", "results", false, false, true},
+		{"blocked_child", "api", "results", false, false, true},
+		{"tester_log_write_failure", "api", "results", false, false, false},
+		{"report_write_failure", "api", "results", false, false, true},
+		{"report_rename_failure", "api", "results", false, false, true},
 		{"dead_fdb", "api", "results", false, false, false},
 		{"unavailable_fdb", "api", "results", false, false, false},
 		{"active_cancel", "api", "results", false, false, false},
@@ -86,7 +91,7 @@ func TestRunnerAssemblesPinnedHarnessAndPersistsRealResults(t *testing.T) {
 				t.Fatal(err)
 			}
 			upstream := filepath.Join(runfiles, "foundationdb+")
-			if tc.name == "dead_fdb" || tc.name == "unavailable_fdb" || tc.name == "no_verdict" || tc.name == "contradictory_verdict" || tc.name == "active_cancel" {
+			if tc.name == "dead_fdb" || tc.name == "unavailable_fdb" || tc.name == "no_verdict" || tc.name == "contradictory_verdict" || tc.name == "active_cancel" || strings.HasSuffix(tc.name, "_write_failure") || tc.name == "report_rename_failure" || tc.name == "failed_child" || tc.name == "blocked_child" {
 				// A controlled harness verdict kills its actual case container before
 				// claiming success; the runner must independently reject that claim.
 				copy := exec.Command("cp", "-rL", upstream, filepath.Join(root, "dead-oracle"))
@@ -133,6 +138,42 @@ print('Test had 0 incorrect result(s) and 0 error(s)')
 				if tc.name == "contradictory_verdict" {
 					fixture = "print('Test had 1 incorrect result(s) and 0 error(s)')\nprint('Test had 0 incorrect result(s) and 0 error(s)')\n"
 				}
+				if tc.name == "failed_child" || tc.name == "blocked_child" {
+					fixture = `import os, subprocess, sys, fdb
+import fdb.tuple
+fdb.api_version(730)
+cluster = sys.argv[sys.argv.index('--cluster-file') + 1]
+db = fdb.open(cluster)
+root, child, held = b'fixture-root', b'fixture-child', b'fixture-held'
+program = [('CHILD_FAILURE',)] if ` + strconv.Quote(tc.name) + ` == 'failed_child' else [('PUSH', held), ('WAIT_EMPTY',)]
+@fdb.transactional
+def populate(tr):
+    tr[held] = b'held'
+    for prefix, instructions in [(root, [('PUSH', child), ('START_THREAD',)]), (child, program)]:
+        for i, instruction in enumerate(instructions):
+            tr[fdb.tuple.pack((prefix, i))] = fdb.tuple.pack(instruction)
+populate(db)
+subprocess.check_call([os.environ['ACTUAL_STACKTESTER'], root.decode(), '730', cluster])
+print('Test had 0 incorrect result(s) and 0 error(s)')
+`
+				}
+				if strings.HasSuffix(tc.name, "_write_failure") || tc.name == "report_rename_failure" {
+					// Block the exact evidence destination after the real runner has
+					// created its case, without relying on permissions (CI may be root).
+					fixture = `import pathlib, sys
+case = pathlib.Path(sys.argv[sys.argv.index('--cluster-file') + 1]).parent
+output = case.parent
+kind = ` + strconv.Quote(tc.name) + `
+blocked = case / 'tester.log' if kind == 'tester_log_write_failure' else output / ('report.json.tmp' if kind == 'report_write_failure' else 'report.json')
+if kind == 'report_rename_failure':
+    blocked.unlink()
+blocked.mkdir()
+(blocked / 'sentinel').write_text('prior evidence')
+if kind == 'report_write_failure':
+    (output / 'report.json').write_text('prior report')
+print('Test had 0 incorrect result(s) and 0 error(s)')
+`
+				}
 				if err := os.WriteFile(filepath.Join(upstream, "bindings/bindingtester/bindingtester.py"), []byte(fixture), 0o644); err != nil {
 					t.Fatal(err)
 				}
@@ -176,7 +217,7 @@ print('Test had 0 incorrect result(s) and 0 error(s)')
 			configureTesterProcess(cmd)
 			defer killTesterGroup(cmd)
 			cmd.Dir = initial
-			cmd.Env = append(os.Environ(), "BUILD_WORKSPACE_DIRECTORY="+ws, "FIXTURE_OUTPUT_BASE="+base, "PATH="+tools+":"+os.Getenv("PATH"), "LD_LIBRARY_PATH="+native+":"+os.Getenv("LD_LIBRARY_PATH"))
+			cmd.Env = append(os.Environ(), "BUILD_WORKSPACE_DIRECTORY="+ws, "FIXTURE_OUTPUT_BASE="+base, "PATH="+tools+":"+os.Getenv("PATH"), "LD_LIBRARY_PATH="+native+":"+os.Getenv("LD_LIBRARY_PATH"), "ACTUAL_STACKTESTER="+stacktester)
 			if tc.name == "scheduled" {
 				cmd.Env = append(cmd.Env, "SCHEDULED_RUNNER_FIXTURE=1")
 			}
@@ -196,6 +237,31 @@ print('Test had 0 incorrect result(s) and 0 error(s)')
 					if err != nil || string(data) != "prior evidence" {
 						t.Fatalf("overwrote %s: %q %v", file, data, err)
 					}
+				}
+				return
+			}
+			if strings.HasPrefix(tc.name, "report_") && strings.HasSuffix(tc.name, "_failure") {
+				blocked := "report.json.tmp"
+				if tc.name == "report_rename_failure" {
+					blocked = "report.json"
+				}
+				data, err := os.ReadFile(filepath.Join(ws, tc.output, blocked, "sentinel"))
+				if err != nil || string(data) != "prior evidence" || !strings.Contains(string(out), blocked) {
+					t.Fatalf("report persistence rejection lost: sentinel=%q err=%v output=%s", data, err, out)
+				}
+				if tc.name == "report_write_failure" {
+					data, err := os.ReadFile(filepath.Join(ws, tc.output, "report.json"))
+					if err != nil || string(data) != "prior report" {
+						t.Fatalf("prior report overwritten: %q %v", data, err)
+					}
+				}
+				logs, _ := filepath.Glob(filepath.Join(ws, tc.output, "case-*/tester.log"))
+				if len(logs) != 1 {
+					t.Fatalf("missing case evidence: %v", logs)
+				}
+				data, err = os.ReadFile(logs[0])
+				if err != nil || !successfulVerdict(string(data), nil) {
+					t.Fatalf("fixture never reached successful case: %q %v", data, err)
 				}
 				return
 			}
@@ -266,9 +332,25 @@ print('Test had 0 incorrect result(s) and 0 error(s)')
 			if len(logs) != 1 {
 				t.Fatalf("missing case evidence: %v", logs)
 			}
+			if tc.name == "tester_log_write_failure" {
+				data, err := os.ReadFile(filepath.Join(logs[0], "sentinel"))
+				if err != nil || string(data) != "prior evidence" || !strings.Contains(r.Error, "save tester output:") {
+					t.Fatalf("tester evidence rejection lost: sentinel=%q err=%v report=%+v", data, err, r)
+				}
+				return
+			}
 			log, err := os.ReadFile(logs[0])
 			if err != nil || len(log) == 0 {
 				t.Fatalf("empty case log: %v", err)
+			}
+			if tc.name == "failed_child" || tc.name == "blocked_child" {
+				want := "CHILD_FAILURE"
+				if tc.name == "blocked_child" {
+					want = "timed out waiting for child threads"
+				}
+				if !strings.Contains(string(log), want) || successfulVerdict(string(log), nil) {
+					t.Fatalf("concurrent failure did not reject assembled runner: %s", log)
+				}
 			}
 			if tc.name == "active_cancel" {
 				var ready struct {
