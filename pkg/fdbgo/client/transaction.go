@@ -2514,6 +2514,9 @@ func (tx *Transaction) borrowedOnErrorVerdict(caller context.Context, op *readOp
 		}
 		return cause
 	}
+	if fdbErr.Code == 0 {
+		return &wire.FDBError{Code: ErrClientInvalidOperation}
+	}
 	if fdbErr.Code == ErrTransactionTimedOut || tx.hasRetryLimit && tx.retryCount >= tx.retryLimit || !onErrorRetryable(fdbErr.Code) {
 		return err
 	}
@@ -2635,6 +2638,12 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 			return ctxErr // the caller's own cancellation/deadline out-ranks the txn timeout
 		}
 		return cerr // the recorded cause: the timeout above, or one recorded since
+	}
+
+	// NativeAPI::onError rejects success as client_invalid_operation.
+	if fdbErr.Code == 0 {
+		tx.state.Store(int32(txStateErrored))
+		return &wire.FDBError{Code: ErrClientInvalidOperation}
 	}
 
 	// Transaction timeout is NEVER retryable — matches C++ behavior where

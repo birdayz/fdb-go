@@ -53,7 +53,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		sm.push(idx, append(a, b...))
 	case "LOG_STACK":
 		prefix := sm.popBytes()
-		sm.logStack(ctx, idx, prefix)
+		return sm.logStack(ctx, idx, prefix)
 
 	// --- Transaction management ---
 	case "NEW_TRANSACTION":
@@ -146,7 +146,11 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		end := sm.popBytes()
 		limit := int(sm.popInt64())
 		reverse := sm.popInt64() != 0
-		_ = sm.popInt64() // streaming_mode — ignored, we always do WANT_ALL
+		mode := sm.popInt64()
+		if limit == 0 && mode == 0 {
+			sm.pushError(idx, &wire.FDBError{Code: 2210})
+			return nil
+		}
 
 		var kvs []client.KeyValue
 		var err error
@@ -193,7 +197,11 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		prefix := sm.popBytes()
 		limit := int(sm.popInt64())
 		reverse := sm.popInt64() != 0
-		_ = sm.popInt64() // streaming_mode
+		mode := sm.popInt64()
+		if limit == 0 && mode == 0 {
+			sm.pushError(idx, &wire.FDBError{Code: 2210})
+			return nil
+		}
 
 		end := strinc(prefix)
 		var kvs []client.KeyValue
@@ -245,8 +253,12 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		endOffset := int32(sm.popInt64())
 		limit := int(sm.popInt64())
 		reverse := sm.popInt64() != 0
-		_ = sm.popInt64() // streaming_mode
+		mode := sm.popInt64()
 		prefix := sm.popBytes()
+		if limit == 0 && mode == 0 {
+			sm.pushError(idx, &wire.FDBError{Code: 2210})
+			return nil
+		}
 
 		// Resolve key selectors to actual keys + range read.
 		// For _DATABASE variant, everything runs in one auto-commit transaction.
@@ -263,14 +275,6 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 				if eErr != nil {
 					return nil, eErr
 				}
-				// Clamp to prefix.
-				if bytes.Compare(b, prefix) < 0 {
-					b = prefix
-				}
-				prefixEnd := strinc(prefix)
-				if bytes.Compare(en, prefixEnd) > 0 {
-					en = prefixEnd
-				}
 				var kv []client.KeyValue
 				var rangeErr error
 				if reverse {
@@ -286,7 +290,9 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 				rr := result.(*rangeResult)
 				t := make(tuple.Tuple, 0, len(rr.kvs)*2)
 				for _, kv := range rr.kvs {
-					t = append(t, kv.Key, kv.Value)
+					if bytes.HasPrefix(kv.Key, prefix) {
+						t = append(t, kv.Key, kv.Value)
+					}
 				}
 				sm.push(idx, t.Pack())
 			}
@@ -594,11 +600,8 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 
 	case "TUPLE_PACK_WITH_VERSIONSTAMP":
 		prefix := sm.popBytes()
-		count := int(sm.popInt64())
-		t := make(tuple.Tuple, count)
-		for i := 0; i < count; i++ {
-			t[i] = sm.pop().value
-		}
+		// Use the pure-Go API version, not the uninitialized C binding's state.
+		t := sm.popTupleRaw()
 		packed, err := t.PackWithVersionstamp(prefix)
 		if err != nil && strings.Contains(err.Error(), "No incomplete") {
 			sm.push(idx, []byte("ERROR: NONE"))
@@ -612,12 +615,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 	// --- Threading ---
 	case "START_THREAD":
 		prefix := sm.popBytes()
-		child := NewStackMachine(sm.db, prefix)
-		// Share transaction map and directory list (binding tester spec).
-		child.trMap = sm.trMap
-		child.dirList = sm.dirList
-		child.dirIndex = sm.dirIndex
-		child.dirErrorIndex = sm.dirErrorIndex
+		child := newStackMachine(sm.db, prefix, sm.transactionRegistry)
 		sm.wg.Add(1)
 		go func() {
 			defer sm.wg.Done()
@@ -654,7 +652,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 	return nil
 }
 
-func (sm *StackMachine) logStack(ctx context.Context, idx int, prefix []byte) {
+func (sm *StackMachine) logStack(ctx context.Context, idx int, prefix []byte) error {
 	// Pop all entries (resolving futures) and write to FDB in batches.
 	n := len(sm.stack)
 	entries := make([]stackEntry, n)
@@ -668,10 +666,10 @@ func (sm *StackMachine) logStack(ctx context.Context, idx int, prefix []byte) {
 			end = len(entries)
 		}
 		batch := entries[i:end]
-		sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+		_, err := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
 			for j, e := range batch {
 				globalIdx := i + j
-				key := tuple.Tuple{prefix, int64(globalIdx), int64(e.idx)}.Pack()
+				key := append(append([]byte{}, prefix...), tuple.Tuple{int64(globalIdx), int64(e.idx)}.Pack()...)
 				packed := tuple.Tuple{e.value}.Pack()
 				if len(packed) > 40000 {
 					packed = packed[:40000]
@@ -680,7 +678,11 @@ func (sm *StackMachine) logStack(ctx context.Context, idx int, prefix []byte) {
 			}
 			return nil, nil
 		})
+		if err != nil {
+			return fmt.Errorf("log stack: %w", err)
+		}
 	}
+	return nil
 }
 
 func (sm *StackMachine) waitEmpty(ctx context.Context, prefix []byte) {

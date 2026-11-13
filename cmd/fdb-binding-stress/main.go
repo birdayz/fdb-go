@@ -104,7 +104,8 @@ func runSeed(parent context.Context, seed int, w workload, btRunDir, seedDir str
 	ctx, cancel := context.WithTimeout(parent, perSeedTimeout)
 	defer cancel()
 
-	container, err := foundationdb.Run(ctx, "foundationdb/foundationdb:"+testedFDBVersion,
+	container, err := foundationdb.Run(
+		ctx, "foundationdb/foundationdb:"+testedFDBVersion,
 		foundationdb.WithDirectIP(),
 		foundationdb.WithStorageEngine("memory"),
 	)
@@ -258,8 +259,22 @@ func collectLogs(ctx context.Context, container *foundationdb.Container, seedDir
 }
 
 func isFDBAlive(ctx context.Context, container *foundationdb.Container) bool {
-	_, err := container.FDBCLIExec(ctx, "status")
-	return err == nil
+	output, err := container.FDBCLIExec(ctx, "status json")
+	return databaseAvailable(output, err)
+}
+
+func databaseAvailable(output string, err error) bool {
+	if err != nil {
+		return false
+	}
+	var status struct {
+		Client struct {
+			DatabaseStatus struct {
+				Available bool `json:"available"`
+			} `json:"database_status"`
+		} `json:"client"`
+	}
+	return json.Unmarshal([]byte(output), &status) == nil && status.Client.DatabaseStatus.Available
 }
 
 func setup() (btRunDir string) {
@@ -332,7 +347,7 @@ func setup() (btRunDir string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	_, err = fmt.Fprintf(f, "\ntesters['python'] = Tester('python', 'python3 %s', 2040, 23, 730, types=ALL_TYPES, tenants_enabled=True)\ntesters['pure_go'] = Tester('pure_go', '%s', 2040, 23, 730, types=ALL_TYPES)\n", filepath.Join(btRunDir, "python", "tester.py"), stacktester)
+	_, err = fmt.Fprintf(f, "\ntesters['python'] = Tester('python', 'python3 %s', 2040, 23, 730, types=ALL_TYPES, tenants_enabled=True)\ntesters['pure_go'] = Tester('pure_go', '%s', 2040, 510, 730, types=ALL_TYPES)\n", filepath.Join(btRunDir, "python", "tester.py"), stacktester)
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}

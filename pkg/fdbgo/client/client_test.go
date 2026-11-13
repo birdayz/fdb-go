@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -205,6 +206,39 @@ func TestOnError_AllRetryableCodes(t *testing.T) {
 				t.Errorf("mutations not cleared: %d", len(tx.mutations))
 			}
 		})
+	}
+}
+
+func TestOnErrorSuccessCodeIsInvalidOperation(t *testing.T) {
+	t.Parallel()
+	for _, retryLimit := range []bool{false, true} {
+		tx := &Transaction{}
+		if retryLimit {
+			tx.SetRetryLimit(0)
+		}
+		err := tx.OnError(context.Background(), fmt.Errorf("wrapped: %w", &wire.FDBError{Code: 0}))
+		var fdbErr *wire.FDBError
+		if !errors.As(err, &fdbErr) || fdbErr.Code != ErrClientInvalidOperation {
+			t.Fatalf("OnError(success), retryLimit=%v: got %v, want 2000", retryLimit, err)
+		}
+		if tx.retryCount != 0 {
+			t.Fatalf("OnError(success) retried %d times", tx.retryCount)
+		}
+	}
+}
+
+func TestBorrowedOnErrorSuccessCodeIsInvalidOperation(t *testing.T) {
+	t.Parallel()
+	tx := &Transaction{}
+	tx.SetReadVersion(123)
+	op := &readOperation{Context: tx.readLife.ctx, readAdmission: readAdmission{tx: tx, inc: tx.readLife, parent: context.Background()}}
+	err := tx.borrowedOnErrorVerdict(context.Background(), op, &wire.FDBError{Code: 0})
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) || fdbErr.Code != ErrClientInvalidOperation {
+		t.Fatalf("borrowed OnError(success)=%v, want 2000", err)
+	}
+	if tx.retryCount != 0 || txState(tx.state.Load()) != txStateActive {
+		t.Fatal("borrowed OnError changed the owner's transaction")
 	}
 }
 

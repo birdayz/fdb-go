@@ -34,6 +34,12 @@ type stackEntry struct {
 	idx   int // instruction number that pushed this
 }
 
+// transactionRegistry is shared by all machines in a tester run.
+type transactionRegistry struct {
+	trMap map[string]*client.Transaction
+	trMu  sync.RWMutex
+}
+
 // StackMachine executes binding tester instructions.
 type StackMachine struct {
 	db      *client.Database
@@ -42,9 +48,8 @@ type StackMachine struct {
 	stack   []stackEntry
 	lastVer int64
 
-	trMap map[string]*client.Transaction
-	trMu  sync.RWMutex
-	wg    sync.WaitGroup
+	*transactionRegistry
+	wg sync.WaitGroup
 
 	// Directory layer state.
 	dirList       []dirEntry
@@ -58,13 +63,19 @@ type StackMachine struct {
 
 // NewStackMachine creates a stack machine with the given prefix.
 func NewStackMachine(db *client.Database, prefix []byte) *StackMachine {
+	return newStackMachine(db, prefix, &transactionRegistry{trMap: make(map[string]*client.Transaction)})
+}
+
+func newStackMachine(db *client.Database, prefix []byte, registry *transactionRegistry) *StackMachine {
 	sm := &StackMachine{
-		db:     db,
-		prefix: prefix,
-		trName: string(prefix),
-		trMap:  make(map[string]*client.Transaction),
+		db:                  db,
+		prefix:              prefix,
+		trName:              string(prefix),
+		transactionRegistry: registry,
 	}
+	sm.trMu.Lock()
 	sm.trMap[sm.trName] = db.CreateTransaction()
+	sm.trMu.Unlock()
 	sm.initDirectoryState()
 	return sm
 }

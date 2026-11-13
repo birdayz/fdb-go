@@ -81,8 +81,8 @@ func validateRun(seeds, start int, duration time.Duration, scheduled bool, w wor
 	default:
 		return fmt.Errorf("unknown test name %q", w.Test)
 	}
-	if w.APIVersion < 23 || w.APIVersion > 730 {
-		return fmt.Errorf("API version must be between 23 and 730")
+	if w.APIVersion < 510 || w.APIVersion > 730 {
+		return fmt.Errorf("API version must be between 510 and 730")
 	}
 	return nil
 }
@@ -133,16 +133,20 @@ func runVerdict(r Report, scheduled bool, regressionsDone bool) error {
 }
 
 func executeRun(out string, seeds, start int, duration time.Duration, scheduled bool, w workload, harness string) error {
+	return executeRunContext(context.Background(), out, seeds, start, duration, scheduled, w, harness)
+}
+
+func executeRunContext(parent context.Context, out string, seeds, start int, duration time.Duration, scheduled bool, w workload, harness string) error {
 	revision, err := exec.Command("git", "rev-parse", "HEAD").Output()
 	if err != nil {
 		return fmt.Errorf("record revision: %w", err)
 	}
 	r := Report{Revision: strings.TrimSpace(string(revision)), FDBVersion: testedFDBVersion, Scheduled: scheduled, StartedAt: time.Now().Format(time.RFC3339), Ops: w.Ops}
 	started := time.Now()
-	ctx := context.Background()
+	ctx := parent
 	cancel := func() {}
 	if duration > 0 {
-		ctx, cancel = context.WithTimeout(ctx, duration)
+		ctx, cancel = context.WithTimeout(parent, duration)
 	}
 	defer cancel()
 	persist := func() {

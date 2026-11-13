@@ -459,46 +459,39 @@ func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op stri
 		logSS := subspace.FromBytes(append(append([]byte{}, prefix...), ourtuple.Tuple{int64(sm.dirIndex)}.Pack()...))
 		d := sm.currentDir()
 
-		// Log path
-		var pathTuple ourtuple.Tuple
-		if d.dir != nil {
-			for _, p := range d.dir.GetPath() {
-				pathTuple = append(pathTuple, p)
+		if d.dir == nil {
+			sm.push(idx, []byte("DIRECTORY_ERROR"))
+			return true, nil
+		}
+		// Evaluate reads before writing any log fields, as the Python tester does.
+		rt := sm.getReadTransactor(isDatabase, isSnapshot)
+		exists, err := d.dir.Exists(rt, nil)
+		if err != nil {
+			sm.push(idx, []byte("DIRECTORY_ERROR"))
+			return true, nil
+		}
+		var existsVal int64
+		var childTuple ourtuple.Tuple
+		if exists {
+			existsVal = 1
+			children, err := d.dir.List(rt, nil)
+			if err != nil {
+				sm.push(idx, []byte("DIRECTORY_ERROR"))
+				return true, nil
+			}
+			for _, c := range children {
+				childTuple = append(childTuple, c)
 			}
 		}
+		var pathTuple ourtuple.Tuple
+		for _, p := range d.dir.GetPath() {
+			pathTuple = append(pathTuple, p)
+		}
+		layerTuple := ourtuple.Tuple{d.dir.GetLayer()}
 		tr := sm.currentTr()
 		tr.Set(logSS.Pack(ourtuple.Tuple{"path"}), pathTuple.Pack())
-
-		// Log layer
-		var layerTuple ourtuple.Tuple
-		if d.dir != nil {
-			layerTuple = ourtuple.Tuple{d.dir.GetLayer()}
-		} else {
-			layerTuple = ourtuple.Tuple{[]byte{}}
-		}
 		tr.Set(logSS.Pack(ourtuple.Tuple{"layer"}), layerTuple.Pack())
-
-		// Log exists
-		rt := sm.getReadTransactor(isDatabase, isSnapshot)
-		var existsVal int64
-		if d.dir != nil {
-			exists, err := d.dir.Exists(rt, nil)
-			if err == nil && exists {
-				existsVal = 1
-			}
-		}
 		tr.Set(logSS.Pack(ourtuple.Tuple{"exists"}), ourtuple.Tuple{existsVal}.Pack())
-
-		// Log children
-		var childTuple ourtuple.Tuple
-		if d.dir != nil {
-			children, err := d.dir.List(rt, nil)
-			if err == nil {
-				for _, c := range children {
-					childTuple = append(childTuple, c)
-				}
-			}
-		}
 		tr.Set(logSS.Pack(ourtuple.Tuple{"children"}), childTuple.Pack())
 
 	case "STRIP_PREFIX":

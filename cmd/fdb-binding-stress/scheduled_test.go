@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -154,13 +155,13 @@ func TestCorrectnessModesAndRegressionPopulation(t *testing.T) {
 
 func TestTesterArgsPreserveOracleConcurrencyAndFullScriptedSurface(t *testing.T) {
 	t.Parallel()
-	for _, w := range correctnessModes(1000) {
+	for _, w := range append(correctnessModes(1000), workload{"directory_hca", 37, 5, false, 610}) {
 		got := testerArgs(3864917676, w, "cluster", "harness")
 		if got[len(got)-1] != "pure_go" {
 			t.Fatal("must use registered ALL_TYPES/2040-bit Go tester")
 		}
 		joined := " " + strings.Join(got, " ") + " "
-		for _, part := range []string{"--seed 3864917676", "--api-version 730", "--test-name " + w.Test, "--no-tenants"} {
+		for _, part := range []string{"--seed 3864917676", "--api-version " + strconv.Itoa(w.APIVersion), "--num-ops " + strconv.Itoa(w.Ops), "--test-name " + w.Test, "--no-tenants"} {
 			if !strings.Contains(joined, " "+part+" ") {
 				t.Errorf("missing %q in %v", part, got)
 			}
@@ -178,6 +179,43 @@ func TestTesterArgsPreserveOracleConcurrencyAndFullScriptedSurface(t *testing.T)
 		directory := w.Test == "directory" || w.Test == "directory_hca"
 		if strings.Contains(joined, "--no-directory-snapshot-ops") != directory {
 			t.Errorf("directory snapshot setting: %v", got)
+		}
+	}
+}
+
+func TestTesterArgsLiteralVectors(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		w    workload
+		want []string
+	}{
+		{workload{"api", 731, 1, true, 730}, []string{"harness/bindingtester/bindingtester.py", "--cluster-file", "cluster", "--test-name", "api", "--api-version", "730", "--num-ops", "731", "--seed", "42", "--timeout", "300", "--concurrency", "1", "--no-tenants", "--compare", "python", "pure_go"}},
+		{workload{"directory_hca", 37, 5, false, 610}, []string{"harness/bindingtester/bindingtester.py", "--cluster-file", "cluster", "--test-name", "directory_hca", "--api-version", "610", "--num-ops", "37", "--seed", "42", "--timeout", "300", "--concurrency", "5", "--no-tenants", "--no-directory-snapshot-ops", "pure_go"}},
+	} {
+		if got := testerArgs(42, tc.w, "cluster", "harness"); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("args=%q want=%q", got, tc.want)
+		}
+	}
+}
+
+func TestDatabaseAvailabilityFailsClosed(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		output string
+		err    error
+		want   bool
+	}{
+		{`{"client":{"database_status":{"available":true}}}`, nil, true},
+		{`{"client":{"database_status":{"available":false}}}`, nil, false},
+		{`{"client":{"database_status":{"available":true}}}`, errors.New("exec failed"), false},
+		{`{}`, nil, false},
+		{`{"client":{"database_status":{}}}`, nil, false},
+		{`{"client":{"database_status":{"available":"true"}}}`, nil, false},
+		{`not json`, nil, false},
+		{"", nil, false},
+	} {
+		if got := databaseAvailable(tc.output, tc.err); got != tc.want {
+			t.Errorf("status=%q err=%v got=%v", tc.output, tc.err, got)
 		}
 	}
 }
@@ -245,6 +283,10 @@ func TestValidateRunRejectsVacuousAndUnsupportedConfigurations(t *testing.T) {
 	if err := validateRun(0, 1, 20*time.Minute, true, valid); err != nil {
 		t.Fatal(err)
 	}
+	valid.APIVersion = 510
+	if err := validateRun(1, 1, 0, false, valid); err != nil {
+		t.Fatalf("minimum supported API rejected: %v", err)
+	}
 	for _, tt := range []struct {
 		seeds, start int
 		duration     time.Duration
@@ -262,6 +304,7 @@ func TestValidateRunRejectsVacuousAndUnsupportedConfigurations(t *testing.T) {
 		{1, 1, 0, false, workload{"api", 1000, 5, true, 730}},
 		{1, 1, 0, false, workload{"api", 1000, 1, false, 731}},
 		{1, 1, 0, false, workload{"api", 1000, 1, false, 22}},
+		{1, 1, 0, false, workload{"api", 1000, 1, false, 509}},
 	} {
 		if err := validateRun(tt.seeds, tt.start, tt.duration, tt.scheduled, tt.w); err == nil {
 			t.Errorf("accepted %+v", tt)

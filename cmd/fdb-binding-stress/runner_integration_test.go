@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +34,10 @@ func TestRunnerAssemblesPinnedHarnessAndPersistsRealResults(t *testing.T) {
 		{"relative_output", "directory", "relative/results", true, true, true},
 		{"tester_failure", "api", "results", true, false, true},
 		{"dead_fdb", "api", "results", false, false, false},
+		{"unavailable_fdb", "api", "results", false, false, false},
+		{"active_cancel", "api", "results", false, false, false},
+		{"no_verdict", "api", "results", false, false, true},
+		{"contradictory_verdict", "api", "results", false, false, true},
 		{"scheduled", "api", "results", false, true, true},
 		{"insufficient_budget", "api", "results", false, false, true},
 		{"existing_output", "api", "results", false, false, true},
@@ -80,7 +86,7 @@ func TestRunnerAssemblesPinnedHarnessAndPersistsRealResults(t *testing.T) {
 				t.Fatal(err)
 			}
 			upstream := filepath.Join(runfiles, "foundationdb+")
-			if tc.name == "dead_fdb" {
+			if tc.name == "dead_fdb" || tc.name == "unavailable_fdb" || tc.name == "no_verdict" || tc.name == "contradictory_verdict" || tc.name == "active_cancel" {
 				// A controlled harness verdict kills its actual case container before
 				// claiming success; the runner must independently reject that claim.
 				copy := exec.Command("cp", "-rL", upstream, filepath.Join(root, "dead-oracle"))
@@ -96,12 +102,37 @@ found = False
 for cid in ids:
     info = json.loads(subprocess.check_output(['docker', 'inspect', cid]))[0]
     if any(n.get('IPAddress') == ip for n in info['NetworkSettings']['Networks'].values()):
-        subprocess.check_call(['docker', 'kill', cid])
+        if sys.argv[0].endswith('bindingtester.py') and FIXTURE_UNAVAILABLE:
+            subprocess.check_call(['docker', 'exec', cid, 'sh', '-c', 'kill -STOP $(pidof fdbserver)'])
+            status = subprocess.check_output(['docker', 'exec', cid, 'fdbcli', '--exec', 'status json'], text=True)
+            assert json.loads(status)['client']['database_status']['available'] is False, status
+            print('zero-exit unavailable status confirmed', flush=True)
+        else:
+            subprocess.check_call(['docker', 'kill', cid])
         found = True
         break
 assert found, 'case container not found'
 print('Test had 0 incorrect result(s) and 0 error(s)')
 `
+				if tc.name == "active_cancel" {
+					fixture = strings.Replace(fixture, "        if sys.argv[0].endswith('bindingtester.py') and FIXTURE_UNAVAILABLE:", `        if True:
+            import os, time
+            child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(600)'])
+            ready = os.environ['CANCEL_READY']
+            with open(ready + '.tmp', 'w') as f:
+                json.dump({'pid': child.pid, 'container': cid}, f)
+            print('active harness ready with child', flush=True)
+            os.replace(ready + '.tmp', ready)
+            time.sleep(600)
+        elif FIXTURE_UNAVAILABLE:`, 1)
+				}
+				fixture = strings.ReplaceAll(fixture, "FIXTURE_UNAVAILABLE", map[bool]string{true: "True", false: "False"}[tc.name == "unavailable_fdb"])
+				if tc.name == "no_verdict" {
+					fixture = "print('completed without a verdict')\n"
+				}
+				if tc.name == "contradictory_verdict" {
+					fixture = "print('Test had 1 incorrect result(s) and 0 error(s)')\nprint('Test had 0 incorrect result(s) and 0 error(s)')\n"
+				}
 				if err := os.WriteFile(filepath.Join(upstream, "bindings/bindingtester/bindingtester.py"), []byte(fixture), 0o644); err != nil {
 					t.Fatal(err)
 				}
@@ -132,7 +163,7 @@ print('Test had 0 incorrect result(s) and 0 error(s)')
 				}
 			}
 			program := binary
-			if tc.name == "scheduled" {
+			if tc.name == "scheduled" || tc.name == "active_cancel" {
 				program, err = os.Executable()
 				if err != nil {
 					t.Fatal(err)
@@ -148,6 +179,9 @@ print('Test had 0 incorrect result(s) and 0 error(s)')
 			cmd.Env = append(os.Environ(), "BUILD_WORKSPACE_DIRECTORY="+ws, "FIXTURE_OUTPUT_BASE="+base, "PATH="+tools+":"+os.Getenv("PATH"), "LD_LIBRARY_PATH="+native+":"+os.Getenv("LD_LIBRARY_PATH"))
 			if tc.name == "scheduled" {
 				cmd.Env = append(cmd.Env, "SCHEDULED_RUNNER_FIXTURE=1")
+			}
+			if tc.name == "active_cancel" {
+				cmd.Env = append(cmd.Env, "SCHEDULED_RUNNER_FIXTURE=cancel", "CANCEL_READY="+filepath.Join(root, "ready"))
 			}
 			if tc.name == "version_override" {
 				cmd.Env = append(cmd.Env, "FDB_VERSION=7.3.63")
@@ -202,6 +236,12 @@ print('Test had 0 incorrect result(s) and 0 error(s)')
 					want = append(want, seedCase{146, mode})
 				}
 				for i, result := range report.Seeds {
+					command := " " + strings.Join(result.Command, " ") + " "
+					for _, setting := range []string{fmt.Sprintf("--num-ops %d", want[i].Workload.Ops), fmt.Sprintf("--api-version %d", want[i].Workload.APIVersion), fmt.Sprintf("--concurrency %d", want[i].Workload.Concurrency)} {
+						if !strings.Contains(command, " "+setting+" ") {
+							t.Fatalf("case %d command lost setting %s: %s", i, setting, command)
+						}
+					}
 					if result.Seed != want[i].Seed || result.Workload != want[i].Workload || !result.Pass || !result.FDBAlive || len(result.Command) == 0 {
 						t.Fatalf("scheduled case %d: %+v want %+v", i, result, want[i])
 					}
@@ -230,6 +270,36 @@ print('Test had 0 incorrect result(s) and 0 error(s)')
 			if err != nil || len(log) == 0 {
 				t.Fatalf("empty case log: %v", err)
 			}
+			if tc.name == "active_cancel" {
+				var ready struct {
+					PID       int    `json:"pid"`
+					Container string `json:"container"`
+				}
+				data, err := os.ReadFile(filepath.Join(root, "ready"))
+				if err != nil || json.Unmarshal(data, &ready) != nil || ready.PID <= 0 || ready.Container == "" {
+					t.Fatalf("active cancellation never became ready: %s %v", data, err)
+				}
+				info, err := os.Stat(filepath.Join(root, "ready"))
+				if err != nil || time.Since(info.ModTime()) > 45*time.Second {
+					t.Fatalf("canceled case did not finish promptly: %v", err)
+				}
+				stat, err := os.ReadFile("/proc/" + strconv.Itoa(ready.PID) + "/stat")
+				if !os.IsNotExist(err) && !(err == nil && strings.Contains(string(stat), ") Z ")) {
+					t.Fatalf("tester child survived cancellation: %s %v", stat, err)
+				}
+				if out, err := exec.Command("docker", "inspect", ready.Container).CombinedOutput(); err == nil || !strings.Contains(string(out), "No such") {
+					t.Fatalf("case container not removed: %s %v", out, err)
+				}
+				if !strings.Contains(string(log), "active harness ready with child") {
+					t.Fatalf("cancelled tester log lost: %s", log)
+				}
+				if _, err := os.Stat(filepath.Join(filepath.Dir(logs[0]), "docker.log")); err != nil {
+					t.Fatalf("cleanup logs missing after canceled context: %v", err)
+				}
+			}
+			if tc.name == "unavailable_fdb" && !strings.Contains(string(log), "zero-exit unavailable status confirmed") {
+				t.Fatalf("fixture did not establish unavailable database with successful status command: %s", log)
+			}
 			if tc.pass && !successfulVerdict(string(log), nil) {
 				t.Fatalf("no actual pinned harness success: %s", log)
 			}
@@ -243,13 +313,37 @@ print('Test had 0 incorrect result(s) and 0 error(s)')
 // Count-bound the real scheduled executor in a subprocess, avoiding a clock-based
 // test cutoff while still running all corpus cases and one full mode cycle.
 func TestScheduledRunnerProcess(t *testing.T) {
-	if os.Getenv("SCHEDULED_RUNNER_FIXTURE") != "1" {
+	mode := os.Getenv("SCHEDULED_RUNNER_FIXTURE")
+	if mode == "" {
 		return
 	}
 	harness := setup()
 	defer os.RemoveAll(harness)
 	if err := os.Mkdir("results", 0o755); err != nil {
 		t.Fatal(err)
+	}
+	if mode == "cancel" {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			for ctx.Err() == nil {
+				if _, err := os.Stat(os.Getenv("CANCEL_READY")); err == nil {
+					cancel()
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}()
+		started := time.Now()
+		err := executeRunContext(ctx, "results", 1, 146, 0, false, workload{"api", 20, 1, false, 730}, harness)
+		ready, statErr := os.Stat(os.Getenv("CANCEL_READY"))
+		if statErr != nil || ready.ModTime().Before(started) || time.Since(ready.ModTime()) > 45*time.Second {
+			t.Fatalf("cancelled run did not terminate promptly after active readiness: %v", statErr)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Fatal("cancelled run accepted")
 	}
 	if err := executeRun("results", 1, 146, 0, true, workload{"api", 20, 1, false, 730}, harness); err != nil {
 		t.Fatal(err)
