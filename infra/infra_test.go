@@ -452,7 +452,7 @@ func TestWorkflowGoMatchesGoMod(t *testing.T) {
 	if want == "" {
 		t.Fatal("missing build toolchain")
 	}
-	for _, path := range []string{"../.github/workflows/ci.yml", "../.github/workflows/fdb-release.yml"} {
+	for _, path := range []string{"../.github/workflows/ci.yml", "../.github/workflows/fdb-release.yml", "../.github/workflows/grafana-plugin.yml"} {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)

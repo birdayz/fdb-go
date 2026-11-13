@@ -24,6 +24,13 @@ until such a tag is published (`RELEASE.md`).
 
 ## [Unreleased]
 
+### Security (post-v0.2.0)
+- Require Go **1.27.4** or newer and build with Go 1.27.4, including the Grafana
+  backend. This includes the `net/http` MaxBytesReader header-race fix for
+  [GO-2026-6859 / CVE-2026-97054](https://pkg.go.dev/vuln/GO-2026-6859).
+  Rebuild deployed binaries to receive the standard-library fix; this does not
+  change persisted formats, SQL semantics or FoundationDB client options.
+
 ### Breaking changes
 Each is described in full under Compatibility or Changed below.
 - **Pure-Go client retry observers:** retry log handlers receive the caller's context;
@@ -137,7 +144,7 @@ Each is described in full under Compatibility or Changed below.
 - **DSN booleans are strictly `true`/`false`** (any case): a bare `?flag`, `1`/`0`, `t`/`f`,
   `yes`/`no` and `on`/`off` now fail at open with 22023.
 - **Required versions:** Java `fdb-record-layer-core` **4.14.2.0**, FDB C++ client **7.3.77**, Go
-  **1.27.3** or newer (`go.mod` enforces this minimum).
+  **1.27.4** or newer (`go.mod` enforces this minimum).
 - **Pure-Go client TLS (RFC-277):** a `:tls` cluster file with `FDB_TLS_*` now verifies the
   server as libfdb_c 7.3.77 does. Trust comes only from `FDB_TLS_CA_FILE`; with no CA file no
   server is trusted, where the system roots used to be. The host name is no longer checked, so
@@ -147,7 +154,7 @@ Each is described in full under Compatibility or Changed below.
   a password, a verify-peers string) fails the open with `*client.TLSConfigError`, which reads
   as `tls_error` (2107). `WithTLSConfig` configs keep Go's own verification.
 - **Go 1.27 runtime defaults** apply to applications built with this module, because their
-  `go` line must be at least 1.27.3:
+  `go` line must be at least 1.27.4:
   - `x509sslcertoverrideplatform=1`: on macOS and Windows, a nonempty `SSL_CERT_FILE` or
     `SSL_CERT_DIR` replaces the platform certificate verifier. Pure-Go client TLS connections
     through a `WithTLSConfig` config with nil `RootCAs` are affected; the `FDB_TLS_*` path
@@ -219,7 +226,7 @@ Each is described in full under Compatibility or Changed below.
     transaction, and the build when it is not retried. It used to fall back to one fragment.
     A database without a shard map (`BackendCapabilityError`) still builds one fragment.
 - Development builds use Bazel 9.3.1, Bazelisk 1.30.0, and updated stable BCR build rules.
-- Require Go 1.27 (minimum toolchain Go 1.27.3).
+- Require Go 1.27 (minimum toolchain Go 1.27.4).
 - Go 1.27.3 includes the GO-2026-6809 `crypto/x509` fix used by pure-Go client TLS.
 - Staticcheck 2026.2 retires SA5011 (upstream `5161aaa18`); nogo keeps x/tools `nilness`, which checks proven-nil uses but does not replace SA5011's dereference-then-later-nil-check coverage. Its upstream replacement is tracked in TODO.md.
 - Remote-fetch index scans avoid per-row raw/pending wrappers and read-only local-version key repacking. A fixed 1,000-row benchmark reduces remote-fetch median allocations from 35,988 to 21,915 per scan (39.10%) and bytes from 3,381,658 to 2,640,724 (21.91%); returned records and entries remain independently owned. See [RFC-258 PR4 measurements](https://github.com/birdayz/fdb-go/blob/master/docs/benchmarks/rfc-258-pr4-allocations.md) for scope and reproduction; unquiet timings are informational only.

@@ -50,7 +50,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.27.3'
+          go-version: '1.27.4'
           cache: false
 
       - name: Verify third-party notices are current
@@ -212,7 +212,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.27.3'
+          go-version: '1.27.4'
           cache: false
 
       - name: Check Docker
@@ -341,7 +341,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.27.3'
+          go-version: '1.27.4'
           cache: false
 
       # This repository is public: every commit a change adds is read for
@@ -417,7 +417,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.27.3'
+          go-version: '1.27.4'
           cache: false
 
       - name: govulncheck (shipped packages)
@@ -533,7 +533,7 @@ jobs:
         # thrash the isolated base exists to prevent.
         uses: actions/setup-go@v5
         with:
-          go-version: '1.27.3'
+          go-version: '1.27.4'
           cache: false
 
       - name: -race tests (SQL layer + client + cascades) — isolated output_base

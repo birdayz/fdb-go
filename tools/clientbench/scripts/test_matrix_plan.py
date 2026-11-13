@@ -44,6 +44,7 @@ class MatrixPlanTest(unittest.TestCase):
         revisions = {r['arm']: r['command'][r['command'].index('--source-revision') + 1] for r in schedule}
         self.assertEqual(revisions, {'g9a': 'a' * 40, 'g267': 'b' * 40, 'cgo': 'b' * 40})
         self.assertEqual(plan['environment']['GOMAXPROCS'], '8')
+        self.assertEqual(plan['go_version'], 'go1.27.4')
         self.assertEqual(plan['campaign_wall_cap_seconds'], 180)
         for arm in plan['arms']:
             self.assertEqual(plan['expected_sha256'][arm['binary']], r3_plan.digest(arm['binary']))

@@ -21,6 +21,13 @@ the release archives (`RELEASE.md`).
 **Post-v0.2.0 development.** These changes are outside the frozen v0.2.0 scope
 below; neither publication nor readiness is asserted.
 
+### Security
+- Require Go **1.27.4** or newer and build with Go 1.27.4, including the Grafana
+  backend. This includes the `net/http` MaxBytesReader header-race fix for
+  [GO-2026-6859 / CVE-2026-97054](https://pkg.go.dev/vuln/GO-2026-6859).
+  Rebuild deployed binaries to receive the standard-library fix; this does not
+  change persisted formats, SQL semantics or FoundationDB client options.
+
 ### Added
 - `layers/otel/otelsql` OTEL_V1 template API (`TemplateDDL`, `CreateTemplate`,
   `CreateTenant`) for Java-readable tenant spans, logs and message tables, and

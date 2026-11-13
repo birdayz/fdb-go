@@ -86,6 +86,7 @@ class CampaignTest(unittest.TestCase):
         self.assertEqual(self.plan['workloads'], [dict(name='batchset50', iterations=3000, warmup=200, workers=1)])
         self.assertEqual(self.plan['campaign_wall_cap_seconds'], 180)
         self.assertEqual(self.plan['environment']['GOMAXPROCS'], '8')
+        self.assertEqual(self.plan['go_version'], 'go1.27.4')
         schedule = run.make_schedule(self.plan, self.root / 'out')
         self.assertEqual(len(schedule), 12)
         self.assertEqual(schedule, run.make_schedule(self.plan, self.root / 'out'))
@@ -241,7 +242,7 @@ class CampaignTest(unittest.TestCase):
             backend = dict(backend=entry['arm'], native_library=native, executable=binary,
                            executable_sha256=pins[binary], api_version=730,
                            loaded_fdb_libraries_sha256={str(self.root / 'native'): plan['native_library_sha256']} if native else {})
-            manifest = dict(config=cfg, backend=backend, go_version='go1.27.3', gomaxprocs=8)
+            manifest = dict(config=cfg, backend=backend, go_version='go1.27.4', gomaxprocs=8)
             before = dict(process_user_cpu_us=100, process_system_cpu_us=50, go_total_alloc_bytes=0,
                           go_mallocs=0, go_gc_cycles=0, go_gc_pause_ns=0, process_high_water_rss_kb=1)
             identity = dict(before, process_user_cpu_us=25, process_system_cpu_us=10)
