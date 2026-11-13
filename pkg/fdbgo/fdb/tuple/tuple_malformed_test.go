@@ -83,9 +83,13 @@ func TestUnpackStrictMalformed(t *testing.T) {
 func TestUnpackStrictValid(t *testing.T) {
 	t.Parallel()
 	allTypes := Tuple{
-		[]byte{0xff, 0x00, 0xfe}, "a\x00é😀", int64(-42), int64(42),
+		[]byte{0xff, 0x00, 0xfe},
+		"a\x00é😀", int64(-42), int64(42),
 		new(big.Int).Lsh(big.NewInt(1), 80), float32(1.25), float64(-2.5),
-		true, false, UUID{1, 2, 3}, Versionstamp{TransactionVersion: [10]byte{1}, UserVersion: 2}, nil,
+		true, false,
+		UUID{1, 2, 3},
+		Versionstamp{TransactionVersion: [10]byte{1}, UserVersion: 2},
+		nil,
 		Tuple{nil, Tuple{int64(1)}, "nested\x00é"},
 	}
 	for _, tc := range []struct {
