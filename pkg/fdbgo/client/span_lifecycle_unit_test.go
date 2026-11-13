@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/binary"
 	"sync"
 	"testing"
 	"time"
@@ -160,53 +161,87 @@ func TestTracerRetryKeepsMetricsButRestartsSpan(t *testing.T) {
 
 func TestTracerManagedCommitLazyReuse(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	sr := tracetest.NewSpanRecorder()
-	db := traceUnitDB(t, sr)
-	db.db.timeouts = newTimeoutQueue()
-	var tx *Transaction
-	var before [16]byte
-	_, err := db.Transact(ctx, func(attempt *Transaction) (any, error) {
-		tx = attempt
-		tx.SetTimeout(60000)
-		tx.SetReadVersion(123)
-		tx.ensureTxSpan(ctx)
-		before = tx.currentSpan().TraceID
-		return nil, nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertTraceBalance(t, sr, 1)
-	if !tx.spanNeedsRegen.Load() || tx.spanContext.Load() != nil {
-		t.Fatal("managed commit did not leave lazy span regeneration")
-	}
-	tx.readErrMu.Lock()
-	released := !tx.transactScoped && tx.designEntry == nil && !tx.timeoutArmed
-	tx.readErrMu.Unlock()
-	if !released {
-		t.Fatal("managed helper did not release its timeout while ending its span")
-	}
+	for _, tc := range []struct {
+		name   string
+		parent int
+		spans  int
+	}{
+		{"unparented", -1, 2},
+		{"sampledParent", 1, 2},
+		{"unsampledParent", 0, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			sr := tracetest.NewSpanRecorder()
+			db := traceUnitDB(t, sr)
+			db.db.timeouts = newTimeoutQueue()
+			var tx *Transaction
+			var before [16]byte
+			_, err := db.Transact(ctx, func(attempt *Transaction) (any, error) {
+				tx = attempt
+				tx.SetTimeout(60000)
+				tx.SetReadVersion(123)
+				tx.ensureTxSpan(ctx)
+				before = tx.currentSpan().TraceID
+				return nil, nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertTraceBalance(t, sr, 1)
+			if !tx.spanNeedsRegen.Load() || tx.spanContext.Load() != nil {
+				t.Fatal("managed commit did not leave lazy span regeneration")
+			}
+			tx.readErrMu.Lock()
+			released := !tx.transactScoped && tx.designEntry == nil && !tx.timeoutArmed
+			tx.readErrMu.Unlock()
+			if !released {
+				t.Fatal("managed helper did not release its timeout while ending its span")
+			}
 
-	// Reusing the committed handle must regenerate under traceMu only once.
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		tx.ensureTxSpan(ctx)
-	}()
-	select {
-	case <-done:
-	case <-ctx.Done():
-		t.Fatal("lazy span regeneration deadlocked")
+			parentTrace := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+			// Parent injection must reopen the lazy successor before publishing its context.
+			done := make(chan error, 1)
+			go func() {
+				if tc.parent >= 0 {
+					var parent [spanParentSize]byte
+					binary.LittleEndian.PutUint64(parent[:8], 0x0fdb00b073000000)
+					copy(parent[8:24], parentTrace[:])
+					binary.LittleEndian.PutUint64(parent[24:32], 0x1234)
+					parent[32] = byte(tc.parent)
+					if err := tx.SetSpanParent(parent[:]); err != nil {
+						done <- err
+						return
+					}
+				}
+				tx.ensureTxSpan(ctx)
+				done <- nil
+			}()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-ctx.Done():
+				t.Fatal("lazy span regeneration deadlocked")
+			}
+			defer tx.Cancel()
+			after := tx.currentSpan()
+			if after.TraceID == before || !spanContextValid(after) || tx.spanNeedsRegen.Load() {
+				t.Fatal("escaped handle did not acquire a fresh wire span")
+			}
+			if tc.parent >= 0 && (after.TraceID != parentTrace || after.Flags != uint8(tc.parent)) {
+				t.Fatalf("successor context=%v, want injected trace %x flags %d", after, parentTrace, tc.parent)
+			}
+			tx.Cancel()
+			assertTraceBalance(t, sr, tc.spans)
+			if tc.parent == 1 && sr.Ended()[1].SpanContext().TraceID() != oteltrace.TraceID(parentTrace) {
+				t.Fatal("successor span did not use the injected trace")
+			}
+		})
 	}
-	defer tx.Cancel()
-	after := tx.currentSpan()
-	if after.TraceID == before || !spanContextValid(after) || tx.spanNeedsRegen.Load() {
-		t.Fatal("escaped handle did not acquire a fresh wire span")
-	}
-	tx.endTxSpan()
-	assertTraceBalance(t, sr, 2)
 }
 
 type traceWaitContext struct {

@@ -312,12 +312,22 @@ func TestTracerWriteOnlyCommit(t *testing.T) {
 	if !escaped.spanNeedsRegen.Load() || escaped.spanContext.Load() != nil {
 		t.Fatal("managed write commit did not defer successor span generation")
 	}
+	parentTrace := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
 	type readResult struct {
 		value []byte
 		err   error
 	}
 	done := make(chan readResult, 1)
 	go func() {
+		var parent [spanParentSize]byte
+		binary.LittleEndian.PutUint64(parent[:8], 0x0fdb00b073000000)
+		copy(parent[8:24], parentTrace[:])
+		binary.LittleEndian.PutUint64(parent[24:32], 0x1234)
+		parent[32] = 1
+		if err := escaped.SetSpanParent(parent[:]); err != nil {
+			done <- readResult{err: err}
+			return
+		}
 		value, err := escaped.Get(ctx, key)
 		done <- readResult{value, err}
 	}()
@@ -330,11 +340,16 @@ func TestTracerWriteOnlyCommit(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("escaped-handle read stalled during lazy span regeneration")
 	}
-	if escaped.currentSpan().TraceID == wireSpan.TraceID {
-		t.Fatal("escaped-handle read reused the committed trace identity")
+	if escaped.currentSpan().TraceID != parentTrace {
+		t.Fatal("escaped-handle read did not adopt the injected trace identity")
 	}
 	escaped.Cancel()
-	checkEndedSpans(t, sr, "Transaction", "Transaction", "fdbgo.getValue")
+	spans = checkEndedSpans(t, sr, "Transaction", "Transaction", "fdbgo.getValue")
+	for _, span := range spans[1:] {
+		if span.SpanContext().TraceID() != oteltrace.TraceID(parentTrace) {
+			t.Errorf("successor %s span did not use the injected trace", span.Name())
+		}
+	}
 }
 
 type observingSpanTracer struct {

@@ -2342,7 +2342,13 @@ func (tx *Transaction) stateSetSpanParent(b []byte) error {
 	if err != nil {
 		return err
 	}
+	tx.traceMu.Lock()
+	defer tx.traceMu.Unlock()
 	tx.spanParent.Store(&parent)
+	if tx.spanNeedsRegen.Load() {
+		tx.regenerateSpanLocked()
+		return nil
+	}
 	sc := childSpanContext(parent)
 	tx.spanContext.Store(&sc)
 	return nil
