@@ -53,10 +53,10 @@ type Report struct {
 }
 
 func main() {
-	os.Exit(run())
+	os.Exit(run(runSeed))
 }
 
-func run() int {
+func run(seedRunner func(int, int, string, string, string, string) SeedResult) int {
 	seeds := flag.Int("seeds", 100, "number of seeds to run (0 = use -duration)")
 	ops := flag.Int("ops", 1000, "operations per seed")
 	duration := flag.Duration("duration", 0, "run for this long (e.g. 2h); overrides -seeds")
@@ -109,7 +109,7 @@ func run() int {
 		os.MkdirAll(seedDir, 0o755)
 
 		t0 := time.Now()
-		r := runSeed(seed, *ops, *testName, stacktester, btRunDir, seedDir)
+		r := seedRunner(seed, *ops, *testName, stacktester, btRunDir, seedDir)
 		r.Duration = time.Since(t0).Seconds()
 
 		report.Seeds = append(report.Seeds, r)

@@ -3,6 +3,8 @@ package main
 import (
 	"archive/tar"
 	"crypto/sha256"
+	"encoding/json"
+	"flag"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -181,11 +183,12 @@ print("standalone bindingtester imports verified")
 	}
 }
 
-func TestSetupCleansHarnessAfterClientInitializationFailure(t *testing.T) {
-	root := t.TempDir()
-	ws := filepath.Join(root, "workspace")
-	base := filepath.Join(root, "output-base")
-	bin := filepath.Join(root, "bin")
+func setupFixture(t *testing.T) (root, ws, base, bin string) {
+	t.Helper()
+	root = t.TempDir()
+	ws = filepath.Join(root, "workspace")
+	base = filepath.Join(root, "output-base")
+	bin = filepath.Join(root, "bin")
 	for _, dir := range []string{
 		bin,
 		filepath.Join(ws, "bazel-bin", "cmd", "fdb-stacktester", "fdb-stacktester_"),
@@ -206,6 +209,82 @@ func TestSetupCleansHarnessAfterClientInitializationFailure(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	return root, ws, base, bin
+}
+
+func TestRunRemovesHarnessOnSuccessAndFailedSeed(t *testing.T) {
+	t.Parallel()
+	client, err := os.ReadFile("python-fdb.tar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"success", "failure"} {
+		t.Run(mode, func(t *testing.T) {
+			root, ws, base, bin := setupFixture(t)
+			clientTar := filepath.Join(ws, "bazel-bin", "cmd", "fdb-binding-stress", "python-fdb.tar")
+			if err := os.WriteFile(clientTar, client, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			outDir := filepath.Join(root, "out")
+			cmd := exec.Command(os.Args[0], "-test.run=^TestHarnessLifecycleChild$")
+			cmd.Env = append(
+				os.Environ(),
+				"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"BUILD_WORKSPACE_DIRECTORY="+ws,
+				"FDB_TEST_OUTPUT_BASE="+base,
+				"TMPDIR="+root,
+				"FDB_STRESS_LIFECYCLE="+mode,
+				"FDB_STRESS_TEST_OUT="+outDir,
+			)
+			output, err := cmd.CombinedOutput()
+			status := 0
+			if err != nil {
+				if exit, ok := err.(*exec.ExitError); ok {
+					status = exit.ExitCode()
+				} else {
+					t.Fatal(err)
+				}
+			}
+			wantStatus, wantPass, wantFail := 0, 1, 0
+			if mode == "failure" {
+				wantStatus, wantPass, wantFail = 1, 0, 1
+			}
+			if status != wantStatus {
+				t.Fatalf("exit = %d, want %d: %s", status, wantStatus, output)
+			}
+			data, err := os.ReadFile(filepath.Join(outDir, "report.json"))
+			if err != nil {
+				t.Fatalf("no completed campaign report: %v: %s", err, output)
+			}
+			var report Report
+			if err := json.Unmarshal(data, &report); err != nil {
+				t.Fatal(err)
+			}
+			if report.Total != 1 || report.Pass != wantPass || report.Fail != wantFail {
+				t.Fatalf("campaign population/status = %+v", report)
+			}
+			left, err := filepath.Glob(filepath.Join(root, "fdb-binding-harness-*"))
+			if err != nil || len(left) != 0 {
+				t.Fatalf("completed campaign leaked harness: %v, %v", left, err)
+			}
+		})
+	}
+}
+
+func TestHarnessLifecycleChild(t *testing.T) {
+	mode := os.Getenv("FDB_STRESS_LIFECYCLE")
+	if mode == "" {
+		return
+	}
+	flag.CommandLine = flag.NewFlagSet("binding-stress-lifecycle", flag.ExitOnError)
+	os.Args = []string{"binding-stress", "-seeds", "1", "-out", os.Getenv("FDB_STRESS_TEST_OUT")}
+	os.Exit(run(func(seed, _ int, _, _, _, _ string) SeedResult {
+		return SeedResult{Seed: seed, Pass: mode == "success", FDBAlive: true, Error: "controlled seed verdict"}
+	}))
+}
+
+func TestSetupCleansHarnessAfterClientInitializationFailure(t *testing.T) {
+	root, ws, base, bin := setupFixture(t)
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
