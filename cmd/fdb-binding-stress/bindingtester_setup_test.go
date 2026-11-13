@@ -1,6 +1,9 @@
 package main
 
 import (
+	"archive/tar"
+	"crypto/sha256"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,6 +101,159 @@ func TestPrepareBindingTesterRemovesFailedPrivateCopies(t *testing.T) {
 		entries, err := os.ReadDir(root)
 		if err != nil || len(entries) != 0 {
 			t.Fatalf("failed setup left private copies: %v, %v", entries, err)
+		}
+	}
+}
+
+func TestPreparedPinnedBindingTesterImportsPinnedClient(t *testing.T) {
+	t.Parallel()
+	source := filepath.Join(os.Getenv("TEST_SRCDIR"), "foundationdb+", "bindings", "bindingtester")
+	source, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		t.Fatalf("pinned tester not staged: %v", err)
+	}
+	root := t.TempDir()
+	forest := filepath.Join(root, "forest")
+	pinned := map[string][sha256.Size]byte{}
+	err = filepath.WalkDir(source, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(forest, rel)
+		if entry.IsDir() {
+			return os.MkdirAll(dst, 0o755)
+		}
+		if !strings.HasSuffix(path, ".py") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		pinned[path] = sha256.Sum256(data)
+		return os.Symlink(path, dst)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pinned) == 0 {
+		t.Fatal("no pinned tester Python inputs staged")
+	}
+	clientTar, err := filepath.Abs("python-fdb.tar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		dir, err := prepareBindingTester(forest, root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command("tar", "xf", clientTar, "-C", dir).CombinedOutput(); err != nil {
+			t.Fatalf("unpack pinned client: %s: %v", out, err)
+		}
+		cmd := exec.Command("python3", "-S", "-c", `import os, pathlib
+import bindingtester
+from bindingtester import util
+import fdb
+root = pathlib.Path(os.getcwd())
+assert pathlib.Path(bindingtester.__file__).is_relative_to(root)
+assert pathlib.Path(util.__file__).is_relative_to(root)
+assert pathlib.Path(fdb.__file__).is_relative_to(root)
+assert bindingtester.FDB_API_VERSION == 730
+assert callable(fdb.api_version)
+print("standalone bindingtester imports verified")
+`)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "PYTHONPATH="+dir, "PYTHONDONTWRITEBYTECODE=1")
+		if out, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(out), "standalone bindingtester imports verified") {
+			t.Fatalf("prepared pinned tester startup: %s: %v", out, err)
+		}
+		for path, before := range pinned {
+			data, err := os.ReadFile(path)
+			if err != nil || sha256.Sum256(data) != before {
+				t.Fatalf("pinned tester input changed: %s: %v", path, err)
+			}
+		}
+	}
+}
+
+func TestSetupCleansHarnessAfterClientInitializationFailure(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "workspace")
+	base := filepath.Join(root, "output-base")
+	bin := filepath.Join(root, "bin")
+	for _, dir := range []string{
+		bin,
+		filepath.Join(ws, "bazel-bin", "cmd", "fdb-stacktester", "fdb-stacktester_"),
+		filepath.Join(ws, "bazel-bin", "cmd", "fdb-binding-stress"),
+		filepath.Join(base, "external", "foundationdb+", "bindings", "bindingtester"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := map[string]string{
+		filepath.Join(bin, "bazelisk"): "#!/bin/sh\nif [ \"$1\" = info ]; then printf '%s\\n' \"$FDB_TEST_OUTPUT_BASE\"; fi\n",
+		filepath.Join(ws, "bazel-bin", "cmd", "fdb-stacktester", "fdb-stacktester_", "fdb-stacktester"): "stub",
+		filepath.Join(base, "external", "foundationdb+", "bindings", "bindingtester", "__init__.py"):    bindingTesterImports,
+	}
+	for path, data := range files {
+		if err := os.WriteFile(path, []byte(data), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(cwd); err != nil {
+			t.Error(err)
+		}
+	})
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("BUILD_WORKSPACE_DIRECTORY", ws)
+	t.Setenv("FDB_TEST_OUTPUT_BASE", base)
+	t.Setenv("TMPDIR", root)
+	clientTar := filepath.Join(ws, "bazel-bin", "cmd", "fdb-binding-stress", "python-fdb.tar")
+	for _, preflightFailure := range []bool{false, true} {
+		if preflightFailure {
+			f, err := os.Create(clientTar)
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := tar.NewWriter(f)
+			data := "raise RuntimeError('broken pinned client')\n"
+			if err := w.WriteHeader(&tar.Header{Name: "fdb/__init__.py", Mode: 0o644, Size: int64(len(data))}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := w.Write([]byte(data)); err != nil {
+				t.Fatal(err)
+			}
+			if err := w.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Close(); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := os.WriteFile(clientTar, []byte("invalid tar"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, _, err := setup()
+		want := "unpack python fdb"
+		if preflightFailure {
+			want = "broken pinned client"
+		}
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("setup error = %v, want %q", err, want)
+		}
+		left, err := filepath.Glob(filepath.Join(root, "fdb-binding-harness-*"))
+		if err != nil || len(left) != 0 {
+			t.Fatalf("failed setup leaked harness: %v, %v", left, err)
 		}
 	}
 }

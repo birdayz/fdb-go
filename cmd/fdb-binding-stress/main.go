@@ -53,6 +53,10 @@ type Report struct {
 }
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	seeds := flag.Int("seeds", 100, "number of seeds to run (0 = use -duration)")
 	ops := flag.Int("ops", 1000, "operations per seed")
 	duration := flag.Duration("duration", 0, "run for this long (e.g. 2h); overrides -seeds")
@@ -61,7 +65,11 @@ func main() {
 	testName := flag.String("test-name", "api", "binding tester test name (api, directory, directory_hca)")
 	flag.Parse()
 
-	stacktester, btRunDir := setup()
+	stacktester, btRunDir, err := setup()
+	if err != nil {
+		log.Print(err)
+		return 1
+	}
 	defer os.RemoveAll(btRunDir)
 
 	// Create timestamped output directory.
@@ -170,8 +178,9 @@ func main() {
 	fmt.Println("=========================================")
 
 	if fail > 0 {
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 func runSeed(seed, ops int, testName, stacktester, btRunDir, seedDir string) (r SeedResult) {
@@ -183,7 +192,8 @@ func runSeed(seed, ops int, testName, stacktester, btRunDir, seedDir string) (r 
 	ctx, cancel := context.WithTimeout(context.Background(), perSeedTimeout)
 	defer cancel()
 
-	container, err := foundationdb.Run(ctx, "",
+	container, err := foundationdb.Run(
+		ctx, "",
 		foundationdb.WithDirectIP(),
 		foundationdb.WithStorageEngine("memory"),
 	)
@@ -221,7 +231,8 @@ func runSeed(seed, ops int, testName, stacktester, btRunDir, seedDir string) (r 
 	}
 
 	// Run bindingtester.
-	cmd := exec.CommandContext(ctx, "python3",
+	cmd := exec.CommandContext(
+		ctx, "python3",
 		filepath.Join(btRunDir, "bindingtester/bindingtester.py"),
 		"--cluster-file", clusterFile,
 		"--test-name", testName,
@@ -321,7 +332,7 @@ func isFDBAlive(ctx context.Context, container *foundationdb.Container) bool {
 	return err == nil
 }
 
-func setup() (stacktester string, btRunDir string) {
+func setup() (stacktester string, btRunDir string, err error) {
 	// When run via `bazelisk run`, cwd is the sandbox. Use workspace dir.
 	wsDir := os.Getenv("BUILD_WORKSPACE_DIRECTORY")
 	if wsDir != "" {
@@ -335,12 +346,12 @@ func setup() (stacktester string, btRunDir string) {
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		log.Fatalf("bazelisk build failed: %v", err)
+		return "", "", fmt.Errorf("bazelisk build failed: %w", err)
 	}
 
-	stacktester, err := filepath.Abs("bazel-bin/cmd/fdb-stacktester/fdb-stacktester_/fdb-stacktester")
+	stacktester, err = filepath.Abs("bazel-bin/cmd/fdb-stacktester/fdb-stacktester_/fdb-stacktester")
 	if err != nil {
-		log.Fatalf("resolve stacktester path: %v", err)
+		return "", "", fmt.Errorf("resolve stacktester path: %w", err)
 	}
 	// Resolve symlinks to get the stable cache path. The bazel-bin/ symlink
 	// gets recreated on every Bazel invocation, so if a concurrent build runs
@@ -349,27 +360,36 @@ func setup() (stacktester string, btRunDir string) {
 	// cache which survives across builds.
 	stacktester, err = filepath.EvalSymlinks(stacktester)
 	if err != nil {
-		log.Fatalf("resolve stacktester symlinks: %v", err)
+		return "", "", fmt.Errorf("resolve stacktester symlinks: %w", err)
 	}
 	if _, err := os.Stat(stacktester); err != nil {
-		log.Fatalf("stacktester not found at %s", stacktester)
+		return "", "", fmt.Errorf("stacktester not found at %s: %w", stacktester, err)
 	}
 
 	btDir, err := findBindingTesterDir()
 	if err != nil {
-		log.Fatalf("find bindingtester: %v", err)
+		return "", "", fmt.Errorf("find bindingtester: %w", err)
 	}
 
 	btRunDir, err = prepareBindingTester(btDir, os.TempDir())
 	if err != nil {
-		log.Fatalf("prepare bindingtester: %v", err)
+		return "", "", fmt.Errorf("prepare bindingtester: %w", err)
+	}
+	defer func(dir string) {
+		if err != nil {
+			os.RemoveAll(dir)
+		}
+	}(btRunDir)
+
+	if err = installPythonFDB(btRunDir); err != nil {
+		return "", "", err
+	}
+	if err = preflightPythonFDB(btRunDir); err != nil {
+		return "", "", err
 	}
 
-	installPythonFDB(btRunDir)
-	preflightPythonFDB(btRunDir)
-
 	fmt.Fprintf(os.Stderr, "Stacktester: %s\nHarness: %s\n\n", stacktester, btRunDir)
-	return stacktester, btRunDir
+	return stacktester, btRunDir, nil
 }
 
 // installPythonFDB unpacks the pinned FDB Python client into the harness dir,
@@ -378,25 +398,26 @@ func setup() (stacktester string, btRunDir string) {
 // and a developer laptop, and so the binding under test is version-locked to
 // the pinned C client instead of to whatever `pip install foundationdb` last
 // left behind.
-func installPythonFDB(btRunDir string) {
+func installPythonFDB(btRunDir string) error {
 	tar, err := filepath.Abs("bazel-bin/cmd/fdb-binding-stress/python-fdb.tar")
 	if err != nil {
-		log.Fatalf("resolve python fdb tar path: %v", err)
+		return fmt.Errorf("resolve python fdb tar path: %w", err)
 	}
 	// See the stacktester resolution above for why the symlink is resolved.
 	tar, err = filepath.EvalSymlinks(tar)
 	if err != nil {
-		log.Fatalf("resolve python fdb tar symlinks: %v", err)
+		return fmt.Errorf("resolve python fdb tar symlinks: %w", err)
 	}
 
 	// Replace the package if this private harness is initialized again.
 	if err := os.RemoveAll(filepath.Join(btRunDir, "fdb")); err != nil {
-		log.Fatalf("remove stale python fdb: %v", err)
+		return fmt.Errorf("remove stale python fdb: %w", err)
 	}
 	untar := exec.Command("tar", "xf", tar, "-C", btRunDir)
 	if out, err := untar.CombinedOutput(); err != nil {
-		log.Fatalf("unpack python fdb (%s): %s: %v", tar, out, err)
+		return fmt.Errorf("unpack python fdb (%s): %s: %w", tar, out, err)
 	}
+	return nil
 }
 
 // preflightPythonProgram is the probe preflightPythonFDB runs in the tester's Python.
@@ -422,18 +443,19 @@ print(fdb.__file__)
 // preflight therefore has to touch something the real client defines —
 // api_version is the first thing the tester itself calls — and reject the
 // file-less namespace case explicitly.
-func preflightPythonFDB(btRunDir string) {
+func preflightPythonFDB(btRunDir string) error {
 	cmd := exec.Command("python3", "-c", preflightPythonProgram)
 	cmd.Dir = btRunDir
 	cmd.Env = append(os.Environ(), "PYTHONPATH="+btRunDir)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Fatalf("the binding tester's Python client is not importable — every seed "+
+		return fmt.Errorf("the binding tester's Python client is not importable — every seed "+
 			"would fail with an opaque exec status.\npython3 -c 'import fdb' under %s said:\n%s\n"+
 			"(the client is unpacked from //cmd/fdb-binding-stress:python_fdb_tar; it also "+
-			"needs libfdb_c on the system loader path)", btRunDir, out)
+			"needs libfdb_c on the system loader path): %w", btRunDir, out, err)
 	}
 	fmt.Fprintf(os.Stderr, "Python FDB client: %s", out)
+	return nil
 }
 
 func findBindingTesterDir() (string, error) {
