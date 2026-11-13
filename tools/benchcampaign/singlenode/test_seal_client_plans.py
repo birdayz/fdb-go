@@ -59,7 +59,7 @@ class SealClientPlansTest(unittest.TestCase):
         self.orders = self.root / 'orders.json'
         protocol = json.loads((TESTDATA / 'protocol.json').read_text())
         # Match the current plan generator without rewriting historical protocol data.
-        protocol['runtime']['go'] = '1.27.3'
+        protocol['runtime']['go'] = '1.27.4'
         # Protocol v4: the client campaigns' wall cap is 360 seconds, processes 180.
         protocol['harness_revision'] = HARNESS_REVISION
         for phase in protocol['phases']:
@@ -96,6 +96,7 @@ class SealClientPlansTest(unittest.TestCase):
             schedule = json.loads(Path(c['schedule']).read_text())
             self.assertEqual(c['plan_sha256'], digest(c['plan']))
             self.assertEqual(plan['seed'], phase['order_seed'])
+            self.assertEqual(plan['go_version'], 'go1.27.4')
             self.assertEqual((plan['campaign_wall_cap_seconds'], plan['timeout_seconds']), (360, 180))
             self.assertEqual([a['name'] for a in plan['arms']], ['before', 'final', 'cgo'])
             self.assertEqual(plan['workloads'], [dict(name=c['workload'], iterations=phase['iterations'],
@@ -165,7 +166,7 @@ class SealClientPlansTest(unittest.TestCase):
 
     def test_rejects_a_protocol_with_the_old_toolchain(self):
         protocol = json.loads(self.protocol.read_text())
-        protocol['runtime']['go'] = '1.26.9'
+        protocol['runtime']['go'] = '1.27.3'
         self.protocol.write_text(json.dumps(protocol))
         with self.assertRaisesRegex(ValueError, 'plan API/Go version differs'):
             seal.seal(copy.copy(self.args))
