@@ -29,6 +29,7 @@ class MatrixPlanTest(unittest.TestCase):
 
     def test_three_arm_plan_is_counterbalanced(self):
         plan = matrix_plan.make_plan(self.args)
+        self.assertEqual(plan['go_version'], 'go1.27.4')
         schedule = run.make_schedule(plan, self.root / 'out')
         self.assertEqual(len(schedule), 12 * 1 * 3)
         self.assertEqual(schedule, run.make_schedule(plan, self.root / 'out'))
