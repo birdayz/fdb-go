@@ -740,6 +740,8 @@ func toBigInt(v any) *big.Int {
 		return big.NewInt(x)
 	case int:
 		return big.NewInt(int64(x))
+	case uint64:
+		return new(big.Int).SetUint64(x)
 	case *big.Int:
 		return x
 	case []byte:

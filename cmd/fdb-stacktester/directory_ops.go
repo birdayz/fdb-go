@@ -198,6 +198,11 @@ func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op stri
 	// The binding tester expects DIRECTORY_ERROR, not a crash.
 	defer func() {
 		if r := recover(); r != nil {
+			// Python reserves a directory-list slot even when a creator raises.
+			switch strings.TrimPrefix(op, "DIRECTORY_") {
+			case "CREATE_SUBSPACE", "CREATE_LAYER", "CREATE_OR_OPEN", "CREATE", "OPEN", "MOVE", "MOVE_TO", "OPEN_SUBSPACE":
+				sm.appendNull()
+			}
 			sm.push(idx, []byte("DIRECTORY_ERROR"))
 			handled = true
 			err = nil
