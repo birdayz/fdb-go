@@ -21,13 +21,14 @@ import (
 )
 
 type recordKeyInteropRequest struct {
-	Layout       string  `json:"layout"`
-	Reverse      bool    `json:"reverse"`
-	RowLimit     int     `json:"rowLimit"`
-	Skip         int     `json:"skip"`
-	ScannedLimit int     `json:"scannedLimit"`
-	ByteLimit    int64   `json:"byteLimit"`
-	Continuation *string `json:"continuation"` // nil=start; pointer to ""=present empty token
+	Layout          string  `json:"layout"`
+	Reverse         bool    `json:"reverse"`
+	RowLimit        int     `json:"rowLimit"`
+	Skip            int     `json:"skip"`
+	ScannedLimit    int     `json:"scannedLimit"`
+	ByteLimit       int64   `json:"byteLimit"`
+	Continuation    *string `json:"continuation"` // nil=start; pointer to ""=present empty token
+	FailOnScanLimit bool    `json:"failOnScanLimit"`
 }
 
 type recordKeyInteropRow struct {
@@ -173,6 +174,7 @@ var _ = Describe("Record-key opaque continuation Java interchange", func() {
 		execution := recordlayer.DefaultExecuteProperties()
 		execution.ReturnedRowLimit, execution.Skip = req.RowLimit, req.Skip
 		execution.ScannedRecordsLimit, execution.ScannedBytesLimit = req.ScannedLimit, req.ByteLimit
+		execution.FailOnScanLimitReached = req.FailOnScanLimit
 		cursor := store.ScanRecordKeys(recordKeyInteropDecode(req.Continuation), recordlayer.NewScanProperties(execution).WithReverse(req.Reverse))
 		defer func() { Expect(cursor.Close()).To(Succeed()) }()
 		page := recordKeyInteropPage{Rows: []recordKeyInteropRow{}, Repeats: []recordKeyInteropTerminal{}}
@@ -237,22 +239,24 @@ var _ = Describe("Record-key opaque continuation Java interchange", func() {
 		for _, empty := range []bool{true, false} {
 			if !empty {
 				_, err := env.RecordDB.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
-					_, err := recordlayer.NewStoreBuilder().SetContext(rc).SetSubspace(ks.Sub("unsplit")).
-						SetFormatVersion(14).SetMetaDataProvider(recordScanMetadata(false, false, false)).CreateOrOpen()
+					_, err := recordlayer.NewStoreBuilder().SetContext(rc).SetSubspace(ks.Sub("split")).
+						SetFormatVersion(14).SetMetaDataProvider(recordScanMetadata(true, false, false)).CreateOrOpen()
 					if err != nil {
 						return nil, err
 					}
 					for _, id := range []byte{1, 2} {
-						physical := []byte{0x05, 0x15, id, 0x00, 0x14}
-						key := append(append([]byte(nil), ks.Sub("unsplit").Sub(recordlayer.RecordKey).Bytes()...), physical...)
-						rc.Transaction().Set(fdb.Key(key), []byte{0x61})
+						for _, suffix := range []byte{1, 2} {
+							physical := []byte{0x05, 0x15, id, 0x00, 0x15, suffix}
+							key := append(append([]byte(nil), ks.Sub("split").Sub(recordlayer.RecordKey).Bytes()...), physical...)
+							rc.Transaction().Set(fdb.Key(key), []byte{0x61})
+						}
 					}
 					return nil, nil
 				})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			for _, reverse := range []bool{false, true} {
-				req := recordKeyInteropRequest{Layout: "unsplit", Reverse: reverse}
+				req := recordKeyInteropRequest{Layout: "split", Reverse: reverse}
 				firstID, secondID := byte(1), byte(2)
 				if reverse {
 					firstID, secondID = secondID, firstID
@@ -267,6 +271,26 @@ var _ = Describe("Record-key opaque continuation Java interchange", func() {
 						Expect(control.Rows).To(HaveLen(2))
 						Expect(control.Rows[0].PrimaryKey).To(Equal(base64.StdEncoding.EncodeToString([]byte{0x05, 0x15, firstID, 0x00})))
 						Expect(control.Rows[1].PrimaryKey).To(Equal(base64.StdEncoding.EncodeToString([]byte{0x05, 0x15, secondID, 0x00})))
+					}
+				}
+				if !empty {
+					for _, tokenHex := range []string{"0a00", "0a0b0a0011accd7398dd42005e"} {
+						token, err := hex.DecodeString(tokenHex)
+						Expect(err).NotTo(HaveOccurred())
+						req.Continuation = recordKeyInteropBytes(token)
+						for _, page := range []recordKeyInteropPage{javaPage(req), goPage(req)} {
+							Expect(page.ExceptionClass).To(BeEmpty())
+							Expect(page.End).To(BeTrue())
+							Expect(page.Reason).To(Equal("SOURCE_EXHAUSTED"))
+							if reverse {
+								Expect(page.Rows).To(BeEmpty())
+							} else {
+								Expect(page.Rows).To(HaveLen(2))
+								Expect(page.Rows[0].PrimaryKey).To(Equal(base64.StdEncoding.EncodeToString([]byte{0x05, 0x15, 1, 0x00})))
+								Expect(page.Rows[1].PrimaryKey).To(Equal(base64.StdEncoding.EncodeToString([]byte{0x05, 0x15, 2, 0x00})))
+							}
+							recordKeyInteropAssertFraming(page, false)
+						}
 					}
 				}
 				for _, tokenHex := range []string{"0a001203051501", "0a00120302ff00"} {
@@ -291,6 +315,7 @@ var _ = Describe("Record-key opaque continuation Java interchange", func() {
 						Expect(page.ExceptionClass).To(BeEmpty())
 						Expect(page.Rows).To(HaveLen(1))
 						Expect(page.Rows[0].PrimaryKey).To(Equal(base64.StdEncoding.EncodeToString([]byte{0x05, 0x15, firstID, 0x00})))
+						Expect(page.ScannedRecords).To(Equal(1))
 						Expect(page.Reason).To(Equal("RETURN_LIMIT_REACHED"))
 						recordKeyInteropAssertFraming(page, false)
 					}
@@ -303,6 +328,7 @@ var _ = Describe("Record-key opaque continuation Java interchange", func() {
 						Expect(page.ExceptionClass).To(BeEmpty())
 						Expect(page.Rows).To(HaveLen(1))
 						Expect(page.Rows[0].PrimaryKey).To(Equal(base64.StdEncoding.EncodeToString([]byte{0x05, 0x15, secondID, 0x00})))
+						Expect(page.ScannedRecords).To(Equal(2)) // suppress the restored PK's remaining suffix
 						Expect(page.Reason).To(Equal("RETURN_LIMIT_REACHED"))
 						recordKeyInteropAssertFraming(page, false)
 					}
@@ -487,6 +513,51 @@ var _ = Describe("Record-key opaque continuation Java interchange", func() {
 					Expect(ended).To(BeTrue(), "bounded walk never reached EOF")
 					Expect(ids).To(Equal(want), "%s reverse=%t mode=%s", name, reverse, mode)
 				}
+				if !bare {
+					position := 0
+					if reverse {
+						position = len(physical) - 1
+					}
+					physicalBytes := int64(len(physical[position].Key) + len(physical[position].Value))
+					leaf := append([]byte{0x0a, byte(len(wantPhysical[position]))}, wantPhysical[position]...)
+					leaf = append(leaf, 0x11, 0xac, 0xcd, 0x73, 0x98, 0xdd, 0x42, 0x00, 0x5e)
+					pk := recordKeyInteropPK(byte(want[0]))
+					wantToken := append([]byte{0x0a, byte(len(leaf))}, leaf...)
+					wantToken = append(wantToken, 0x12, byte(len(pk)))
+					wantToken = append(wantToken, pk...)
+					for _, budget := range []string{"records", "bytes"} {
+						for _, fail := range []bool{false, true} {
+							req := base
+							req.RowLimit, req.FailOnScanLimit = 1, fail
+							if budget == "records" {
+								req.ScannedLimit = 1
+							} else {
+								req.ByteLimit = physicalBytes
+							}
+							jp, gp := javaPage(req), goPage(req)
+							Expect(gp).To(Equal(jp))
+							for _, page := range []recordKeyInteropPage{jp, gp} {
+								Expect(page.ExceptionClass).To(BeEmpty())
+								Expect(recordKeyInteropIDs(page)).To(Equal(want[:1]))
+								Expect(page.Reason).To(Equal("RETURN_LIMIT_REACHED"))
+								Expect(page.End).To(BeFalse())
+								Expect(recordKeyInteropDecode(page.Continuation)).To(Equal(wantToken))
+								Expect(page.ScannedRecords).To(Equal(1))
+								Expect(page.ScannedBytes).To(Equal(physicalBytes))
+								recordKeyInteropAssertFraming(page, false)
+							}
+							javaResume, goResume := base, base
+							javaResume.Continuation, goResume.Continuation = gp.Continuation, jp.Continuation
+							for _, page := range []recordKeyInteropPage{javaPage(javaResume), goPage(goResume)} {
+								Expect(page.ExceptionClass).To(BeEmpty())
+								Expect(recordKeyInteropIDs(page)).To(Equal(want[1:]))
+								Expect(page.End).To(BeTrue())
+								recordKeyInteropAssertFraming(page, false)
+							}
+						}
+					}
+				}
+
 				for _, limit := range []int{0, 2, 6} {
 					req := base
 					req.RowLimit = limit

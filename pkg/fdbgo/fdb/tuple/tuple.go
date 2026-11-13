@@ -976,11 +976,27 @@ func Unpack(b []byte) (Tuple, error) {
 	return t, err
 }
 
-// UnpackStrict decodes a tuple, additionally requiring nested tuple terminators
-// and valid UTF-8 strings. It still accepts noncanonical integer encodings.
+// DecodeError describes malformed input to UnpackStrict and preserves its cause.
+type DecodeError struct {
+	// Offset is the byte offset of the top-level element containing the failure.
+	Offset int
+	Cause  error
+}
+
+func (e *DecodeError) Error() string {
+	return fmt.Sprintf("unable to unpack strict tuple at byte %d: %v", e.Offset, e.Cause)
+}
+
+func (e *DecodeError) Unwrap() error { return e.Cause }
+
+// UnpackStrict requires nested terminators and valid UTF-8, returning *DecodeError
+// for malformed input. It still accepts noncanonical integer encodings.
 func UnpackStrict(b []byte) (Tuple, error) {
-	t, _, err := decodeTuple(b, false, true)
-	return t, err
+	t, offset, err := decodeTuple(b, false, true)
+	if err != nil {
+		return nil, &DecodeError{Offset: offset, Cause: err}
+	}
+	return t, nil
 }
 
 // FDBKey returns the packed representation of a Tuple, and allows Tuple to

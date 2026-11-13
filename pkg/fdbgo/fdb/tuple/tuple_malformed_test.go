@@ -2,6 +2,8 @@ package tuple
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"math/big"
 	"reflect"
 	"testing"
@@ -44,6 +46,14 @@ func TestUnpackMalformedReturnsError(t *testing.T) {
 				if err == nil {
 					t.Fatalf("%s(%x) = %v, want error", name, c.in, tup)
 				}
+				var decoding *DecodeError
+				if name == "UnpackStrict" {
+					if !errors.As(err, &decoding) || decoding.Cause == nil || errors.Unwrap(err) != decoding.Cause {
+						t.Fatalf("UnpackStrict(%x) error lacks a typed cause: %v", c.in, err)
+					}
+				} else if errors.As(err, &decoding) {
+					t.Fatalf("legacy Unpack(%x) error type changed: %v", c.in, err)
+				}
 			}
 		})
 	}
@@ -69,14 +79,27 @@ func TestUnpackStrictMalformed(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got, err := UnpackStrict(tc.in); err == nil {
-				t.Fatalf("UnpackStrict(%x) = %v, want error", tc.in, got)
+			got, err := UnpackStrict(tc.in)
+			var decoding *DecodeError
+			if !errors.As(err, &decoding) || decoding.Offset != 0 || decoding.Cause == nil || errors.Unwrap(err) != decoding.Cause {
+				t.Fatalf("UnpackStrict(%x) = %v, %v; want typed error at byte 0 with cause", tc.in, got, err)
 			}
 			// Strict restoration must not change existing Unpack callers.
 			if _, err := Unpack(tc.in); err != nil {
 				t.Fatalf("legacy Unpack(%x) changed: %v", tc.in, err)
 			}
 		})
+	}
+}
+
+func TestUnpackStrictErrorOffset(t *testing.T) {
+	t.Parallel()
+	for _, in := range [][]byte{{0x14, 0x02, 0xff, 0x00}, {0x14, 0x05, 0x05, 0x15, 0x01}} {
+		_, err := UnpackStrict(in)
+		var decoding *DecodeError
+		if !errors.As(fmt.Errorf("caller: %w", err), &decoding) || decoding.Offset != 1 || decoding.Cause == nil {
+			t.Fatalf("UnpackStrict(%x) = %v; want wrapped typed error at byte 1", in, err)
+		}
 	}
 }
 

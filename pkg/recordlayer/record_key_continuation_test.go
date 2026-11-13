@@ -422,6 +422,30 @@ var _ = Describe("Record-key continuation framing", func() {
 		}
 	})
 
+	It("distinguishes nil start from present-empty leaves on a nonempty suffixed range", func() {
+		ss := specSubspace()
+		md := recordKeyTestMetadata(false, false)
+		recordKeySeedRaw(ss, md, [][]byte{{0x15, 1, 0x14}, {0x15, 2, 0x14}})
+		wrappedLeaf := recordKeyLiteralLeaf(nil)
+		wrappedEmpty := append([]byte{0x0a, byte(len(wrappedLeaf))}, wrappedLeaf...)
+		for _, reverse := range []bool{false, true} {
+			for _, token := range [][]byte{nil, {0x0a, 0x00}, wrappedEmpty} {
+				page := recordKeyTestRead(ss, md, 14, ForwardScan().WithReverse(reverse), token)
+				want := []tuple.Tuple{{int64(1)}, {int64(2)}}
+				if reverse {
+					want = []tuple.Tuple{{int64(2)}, {int64(1)}}
+					if token != nil {
+						want = []tuple.Tuple{}
+					}
+				}
+				Expect(page.keys).To(Equal(want), "reverse=%t token=%x", reverse, token)
+				Expect(page.reason).To(Equal(SourceExhausted))
+				Expect(page.end).To(BeTrue())
+				Expect(page.token).To(BeNil())
+			}
+		}
+	})
+
 	It("returns stable EOF for an empty suffixed store", func() {
 		ss := specSubspace()
 		md := recordKeyTestMetadata(true, true)
@@ -522,6 +546,74 @@ var _ = Describe("Suffix-only physical record keys", func() {
 	})
 })
 
+var _ = Describe("Suffixed record-key simultaneous limits", func() {
+	for _, budget := range []string{"records", "bytes", "time"} {
+		for _, reverse := range []bool{false, true} {
+			for _, fail := range []bool{false, true} {
+				It(fmt.Sprintf("returns the row boundary before exhausted %s, reverse=%t fail=%t", budget, reverse, fail), func() {
+					ss := specSubspace()
+					md := recordKeyTestMetadata(true, false)
+					recordKeySeedRaw(ss, md, [][]byte{
+						{0x15, 1, 0x15, 1}, {0x15, 1, 0x15, 2}, {0x15, 2, 0x15, 1}, {0x15, 2, 0x15, 2},
+					})
+					clock := dst.NewSimClock(dst.Epoch)
+					env := &dst.Env{Clock: clock, Random: dst.NewSeededRandomness(152)}
+					store, pulls := recordKeyObservedOpen(ss, md, 14, env)
+					props := NewScanProperties(DefaultExecutePropertiesIn(env)).WithReverse(reverse)
+					props.ExecuteProperties.ReturnedRowLimit = 1
+					props.ExecuteProperties.FailOnScanLimitReached = fail
+					physicalBytes := int64(len(ss.Sub(RecordKey).Bytes()) + 4 + 1)
+					switch budget {
+					case "records":
+						props.ExecuteProperties.ScannedRecordsLimit = 1
+					case "bytes":
+						props.ExecuteProperties.ScannedBytesLimit = physicalBytes
+					case "time":
+						props.ExecuteProperties.TimeLimit = 100 * time.Millisecond
+					}
+					state := props.ExecuteProperties.ScanState
+					cursor := store.ScanRecordKeys(nil, props)
+					DeferCleanup(func() { Expect(cursor.Close()).To(Succeed()) })
+					first, err := cursor.OnNext(context.Background())
+					Expect(err).NotTo(HaveOccurred())
+					Expect(first.HasNext()).To(BeTrue())
+					id, suffix, nextID := byte(1), byte(1), int64(2)
+					if reverse {
+						id, suffix, nextID = 2, 2, 1
+					}
+					Expect(first.GetValue()).To(Equal(tuple.Tuple{int64(id)}))
+					token, err := first.GetContinuation().ToBytes()
+					Expect(err).NotTo(HaveOccurred())
+					recordKeyAssertToken(token, id, []byte{0x15, suffix})
+					if budget == "time" {
+						clock.Advance(100 * time.Millisecond)
+						Expect(state.Elapsed()).To(Equal(100 * time.Millisecond))
+					}
+					for range 3 {
+						last, err := cursor.OnNext(context.Background())
+						Expect(err).NotTo(HaveOccurred())
+						Expect(last.HasNext()).To(BeFalse())
+						Expect(last.GetNoNextReason()).To(Equal(ReturnLimitReached))
+						Expect(last.GetContinuation().IsEnd()).To(BeFalse())
+						raw, err := last.GetContinuation().ToBytes()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(raw).To(Equal(token))
+						Expect(state.RecordsScanned()).To(Equal(1))
+						Expect(state.BytesScanned()).To(Equal(physicalBytes))
+						Expect(pulls.ranges).To(HaveLen(1))
+						Expect(pulls.advances).To(Equal(1))
+						Expect(pulls.gets).To(Equal(1))
+					}
+					rest := recordKeyTestRead(ss, md, 14, ForwardScan().WithReverse(reverse), token)
+					Expect(rest.keys).To(Equal([]tuple.Tuple{{nextID}}))
+					Expect(rest.reason).To(Equal(SourceExhausted))
+					Expect(rest.end).To(BeTrue())
+				})
+			}
+		}
+	}
+})
+
 var _ = Describe("Bare record-key physical limits", func() {
 	var ss subspace.Subspace
 	var md *RecordMetaData
@@ -537,6 +629,39 @@ var _ = Describe("Bare record-key physical limits", func() {
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("checks cancellation before range initialization and between physical pulls", func() {
+		for _, reverse := range []bool{false, true} {
+			for _, successfulPulls := range []int{0, 1} {
+				store, pulls := recordKeyObservedOpen(ss, md, 4, nil)
+				props := ForwardScan().WithReverse(reverse)
+				state := props.ExecuteProperties.ScanState
+				cursor := store.ScanRecordKeys(nil, props)
+				DeferCleanup(func() { Expect(cursor.Close()).To(Succeed()) })
+				ctx, cancel := context.WithCancel(context.Background())
+				if successfulPulls == 1 {
+					first, err := cursor.OnNext(ctx)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(first.HasNext()).To(BeTrue())
+					id := int64(1)
+					if reverse {
+						id = 5
+					}
+					Expect(first.GetValue()).To(Equal(tuple.Tuple{id}))
+				}
+				cancel()
+				for range 2 {
+					_, err := cursor.OnNext(ctx)
+					Expect(errors.Is(err, context.Canceled)).To(BeTrue(), "got %v", err)
+					Expect(pulls.ranges).To(HaveLen(successfulPulls))
+					Expect(pulls.advances).To(Equal(successfulPulls))
+					Expect(pulls.gets).To(Equal(successfulPulls))
+					Expect(state.RecordsScanned()).To(Equal(successfulPulls))
+					Expect(state.BytesScanned()).To(Equal(int64(successfulPulls * (len(ss.Sub(RecordKey).Bytes()) + 3))))
+				}
+			}
+		}
 	})
 
 	for _, budget := range []string{"records", "bytes", "time"} {
@@ -1165,10 +1290,15 @@ var _ = Describe("Record-key scan argument boundaries", func() {
 		}
 	}
 
-	It("restores valid nested primary keys without dropping a different key", func() {
+	It("restores nested primary keys to suppress duplicates without dropping a different key", func() {
 		ss := specSubspace()
-		md := recordKeyTestMetadata(false, false)
-		recordKeySeedRaw(ss, md, [][]byte{{0x05, 0x15, 0x01, 0x00, 0x14}, {0x05, 0x15, 0x02, 0x00, 0x14}})
+		md := recordKeyTestMetadata(true, false)
+		recordKeySeedRaw(ss, md, [][]byte{
+			{0x05, 0x15, 0x01, 0x00, 0x15, 1},
+			{0x05, 0x15, 0x01, 0x00, 0x15, 2},
+			{0x05, 0x15, 0x02, 0x00, 0x15, 1},
+			{0x05, 0x15, 0x02, 0x00, 0x15, 2},
+		})
 		for _, reverse := range []bool{false, true} {
 			props := ForwardScan().WithReverse(reverse)
 			props.ExecuteProperties.ReturnedRowLimit = 1
@@ -1177,12 +1307,17 @@ var _ = Describe("Record-key scan argument boundaries", func() {
 				ids = []byte{2, 1}
 			}
 			var token []byte
-			for _, id := range ids {
+			for index, id := range ids {
 				page := recordKeyTestRead(ss, md, 14, props, token)
+				Expect(page.records).To(Equal(index + 1)) // resume consumes a matching physical duplicate first
 				Expect(page.keys).To(Equal([]tuple.Tuple{{tuple.Tuple{int64(id)}}}))
 				Expect(page.reason).To(Equal(ReturnLimitReached))
 				pk := []byte{0x05, 0x15, id, 0x00}
-				leaf := recordKeyLiteralLeaf(append(append([]byte(nil), pk...), 0x14))
+				suffix := byte(1)
+				if reverse {
+					suffix = 2
+				}
+				leaf := recordKeyLiteralLeaf(append(append([]byte(nil), pk...), 0x15, suffix))
 				wantToken := append([]byte{0x0a, byte(len(leaf))}, leaf...)
 				wantToken = append(wantToken, 0x12, byte(len(pk)))
 				wantToken = append(wantToken, pk...)
