@@ -848,7 +848,7 @@ var _ = Describe("Record-key scan argument boundaries", func() {
 
 	It("preserves complete versionstamps in physical keys and resumed Dedup state", func() {
 		for _, pkHex := range []string{"33000000000000000000000000", "053300000000000000000000000000"} {
-			ss := specSubspace()
+			ss := specSubspace().Sub(pkHex)
 			md := recordKeyTestMetadata(false, false)
 			pk, err := hex.DecodeString(pkHex)
 			Expect(err).NotTo(HaveOccurred())
@@ -856,6 +856,8 @@ var _ = Describe("Record-key scan argument boundaries", func() {
 			want, err := tuple.Unpack(pk)
 			Expect(err).NotTo(HaveOccurred())
 			for _, reverse := range []bool{false, true} {
+				all := recordKeyTestRead(ss, md, 14, ForwardScan().WithReverse(reverse), nil)
+				Expect(all.keys).To(Equal([]tuple.Tuple{want}))
 				props := NewScanProperties(DefaultExecuteProperties().WithReturnedRowLimit(1)).WithReverse(reverse)
 				page := recordKeyTestRead(ss, md, 14, props, nil)
 				Expect(page.keys).To(Equal([]tuple.Tuple{want}))
