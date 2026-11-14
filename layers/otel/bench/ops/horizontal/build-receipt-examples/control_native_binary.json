@@ -1,0 +1,56 @@
+{
+  "schema": "otel_paired_build_receipt_v1",
+  "executable_asset": "control_native_binary",
+  "binary_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+  "source_revision": "1111111111111111111111111111111111111111",
+  "source_manifest_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+  "build_command": [
+    "bazelisk",
+    "--nohome_rc",
+    "build",
+    "--announce_rc",
+    "--compilation_mode=opt",
+    "//layers/otel/cmd/otelrust-control:control-native"
+  ],
+  "compilation_mode": "opt",
+  "configured_output_path": "bazel-out/k8-opt/bin/layers/otel/cmd/otelrust-control/control-native",
+  "developer_home": "/home/bench",
+  "rc_set": [
+    {
+      "path": "/work/fdb-go/.bazelrc",
+      "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  ],
+  "build_exit_code": 0,
+  "readelf_command": [
+    "readelf",
+    "-d",
+    "/work/measured/control_native_binary"
+  ],
+  "readelf_output": "Dynamic section at offset 0x1000 contains 2 entries:\n 0x0000000000000001 (NEEDED) Shared library: [libfdb_c.so]\n 0x000000000000001d (RUNPATH) Library runpath: [$ORIGIN/control-native.runfiles/fdb_native/lib]\n",
+  "readelf_exit_code": 0,
+  "deployment_asset": "control_native_binary_deployment",
+  "deployment_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+  "executable_relative_path": "layers/otel/cmd/otelrust-control/control-native",
+  "client_library_relative_path": "layers/otel/cmd/otelrust-control/control-native.runfiles/fdb_native/lib/libfdb_c.so",
+  "files": [
+    {
+      "path": "layers/otel/cmd/otelrust-control/control-native",
+      "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "bytes": 4096,
+      "mode": 493
+    },
+    {
+      "path": "layers/otel/cmd/otelrust-control/control-native.runfiles/_repo_mapping",
+      "sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+      "bytes": 32,
+      "mode": 420
+    },
+    {
+      "path": "layers/otel/cmd/otelrust-control/control-native.runfiles/fdb_native/lib/libfdb_c.so",
+      "sha256": "617572467897d0360f76ffc33f24b58090ee691e3273750d2ff334cc71aae3fa",
+      "bytes": 65536,
+      "mode": 493
+    }
+  ]
+}

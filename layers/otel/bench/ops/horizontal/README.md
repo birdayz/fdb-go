@@ -600,3 +600,237 @@ Tests use fake procfs, USER-manager replies, clocks and provider operations only
 No OS unit is installed, started, killed or proved to survive a real runtime
 restart. **Actual OS isolation/survival remains UNVERIFIED** pending explicit
 operator authorization; this correction does not authorize a benchmark restart.
+
+## Versioned Go/Rust paired campaign (offline contract)
+
+`paired.py` introduces **otel_native_paired_v1**, not another scaling-v1 sweep.
+`paired_pricing.py` provides an offline strict normalizer for retained read-only
+EUR/ccx43/HEL1 and IPv4/HEL1 pricing responses. It verifies 19-percent VAT and
+exact net/gross money strings, seals the raw response hash, and compares fresh
+captures without allowing changed bounds. Root scope1240 uses one read-only
+capture immediately before admission for the entire original admitted lifetime
+plus cleanup; no mid-run recapture or refresh protocol is required or wired.
+Traffic uses retained included-traffic/overage evidence and public-interface byte
+counters, not an OS-level quota or stop threshold.
+
+The sealed arm subset contains two or three of `go_pure`, `go_native`,
+`rust_native`. Every stage has an explicit arm order. `pilot` holds exactly
+node1/client1 for one hour, with active cutoff +2700s and cleanup +3000s;
+`scaling` holds all six hosts for the original two hours, with active cutoff
++6000s and cleanup +6600s. Every implementation/repetition gets a fresh native
+cluster/datadir, and every prerequisite/measured producer its own namespace and
+exclusive output path. Any failure ends the entire comparison; released rows
+are never reclaimed or retried.
+
+The finite pilot runs the arm list followed by its reverse (two repetitions per
+arm); the sweep runs the explicitly ordered arms once at each 1x/2x/3x tier.
+Each producer receives 100k prerequisite plus 375k measured rows. Two/three-arm
+pilot allocations are 1.9M/2.85M; two/three-arm sweeps are 5.7M/8.55M. The named
+**otel_paired_go_rust_v1** family has a separate, explicitly approved 15M ceiling
+and zero initial prior. This is not a reset of the older native family's 10M
+history. `paired_rows.py` owns a private append-only, flock/fsync/hash-chained
+JSONL ledger with a durable inode-xattr head witness. The runner appends an issue
+BEFORE every release and an outcome after validation. Local Stage0 must use the
+same authoritative ledger, including failed/aborted populations:
+
+```sh
+python3 -B layers/otel/bench/ops/horizontal/paired_rows.py init /private/family/rows.jsonl
+python3 -B layers/otel/bench/ops/horizontal/paired_rows.py issue /private/family/rows.jsonl \
+  --campaign local-campaign --stage local --arm rust_native --repeat 0 --phase local --rows 100000
+python3 -B layers/otel/bench/ops/horizontal/paired_rows.py outcome /private/family/rows.jsonl \
+  --issue-id ISSUED_HASH --status passed
+python3 -B layers/otel/bench/ops/horizontal/paired_rows.py show /private/family/rows.jsonl
+```
+
+Initialize exactly once, in an existing private0700 directory outside worktrees;
+never create a substitute ledger after a corruption/refusal. A complete suffix
+truncation, changed witness, symlink, hardlink, partial write, duplicate issue or
+ceiling overflow fails closed. Outcome does not reduce issued population.
+
+`paired-job-v1.schema.json` defines the one-JSON-argument producer contract. Go
+and Rust have separate typed builders; Rust never receives otelbench flags.
+Source/binary seals remain per arm. Four executable assets have distinct paths
+and hashes: `assets.control_pure_binary` for `go_pure` ingest AND corpus/setup;
+`assets.control_native_binary` for `go_native` ingest only; `assets.rust_binary`
+for `rust_native` ingest only; `assets.verifier_binary` for every arm's verify
+invocation only (`//layers/otel/cmd/otelrust-control:verifier`). The pure-Go verifier
+refuses corpus/setup/ingest and owns full read/census plus source_1600 oracle.
+The three measured ingest binaries must not link oracle code and must remain
+byte-identical whether the verifier exists. All four require fresh integrated
+PR1048 source builds and current receipt schema; old local-only Stage0 receipts
+do not admit paid runs. Each asset carries its
+own `path` and `sha256`, plus a sealed `build_receipt:{path,sha256}` and its
+`<executable_asset>_deployment` binary/runfiles archive; jobs/reports retain the
+existing `binary_sha256` field. [BUILD-PROVENANCE.md](BUILD-PROVENANCE.md) specifies
+the versioned receipt/manifest schema, literal examples and exact build/package
+commands. Measured artifacts require no-home-rc build provenance, explicit
+`--compilation_mode=opt` for all four executables, recorded `compilation_mode:"opt"`
+and `configured_output_path` under a Bazel `-opt` configuration, plus live
+readelf checks. Use each toolchain's default optimized build; no LTO, PGO,
+target-cpu or codegen-units overrides on either side. Fastbuild/dbg and omitted
+opt options are refused even with otherwise passing Stage 0 proofs. The ordinary
+correctness-test lane's rc configuration is unchanged.
+Native Go runs from its verified deployment with an explicit minimal loader
+search path to the receipt-bound `libfdb_c.so`; pure and Rust inherit no loader path.
+The pure control AND dedicated verifier executable, sharing `sources.go_pure`
+source identity but distinct executable/build/deployment seals, are required even
+when pure ingest is not selected. Go executable variants share collector source
+seals, not executable seals. Per-arm builders, invocation/grant checks, preflight,
+all-host asset transfer and residual-process checks bind the correct executable.
+`writer_direct` and `collector_queue` are
+separate workload kinds; producer request size, internal writer concurrency and
+queue batching are distinct explicit controls. Every collector/retry parameter
+is required without defaults. Only writer_workers=1 is currently matched. Go
+control-pure alone owns corpus/setup; the fourth independent pure-Go executable
+alone owns verify. Verification seals never replace original ingest writer seals.
+All inputs include hashes, and pure Go explicitly names no C library. Native
+arms require the pinned7.3.77 libfdb_c. Every asset (executables, FDB tools,
+library, corpus, descriptor and layout template) requires per-held-host transfer
+receipts. The existing zstd roundtrip/private-fanout transfer accepts the paired
+asset set without changing legacy asset bytes.
+
+Nonzero exits, absent reports and schema-invalid reports fail the released arm;
+the issued row population remains charged with a failed outcome, with no retry
+or comparison. Cleanup first aborts/reaps and proves exact scope quiescence, then
+attempts bounded collection even on failure. All adjacent non-input job files,
+including separately named diagnostics and malformed/partial reports, are retained
+in `raw.json` with original-byte SHA256, byte count and encoding per artifact.
+UTF-8 preserves exact line endings; binary partials use lossless base64. Unsafe or
+oversize artifacts fail collection explicitly rather than being silently sampled.
+
+`otel_paired_result_v1` preserves each original `otel_control_report_v1` and its
+arm/job identity. Admission, ACK operations (including replay), distinct audited
+rows and storage drain are not interchangeable. Top-level `acked_span_operations`
+is exactly `{"availability":"available","value":100000}` for Rust, or for Go
+`{"availability":"unavailable","reason":"Go collector does not expose acknowledged write operations including replays"}`.
+Rust must supply the available numeric value. Successful reports also attest
+`native_library_mapped:false` for pure ingest and ALL pure control modes, without
+a `native_mapping_rule` field. Native ingest requires `native_library_mapped:true`,
+the sealed `client_library_sha256` and `native_mapping_rule:exact_stat|btrfs_superblock`.
+Replayed LOCAL preflight evidence may use either audited rule and preserves it;
+reports actually produced on paid ext4 hosts MUST use `exact_stat` or fail the arm.
+The runner records this policy context as `paid_host` in its envelopes/results.
+Failed opens may omit mapping evidence rather than inventing a successful check.
+All six counters
+`acked_span_operations`, `committed_batches`, `native_retries`, `outer_retries`,
+`export_attempts` and `queue_retries` require the same explicit availability-marker
+shape. Go must mark the first four unavailable, never a fabricated or inferred zero;
+its pure-Go `native_retries` reason is "not applicable to this arm", while other
+unobservable Go counters identify what is not exposed by the Go collector. Public
+Go collector `Exports` and `Retries` map to available `export_attempts` (queue sink
+calls) and `queue_retries` (queue decisions), not native transaction or RecordLayer
+attempts. Rust may mark truly unobservable non-ACK counters unavailable with a reason. Direct-write call samples may carry
+a separate optional integer `direct_write_acked_operations`; collector admission
+samples carry neither ACK field (admission is not ACK, not even ACK zero).
+`paired-job-v1.schema.json` defines these report/sample shapes under `$defs`.
+Unavailable telemetry remains `availability:unavailable`, never an invented zero.
+The pre-census `otel_paired_ingest_envelope_v1` cannot assert a rate. Successful
+`otel_paired_result_v1` is written only after full verification and requires plain
+integer `distinct_spans`. Every accepted span-rate numerator and CPU/span denominator
+is recomputed and validated against that independent distinct population, never
+ACK operations, accepted input, or replay counts. Aggregates sum CPU counters
+and verified distinct spans before division; unknown ACK remains unavailable.
+Plain source counts (`frames`, `received_spans`, `accepted_spans`, plus public
+rejected/failed/queued counts), wall/admission/drain timings, samples and explicit
+`error` are required. Accepted comparisons also require `ingest_resources` scoped
+to `first_read_through_flush`: measured `user_cpu_seconds`, `system_cpu_seconds`,
+their `cpu_seconds` sum, positive `peak_rss_bytes` and `measurement_source`.
+Missing CPU/RSS is refused for `status:ok`; argv-to-exit resources cannot substitute
+for that window. An early `status:error` receipt may instead report
+`"ingest_resources":null` with a required nonblank
+`"ingest_resources_unavailable_reason":"ingest window not started: native client open failed"`
+and nonblank `error`. The reason field is forbidden when resources are measured.
+This is retained failed-arm evidence, not invented zero CPU/RSS: the released
+population stays charged, the campaign stops, and neither a successful joined
+result nor a comparison is allowed. Normal seals/counters remain required.
+A paid gate requires complete
+standard-serializer row/OTLP readback, data-derived physical/index census including
+all eight indexes and STORE_META_NAME, and the complete sealed source oracle
+NDJSON (16 classes x100, full ordered expected/actual results). Ingest alone is
+never rate eligible. The offered-load600s profile is explicitly refused until
+all selected producer binaries supply a sealed schedule/window implementation; a short finite
+run is never relabelled sustained.
+
+`paired_cost.py` reserves every held server AND IPv4 from the original lease
+start through the admitted lifetime plus one financial cleanup hour, using
+conservative hourly quanta until verified provider absence. The cleanup reserve
+never extends the operational deadline. EUR2 pilot/EUR8 sweep allocations and
+the cumulative EUR10 ceiling are checked before active transitions. One capture
+must be fresh (at most3600s old, not future-dated) at original admission; it stays
+valid throughout that original lifetime plus cleanup, with no moving TTL or
+refresh. The same original capture/lease/host history stays sealed. Missing or
+non-EUR evidence, stale-at-admission captures, unknown extras, changed IDs and
+renewal refuse active work; cleanup is never blocked by admission failure.
+Price integrity seals are not provider signatures. Under root scope1240, retain
+ccx43/HEL1 included-traffic and overage fields: at least1TB per server permits
+EUR0 traffic reserve; absent included traffic reserves50GB per host at the listed
+overage price. Record public-interface byte counters at start and before deletion;
+egress above50GB per host is reported, not stopped. Benchmark inter-host traffic
+uses the private network. No nftables/packet filter/OS-level traffic quota is
+required or installed. At retained prices the two-host pilot reservesEUR1.792616
+server+IPv4 including cleanup, plusEUR0.10 other margin =EUR1.892616 withinEUR2.
+A full two-hour/six-host sweep at those prices exceedsEUR8 after cleanup reserve
+and is refused; future sweep geometry is decided at its separate admission. Paired managed watches use the same sealed USER-manager
+root-slice isolation and exact-owned/baseline cleanup checks; fake procfs/provider
+tests simulate controller loss, not actual OS survival.
+
+Exercise the complete three-arm sequence without any provider call:
+
+```sh
+python3 -B layers/otel/bench/ops/horizontal/paired.py \
+  --dry-run --workload collector_queue --output /private/new-paired-fake
+```
+
+The command creates private synthetic fixtures and a separate fake row ledger,
+then runs readiness/release, both waves, report/oracle gates, storage drain,
+quiescence and cleanup. It must print `FAKE_PASSED`, 8,550,000 charged rows,
+18 released waves and `accepted_comparison:false`. Synthetic fixtures are not
+benchmarks or real authorizations. Add `--profile pilot` for the two-host/repeated
+sequence. A new output path is mandatory; nothing overwrites or resumes a run.
+With `--dry-run --plan FAKE_PLAN`, the CLI creates a new adjacent fake ledger
+instead of ever debiting the supplied plan's authorization ledger; live plans
+are rejected before rehearsal output/ledger creation.
+`paired_native.py` implements the real pinned-host backend against this versioned
+control contract: fresh price re-capture, managed-watch registration, per-provider
+command cost gates, sealed remote inputs, Go-only setup/verify, typed Go/Rust
+producer grants, exclusive releases, bounded abort/reap, storage-side three-sample
+five-second stable drain, exact process quiescence and protected ten-kind teardown.
+It has fake transport/process/provider regressions, not live acceptance evidence.
+Before any paid mutation, `preflight_verifications` must replay a sealed local
+100k ingest plus full cross-reader/census/1600-oracle proof for EACH selected arm,
+using the very same executable/source/corpus/client/writer/compression seals AND
+identical complete workload object. Local point2 must use the paid pilot's exact
+queue/retry/concurrency configuration; a minimal point1 or `oracle:none` result
+cannot unlock it. The paid CLI still refuses `--execute-approved` while
+actual producer/control capability and independent-watch runtime proof are missing.
+
+`native_geometry` is one shared, sealed data object, never per-arm overrides:
+
+```json
+{
+  "storage": {"processes_per_host": 3, "memory_mib": 3072, "cache_mib": 1024, "max_outstanding": 64},
+  "log": {"memory_mib": 2048, "cache_mib": 64},
+  "control": {"memory_mib": 1024, "cache_mib": 64},
+  "fdb_slice": {"allowed_cpus": "0-3", "cpu_quota_percent": 400, "memory_max_mib": 16384, "swap_max_bytes": 0},
+  "client_slice": {"allowed_cpus": "0-3", "cpu_quota_percent": 400, "memory_max_mib": 16384, "swap_max_bytes": 0},
+  "gomaxprocs": 4
+}
+```
+
+This pilot has configured15GiB native process memory under the16GiB FDB slice,
+not a memory-safety proof. Memory/cache/role-slice values drive both rendered argv
+and live status/cgroup guards. A future explicitly preregistered4GiB-log/24GiB
+FDB-slice profile is representable without changing code;4GiB log under16GiB is
+rejected for insufficient headroom. No inherited historical `log_memory_gib`
+override is accepted. Memory-monitor exit, OOM, process loss or strict-health
+failure stops all arms, charges the issued populations and enters exact cleanup;
+no automatic profile change, health waiver or retry is permitted.
+
+Large LIVE controller receipts are losslessly archived as `.json.gz` with a
+private `.json.seal.json` (`otel_paired_receipt_archive_v1`) recording compressed
+and original SHA256/byte counts. This retains every raw call and oracle row under
+the shared1GiB cap without sampling/truncation; job/grant inputs stay original
+JSON for their byte seals. Small receipts and fake-run paths remain ordinary
+JSON. Decompress and verify the two hashes before inspecting an archive. Setup
+layout artifacts, failed reports and original oracle NDJSON remain in bounded
+collected evidence, not only normalized summaries.

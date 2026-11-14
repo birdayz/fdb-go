@@ -3943,6 +3943,30 @@ boundary in `docs/benchmarks/otel-relational-local-20261107.md`.
   runs only on `workflow_dispatch`; measure it on the runners and move it to
   pull requests if it fits.
 
+## Paired native collector campaign
+
+- [ ] Live-validate the implemented `paired_native.py` adapter against frozen
+  `otel_paired_job_v1` control/producer binaries, including Go-control setup and
+  independent pure-Go full-row/census/1600-query verification for every arm.
+  `paired.py` refuses paid execution until those binaries and per-arm local
+  oracle proofs exist; fake lifecycle/backend checks are not live admission.
+- [ ] Supply and enforce the paid campaign's conservative billable-traffic and
+  other-charge bounds (including provider rounding/proration evidence) before
+  enabling the paid CLI. The cost ledger accounts supplied bounds; it does not
+  itself impose a provider traffic quota. Missing/unknown bounds cannot be
+  promoted into admission by setting a boolean.
+- [ ] Integrate fresh same-bound price recapture if a campaign needs to continue
+  beyond the pricing receipt's one-hour freshness limit. Current continuation
+  fails closed on stale evidence even inside the original two-hour hard lease;
+  a recapture must never renew that lease or lower reserved cost.
+- [ ] Add the separately sealed offered-load600/60/10 schedule and window
+  telemetry to both queued producers and the paired runner before permitting
+  that profile. Finite queued waves cannot stand in for sustained capacity.
+- [ ] Obtain explicitly authorized real USER-unit cleanup-isolation/survival
+  proof on sealed paired inputs; fake procfs controller-loss coverage is not OS
+  runtime evidence. Resolve native log-memory geometry through bounded live
+  admission, with fatal stop/cleanup on the memory monitor and no profile waiver.
+
 ## TEXT SQL access paths
 
 - [ ] Recover and diagnose the historical RFC-258 fail-on-scan-limit failure

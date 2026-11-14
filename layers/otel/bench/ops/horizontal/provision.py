@@ -112,13 +112,19 @@ def _roles(plan):
         return ROLES
     if schema in ('otel_native_diagnostic_v1', 'otel_native_session_v1'):
         return ('node1', 'client1')
+    if schema == 'otel_native_paired_v1':
+        if plan.get('stage_profile') == 'pilot':
+            return ('node1', 'client1')
+        if plan.get('stage_profile') != 'scaling':
+            raise ProvisionError('unknown paired held-host profile')
+        return ('node1', 'node2', 'node3', 'client1', 'client2', 'client3')
     if schema == 'otel_native_scaling_v1':
         return ('node1', 'node2', 'node3', 'client1', 'client2', 'client3')
     raise ProvisionError('unknown campaign schema; no resource roles authorized')
 
 
 def _storage_max_outstanding(plan):
-    if plan.get('schema') == 'otel_native_scaling_v1':
+    if plan.get('schema') in ('otel_native_scaling_v1', 'otel_native_paired_v1'):
         if type(plan.get('storage_max_outstanding')) is not int or plan['storage_max_outstanding'] != 64:
             raise ProvisionError('scaling requires exact integer storage_max_outstanding 64')
         return 64
@@ -133,7 +139,7 @@ def _storage_max_outstanding(plan):
 
 
 def _storage_process_count(plan):
-    if plan.get('schema') == 'otel_native_scaling_v1':
+    if plan.get('schema') in ('otel_native_scaling_v1', 'otel_native_paired_v1'):
         if type(plan.get('storage_process_count')) is not int or plan['storage_process_count'] != 3:
             raise ProvisionError('scaling requires exact integer storage_process_count 3')
         _storage_max_outstanding(plan)
@@ -151,7 +157,11 @@ def _storage_process_count(plan):
 
 
 def _storage_memory_profile(plan):
-    if plan.get('schema') == 'otel_native_scaling_v1':
+    if plan.get('schema') == 'otel_native_paired_v1':
+        import paired
+        paired.native_geometry(plan.get('native_geometry'))
+        return 'paired'
+    if plan.get('schema') in ('otel_native_scaling_v1', 'otel_native_paired_v1'):
         if type(plan.get('storage_memory_profile')) is not str or plan['storage_memory_profile'] != 'scaling3ss3g':
             raise ProvisionError('scaling requires storage_memory_profile scaling3ss3g')
         _storage_process_count(plan)
@@ -168,6 +178,8 @@ def _storage_memory_profile(plan):
 
 
 def _scaling_mode(plan):
+    if plan.get('schema') == 'otel_native_paired_v1':
+        return 'managed_watch'
     import policy
     try:
         return policy.scaling_execution_mode(plan)
@@ -196,6 +208,13 @@ def _admit_managed_watch(plan, out, clock):
 
 
 def _validate_scaling(plan):
+    if plan.get('schema') == 'otel_native_paired_v1':
+        import paired
+        try:
+            paired.validate_plan(plan, check_assets=False)
+            return [[n, n] for n in paired.stages(plan)]
+        except ValueError as exc:
+            raise ProvisionError(str(exc)) from exc
     if plan.get('schema') != 'otel_native_scaling_v1':
         return
     import policy
@@ -301,6 +320,8 @@ def _baseline(path):
 
 
 def _active_deadline(plan):
+    if plan.get('schema') == 'otel_native_paired_v1':
+        return plan['deadline_epoch'] - (900 if plan.get('stage_profile') == 'pilot' else 1200)
     return min(plan['first_epoch'] + 6000, plan['deadline_epoch'] - 600)
 
 
@@ -346,15 +367,31 @@ def _lock(state):
         yield
 
 
+def _paired_cost_step(plan, state, clock):
+    if plan.get('schema') != 'otel_native_paired_v1':
+        return
+    import paired_cost
+    path = state / 'paired-cost-ledger.json'
+    if not path.is_file():
+        raise ProvisionError('paired cost ledger missing; no active action authorized')
+    ledger = paired_cost.checkpoint(_load(path), now_epoch=int(clock()),
+                                    owned_ids=_load(state / 'resources.json')['ids']['server'], deadline_epoch=plan['deadline_epoch'])
+    report = paired_cost.assess(ledger, now_epoch=int(clock()), owned_ids=[h['host_id'] for h in ledger['hosts'] if h['deletion'] is None])
+    total = Decimal(report['total_upper_eur'])
+    if total > Decimal(plan['stage_budget_eur']) or total + Decimal(plan['prior_cost_upper_eur']) > 10:
+        raise ProvisionError('paired stage/shared EUR10 cost ceiling reached; cleanup required')
+    _json(path, ledger, replace=True)
+
+
 def _check_window(plan, state, clock, guard=None):
     lease_path = state / 'guard-plan.json'
-    if plan.get('schema') == 'otel_native_scaling_v1' and not lease_path.exists():
+    if plan.get('schema') in ('otel_native_scaling_v1', 'otel_native_paired_v1') and not lease_path.exists():
         raise ProvisionError('immutable scaling lease is missing')
     if lease_path.exists():
         lease = _load(lease_path)
         if any(plan.get(key) != lease.get(key) for key in ('campaign', 'prefix', 'first_epoch', 'deadline_epoch')):
             raise ProvisionError('campaign identity or original lease deadline changed')
-        if 'otel_native_scaling_v1' in (lease.get('schema'), plan.get('schema')):
+        if {'otel_native_scaling_v1', 'otel_native_paired_v1'} & {lease.get('schema'), plan.get('schema')}:
             if plan != lease or json.dumps(plan, sort_keys=True) != json.dumps(lease, sort_keys=True):
                 raise ProvisionError('immutable scaling lease or stage parameters changed')
         if lease.get('schema') == 'otel_native_session_v1':
@@ -372,8 +409,9 @@ def _check_window(plan, state, clock, guard=None):
             or (state / 'cleanup-started.json').exists()
             or (guard is not None and guard.poll() is not None)):
         raise ProvisionError('cleanup has started, deadline reached, or lifetime guard exited')
-    if plan.get('schema') == 'otel_native_scaling_v1' and _scaling_mode(plan) == 'managed_watch':
+    if plan.get('schema') in ('otel_native_scaling_v1', 'otel_native_paired_v1') and _scaling_mode(plan) == 'managed_watch':
         _admit_managed_watch(plan, state.parent, clock)
+    _paired_cost_step(plan, state, clock)
 
 
 def _save_resources(state, resources):
@@ -431,6 +469,11 @@ def _create(plan, state, resources, kind, argv, runner, clock, guard):
             raise ProvisionError(f'{kind}: created resource is unowned or protected')
         resources['ids'][kind].append(item['id'])
         _save_resources(state, resources)
+        if plan.get('schema') == 'otel_native_paired_v1' and kind == 'server':
+            import paired_cost
+            ledger_path = state / 'paired-cost-ledger.json'
+            ledger = paired_cost.record_creation(_load(ledger_path), host_id=item['id'], created_epoch=int(clock()), now_epoch=int(clock()))
+            _json(ledger_path, ledger, replace=True)
         return item
 
 
@@ -613,7 +656,7 @@ def _authorized_node(plan, out, node):
     if (set(resources['nodes']) != set(_roles(plan))
             or len(matches) != 1 or any(node.get(k) != matches[0].get(k)
                                   for k in ('name', 'host', 'private_ip', 'known_hosts'))
-            or plan.get('schema') == 'otel_native_scaling_v1' and node.get('role') != matches[0].get('role')
+            or plan.get('schema') in ('otel_native_scaling_v1', 'otel_native_paired_v1') and node.get('role') != matches[0].get('role')
             or node['id'] in resources['protected_ids']['server']
             or resources['campaign'] != plan['campaign']):
         raise ProvisionError('SSH target is not an exact campaign-owned node')
@@ -643,8 +686,8 @@ def disk_floor(total_bytes):
 
 def _host_prepare_script(plan):
     root = REMOTE_BASE + '/' + plan['campaign']
-    checks = '\n'.join(f"echo '{plan[k + '_sha256']}  {root}/bin/{name}' | sha256sum -c -"
-                       for k, name in [('binary', 'otel-demo'), ('fdbserver', 'fdbserver'), ('fdbcli', 'fdbcli')])
+    checks = '\n'.join(f"echo '{_asset_source(plan, k)[1]}  {root}/bin/{name}' | sha256sum -c -"
+                       for k, name in sealed_assets(plan))
     return f'''set -eu
 chmod 0755 {root}/bin/*
 {checks}
@@ -681,6 +724,18 @@ def _transfer_timeout(nbytes, rate):
     return TRANSFER_FIXED_SECONDS + math.ceil(nbytes / rate)
 
 
+def sealed_assets(plan):
+    if plan.get('schema') != 'otel_native_paired_v1':
+        return SEALED_ASSETS
+    return tuple((name, 'libfdb_c.so' if name == 'libfdb_c' else name) for name in sorted(plan['assets']))
+
+
+def _asset_source(plan, key):
+    if plan.get('schema') == 'otel_native_paired_v1':
+        return plan['assets'][key]['path'], plan['assets'][key]['sha256']
+    return plan[key], plan[key + '_sha256']
+
+
 def _pack_assets(plan, state, runner, clock=time.time):
     """Compress each sealed asset once with zstd and prove the round trip.
 
@@ -691,21 +746,22 @@ def _pack_assets(plan, state, runner, clock=time.time):
     directory = state / 'assets'
     directory.mkdir(mode=0o700)
     packed = {}
-    for key, name in SEALED_ASSETS:
+    for key, name in sealed_assets(plan):
+        source, expected = _asset_source(plan, key)
         path, check = directory / (name + '.zst'), directory / (name + '.check')
         try:
-            _checked(runner, ['zstd', *ZSTD_LEVEL, '-q', '--no-progress', '-o', path, '--', plan[key]],
+            _checked(runner, ['zstd', *ZSTD_LEVEL, '-q', '--no-progress', '-o', path, '--', source],
                      timeout=_remaining(plan, 120, clock))
             _checked(runner, ['zstd', '-d', '-q', '--no-progress', '-o', check, '--', path],
                      timeout=_remaining(plan, 120, clock))
         except OSError as exc:
             raise ProvisionError(f'zstd is required on the controller: {exc}') from exc
         size = check.stat().st_size
-        if _sha(plan[key]) != plan[key + '_sha256'] or _sha(check) != plan[key + '_sha256']:
+        if _sha(source) != expected or _sha(check) != expected:
             raise ProvisionError(f'{key} does not reproduce its sealed SHA-256 through compression')
         check.unlink()
         path.chmod(0o600)
-        packed[key] = dict(name=name, path=str(path), sha256=plan[key + '_sha256'], bytes=size,
+        packed[key] = dict(name=name, path=str(path), sha256=expected, bytes=size,
                            transfer_sha256=_sha(path), transfer_bytes=path.stat().st_size,
                            encoding='zstd ' + ' '.join(ZSTD_LEVEL))
     _json(state / 'asset-transfer.json',
@@ -790,7 +846,7 @@ def _journaled_step(state, name, node, what, timeout, clock, call):
 def _install_assets(plan, out, state, role, node, packed, seed, runner, clock):
     """Install every sealed asset on node: uploaded if node is the seed, else fetched from it."""
     remote = REMOTE_BASE + '/' + plan['campaign']
-    for key, name in SEALED_ASSETS:
+    for key, name in sealed_assets(plan):
         asset = packed[key]
         dest = remote + '/bin/' + name
         incoming = remote + '/incoming/' + name + '.zst'
@@ -975,7 +1031,7 @@ def _prove_ips(plan, state, resources, runner, clock=time.time, guard=None):
     return {s['id']: s for s in mine}
 
 
-def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.sleep):
+def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.sleep, cost_ledger=None):
     """Provision exactly the schema's new servers and install sealed native binaries.
 
     Does not start FDB, run a workload, or make a health/readiness claim. A failed
@@ -985,11 +1041,17 @@ def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.s
     except explicitly approved foreground_only scaling with no survival claim.
     """
     validate_plan(plan, out, clock)
-    if plan['schema'] == 'otel_native_scaling_v1' and _scaling_mode(plan) == 'managed_watch':
+    if plan['schema'] in ('otel_native_scaling_v1', 'otel_native_paired_v1') and _scaling_mode(plan) == 'managed_watch':
         _admit_managed_watch(plan, out, clock)
     roles = _roles(plan)
     state = _state(out)
     state.mkdir(mode=0o700, parents=True, exist_ok=False)
+    if plan['schema'] == 'otel_native_paired_v1':
+        import paired_cost
+        if cost_ledger is None:
+            raise ProvisionError('paired admission cost ledger required before preparation')
+        paired_cost.assess(cost_ledger, now_epoch=int(clock()), owned_ids=[], deadline_epoch=plan['deadline_epoch'])
+        _json(state / 'paired-cost-ledger.json', cost_ledger)
     packed = _pack_assets(plan, state, runner, clock)
     baseline_dir = state / 'baseline'
     _inventory.snapshot(SimpleNamespace(hcloud=plan['hcloud'], output_dir=str(baseline_dir)),
@@ -1093,6 +1155,9 @@ def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.s
                         host=current['public_net']['ipv4']['ip'], public_ipv4=current['public_net']['ipv4']['ip'],
                         private_ip=private, known_hosts=str(cloud_dir / 'known_hosts'),
                         private_key=plan['controller_private_key'])
+            if plan['schema'] == 'otel_native_paired_v1':
+                ledger_hosts = _load(state / 'paired-cost-ledger.json')['hosts']
+                node['created_epoch'] = next(host['created_epoch'] for host in ledger_hosts if host['host_id'] == node['id'])
             node['ssh'] = ssh_argv(plan, out, node, [])[:-1]
             node['scp_options'] = _ssh_options(plan, out, node)
             resources['nodes'][role] = node
@@ -1114,7 +1179,7 @@ def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.s
         resources['remote_root'] = remote
         for kind in ('fdb', 'client'):
             _mc.write_private(state / ('horizontal-' + kind + '.slice'),
-                              _slice(kind, io_accounting=plan['schema'] in ('otel_native_diagnostic_v1', 'otel_native_session_v1', 'otel_native_scaling_v1')))
+                              _slice(kind, io_accounting=plan['schema'] in ('otel_native_diagnostic_v1', 'otel_native_session_v1', 'otel_native_scaling_v1', 'otel_native_paired_v1'), geometry=plan.get('native_geometry') if plan['schema'] == 'otel_native_paired_v1' else None))
         seed = None
         for role, node in resources['nodes'].items():
             until = min(clock() + 600, _active_deadline(plan))
@@ -1316,14 +1381,18 @@ def render_cluster(plan, nodes, storage_hosts, armid):
     storage_count = _storage_process_count(plan)
     memory_profile = _storage_memory_profile(plan)
     stages = _validate_scaling(plan)
-    scaling = plan['schema'] == 'otel_native_scaling_v1'
-    log_memory_gib = plan.get('log_memory_gib', 1) if scaling else 1
+    scaling = plan['schema'] in ('otel_native_scaling_v1', 'otel_native_paired_v1')
+    geometry = plan.get('native_geometry') if plan['schema'] == 'otel_native_paired_v1' else None
+    log_memory_gib = geometry['log']['memory_mib'] / 1024 if geometry else (plan.get('log_memory_gib', 1) if scaling else 1)
     if plan['schema'] == 'otel_native_session_v1':
         raise ProvisionError('session clusters must use an explicitly validated diagnostic case plan')
     storage_memory_gib = 4 if memory_profile == 'capacity16g' or storage_count == 1 else 2
     storage_cache_mib = 2048 if memory_profile == 'capacity16g' or storage_count == 1 else 1024
     if scaling:
         storage_memory_gib = 3
+    if geometry:
+        storage_memory_gib = geometry['storage']['memory_mib'] / 1024
+        storage_cache_mib = geometry['storage']['cache_mib']
     fdb_roles = tuple(role for role in roles if role.startswith('node'))
     if plan['schema'] == 'otel_native_diagnostic_v1' and (type(nodes) is not dict or set(nodes) != set(roles)):
         raise ProvisionError('diagnostic layout requires exactly node1 and client1')
@@ -1340,9 +1409,13 @@ def render_cluster(plan, nodes, storage_hosts, armid):
             raise ProvisionError('storage hosts must name the schema-scoped FDB hosts') from exc
     if selected not in [list(fdb_roles[:n]) for n in range(1, len(fdb_roles)+1)]:
         raise ProvisionError('storage hosts must be an allowed prefix of the schema-scoped FDB hosts')
-    if scaling and (len(selected) not in [stage[0] for stage in stages]
-                    or type(armid) is not str or armid != 'scaling-' + str(len(selected))):
-        raise ProvisionError('scaling stage arm ID must match an approved active host prefix')
+    if scaling:
+        paired = plan['schema'] == 'otel_native_paired_v1'
+        allowed = (['pairs%d-%s-rep%d' % (len(selected), arm, repeat)
+                    for arm in plan['arms'] for repeat in range(1, 3 if plan['stage_profile'] == 'pilot' else 2)]
+                   if paired else ['scaling-' + str(len(selected))])
+        if len(selected) not in [stage[0] for stage in stages] or type(armid) is not str or armid not in allowed:
+            raise ProvisionError('scaling stage arm ID must match an approved active host prefix')
     root = REMOTE_BASE + '/' + plan['campaign'] + '/arms/' + str(armid)
     cluster = 'horizontal_' + str(armid).replace('-', '_') + ':' + hashlib.sha256(
         (plan['campaign'] + ':' + str(armid)).encode()).hexdigest()[:24] + '@' + nodes['node1']['private_ip'] + ':4500'
@@ -1354,15 +1427,17 @@ def render_cluster(plan, nodes, storage_hosts, armid):
             [(4510+i, 'storage') for i in range(storage_count)] if node in selected else [])
         for port, cls in specs:
             storage = cls == 'storage'
-            process_memory_gib = storage_memory_gib if storage else (log_memory_gib if port == 4504 else 1)
+            process_memory_gib = storage_memory_gib if storage else (log_memory_gib if port == 4504 else (geometry['control']['memory_mib'] / 1024 if geometry else 1))
+            process_memory_mib = int(process_memory_gib * 1024)
+            process_cache_mib = storage_cache_mib if storage else (geometry['log' if port == 4504 else 'control']['cache_mib'] if geometry else 64)
             address = f'{nodes[node]["private_ip"]}:{port}'
             name = f'oh-{plan["prefix"]}-{armid}-{port}'
             args = [REMOTE_BASE + '/' + plan['campaign'] + '/bin/fdbserver',
                     '--cluster-file', root + '/fdb.cluster', '--public-address', address,
                     '--listen-address', address, '--class', cls, '--datadir', f'{root}/data/{port}',
                     '--logdir', root + '/logs', '--locality-machineid', node,
-                    '--locality-zoneid', node, '--memory', f'{process_memory_gib}GiB',
-                    '--cache-memory', f'{storage_cache_mib//1024}GiB' if storage else '64MiB', '--trace-format', 'json',
+                    '--locality-zoneid', node, '--memory', f'{process_memory_mib}MiB' if geometry else f'{process_memory_gib}GiB',
+                    '--cache-memory', f'{process_cache_mib}MiB' if geometry else (f'{storage_cache_mib//1024}GiB' if storage else '64MiB'), '--trace-format', 'json',
                     '--maxlogssize', '128MiB', '--loggroup', plan['campaign']]
             if storage and max_outstanding == 128:
                 args += ['--knob_max_outstanding', '128']
@@ -1383,8 +1458,8 @@ Restart=no
                         'transaction': ['log'], 'storage': ['storage']}[cls]
             processes.append(dict(node=node, address=address, port=port, process_class=cls,
                                   args=args, unit_name=name + '.service', unit=unit,
-                                  memory_gib=process_memory_gib, cache_mib=storage_cache_mib if storage else 64,
-                                  memory_limit_bytes=process_memory_gib * GIB,
+                                  memory_gib=process_memory_gib, cache_mib=process_cache_mib,
+                                  memory_limit_bytes=process_memory_mib * 1024 ** 2,
                                   machineid=node, zoneid=node, required_roles=required))
     layout = dict(root=root, cluster_text=cluster + '\n', remote_cluster_file=root + '/fdb.cluster',
                 storage_hosts=selected, processes=processes, configure=CONFIGURE,
@@ -1392,19 +1467,32 @@ Restart=no
                                            max_process_memory_gib=5+storage_count*storage_memory_gib+log_memory_gib-1, max_processes=5+storage_count),
                              client_host=dict(cpu_quota_percent=400, allowed_cpus='0-3', memory_max_gib=16)),
                 storage_engine='ssd-redwood-1', log_engine='ssd-2', redundancy_mode='single')
+    if geometry:
+        layout['native_geometry'] = geometry
+        layout['budgets']['fdb_host']['max_process_memory_gib'] = (geometry['storage']['processes_per_host'] * geometry['storage']['memory_mib']
+            + geometry['log']['memory_mib'] + 4 * geometry['control']['memory_mib']) / 1024
+        for kind in ('fdb', 'client'):
+            spec = geometry[kind + '_slice']
+            layout['budgets'][kind + '_host'].update(cpu_quota_percent=spec['cpu_quota_percent'], allowed_cpus=spec['allowed_cpus'],
+                                                    memory_max_gib=spec['memory_max_mib'] / 1024)
     if scaling:
-        layout['schema'] = 'otel_native_scaling_v1'
+        layout['schema'] = plan['schema']
         if 'log_memory_gib' in plan:
             layout['log_memory_gib'] = log_memory_gib
-    if plan['schema'] in ('otel_native_diagnostic_v1', 'otel_native_scaling_v1'):
+    if plan['schema'] in ('otel_native_diagnostic_v1', 'otel_native_scaling_v1', 'otel_native_paired_v1'):
         layout['storage_max_outstanding'] = max_outstanding
         layout['storage_process_count'] = storage_count
         layout['storage_memory_profile'] = memory_profile
     return layout
 
 
-def _slice(kind, *, io_accounting=False):
+def _slice(kind, *, io_accounting=False, geometry=None):
     accounting = 'IOAccounting=yes\n' if io_accounting else ''
+    if geometry is not None:
+        spec = geometry[kind + '_slice']
+        return (f'[Unit]\nDescription=Horizontal campaign {kind} resource boundary\n[Slice]\nCPUAccounting=yes\nMemoryAccounting=yes\n'
+                f'{accounting}AllowedCPUs={spec["allowed_cpus"]}\nCPUQuota={spec["cpu_quota_percent"]}%\n'
+                f'MemoryMax={spec["memory_max_mib"]}M\nMemorySwapMax={spec["swap_max_bytes"]}\n')
     return f'''[Unit]
 Description=Horizontal campaign {kind} resource boundary
 [Slice]
@@ -1462,16 +1550,18 @@ for entry in pathlib.Path('/proc').iterdir():
     if entry.name.isdigit():
         value = proc(int(entry.name))
         if value and (value['exe'].removesuffix(' (deleted)') in request['binaries']
-                      or value['args'] and value['args'][0] in request['binaries']):
+                      or value['args'] and value['args'][0] in request['binaries']
+                      or any(value['exe'].removesuffix(' (deleted)').startswith(root) or value['args'] and value['args'][0].startswith(root)
+                             for root in request.get('binary_roots', []))):
             residual.append(value)
 print(json.dumps(dict(units=units, historical=historical, owned_residual=residual)))
 '''
 
 
 def _stop_specs(plan, nodes, layout, active, scopes):
-    scaling = plan['schema'] == 'otel_native_scaling_v1'
+    scaling = plan['schema'] in ('otel_native_scaling_v1', 'otel_native_paired_v1')
     roles = _roles(plan)
-    if (plan['schema'] not in ('otel_native_diagnostic_v1', 'otel_native_session_v1', 'otel_native_scaling_v1')
+    if (plan['schema'] not in ('otel_native_diagnostic_v1', 'otel_native_session_v1', 'otel_native_scaling_v1', 'otel_native_paired_v1')
             or type(nodes) is not dict or set(nodes) != set(roles)):
         raise ProvisionError('owned-arm stop requires exactly the schema-scoped native nodes')
     armid = active.get('armid')
@@ -1601,7 +1691,7 @@ def stop_owned_arm(plan, out, nodes, layout, *, scopes=(), runner=None, clock=ti
         with _lock(state):
             _check_window(plan, state, clock)
             for role, node in nodes.items():
-                if plan['schema'] == 'otel_native_scaling_v1' and node.get('role') != role:
+                if plan['schema'] in ('otel_native_scaling_v1', 'otel_native_paired_v1') and node.get('role') != role:
                     raise ProvisionError('scaling role does not match its prepared node')
                 _authorized_node(plan, out, node)
             active = _load(state / 'active-arm.json')
@@ -1614,8 +1704,12 @@ def stop_owned_arm(plan, out, nodes, layout, *, scopes=(), runner=None, clock=ti
                 if clock() >= until:
                     raise ProvisionError('owned-arm quiescence proof exceeded its operation budget')
                 root = REMOTE_BASE+'/'+plan['campaign']
-                request = dict(units=specs[role], historical=list(historical[role]),
-                               binaries=[root+'/bin/fdbserver', root+'/bin/otel-demo'])
+                binaries = [root+'/bin/fdbserver', root+'/bin/otel-demo']
+                if plan['schema'] == 'otel_native_paired_v1':
+                    binaries += [root+'/bin/'+name for name in ('control_pure_binary', 'control_native_binary', 'rust_binary', 'verifier_binary') if name in plan['assets']]
+                request = dict(units=specs[role], historical=list(historical[role]), binaries=binaries)
+                if plan['schema'] == 'otel_native_paired_v1':
+                    request['binary_roots'] = [root+'/bin/'+name+'.bundle/' for name in ('control_pure_binary', 'control_native_binary', 'rust_binary', 'verifier_binary') if name in plan['assets']]
                 timed_out = False
                 try:
                     rc, stdout, stderr = run_on_node(plan, out, nodes[role],
@@ -1641,7 +1735,7 @@ def stop_owned_arm(plan, out, nodes, layout, *, scopes=(), runner=None, clock=ti
                 units = [item['unit'] for item in value['units'] if item['load_state'] != 'not-found']
                 if units:
                     _check_window(plan, state, clock)
-                    if plan['schema'] == 'otel_native_scaling_v1' and clock() >= until:
+                    if plan['schema'] in ('otel_native_scaling_v1', 'otel_native_paired_v1') and clock() >= until:
                         raise ProvisionError('owned-arm quiescence proof exceeded its operation budget')
                     rc, stdout, stderr = run_on_node(plan, out, nodes[role], ['systemctl', 'stop', *units],
                                                     runner=runner, timeout=min(20, max(0.001, until-clock())))
@@ -1688,7 +1782,7 @@ def setup_cluster(plan, out, nodes, storage_hosts, armid, *, runner=None, clock=
     if type(nodes) is not dict or set(nodes) != set(roles):
         raise ProvisionError('exactly the schema-scoped prepared campaign nodes are required')
     for role, node in nodes.items():
-        if plan['schema'] == 'otel_native_scaling_v1' and node.get('role') != role:
+        if plan['schema'] in ('otel_native_scaling_v1', 'otel_native_paired_v1') and node.get('role') != role:
             raise ProvisionError('scaling role does not match its prepared node')
         _authorized_node(plan, out, node)
     layout = render_cluster(plan, nodes, storage_hosts, armid)
@@ -1699,11 +1793,18 @@ def setup_cluster(plan, out, nodes, storage_hosts, armid, *, runner=None, clock=
         previous = _load(active_path)
         if previous.get('campaign') != plan['campaign']:
             raise ProvisionError('previous arm is not campaign-owned')
-        if plan['schema'] == 'otel_native_scaling_v1':
+        if plan['schema'] in ('otel_native_scaling_v1', 'otel_native_paired_v1'):
             prior_id = previous.get('armid')
-            if prior_id not in ('scaling-1', 'scaling-2', 'scaling-3'):
-                raise ProvisionError('previous scaling stage arm ID is not owned')
-            prior = render_cluster(plan, nodes, int(prior_id[-1]), prior_id)
+            if plan['schema'] == 'otel_native_paired_v1':
+                match = re.fullmatch(r'pairs([123])-(go_pure|go_native|rust_native)-rep([12])', str(prior_id))
+                if not match:
+                    raise ProvisionError('previous paired arm ID is not owned')
+                prior_hosts = int(match[1])
+            else:
+                if prior_id not in ('scaling-1', 'scaling-2', 'scaling-3'):
+                    raise ProvisionError('previous scaling stage arm ID is not owned')
+                prior_hosts = int(prior_id[-1])
+            prior = render_cluster(plan, nodes, prior_hosts, prior_id)
             stop_owned_arm(plan, out, nodes, prior, scopes=(), runner=runner, clock=clock, sleep=sleep)
         else:
             for node in fdb_roles:
@@ -1721,7 +1822,7 @@ def setup_cluster(plan, out, nodes, storage_hosts, armid, *, runner=None, clock=
     # therefore stopped by the next arm, even when its receipt was never written.
     active = dict(campaign=plan['campaign'], armid=str(armid),
                   units={node: [p['unit_name'] for p in layout['processes'] if p['node'] == node]
-                         for node in (roles if plan['schema'] == 'otel_native_scaling_v1' else fdb_roles)})
+                         for node in (roles if plan['schema'] in ('otel_native_scaling_v1', 'otel_native_paired_v1') else fdb_roles)})
     _json(active_path, active, replace=True)
     try:
         for role in roles:
@@ -1736,7 +1837,7 @@ def setup_cluster(plan, out, nodes, storage_hosts, armid, *, runner=None, clock=
             slice_path = arm / ('horizontal-' + kind + '.slice')
             if not slice_path.exists():
                 _mc.write_private(slice_path,
-                                  _slice(kind, io_accounting=plan['schema'] in ('otel_native_diagnostic_v1', 'otel_native_session_v1', 'otel_native_scaling_v1')))
+                                  _slice(kind, io_accounting=plan['schema'] in ('otel_native_diagnostic_v1', 'otel_native_session_v1', 'otel_native_scaling_v1', 'otel_native_paired_v1'), geometry=plan.get('native_geometry') if plan['schema'] == 'otel_native_paired_v1' else None))
             _require_result(copy_to_node(plan, out, node, slice_path,
                                          '/etc/systemd/system/horizontal-' + kind + '.slice', runner=runner), 'copy resource slice')
             for p in [p for p in layout['processes'] if p['node'] == role]:
