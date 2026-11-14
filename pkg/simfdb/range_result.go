@@ -40,6 +40,10 @@ func (r *simRangeResult) issueFirst() {
 		f.err = err
 		return
 	}
+	if r.tx.deferredErr != nil {
+		f.err = r.tx.deferredErr
+		return
+	}
 	beginSel, endSel := r.r.FDBRangeKeySelectors()
 	bks, eks := beginSel.FDBKeySelector(), endSel.FDBKeySelector()
 	if !isTrivialSelector(bks) || !isTrivialSelector(eks) {

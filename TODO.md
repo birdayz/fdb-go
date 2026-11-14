@@ -27,6 +27,57 @@ git show 13d5a3d1e:rfcs/257-java-upgrade-audit/ws-e-design.md
 Verify remaining audit claims against current Go and Java before changing code.
 Never mark a whole workstream complete because one of its subitems passed.
 
+## Go client scheduled correctness — hosted acceptance recorded
+
+- [x] Merged-master hosted acceptance: manual workflow run [43569938200](https://github.com/birdayz/fdb-go/actions/runs/43569938200)
+  on `7ce10d143a229001a0b6cd8149b9d31e42ef1602` passed 142/142 cases,
+  zero failures/FDB deaths: 14 borrowed regressions + 128 exploration cases,
+  including 25 complete five-mode cycles. Totals: API Python differential 28,
+  API concurrency-5 27, directory Python differential 35, directory HCA
+  concurrency-5 25 at API 730 + 1 at API 610, scripted 26; every case FDB-alive.
+  FDB 7.3.77, seed-start 1673315343, elapsed 14m34s. `workflow.txt` records
+  matching GitHub/workflow/checkout SHAs; `workflow-exit.txt` records runner exit 0
+  and inputs_changed=0. All 9,307 `inputs.before`/`inputs.after` entries match;
+  `head.diff`/`status.diff` are empty. `results/report.json` and all 142 case
+  directories contain evidence (`tester.log` with zero incorrect results/errors,
+  `fdb.cluster`, `docker.log`). Artifact `client-correctness-43569938200-1`
+  expires 2026-11-28 (14-day retention). This is Go client coverage only, not
+  Record Layer or SQL. See `docs/client-correctness.md`.
+
+- [ ] First cron-triggered run observed green (same checks). No `schedule` event
+  run on master was listed during acceptance recording; manual dispatch does not
+  establish hourly trigger delivery.
+
+- [ ] Harden the remaining preexisting Go client correctness regression paths:
+  - RW040: MkdirTemp failure is fatal.
+  - RW096: Persist Finished timestamp and elapsed duration every checkpoint.
+  - RW099: Record nonzero per-case duration.
+  - RW101: Persist report after each case rather than only final.
+
+  The runner, stacktester, and workflow regression paths removed from this list
+  have executed regressions: PR CI [43562773132](https://github.com/birdayz/fdb-go/actions/runs/43562773132)
+  passed `runner_integration_test` (369.3s), including real-executable CLI
+  propagation and engine-independent container-removal observers, plus
+  `client_test` and `bench_test`. Full CI [43562849141](https://github.com/birdayz/fdb-go/actions/runs/43562849141)
+  passed 268 targets (5 executed, 263 cached) on the merged content; master push
+  CI [43569922551](https://github.com/birdayz/fdb-go/actions/runs/43569922551) also passed.
+  These results do not close RW040/RW096/RW099/RW101 above.
+
+- [ ] Align failed read-version getter reuse with native 7.3.77: Go clears the
+  completed producer even on failure (`pkg/fdbgo/client/read_version_state.go:174-177`)
+  and retries/refetches a GRV on a later read when entry guards permit
+  (`pkg/fdbgo/client/read_version_state.go:122-145`), whereas native retains the
+  failed future until Reset/successful OnError replaces the incarnation. The
+  SetReadVersion admission side is fixed; getter/read-side reuse is not.
+
+- [ ] Register the three existing `cgo && libfdbc` differential test files in
+  Bazel and execute their intended populations: `pkg/fdbgo/libfdbc/mappedrange_differential_test.go:162`,
+  `pkg/fdbgo/libfdbc/mappedrange_multishard_differential_test.go:116`, and
+  `pkg/fdbgo/libfdbc/range_shard_pair_differential_test.go:162`. These files contain
+  28 SetReadVersion calls but belong to no Bazel target: the hand-maintained
+  `pkg/fdbgo/libfdbc/BUILD.bazel:5-6` ignores Gazelle and omits them; no repository
+  BUILD/bzl declaration names them. Neither fast nor full CI executes these files.
+
 ## Pending acceptance: ingest-20k conformance gate corrections
 
 - [ ] Run the supported full stacked-tree acceptance lane and fresh native review
@@ -3943,3 +3994,53 @@ boundary in `docs/benchmarks/otel-relational-local-20261107.md`.
   DIVERGENCES.md, “TEXT logical suffix bounds”. The SQL executor retains its
   whole-group filtering path for caller-built typed suffix plans; SQL planning
   does not currently produce suffix bounds.
+
+## Persisted R-tree Hilbert decoding
+
+- [x] Preserve persisted unsigned and arbitrary-precision Hilbert values in leaf
+  and child slots instead of recomputing stored leaves or replacing child bounds
+  with zero. Match Java numeric narrowing and typed invalid-value failures.
+  Regressions cover literal numeric limits, packed slots, independent big-integer
+  copies, and real-FDB split/reopen/update/delete/pagination across both layouts
+  and stored-Hilbert settings. See `storage_hilbert_test.go`,
+  `storage_hilbert_fdb_test.go` and the compatibility boundary in DIVERGENCES.md.
+- [ ] Provide store validation/repair for entries already duplicated or lost by
+  older R-tree routing through incorrectly decoded Hilbert bounds. Correct
+  decoding prevents further misrouting; it does not reconstruct prior contents.
+
+## OpenTelemetry production hardening
+
+Owner resumed this workstream; see [the observability contract](docs/observability.md).
+Preserve C++ 7.3.77 wire IDs, sampled-parent inheritance, GRV batch roots, and
+transaction outcomes. SDK/exporter setup and shutdown remain application-owned.
+
+- [x] Managed span lifetimes: read/write success, terminal errors, cancellation,
+  panic, retries, reset/cancel racing blocked starts, and parented commit/reuse.
+  `span_lifecycle_unit_test.go` and real-FDB `span_otel_test.go` cover ownership,
+  lock boundaries, waiter cancellation and panic cleanup. The retirement fence
+  was mutation-checked: removing it compiled and failed the cancel/helper-return
+  regressions; restoration passed. Code at `30c2638e8` passed `just test`,
+  `just test-full`, and `just test-race` (fast target set under race, not full-race),
+  with frozen input manifests and code-review ACK. Broader OTel coverage remains
+  open below.
+- [ ] Instrument pipelined point reads through `GetPipelined`/`PendingGet`, which
+  the `fdb` facade uses on its successful path. Own the operation span through
+  reply, fallback, cancellation handoff, commit drain, and retirement; end it once
+  without adding SDK callbacks under pending-read or turnover locks. Prove the
+  facade path against real FDB, not only synchronous `client.Get`.
+- [ ] Add bounded error/status telemetry to exported operation and attempt spans.
+  Preserve error identities and avoid exporting raw keys, values, SQL, tenant
+  identifiers, or arbitrary application error messages. Include failure-path
+  and success-after-retry assertions, not just span-name presence.
+- [ ] Define and test late `SPAN_PARENT` export behavior. The wire context changes
+  immediately, but an already-started SDK span cannot be reparented; current
+  export correlation follows the new parent only after retry/reset. The guide
+  requires parent injection before the first read/commit. Preserve the existing
+  C++ wire option semantics when improving the additive export boundary.
+- [ ] Add an explicit OTel-context parenting API and round-trip tests if automatic
+  request-trace joining is wanted. Current Go contexts carry cancellation only;
+  `SetSpanParent` is the explicit FDB hook. Do not make an SDK span the authority
+  for FDB wire IDs or change batched-GRV roots to simplify a trace waterfall.
+- [ ] Optional OTel metrics adapter over `MetricsSource`/`StoreTimer`: define
+  units, aggregation/temporality and cardinality; keep SDK/exporter dependencies
+  out of core transaction execution. Existing Prometheus adapters remain valid.

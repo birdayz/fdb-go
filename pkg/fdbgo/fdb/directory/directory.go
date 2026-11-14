@@ -168,7 +168,7 @@ func stringsEqual(a, b []string) bool {
 func moveTo(t fdb.Transactor, dl directoryLayer, path, newAbsolutePath []string) (DirectorySubspace, error) {
 	partition_len := len(dl.path)
 
-	if !stringsEqual(newAbsolutePath[:partition_len], dl.path) {
+	if len(newAbsolutePath) < partition_len || !stringsEqual(newAbsolutePath[:partition_len], dl.path) {
 		return nil, errors.New("cannot move between partitions")
 	}
 

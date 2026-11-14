@@ -3,7 +3,6 @@ package client
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"runtime"
 	"sync"
 	"testing"
@@ -183,7 +182,61 @@ func TestNativeCommit_PublicWaitersInterruptDuringRetainedGRV(t *testing.T) {
 	}
 }
 
-func TestNativeCommit_SetReadVersionSupersedesRetainedGRV(t *testing.T) {
+func TestSetReadVersionRejectsOutstandingPublicGRV(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), commitLifetimeTimeout)
+	defer cancel()
+	db, gate, _ := newGRVReplyGateDB(t, ctx)
+	tx := db.CreateTransaction()
+	defer tx.Cancel()
+	gate.arm(1, false)
+	type result struct {
+		version int64
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		version, err := tx.GetReadVersion(ctx)
+		done <- result{version, err}
+	}()
+	waitCommitLifetimeGate(t, ctx, gate.heldCh, "public GRV reply withheld")
+	tx.readVersionMu.Lock()
+	pending := tx.pendingReadVersion
+	tx.readVersionMu.Unlock()
+	if pending == nil {
+		t.Fatal("public GRV was not published as pending")
+	}
+	tx.SetReadVersion(123)
+	if _, err := tx.GetReadVersion(ctx); fdbCodeOf(err) != 2010 {
+		t.Fatalf("read after rejected setter = %v, want 2010", err)
+	}
+	tx.readVersionMu.Lock()
+	preserved := tx.pendingReadVersion == pending && !tx.hasReadVersion
+	tx.readVersionMu.Unlock()
+	if !preserved {
+		t.Fatal("rejected setter replaced the outstanding GRV")
+	}
+	gate.release()
+	select {
+	case got := <-done:
+		if got.err != nil || got.version <= 0 || got.version != pending.version || pending.err != nil {
+			t.Fatalf("original GRV completed with %d/%v; pending=%d/%v", got.version, got.err, pending.version, pending.err)
+		}
+		tx.readVersionMu.Lock()
+		cached, has, userSet, remaining := tx.readVersion, tx.hasReadVersion, tx.userSetReadVersion, tx.pendingReadVersion
+		tx.readVersionMu.Unlock()
+		if cached != got.version || !has || userSet || remaining != nil {
+			t.Fatalf("GRV state after completion: %d/%v/%v/%v", cached, has, userSet, remaining)
+		}
+	case <-ctx.Done():
+		t.Fatal("rejected setter stranded the original GRV request")
+	}
+	if _, err := tx.GetReadVersion(ctx); fdbCodeOf(err) != 2010 {
+		t.Fatalf("GRV completion erased deferred error: %v", err)
+	}
+}
+
+func TestNativeCommit_SetReadVersionRejectsRetainedGRV(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), commitLifetimeTimeout)
 	defer cancel()
@@ -237,26 +290,14 @@ func TestNativeCommit_SetReadVersionSupersedesRetainedGRV(t *testing.T) {
 	if instant, ok := tx.ReadVersionInstant(); ok || !instant.IsZero() {
 		t.Fatalf("explicit version carries a GRV instant: %v/%v", instant, ok)
 	}
-	if got, err := tx.GetReadVersion(waitCtx); err != nil || got != version {
-		t.Fatalf("new operation uses %d/%v, want explicit version %d", got, err, version)
+	if _, err := tx.GetReadVersion(waitCtx); fdbCodeOf(err) != 2010 {
+		t.Fatalf("SetReadVersion during pending GRV: %v, want 2010", err)
 	}
-	prefix := []byte(t.Name() + "/svk/")
-	svk := append(bytes.Clone(prefix), make([]byte, 14)...)
-	binary.LittleEndian.PutUint32(svk[len(svk)-4:], uint32(len(prefix)))
-	mutated := make(chan error, 1)
-	go func() {
-		tx.Atomic(MutSetVersionstampedKey, svk, []byte("not-in-native-snapshot"))
-		mutated <- nil
-	}()
-	awaitCommitLifetimeResult(t, waitCtx, mutated, "SVK mutation while native GRV withheld")
-	tx.conflictMu.Lock()
-	mutation := tx.mutations[len(tx.mutations)-1]
-	stamp := bytes.Clone(mutation.Key[len(prefix) : len(prefix)+10])
-	tx.conflictMu.Unlock()
-	var wantStamp [10]byte
-	binary.BigEndian.PutUint64(wantStamp[:8], uint64(version))
-	if !bytes.Equal(stamp, wantStamp[:]) {
-		t.Fatalf("SVK cached-version stamp = %x, want %x", stamp, wantStamp)
+	state.readVersionMu.Lock()
+	preserved := state.pendingReadVersion == pending && !state.hasReadVersion
+	state.readVersionMu.Unlock()
+	if !preserved {
+		t.Fatal("rejected setter displaced the retained GRV")
 	}
 	tx.Cancel()
 	awaitCommitLifetimeCode(t, waitCtx, done, ErrTransactionCancelled, "public commit before old GRV publication")
@@ -269,8 +310,8 @@ func TestNativeCommit_SetReadVersionSupersedesRetainedGRV(t *testing.T) {
 	state.readVersionMu.Lock()
 	got, hasVersion, userSet, instant := state.readVersion, state.hasReadVersion, state.userSetReadVersion, state.readVersionInstant
 	state.readVersionMu.Unlock()
-	if got != version || !hasVersion || !userSet || !instant.IsZero() {
-		t.Fatalf("old completion replaced explicit state: %d/%v/%v/%v", got, hasVersion, userSet, instant)
+	if got != heldVersion || !hasVersion || userSet || instant.IsZero() {
+		t.Fatalf("retained GRV publication = %d/%v/%v/%v, want native version %d", got, hasVersion, userSet, instant, heldVersion)
 	}
 	if got := readCommitLifetimeValue(t, ctx, db, key); string(got) != "retained" {
 		t.Fatalf("native commit data = %q", got)

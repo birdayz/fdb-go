@@ -90,6 +90,7 @@ func (tx *Transaction) publishCommit(inc *readIncarnation, released *executionLe
 	if err != nil {
 		return
 	}
+	defer endSpan(tx.detachTxSpan())
 	defer turnover.finish()
 	tx.committedVersion = result.version
 	tx.txnBatchId = result.batchID
@@ -107,10 +108,10 @@ func (tx *Transaction) publishCommit(inc *readIncarnation, released *executionLe
 // The native owner shares the existing GRV future, but neither the public
 // resetPromise nor a back-reference to the public transaction.
 func (tx *Transaction) captureNativeReadState(input *commitInput) {
+	tx.ensureTxSpan(context.Background())
 	tx.readVersionMu.Lock()
 	if tx.metricStart.IsZero() {
 		tx.metricStart = time.Now()
-		tx.ensureTxSpan()
 	}
 	tx.readVersionMu.Unlock()
 	request := tx.readVersionRequest()

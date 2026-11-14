@@ -76,8 +76,8 @@ func clampConflictRange(begin, end []byte) (nb, ne []byte, ok bool, err error) {
 // clockVersion is the version the FDB master would have minted at the simulated clock's current
 // reading: microseconds elapsed since dst.Epoch, which at VERSIONS_PER_SECOND = 1e6 is exactly
 // one version per microsecond. Epoch is the baseline because that is where NewSim pins a
-// SimClock, so a fresh simulated database starts at version 0 and every advance of d translates
-// to d.Microseconds() versions.
+// SimClock; this clock coordinate starts at 0, independently of the database's positive genesis.
+// Every advance of d translates to d.Microseconds() versions.
 //
 // This is what binds the MVCC window to TIME. Without it SimFDB's versions came only from the
 // commit counter, so the 5-second window was really "5,000,000 commits ago" and no amount of

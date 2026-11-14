@@ -1,0 +1,161 @@
+name: Go client correctness
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One bounded run at a time, including manual runs; never cancel evidence collection.
+concurrency:
+  group: go-client-correctness
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  bindingtester:
+    name: Go client BindingTester
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      FDB_VERSION: '7.3.77'
+      FDB_REQUIRE_DOCKER: '1'
+      WORKFLOW_SHA: ${{ github.workflow_sha }}
+    steps:
+      - name: Initialize evidence
+        run: |
+          evidence="$RUNNER_TEMP/client-correctness-evidence"
+          mkdir -p "$evidence"
+          printf 'EVIDENCE=%s\n' "$evidence" >> "$GITHUB_ENV"
+
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pinned tools and C client
+        timeout-minutes: 7
+        run: |
+          set -euo pipefail
+          exec > >(tee "$EVIDENCE/setup.log") 2>&1
+          cd "$RUNNER_TEMP"
+          fetch() {
+            curl --fail --location --retry 8 --retry-max-time 180 \
+              --connect-timeout 15 --speed-limit 1024 --speed-time 60 "$1" -o "$3"
+            printf '%s  %s\n' "$2" "$3" | sha256sum --check --strict
+          }
+          # Same versions/checksums as infra/main.tf; no Python package install:
+          # the runner unpacks the Bazel-pinned Python FDB client itself.
+          fetch https://github.com/bazelbuild/bazelisk/releases/download/v1.30.0/bazelisk-linux-amd64 \
+            a248ae2b2b62b5baebb748f6fba7203bff1a27e5d01b55399a8406744cb539e8 bazelisk.bin
+          sudo install -m 0755 bazelisk.bin "/usr/local/bin/bazelisk"
+          fetch https://github.com/casey/just/releases/download/1.48.1/just-1.48.1-x86_64-unknown-linux-musl.tar.gz \
+            9293e553ce401d1b524bf4e104918f72f268e3f9c6827e0055fe98d84a1b2522 just.tar.gz
+          tar -xzf just.tar.gz just
+          sudo install -m 0755 just /usr/local/bin/just
+          fetch https://github.com/apple/foundationdb/releases/download/7.3.77/foundationdb-clients_7.3.77-1_amd64.deb \
+            b6c263723009bddbc30b6ae8cf9854340bd35cef14152abb0da8fb5af2b91254 fdb-clients.deb
+          sudo dpkg -i fdb-clients.deb
+          sudo ldconfig
+          ldconfig -p | grep libfdb_c
+          just --version
+          python3 --version
+          docker info
+          docker pull foundationdb/foundationdb:7.3.77
+
+      - name: Run scheduled BindingTester on frozen inputs
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          # Evidence is outside the checkout, including the runner's results.
+          case "$(realpath "$EVIDENCE")/" in "$GITHUB_WORKSPACE/"*) exit 2 ;; esac
+          manifest() {
+            git ls-files --cached --others --exclude-standard -z |
+              LC_ALL=C sort -zu | xargs -0 -r sha256sum --
+          }
+          finish() {
+            rc=$?
+            trap - EXIT
+            set +e
+            changed=0
+            for rcfile in user.bazelrc "$HOME/.bazelrc" /etc/bazel.bazelrc; do
+              if [[ -e "$rcfile" || -L "$rcfile" ]]; then changed=1; fi
+            done
+            manifest > "$EVIDENCE/inputs.after" || changed=1
+            git rev-parse HEAD > "$EVIDENCE/head.after" || changed=1
+            git status --porcelain=v1 --untracked-files=all > "$EVIDENCE/status.after" || changed=1
+            for item in inputs head status; do
+              diff -u "$EVIDENCE/$item.before" "$EVIDENCE/$item.after" > "$EVIDENCE/$item.diff" || changed=1
+            done
+            printf 'runner_exit=%s\ninputs_changed=%s\n' "$rc" "$changed" > "$EVIDENCE/workflow-exit.txt"
+            if (( changed )); then
+              echo '::error::Checkout changed during the run; evidence is invalid'
+              if (( rc == 0 )); then rc=4; fi
+            fi
+            exit "$rc"
+          }
+          # Refuse ambient Bazel overrides, which are not tracked inputs.
+          for rcfile in user.bazelrc "$HOME/.bazelrc" /etc/bazel.bazelrc; do
+            if [[ -e "$rcfile" || -L "$rcfile" ]]; then
+              echo "::error::Unexpected Bazel override: $rcfile"
+              exit 2
+            fi
+          done
+          manifest > "$EVIDENCE/inputs.before"
+          test -s "$EVIDENCE/inputs.before"
+          git rev-parse HEAD > "$EVIDENCE/head.before"
+          git status --porcelain=v1 --untracked-files=all > "$EVIDENCE/status.before"
+          printf 'github_sha=%s\nworkflow_sha=%s\ncheckout_sha=%s\nrun_id=%s\nattempt=%s\n' \
+            "$GITHUB_SHA" "$WORKFLOW_SHA" "$(cat "$EVIDENCE/head.before")" \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > "$EVIDENCE/workflow.txt"
+          [[ "$(cat "$EVIDENCE/head.before")" = "$GITHUB_SHA" ]] || { echo '::error::Checkout SHA mismatch'; exit 2; }
+          [[ ! -s "$EVIDENCE/status.before" ]] || { echo '::error::Checkout must be clean'; exit 2; }
+          trap finish EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          seed=$(python3 -c 'import secrets; print(secrets.randbelow(2147483647) + 1)')
+          printf '%s\n' "$seed" > "$EVIDENCE/seed-start.txt"
+          # Leave time for post-run hashing and upload even if build/setup hangs.
+          # pipefail preserves a runner failure through tee (no continue-on-error).
+          timeout --signal=TERM --kill-after=30s 28m \
+            bazelisk run --config=ci //cmd/fdb-binding-stress -- \
+              -scheduled -duration 20m -seed-start "$seed" -out "$EVIDENCE/results" \
+            2>&1 | tee "$EVIDENCE/runner.log"
+          # An exit code alone is not evidence of a completed, nonempty population.
+          test -s "$EVIDENCE/results/report.json"
+          jq -e --arg sha "$GITHUB_SHA" '
+            .scheduled == true and .revision == $sha and .fdb_version == "7.3.77" and
+            .total_seeds >= 19 and .pass == .total_seeds and .fail == 0 and
+            .fdb_deaths == 0 and .complete_cycles >= 1 and (.error // "") == "" and
+            (.seeds | length) == .total_seeds and
+            all(.seeds[]; .pass == true and .fdb_alive == true)
+          ' "$EVIDENCE/results/report.json" > "$EVIDENCE/report-verdict.txt"
+
+      - name: Upload correctness evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-correctness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.EVIDENCE }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Failure summary
+        if: failure()
+        run: |
+          {
+            echo '## Go client BindingTester failed'
+            echo 'Inspect the failed step and client-correctness artifact for the seed, report, tester output, FDB traces, setup logs, and input hashes (where available).'
+            echo 'Setup, build, timeout, incomplete cycle, missing evidence, and moving inputs are failures, not successful correctness checks.'
+            echo 'Reproduce using docs/client-correctness.md; do not rerun to dismiss a failure.'
+          } >> "$GITHUB_STEP_SUMMARY"

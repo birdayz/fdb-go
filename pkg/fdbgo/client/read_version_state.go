@@ -12,14 +12,18 @@ import (
 // The retained native commit shares the GRV, not the public resetPromise or
 // transaction. Reset replaces this state after dropping the old actor.
 type readVersionState struct {
-	// Lock order: readVersionMu → traceMu, never the reverse. Never held over I/O.
+	// Never held over I/O or tracer callbacks.
 	readVersionMu      sync.Mutex
 	readVersion        int64
 	hasReadVersion     bool
 	userSetReadVersion bool
-	pendingReadVersion *pendingReadVersion
-	inlinePending      pendingReadVersion
-	inlinePendingUsed  bool
+	// Public/retained-native admission survives caller cancellation and retries;
+	// only replacing this incarnation's state clears the future's existence.
+	readVersionAdmitted bool
+	setterRejection     *wire.FDBError
+	pendingReadVersion  *pendingReadVersion
+	inlinePending       pendingReadVersion
+	inlinePendingUsed   bool
 	// Total latency spans OnError retries; the MVCC instant belongs to one GRV.
 	metricStart        time.Time
 	readVersionInstant time.Time
@@ -76,25 +80,26 @@ func (state *nativeReadState) readVersionForCommit(ctx context.Context) (int64, 
 }
 
 func (tx *Transaction) cachedOrFetchReadVersion(ctx context.Context, extraFlags uint32) (int64, bool, error) {
+	tx.ensureTxSpan(ctx)
 	return tx.readVersionState.cachedOrFetchReadVersion(ctx, nil, extraFlags, tx)
 }
 
-// owner supplies public admission-error mapping, span initialization and, when
-// request is nil, the request options, read only once a fetch starts. Detached
-// native work passes its captured request and a nil owner, and observes its own
-// context instead.
+// Public GRV admission resamples only setter rejection under readVersionMu.
+// Other poison keeps captured admission; detached native work passes nil owner.
 func (state *readVersionState) cachedOrFetchReadVersion(ctx context.Context, request *readVersionRequest, extraFlags uint32, owner *Transaction) (int64, bool, error) {
 	for {
 		state.readVersionMu.Lock()
+		if owner != nil && state.setterRejection != nil {
+			err := state.setterRejection
+			state.readVersionMu.Unlock()
+			return 0, false, err
+		}
 		if err := readVersionEntryError(ctx, owner); err != nil {
 			state.readVersionMu.Unlock()
 			return 0, false, err
 		}
 		if state.metricStart.IsZero() {
 			state.metricStart = time.Now()
-			if owner != nil {
-				owner.ensureTxSpan()
-			}
 		}
 		if state.hasReadVersion {
 			rv, userSet := state.readVersion, state.userSetReadVersion
@@ -127,6 +132,7 @@ func (state *readVersionState) cachedOrFetchReadVersion(ctx context.Context, req
 			pending = &pendingReadVersion{}
 		}
 		state.pendingReadVersion = pending
+		state.readVersionAdmitted = true
 		state.readVersionMu.Unlock()
 		var fetch readVersionRequest
 		if request != nil {

@@ -14,6 +14,9 @@ go_test(
     name = "infra_test",
     srcs = [
         "ci_triggers_test.go",
+        "client_correctness_evidence_test.go",
+        "client_correctness_setup_test.go",
+        "client_correctness_test.go",
         "download_retries_test.go",
         "evidence_lifecycle_test.go",
         "fdb_cpp_build_test.go",

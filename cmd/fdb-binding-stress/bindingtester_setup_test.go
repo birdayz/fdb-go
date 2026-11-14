@@ -1,9 +1,13 @@
+//go:build linux
+
 package main
 
 import (
 	"archive/tar"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"flag"
 	"io/fs"
 	"os"
@@ -194,12 +198,16 @@ func setupFixture(t *testing.T) (root, ws, base, bin string) {
 		filepath.Join(ws, "bazel-bin", "cmd", "fdb-stacktester", "fdb-stacktester_"),
 		filepath.Join(ws, "bazel-bin", "cmd", "fdb-binding-stress"),
 		filepath.Join(base, "external", "foundationdb+", "bindings", "bindingtester"),
+		filepath.Join(base, "external", "foundationdb+", "bindings", "python", "tests"),
 	} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	files := map[string]string{
+		filepath.Join(bin, "git"): "#!/bin/sh\n[ \"$*\" = 'rev-parse HEAD' ] || exit 1\nprintf '%s\\n' '0123456789abcdef0123456789abcdef01234567'\n",
+		filepath.Join(base, "external", "foundationdb+", "bindings", "bindingtester", "known_testers.py"): "# lifecycle fixture\n",
+		filepath.Join(base, "external", "foundationdb+", "bindings", "python", "tests", "tester.py"):      "# lifecycle oracle fixture\n",
 		filepath.Join(bin, "bazelisk"): "#!/bin/sh\nif [ \"$1\" = info ]; then printf '%s\\n' \"$FDB_TEST_OUTPUT_BASE\"; fi\n",
 		filepath.Join(ws, "bazel-bin", "cmd", "fdb-stacktester", "fdb-stacktester_", "fdb-stacktester"): "stub",
 		filepath.Join(base, "external", "foundationdb+", "bindings", "bindingtester", "__init__.py"):    bindingTesterImports,
@@ -218,7 +226,7 @@ func TestRunRemovesHarnessOnSuccessAndFailedSeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"success", "failure"} {
+	for _, mode := range []string{"success", "failure", "report_write_failure", "report_rename_failure"} {
 		t.Run(mode, func(t *testing.T) {
 			root, ws, base, bin := setupFixture(t)
 			clientTar := filepath.Join(ws, "bazel-bin", "cmd", "fdb-binding-stress", "python-fdb.tar")
@@ -246,11 +254,61 @@ func TestRunRemovesHarnessOnSuccessAndFailedSeed(t *testing.T) {
 				}
 			}
 			wantStatus, wantPass, wantFail := 0, 1, 0
+			if mode != "success" {
+				wantStatus = 1
+			}
 			if mode == "failure" {
-				wantStatus, wantPass, wantFail = 1, 0, 1
+				wantPass, wantFail = 0, 1
 			}
 			if status != wantStatus {
 				t.Fatalf("exit = %d, want %d: %s", status, wantStatus, output)
+			}
+			harness := ""
+			for _, line := range strings.Split(string(output), "\n") {
+				if strings.HasPrefix(line, "Harness: ") {
+					harness = strings.TrimPrefix(line, "Harness: ")
+				}
+			}
+			if harness == "" || !strings.HasPrefix(harness, root+string(os.PathSeparator)) {
+				t.Fatalf("missing owned harness under fixture root: %s", output)
+			}
+			if _, err := os.Stat(harness); !os.IsNotExist(err) {
+				t.Fatalf("completed campaign leaked owned harness %s: %v", harness, err)
+			}
+			left, err := filepath.Glob(filepath.Join(root, "fdb-binding-harness-*"))
+			if err != nil || len(left) != 0 {
+				t.Fatalf("completed campaign leaked harness: %v, %v", left, err)
+			}
+			if strings.HasPrefix(mode, "report_") {
+				blocked := filepath.Join(outDir, "report.json.tmp")
+				if mode == "report_rename_failure" {
+					blocked = filepath.Join(outDir, "report.json")
+				}
+				data, err := os.ReadFile(filepath.Join(blocked, "sentinel"))
+				if err != nil || string(data) != "prior evidence" || !strings.Contains(string(output), blocked) {
+					t.Fatalf("lost evidence rejection: sentinel=%q err=%v output=%s", data, err, output)
+				}
+				if mode == "report_write_failure" {
+					data, err := os.ReadFile(filepath.Join(outDir, "report.json"))
+					if err != nil || string(data) != "prior report" {
+						t.Fatalf("overwrote prior report: %q %v", data, err)
+					}
+				} else {
+					data, err := os.ReadFile(filepath.Join(outDir, "report.json.tmp"))
+					var report Report
+					if err != nil || json.Unmarshal(data, &report) != nil || report.Total != 1 || report.Pass != 1 || report.Fail != 0 || report.FDBDeaths != 0 || len(report.Seeds) != 1 || !report.Seeds[0].Pass {
+						t.Fatalf("lost completed report evidence: %s %v", data, err)
+					}
+				}
+				logs, err := filepath.Glob(filepath.Join(outDir, "case-*/tester.log"))
+				if err != nil || len(logs) != 1 {
+					t.Fatalf("missing completed seed evidence: %v %v", logs, err)
+				}
+				data, err = os.ReadFile(logs[0])
+				if err != nil || string(data) != "controlled seed completed\n" {
+					t.Fatalf("fixture did not execute completed seed: %q %v", data, err)
+				}
+				return
 			}
 			data, err := os.ReadFile(filepath.Join(outDir, "report.json"))
 			if err != nil {
@@ -263,10 +321,6 @@ func TestRunRemovesHarnessOnSuccessAndFailedSeed(t *testing.T) {
 			if report.Total != 1 || report.Pass != wantPass || report.Fail != wantFail {
 				t.Fatalf("campaign population/status = %+v", report)
 			}
-			left, err := filepath.Glob(filepath.Join(root, "fdb-binding-harness-*"))
-			if err != nil || len(left) != 0 {
-				t.Fatalf("completed campaign leaked harness: %v, %v", left, err)
-			}
 		})
 	}
 }
@@ -277,9 +331,49 @@ func TestHarnessLifecycleChild(t *testing.T) {
 		return
 	}
 	flag.CommandLine = flag.NewFlagSet("binding-stress-lifecycle", flag.ExitOnError)
-	os.Args = []string{"binding-stress", "-seeds", "1", "-out", os.Getenv("FDB_STRESS_TEST_OUT")}
-	os.Exit(run(func(seed, _ int, _, _, _, _ string) SeedResult {
-		return SeedResult{Seed: seed, Pass: mode == "success", FDBAlive: true, Error: "controlled seed verdict"}
+	if !configureCLIContractChild(t) {
+		os.Args = []string{"binding-stress", "-seeds", "1", "-out", os.Getenv("FDB_STRESS_TEST_OUT")}
+	}
+	os.Exit(run(func(_ context.Context, seed int, w workload, harness, dir string) SeedResult {
+		if fi, err := os.Stat(harness); err != nil || !fi.IsDir() {
+			t.Fatalf("runner did not own live harness: %v", err)
+		}
+		if mode == "cli" {
+			if os.Getenv("FDB_STRESS_CLEANUP_FAILURE") == "1" {
+				d, _ := successfulCleanupDeps(t, harness, errors.New("injected container removal failure"), nil)
+				return realRunSeedWithDeps(context.Background(), seed, w, harness, dir, d)
+			}
+			if err := os.WriteFile(os.Getenv("FDB_STRESS_CLI_SEED_MARKER"), []byte("seed invoked\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return SeedResult{Seed: seed, Workload: w, Pass: true, FDBAlive: true, Command: testerArgs(seed, w, "CLUSTER", "HARNESS")}
+		}
+		if strings.HasPrefix(mode, "report_") {
+			if err := os.WriteFile(filepath.Join(dir, "tester.log"), []byte("controlled seed completed\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			output := filepath.Dir(dir)
+			blocked := filepath.Join(output, "report.json.tmp")
+			if mode == "report_rename_failure" {
+				blocked = filepath.Join(output, "report.json")
+				if err := os.Remove(blocked); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Mkdir(blocked, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(blocked, "sentinel"), []byte("prior evidence"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if mode == "report_write_failure" {
+				if err := os.WriteFile(filepath.Join(output, "report.json"), []byte("prior report"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return SeedResult{Seed: seed, Workload: w, Pass: true, FDBAlive: true}
+		}
+		return SeedResult{Seed: seed, Workload: w, Pass: mode == "success", FDBAlive: true, Error: "controlled seed verdict"}
 	}))
 }
 
@@ -322,7 +416,7 @@ func TestSetupCleansHarnessAfterClientInitializationFailure(t *testing.T) {
 		} else if err := os.WriteFile(clientTar, []byte("invalid tar"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		_, _, err := setup()
+		_, err := setup()
 		want := "unpack python fdb"
 		if preflightFailure {
 			want = "broken pinned client"

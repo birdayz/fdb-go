@@ -50,8 +50,8 @@ const (
 	ErrBlobGranuleRequestFailed  = 1079 // blob_granule_request_failed (retryable, C++ NativeAPI.actor.cpp)
 	ErrTagThrottled              = 1213 // tag_throttled
 	ErrProxyTagThrottled         = 1223 // proxy_tag_throttled
-	ErrThrottledHotShard         = 1235 // transaction_throttled_hot_shard (FDB 7.4+, future-proof)
-	ErrRangeLocked               = 1242 // transaction_rejected_range_locked (FDB 7.4+, future-proof)
+	ErrThrottledHotShard         = 1235 // transaction_throttled_hot_shard (FDB 7.4+; not retried by pinned 7.3.77)
+	ErrRangeLocked               = 1242 // transaction_rejected_range_locked (FDB 7.4+; not retried by pinned 7.3.77)
 	ErrOperationFailed           = 4    // operation_failed (endpoint not supported)
 	ErrAllAlternativesFailed     = 1006 // all_alternatives_failed (Layer 2 only)
 	ErrRequestMaybeDelivered     = 1030 // request_maybe_delivered — an in-flight RPC's connection died (transport teardown); reads retry another alternative, commit maps it to 1021
@@ -349,6 +349,10 @@ type txOptions struct {
 	afterReadVersion func()
 	// beforeReadVersionLock parks acquisition after entry validation.
 	beforeReadVersionLock func()
+	// beforeReadVersionReject parks rejection before publication under readVersionMu.
+	beforeReadVersionReject func()
+	// beforeTraceWait observes a captured pending start without transaction locks.
+	beforeTraceWait func(context.Context)
 	// beforeReadFailureDelivery observes terminal-state publication ordering.
 	beforeReadFailureDelivery func(error)
 	// afterTimeoutRecord runs after a timeout delivery records its cause and
@@ -430,16 +434,17 @@ type Transaction struct {
 	// at cloneAndReset, NativeAPI.actor.cpp:3458). atomic.Pointer with immutable
 	// pointees: the commit auto-reset rotates it concurrently with in-flight
 	// sends, which capture by value via currentSpan() (RFC-175 E1). traceMu
-	// guards the lazily-started otel "Transaction" span + its parenting context
-	// (nil while unsampled — the C++ NoopTracer effect); lock order is
-	// readVersionMu → traceMu, never the reverse.
+	// guards the lazily-started OTel span and its parenting context. Tracer
+	// callbacks run outside traceMu, readVersionMu, and turnover publication.
 	spanContext atomic.Pointer[types.SpanContext]
 	// initialSpan is CreateTransaction's span, written before tx is published
 	// and never again; later spans are fresh pointees.
-	initialSpan types.SpanContext
-	traceMu     sync.Mutex
-	txSpan      oteltrace.Span
-	traceCtx    context.Context
+	initialSpan   types.SpanContext
+	traceMu       sync.Mutex
+	txSpan        oteltrace.Span
+	traceCtx      context.Context
+	traceStarting chan struct{}
+	traceClosed   bool
 
 	// deferredErr is THE transaction's deferred error — the exact analog of C++
 	// ISingleThreadTransaction::deferredError (ISingleThreadTransaction.h:124): ONE slot
@@ -772,7 +777,7 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 func (tx *Transaction) ensureReadVersionFlags(ctx context.Context, extraFlags uint32) error {
 	ctx, release := tx.opContext(ctx)
 	defer release()
-	if _, err := tx.readVersionForOperation(ctx, extraFlags); err != nil {
+	if _, err := tx.readVersionForOperation(ctx, extraFlags, true); err != nil {
 		return err
 	}
 	return tx.readEntryError(ctx)
@@ -784,7 +789,7 @@ func (tx *Transaction) ensureReadVersionFlags(ctx context.Context, extraFlags ui
 func (tx *Transaction) operationReadVersion(ctx context.Context) (int64, error) {
 	ctx, release := tx.opContext(ctx)
 	defer release()
-	readVersion, err := tx.readVersionForOperation(ctx, 0)
+	readVersion, err := tx.readVersionForOperation(ctx, 0, true)
 	if err != nil {
 		return 0, err
 	}
@@ -794,7 +799,7 @@ func (tx *Transaction) operationReadVersion(ctx context.Context) (int64, error) 
 // readVersionForOperation returns the GRV captured by this operation, not a
 // later read of the mutable handle. C++ RYWImpl::getReadVersion returns the
 // value from its completed future even if the handle is subsequently reset.
-func (tx *Transaction) readVersionForOperation(parentCtx context.Context, extraFlags uint32) (int64, error) {
+func (tx *Transaction) readVersionForOperation(parentCtx context.Context, extraFlags uint32, validateExplicit bool) (int64, error) {
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
 	if err := tx.checkReadState(ctx); err != nil {
@@ -807,7 +812,7 @@ func (tx *Transaction) readVersionForOperation(parentCtx context.Context, extraF
 	if err != nil {
 		return 0, err
 	}
-	if userSet {
+	if validateExplicit && userSet {
 		if err := validateExplicitVersion(ctx, tx.db, rv, tx.readVersionRequest); err != nil {
 			return 0, err
 		}
@@ -2147,7 +2152,11 @@ func (tx *Transaction) commitAdmitted(ctx context.Context, completion *versionst
 // This is irreversible — a cancelled transaction cannot be reused.
 func (tx *Transaction) Cancel() {
 	lease := tx.enterState()
-	defer lease.release()
+	var span oteltrace.Span
+	defer func() {
+		lease.release()
+		endSpan(span)
+	}()
 	// Publish the terminal state before either incarnation cancellation or
 	// cancelWatches can wake an operation that maps its error through this handle.
 	tx.state.Store(int32(txStateCancelled))
@@ -2159,7 +2168,7 @@ func (tx *Transaction) Cancel() {
 	// state.Load(), so the ordering is guaranteed, not racy (the prior order let the unblocked
 	// read see the not-yet-cancelled state and surface context.Canceled instead of 1025).
 	tx.cancelWatches()
-	tx.endTxSpan() // RFC-115 §4 Layer 2: end the "Transaction" otel span on teardown
+	span = tx.detachTxSpan()
 }
 
 // Reset resets the transaction to a clean state, as if newly created from Database.
@@ -2182,6 +2191,16 @@ func (tx *Transaction) Reset() {
 // trace); otherwise a brand-new random span, sampled per the DB's sample rate
 // (default unsampled). RFC-115 §4.
 func (tx *Transaction) regenerateSpan() {
+	if tx.db != nil && tx.db.tracer != nil {
+		tx.traceMu.Lock()
+		defer tx.traceMu.Unlock()
+	}
+	tx.regenerateSpanLocked()
+}
+
+// regenerateSpanLocked requires traceMu when export is enabled.
+func (tx *Transaction) regenerateSpanLocked() {
+	tx.traceClosed = false
 	if parent := tx.spanParent.Load(); parent != nil {
 		sc := childSpanContext(*parent)
 		tx.spanContext.Store(&sc)
@@ -2208,7 +2227,7 @@ func (tx *Transaction) currentSpan() types.SpanContext {
 	if tx.spanNeedsRegen.Load() {
 		tx.traceMu.Lock()
 		if tx.spanNeedsRegen.Load() {
-			tx.regenerateSpan()
+			tx.regenerateSpanLocked()
 		}
 		tx.traceMu.Unlock()
 	}
@@ -2218,29 +2237,65 @@ func (tx *Transaction) currentSpan() types.SpanContext {
 	return types.SpanContext{}
 }
 
-// ensureTxSpan lazily starts the "Transaction" otel span for a SAMPLED transaction
-// (C++ NativeAPI.actor.cpp:6186), seeded with the tx's wire traceID (otelSpanContext)
-// so the otel tree and FDB server-side spans share one trace. No-op when unsampled (so
-// unsampled txns allocate nothing) or when the Transaction span already exists. Called
-// at the first GRV under readVersionMu — the single-entry tx-start point.
-func (tx *Transaction) ensureTxSpan() {
-	if !isSampled(tx.currentSpan()) {
+// ensureTxSpan starts one span per attempt, independently of metricStart, which
+// survives retries. A pending start is published before calling application code.
+func (tx *Transaction) ensureTxSpan(ctx context.Context) {
+	if tx.db == nil || tx.db.tracer == nil || !isSampled(tx.currentSpan()) {
 		return
 	}
-	tx.traceMu.Lock()
-	already := tx.txSpan != nil
-	tx.traceMu.Unlock()
-	if already {
+	if tx.readEntryError(ctx) != nil {
 		return
 	}
-	// Start OUTSIDE traceMu (mirroring startOpSpan) so a re-entrant tracer can't deadlock;
-	// safe against a double-start because ensureTxSpan runs only at the first GRV under
-	// readVersionMu (single-entry), so no concurrent ensureTxSpan can race it.
-	parent := oteltrace.ContextWithSpanContext(context.Background(), otelSpanContext(tx.currentSpan()))
+	for {
+		tx.traceMu.Lock()
+		if tx.txSpan != nil || tx.traceClosed {
+			tx.traceMu.Unlock()
+			return
+		}
+		if pending := tx.traceStarting; pending != nil {
+			tx.traceMu.Unlock()
+			if tx.beforeTraceWait != nil {
+				tx.beforeTraceWait(ctx)
+			}
+			select {
+			case <-pending:
+				continue
+			case <-ctx.Done():
+				return
+			}
+		}
+		wireSpan := tx.spanContext.Load()
+		if wireSpan == nil || !isSampled(*wireSpan) {
+			tx.traceMu.Unlock()
+			return
+		}
+		pending := make(chan struct{})
+		tx.traceStarting = pending
+		tx.traceMu.Unlock()
+		tx.startTxSpan(wireSpan, pending)
+		return
+	}
+}
+
+func (tx *Transaction) startTxSpan(wireSpan *types.SpanContext, pending chan struct{}) {
+	// Also release queued starts if an application tracer panics.
+	defer func() {
+		tx.traceMu.Lock()
+		tx.traceStarting = nil
+		close(pending)
+		tx.traceMu.Unlock()
+	}()
+	parent := oteltrace.ContextWithSpanContext(context.Background(), otelSpanContext(*wireSpan))
 	ctx, span := tx.db.tracer.Start(parent, "Transaction", oteltrace.WithSpanKind(oteltrace.SpanKindClient))
 	tx.traceMu.Lock()
-	tx.traceCtx, tx.txSpan = ctx, span
+	publish := !tx.traceClosed && tx.spanContext.Load() == wireSpan
+	if publish {
+		tx.traceCtx, tx.txSpan = ctx, span
+	}
 	tx.traceMu.Unlock()
+	if !publish {
+		endSpan(span)
+	}
 }
 
 // startOpSpan starts a per-operation child span under the "Transaction" span (the C++
@@ -2252,7 +2307,7 @@ func (tx *Transaction) ensureTxSpan() {
 // The per-op otel span carries an otel-minted spanID under the shared traceID; the wire
 // SpanContext is generated independently by Layer 1 (single ID authority).
 func (tx *Transaction) startOpSpan(name string) oteltrace.Span {
-	if !isSampled(tx.currentSpan()) {
+	if tx.db == nil || tx.db.tracer == nil || !isSampled(tx.currentSpan()) {
 		return nil
 	}
 	tx.traceMu.Lock()
@@ -2265,28 +2320,42 @@ func (tx *Transaction) startOpSpan(name string) oteltrace.Span {
 	return span
 }
 
-// endTxSpan ends the "Transaction" otel span (C++ ~Span on tx end). Idempotent; called
-// on commit success (postCommitReset), on OnError retry / user Reset (reset), and on
-// Cancel. NOTE: there is no Transaction.Close(); a raw CreateTransaction handle that is
-// first-GRV'd and then abandoned WITHOUT commit/Reset/Cancel never ends its span (a leak
-// — only with a real WithTracer + a sampled tx). The common Transact/TransactCtx path is
-// always safe (it commits or resets). See WithTracer / CreateTransaction for the caveat.
-func (tx *Transaction) endTxSpan() {
+// detachTxSpan closes the attempt before invoking synchronous SDK processors.
+// Callers holding admission or turnover must release it before ending this span.
+func (tx *Transaction) detachTxSpan() oteltrace.Span {
+	if tx.db == nil || tx.db.tracer == nil {
+		return nil
+	}
 	tx.traceMu.Lock()
-	defer tx.traceMu.Unlock()
-	if tx.txSpan != nil {
-		tx.txSpan.End()
-		tx.txSpan = nil
-		tx.traceCtx = nil
+	span := tx.txSpan
+	tx.txSpan, tx.traceCtx = nil, nil
+	tx.traceClosed = true
+	tx.traceMu.Unlock()
+	return span
+}
+
+func endSpan(span oteltrace.Span) {
+	if span != nil {
+		span.End()
 	}
 }
+
+// endTxSpan is also deferred by managed helpers, including read-only and error exits.
+// Raw handles still require explicit commit, Reset, or Cancel.
+func (tx *Transaction) endTxSpan() { endSpan(tx.detachTxSpan()) }
 
 func (tx *Transaction) stateSetSpanParent(b []byte) error {
 	parent, err := parseSpanParent(b)
 	if err != nil {
 		return err
 	}
+	tx.traceMu.Lock()
+	defer tx.traceMu.Unlock()
 	tx.spanParent.Store(&parent)
+	if tx.spanNeedsRegen.Load() {
+		tx.regenerateSpanLocked()
+		return nil
+	}
 	sc := childSpanContext(parent)
 	tx.spanContext.Store(&sc)
 	return nil
@@ -2514,7 +2583,19 @@ func (tx *Transaction) borrowedOnErrorVerdict(caller context.Context, op *readOp
 		}
 		return cause
 	}
-	if fdbErr.Code == ErrTransactionTimedOut || tx.hasRetryLimit && tx.retryCount >= tx.retryLimit || !onErrorRetryable(fdbErr.Code) {
+	if fdbErr.Code == ErrTransactionTimedOut {
+		return err
+	}
+	if tx.hasRetryLimit && tx.retryCount >= tx.retryLimit {
+		if fdbErr.Code == 0 {
+			return &wire.FDBError{Code: ErrInternalError}
+		}
+		return err
+	}
+	if fdbErr.Code == 0 {
+		return &wire.FDBError{Code: ErrClientInvalidOperation}
+	}
+	if !onErrorRetryable(fdbErr.Code) {
 		return err
 	}
 	if callerErr := caller.Err(); callerErr != nil {
@@ -2647,7 +2728,18 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 	// Check retry limit before allowing any retry.
 	if tx.hasRetryLimit && tx.retryCount >= tx.retryLimit {
 		tx.state.Store(int32(txStateErrored))
+		if fdbErr.Code == 0 {
+			// RYW throws success before NativeAPI can classify it; delivering
+			// that invalid error trips Flow's assertion and surfaces internal_error.
+			return &wire.FDBError{Code: ErrInternalError}
+		}
 		return err
+	}
+
+	// RYW checks the retry limit before NativeAPI rejects success as client_invalid_operation.
+	if fdbErr.Code == 0 {
+		tx.state.Store(int32(txStateErrored))
+		return &wire.FDBError{Code: ErrClientInvalidOperation}
 	}
 
 	// Single source of WHETHER to retry (RFC-105 — derive, don't mirror):
@@ -2679,12 +2771,8 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 		}
 		return retryReset(nil)
 
-	case ErrProxyMemoryLimitExceeded, ErrGrvProxyMemoryLimit,
-		ErrThrottledHotShard, ErrRangeLocked:
-		// Resource-constrained: higher backoff cap (30s vs 1s).
-		// C++ RESOURCE_CONSTRAINED_MAX_BACKOFF for all four codes.
-		// hot_shard and range_locked use the same 30s cap to avoid
-		// hammering the hot shard with aggressive retries.
+	case ErrProxyMemoryLimitExceeded, ErrGrvProxyMemoryLimit:
+		// Resource-constrained: C++ RESOURCE_CONSTRAINED_MAX_BACKOFF (30s vs 1s).
 		tx.retryCount++
 		if cerr := logRetry(fdbErr.Code); cerr != nil {
 			return cerr
@@ -2747,7 +2835,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 func (tx *Transaction) GetReadVersion(ctx context.Context) (int64, error) {
 	ctx, cancel := tx.opContext(ctx)
 	defer cancel()
-	rv, err := tx.readVersionForOperation(ctx, 0)
+	rv, err := tx.readVersionForOperation(ctx, 0, false)
 	if err != nil {
 		return 0, err
 	}
@@ -2755,25 +2843,49 @@ func (tx *Transaction) GetReadVersion(ctx context.Context) (int64, error) {
 }
 
 func (tx *Transaction) stateSetReadVersion(version int64) {
+	if tx.deferredErr.Load() != nil {
+		return
+	}
 	tx.readVersionMu.Lock()
+	defer tx.readVersionMu.Unlock()
+	// Only setter rejection also gates GRV admission under readVersionMu;
+	// unrelated deferred poison preserves the operation's captured admission.
+	if tx.deferredErr.Load() != nil {
+		return
+	}
+	// NativeAPI::setVersion rejects any admitted GRV future, even after failure,
+	// before validating the supplied version. The void C API defers that error.
+	if tx.hasReadVersion || tx.readVersionAdmitted || tx.pendingReadVersion != nil {
+		if tx.beforeReadVersionReject != nil {
+			tx.beforeReadVersionReject()
+		}
+		err := &wire.FDBError{Code: 2010}
+		if tx.deferredErr.CompareAndSwap(nil, err) {
+			tx.setterRejection = err
+		}
+		return
+	}
+	if version <= 0 {
+		if tx.beforeReadVersionReject != nil {
+			tx.beforeReadVersionReject()
+		}
+		err := &wire.FDBError{Code: 2011}
+		if tx.deferredErr.CompareAndSwap(nil, err) {
+			tx.setterRejection = err
+		}
+		return
+	}
 	tx.readVersion = version
 	tx.hasReadVersion = true
 	tx.userSetReadVersion = true
-	tx.pendingReadVersion = nil // an older GRV may finish, but cannot replace this explicit version
-	// A caller-supplied version's MVCC window opened on the cluster at an instant
-	// this client never observed, so there is no anchor to report. Zeroing (rather
-	// than leaving a prior GRV's stamp) keeps "instant describes the CURRENT read
-	// version" true — a stale anchor would read as a window that is still open.
-	// This is the ONE clear the accessor's hasReadVersion gate cannot stand in for,
-	// because SetReadVersion leaves that flag true.
+	tx.pendingReadVersion = nil
+	// The first accepted pin has no client-observed MVCC anchor. Existing or
+	// pending versions are rejected above, never overwritten by this setter.
 	tx.readVersionInstant = time.Time{}
-	tx.readVersionMu.Unlock()
 }
 
-// stateReadVersionInstant's hasReadVersion gate retires the instant for every path
-// that drops the read version; only SetReadVersion, which keeps that flag, clears it
-// explicitly. Per-reset-site clears were tried and removed: with two mechanisms
-// covering one rule, neither is detectable by a mutation.
+// stateReadVersionInstant reports only client-observed anchors for live versions.
+// An accepted explicit pin has no anchor; reset retires it through hasReadVersion.
 func (tx *Transaction) stateReadVersionInstant() (time.Time, bool) {
 	tx.readVersionMu.Lock()
 	defer tx.readVersionMu.Unlock()
@@ -3616,6 +3728,7 @@ func (tx *Transaction) addWriteConflictRangeRYW(begin, end []byte, owned bool) *
 // GetCommittedVersion/GetVersionstamp queries.
 func (tx *Transaction) postCommitReset() {
 	turnover := tx.startTurnover()
+	defer endSpan(tx.detachTxSpan())
 	defer turnover.finish()
 	tx.postCommitResetFields()
 }
@@ -3639,11 +3752,7 @@ func (tx *Transaction) postCommitResetFields() {
 	tx.conflictMu.Unlock()
 	tx.deferredErr.Store(nil) // C++ resetRyow clears deferredError (ReadYourWrites.actor.cpp:2719)
 	tx.hadRead.Store(false)
-	// RFC-115 §4 Layer 2: end this committed transaction's "Transaction" otel span and
-	// re-anchor a fresh wire span — a reused handle begins a NEW logical transaction, so
-	// it must NOT carry the just-committed transaction's traceID. The next op's first GRV
-	// starts a fresh Transaction span via ensureTxSpan.
-	tx.endTxSpan()
+	// The caller ends the detached span after publishing the successor.
 	if tx.transactFinalCommit.Load() {
 		tx.spanNeedsRegen.Store(true)
 		tx.spanContext.Store(nil)
@@ -3659,6 +3768,7 @@ func (tx *Transaction) postCommitResetFields() {
 // per-txn persistent options PRESERVED). Non-persistent options are cleared to DB defaults on both.
 func (tx *Transaction) reset(userReset bool) {
 	turnover := tx.startTurnover()
+	defer endSpan(tx.detachTxSpan())
 	defer turnover.finish()
 	tx.resetFields(userReset)
 }
@@ -3668,6 +3778,7 @@ func (tx *Transaction) resetExpected(userReset bool, expected *readIncarnation, 
 	if err != nil {
 		return err
 	}
+	defer endSpan(tx.detachTxSpan())
 	defer turnover.finish()
 	tx.resetFields(userReset)
 	tx.readConflicts = append(tx.readConflicts, conflicts...)
@@ -3730,11 +3841,7 @@ func (tx *Transaction) resetFields(userReset bool) {
 	// Clear accumulated proxy tag throttle duration on retry (tags themselves are cleared to the DB
 	// default by applyOptionDefaults above — they are NON-persistent, C++ TransactionOptions::clear).
 	tx.proxyTagThrottledDuration = 0
-	// End the prior attempt's "Transaction" otel span and generate a fresh wire span
-	// per attempt (≈ C++ generateSpanID at cloneAndReset, RFC-115 §4). An injected
-	// SPAN_PARENT linkage is preserved (regenerateSpan honors spanParent). The next
-	// attempt's first GRV re-starts a fresh Transaction span (ensureTxSpan).
-	tx.endTxSpan()
+	// SPAN_PARENT survives retries; the caller ends the old span after publication.
 	tx.regenerateSpan()
 	// Option lifecycle is now handled by applyOptionDefaults above (RFC-171 / #9,#14): NON-persistent
 	// options (priority, causalReadRisky, lockAware, readLockAware, sizeLimit, rywDisabled,
@@ -3810,8 +3917,8 @@ func (tx *Transaction) applyOptionDefaults(userReset bool) {
 // nextBackoff returns the current backoff duration with jitter, then grows
 // the backoff for the next call. Matches C++ getBackoff in NativeAPI.actor.cpp.
 // errCode determines the backoff cap: the resource-constrained bucket —
-// commit_proxy_memory_limit_exceeded (1042), grv_proxy_memory_limit_exceeded
-// (1078), throttled_hot_shard (1235), and range_locked (1242) — uses
+// commit_proxy_memory_limit_exceeded (1042) and grv_proxy_memory_limit_exceeded
+// (1078) — uses
 // RESOURCE_CONSTRAINED_MAX_BACKOFF (30s) and IGNORES the user's maxRetryDelay;
 // all other errors use the user's maxRetryDelay or DEFAULT_MAX_BACKOFF (1s). The
 // two branches are mutually exclusive (see the cap selection below).
@@ -3847,14 +3954,13 @@ func (tx *Transaction) nextBackoff(errCode int) time.Duration {
 		tx.proxyTagThrottledDuration += proxyMaxTagThrottleDuration.Seconds()
 	}
 
-	// C++ getBackoff(): the resource-constrained bucket (the four codes below) uses
+	// C++ getBackoff(): the resource-constrained bucket (the two codes below) uses
 	// RESOURCE_CONSTRAINED_MAX_BACKOFF exclusively (user's maxRetryDelay is IGNORED);
 	// all other errors use the user's maxRetryDelay (or DEFAULT_MAX_BACKOFF). The two
 	// branches are mutually exclusive — no min/max combining. (Code list + values are
 	// in the function doc-comment, the single authoritative description.)
 	var cap time.Duration
-	if errCode == ErrProxyMemoryLimitExceeded || errCode == ErrGrvProxyMemoryLimit ||
-		errCode == ErrThrottledHotShard || errCode == ErrRangeLocked {
+	if errCode == ErrProxyMemoryLimitExceeded || errCode == ErrGrvProxyMemoryLimit {
 		cap = resourceConstrainedMaxBackoff
 	} else {
 		cap = maxBackoff

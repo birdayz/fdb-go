@@ -21,6 +21,16 @@ FDB 8.0 compatibility is **not established by this repository's 7.3 target**.
 This is a support boundary, not a statement about whether upstream has released
 8.0. Updating the API version number alone cannot add another wire protocol.
 
+## Explicit FoundationDB read versions
+
+An accepted positive `SetReadVersion` pin is returned unchanged by transaction
+and snapshot `GetReadVersion`, without bootstrapping a GRV to validate the pin.
+Deferred transaction errors and transaction lifetime checks still apply. This
+matches the pinned native client getter; it does not establish that storage can
+serve the snapshot. Actual storage-facing reads and retained commit validation
+keep the existing `1007` (too old) and `1009` (future version) checks. The observed
+minimum read-version floor is not a rolling MVCC retention boundary.
+
 ## Full-text queries
 
 The Go query executor accepts typed `plans.TextScan` predicates for ALL, ANY,
@@ -173,6 +183,15 @@ versions, store headers and supported index layouts. The conformance suite in
 `conformance/` performs bidirectional reads/writes for covered cases. The
 `libfdbc` build tag changes the Record Layer / SQL transport backend, not the
 higher-level storage layout; it does not remove the exceptions below.
+
+**Unreleased (post-v0.2.0):** The shared R-tree storage adapter preserves
+persisted Hilbert integers exactly,
+including tuple values decoded as `uint64` above `MaxInt64`. Floating-point
+values follow Java `Tuple.getBigInteger` / `Number.longValue` narrowing; only a
+null leaf value requests recomputation. Invalid nonnumeric values and null child
+bounds fail explicitly. This is a read-side correction, not a storage-format
+migration or repair of entries previously misrouted by an older decoder. See
+DIVERGENCES.md, “R-tree persisted Hilbert values”.
 
 ### Exceptions to check before mixed Go/Java use
 

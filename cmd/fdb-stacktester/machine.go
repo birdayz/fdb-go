@@ -34,17 +34,30 @@ type stackEntry struct {
 	idx   int // instruction number that pushed this
 }
 
+// transactionRegistry is shared by all machines in a tester run.
+type transactionRegistry struct {
+	trMap map[string]*namedTransaction
+	trMu  sync.RWMutex
+	waits transactionWaits
+}
+
 // StackMachine executes binding tester instructions.
 type StackMachine struct {
-	db      *client.Database
-	prefix  []byte
-	trName  string
-	stack   []stackEntry
-	lastVer int64
+	db         *client.Database
+	prefix     []byte
+	trName     string
+	threadPath string
+	stack      []stackEntry
+	lastVer    int64
 
-	trMap map[string]*client.Transaction
-	trMu  sync.RWMutex
-	wg    sync.WaitGroup
+	*transactionRegistry
+	wg sync.WaitGroup
+
+	childMu          sync.Mutex
+	childErr         error
+	children         map[string]int
+	cancelRun        context.CancelCauseFunc
+	childJoinTimeout time.Duration
 
 	// Directory layer state.
 	dirList       []dirEntry
@@ -58,19 +71,88 @@ type StackMachine struct {
 
 // NewStackMachine creates a stack machine with the given prefix.
 func NewStackMachine(db *client.Database, prefix []byte) *StackMachine {
+	return newStackMachine(db, prefix, &transactionRegistry{trMap: make(map[string]*namedTransaction)})
+}
+
+func newStackMachine(db *client.Database, prefix []byte, registry *transactionRegistry) *StackMachine {
 	sm := &StackMachine{
-		db:     db,
-		prefix: prefix,
-		trName: string(prefix),
-		trMap:  make(map[string]*client.Transaction),
+		db:                  db,
+		prefix:              prefix,
+		trName:              string(prefix),
+		threadPath:          string(prefix),
+		transactionRegistry: registry,
+		childJoinTimeout:    2 * time.Minute,
 	}
-	sm.trMap[sm.trName] = db.CreateTransaction()
+	sm.trMu.Lock()
+	sm.replaceTransaction(sm.trName)
+	sm.trMu.Unlock()
 	sm.initDirectoryState()
 	return sm
 }
 
 // Run reads instructions from FDB and executes them.
-func (sm *StackMachine) Run(ctx context.Context) error {
+func (sm *StackMachine) Run(ctx context.Context) (result error) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	sm.cancelRun = cancel
+	stop := context.AfterFunc(ctx, func() { sm.waits.stop(context.Cause(ctx)) })
+	defer func() {
+		stop()
+		if result != nil {
+			sm.waits.stop(fmt.Errorf("thread %q: %w", sm.threadPath, result))
+		}
+		cancel(context.Canceled)
+		done := make(chan struct{})
+		go func() { sm.wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			sm.childMu.Lock()
+			result = errors.Join(result, fmt.Errorf("unjoined child threads: %v", sm.children))
+			sm.childMu.Unlock()
+		}
+	}()
+	if err := sm.runInstructions(ctx); err != nil {
+		if childErr := sm.childError(); childErr != nil {
+			return childErr
+		}
+		if cause := context.Cause(ctx); cause != nil {
+			return cause
+		}
+		if cause := sm.waits.failure(); cause != nil {
+			return cause
+		}
+		return err
+	}
+
+	done := make(chan struct{})
+	go func() {
+		sm.wg.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(sm.childJoinTimeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	case <-timer.C:
+		return fmt.Errorf("timed out waiting for child threads after %s", sm.childJoinTimeout)
+	}
+	if err := sm.childError(); err != nil {
+		return err
+	}
+	if cause := sm.waits.failure(); cause != nil {
+		return cause
+	}
+	return context.Cause(ctx)
+}
+
+func (sm *StackMachine) childError() error {
+	sm.childMu.Lock()
+	defer sm.childMu.Unlock()
+	return sm.childErr
+}
+
+func (sm *StackMachine) runInstructions(ctx context.Context) error {
 	// Read all instructions via range scan on prefix.
 	kvs, err := sm.readInstructions(ctx)
 	if err != nil {
@@ -78,6 +160,9 @@ func (sm *StackMachine) Run(ctx context.Context) error {
 	}
 
 	for i, kv := range kvs {
+		if err := context.Cause(ctx); err != nil {
+			return err
+		}
 		inst, err := tuple.Unpack(kv.Value)
 		if err != nil {
 			return fmt.Errorf("unpack instruction %d: %w", i, err)
@@ -111,19 +196,6 @@ func (sm *StackMachine) Run(ctx context.Context) error {
 		}
 	}
 
-	// Wait for child threads with a timeout. The binding tester's directory
-	// test spawns threads that can deadlock on WAIT_EMPTY. A timeout prevents
-	// the stacktester from hanging indefinitely.
-	done := make(chan struct{})
-	go func() {
-		sm.wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Minute):
-		fmt.Fprintln(os.Stderr, "[WARN] timed out waiting for child threads")
-	}
 	return nil
 }
 
@@ -133,7 +205,7 @@ func (sm *StackMachine) readInstructions(ctx context.Context) ([]client.KeyValue
 	end := strinc(tuple.Tuple{sm.prefix}.Pack())
 
 	for {
-		result, err := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+		result, err := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 			kvs, more, err := tx.GetRange(ctx, begin, end, 10000)
 			return &rangeResult{kvs: kvs, more: more}, err
 		})
@@ -160,7 +232,7 @@ type rangeResult struct {
 func (sm *StackMachine) currentTr() *client.Transaction {
 	sm.trMu.RLock()
 	defer sm.trMu.RUnlock()
-	return sm.trMap[sm.trName]
+	return sm.trMap[sm.trName].tx
 }
 
 func (sm *StackMachine) push(idx int, value any) {
