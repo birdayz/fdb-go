@@ -921,11 +921,8 @@ mod tests {
 
     const CHILD_EXPECT: &str = "OTEL_RUST_NATIVE_ENV_EXPECT";
 
-    /// Runs only as `open_checks_environment_before_loading_the_client`'s subprocess.
-    #[test]
-    #[ignore = "subprocess child; needs its parent's environment"]
-    fn open_environment_child() {
-        let expect = std::env::var(CHILD_EXPECT).expect("run by the parent test");
+    /// The subprocess side: `open` fails as `expect` says, before any load or global mutation.
+    fn assert_open_outcome(expect: &str) {
         let err = match NativeDatabase::open(
             Path::new("/nonexistent-otel-rust/libfdb_c.so"),
             Path::new("/nonexistent-otel-rust/fdb.cluster"),
@@ -933,7 +930,7 @@ mod tests {
             Ok(_) => panic!("open must fail"),
             Err(err) => err,
         };
-        let message = match expect.as_str() {
+        let message = match expect {
             "refuse" => ENV_OPTION_REFUSED,
             "load" => "cannot read explicit libfdb_c file",
             other => panic!("unknown expectation {other}"),
@@ -946,6 +943,11 @@ mod tests {
 
     #[test]
     fn open_checks_environment_before_loading_the_client() {
+        // A spawned run of this same test carries the marker and checks `open` itself.
+        if let Ok(expect) = std::env::var(CHILD_EXPECT) {
+            assert_open_outcome(&expect);
+            return;
+        }
         let exe = std::env::current_exe().unwrap();
         let mut runs = vec![("no variables", None, false)];
         runs.extend(
@@ -953,13 +955,13 @@ mod tests {
                 .into_iter()
                 .map(|(name, key, value, refused)| (name, Some((key, value)), refused)),
         );
+        assert_eq!(runs.len(), 11);
         for (name, var, refused) in runs {
             let mut child = Command::new(&exe);
             child
                 .args([
-                    "--ignored",
                     "--exact",
-                    "native::tests::open_environment_child",
+                    "native::tests::open_checks_environment_before_loading_the_client",
                     "--nocapture",
                     "--test-threads=1",
                 ])
