@@ -256,7 +256,8 @@ def strict_status(d, layout):
     require(integer(qos["worst_queue_bytes_storage_server"]) and number(qos["worst_durability_lag_storage_server"]["seconds"])
             and type(qos["performance_limited_by"]) is dict
             and type(qos["performance_limited_by"].get("name")) is str and qos["performance_limited_by"]["name"], "native QoS shape")
-    scaling = layout.get("schema") == "otel_native_scaling_v1"
+    paired = layout.get("schema") == "otel_native_paired_v1"
+    scaling = layout.get("schema") in ("otel_native_scaling_v1", "otel_native_paired_v1")
     expected = {x["address"]: x for x in layout["processes"]}
     if scaling:
         hosts = layout.get("storage_hosts")
@@ -264,7 +265,13 @@ def strict_status(d, layout):
                 "exact scaling storage-host prefix")
         require(type(layout.get("storage_process_count")) is int and layout["storage_process_count"] == 3
                 and type(layout.get("storage_max_outstanding")) is int and layout["storage_max_outstanding"] == 64
-                and layout.get("storage_memory_profile") == "scaling3ss3g", "fixed scaling storage geometry")
+                and layout.get("storage_memory_profile") == ("paired" if paired else "scaling3ss3g"), "fixed scaling storage geometry")
+        if paired:
+            import paired as paired_policy
+            geometry = paired_policy.native_geometry(layout.get("native_geometry"))
+            expected_storage = geometry["storage"]["memory_mib"] * 1024 ** 2
+            require(all(spec["memory_limit_bytes"] == expected_storage for spec in expected.values()
+                        if spec.get("process_class") == "storage"), "sealed paired storage memory changed")
         require(len(expected) == len(layout["processes"]), "distinct scaling process addresses")
         storage_specs = [x for x in layout["processes"] if "storage" in x["required_roles"]]
         require(len(storage_specs) == 3 * len(hosts)

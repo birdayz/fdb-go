@@ -152,7 +152,7 @@ class PairedPilotSupervisorTests(PairedSupervisorFixture):
         self.prepare()
         manifest, root = s.load_bundle(self.plan)
         extra = {"layers/otel/bench/ops/horizontal/paired.py", "layers/otel/bench/ops/horizontal/paired_cost.py",
-                 "layers/otel/bench/ops/horizontal/paired_reports.py", "layers/otel/bench/ops/horizontal/paired_rows.py"}
+                 "layers/otel/bench/ops/horizontal/paired_reports.py", "layers/otel/bench/ops/horizontal/paired_rows.py", "layers/otel/bench/ops/horizontal/paired_native.py"}
         self.assertTrue(extra.isdisjoint(s.FILES))
         self.assertEqual(set(manifest["files"]), set(s.FILES) | extra)
         self.assertEqual(s._files({"schema": "otel_native_scaling_v1"}), s.FILES)

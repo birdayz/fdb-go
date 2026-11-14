@@ -686,6 +686,45 @@ quiescence and cleanup. It must print `FAKE_PASSED`, 8,550,000 charged rows,
 18 released waves and `accepted_comparison:false`. Synthetic fixtures are not
 benchmarks or real authorizations. Add `--profile pilot` for the two-host/repeated
 sequence. A new output path is mandatory; nothing overwrites or resumes a run.
-The real producer/control, native geometry and independent-watch runtime evidence
-must still pass before paid execution; the offline CLI currently refuses
-`--execute-approved` rather than claiming these missing gates passed.
+`paired_native.py` implements the real pinned-host backend against this versioned
+control contract: fresh price re-capture, managed-watch registration, per-provider
+command cost gates, sealed remote inputs, Go-only setup/verify, typed Go/Rust
+producer grants, exclusive releases, bounded abort/reap, storage-side three-sample
+five-second stable drain, exact process quiescence and protected ten-kind teardown.
+It has fake transport/process/provider regressions, not live acceptance evidence.
+Before any paid mutation, `preflight_verifications` must replay a sealed local
+100k ingest plus full cross-reader/census/1600-oracle proof for EACH selected arm,
+using the very same executable/source/corpus seals. A local `oracle:none` result
+cannot unlock the pilot. The paid CLI still refuses `--execute-approved` while
+actual producer/control capability and independent-watch runtime proof are missing.
+
+`native_geometry` is one shared, sealed data object, never per-arm overrides:
+
+```json
+{
+  "storage": {"processes_per_host": 3, "memory_mib": 3072, "cache_mib": 1024, "max_outstanding": 64},
+  "log": {"memory_mib": 2048, "cache_mib": 64},
+  "control": {"memory_mib": 1024, "cache_mib": 64},
+  "fdb_slice": {"allowed_cpus": "0-3", "cpu_quota_percent": 400, "memory_max_mib": 16384, "swap_max_bytes": 0},
+  "client_slice": {"allowed_cpus": "0-3", "cpu_quota_percent": 400, "memory_max_mib": 16384, "swap_max_bytes": 0},
+  "gomaxprocs": 4
+}
+```
+
+This pilot has configured15GiB native process memory under the16GiB FDB slice,
+not a memory-safety proof. Memory/cache/role-slice values drive both rendered argv
+and live status/cgroup guards. A future explicitly preregistered4GiB-log/24GiB
+FDB-slice profile is representable without changing code;4GiB log under16GiB is
+rejected for insufficient headroom. No inherited historical `log_memory_gib`
+override is accepted. Memory-monitor exit, OOM, process loss or strict-health
+failure stops all arms, charges the issued populations and enters exact cleanup;
+no automatic profile change, health waiver or retry is permitted.
+
+Large LIVE controller receipts are losslessly archived as `.json.gz` with a
+private `.json.seal.json` (`otel_paired_receipt_archive_v1`) recording compressed
+and original SHA256/byte counts. This retains every raw call and oracle row under
+the shared1GiB cap without sampling/truncation; job/grant inputs stay original
+JSON for their byte seals. Small receipts and fake-run paths remain ordinary
+JSON. Decompress and verify the two hashes before inspecting an archive. Setup
+layout artifacts, failed reports and original oracle NDJSON remain in bounded
+collected evidence, not only normalized summaries.

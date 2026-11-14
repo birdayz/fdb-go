@@ -244,9 +244,14 @@ class Campaign:
             limits = value["slices"][slice_name]
             quota, period = map(int, limits["cpu.max"].split())
             events = dict(line.split() for line in limits["memory.events"].splitlines())
-            p.require(quota == period * 4 and limits["cpuset.cpus.effective"] == "0-3"
-                      and limits["memory.max"] == "17179869184" and limits["memory.swap.max"] == "0"
-                      and int(limits["memory.current"]) < 16 * p.GIB * 9 // 10
+            geometry = self.plan.get("native_geometry") if self.plan.get("schema") == "otel_native_paired_v1" else None
+            spec = geometry[("fdb" if name.startswith("node") else "client") + "_slice"] if geometry else None
+            expected_memory = spec["memory_max_mib"] * 1024 ** 2 if spec else 16 * p.GIB
+            expected_quota = spec["cpu_quota_percent"] if spec else 400
+            expected_cpus = spec["allowed_cpus"] if spec else "0-3"
+            p.require(quota * 100 == period * expected_quota and limits["cpuset.cpus.effective"] == expected_cpus
+                      and limits["memory.max"] == str(expected_memory) and limits["memory.swap.max"] == "0"
+                      and int(limits["memory.current"]) < expected_memory * 9 // 10
                       and int(events["oom"]) == 0 and int(events["oom_kill"]) == 0, "unchanged native cgroup budget/OOM")
             if name.startswith("client"):
                 p.require(not value["fdb_pids"], "client host must not run fdbserver")

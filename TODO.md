@@ -3894,11 +3894,11 @@ boundary in `docs/benchmarks/otel-relational-local-20261107.md`.
 
 ## Paired native collector campaign
 
-- [ ] Finish and live-validate the paired native backend against the frozen
-  `otel_paired_job_v1` control/producer contract, including Go-control setup and
+- [ ] Live-validate the implemented `paired_native.py` adapter against frozen
+  `otel_paired_job_v1` control/producer binaries, including Go-control setup and
   independent pure-Go full-row/census/1600-query verification for every arm.
-  `paired.py` currently exercises the complete fake lifecycle but refuses paid
-  execution; ingest-only success is not campaign admission.
+  `paired.py` refuses paid execution until those binaries and per-arm local
+  oracle proofs exist; fake lifecycle/backend checks are not live admission.
 - [ ] Add the separately sealed offered-load600/60/10 schedule and window
   telemetry to both queued producers and the paired runner before permitting
   that profile. Finite queued waves cannot stand in for sustained capacity.

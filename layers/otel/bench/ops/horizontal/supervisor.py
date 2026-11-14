@@ -22,7 +22,7 @@ FILES = tuple("layers/otel/bench/ops/horizontal/" + name for name in
               ("supervisor.py", "provision.py", "policy.py", "driver.py", "diagnostic.py", "session.py", "scaling.py")) + tuple(
               "tools/benchcampaign/multinode/" + name for name in ("inventory.py", "mn_common.py", "render_cloud_init.py", "teardown_guard.py"))
 PAIRED_SCHEMA = "otel_native_paired_v1"
-PAIRED_FILES = tuple("layers/otel/bench/ops/horizontal/" + name for name in ("paired.py", "paired_cost.py", "paired_reports.py", "paired_rows.py"))
+PAIRED_FILES = tuple("layers/otel/bench/ops/horizontal/" + name for name in ("paired.py", "paired_cost.py", "paired_reports.py", "paired_rows.py", "paired_native.py"))
 PROPERTIES = ("Id", "LoadState", "ActiveState", "SubState", "FragmentPath", "DropInPaths", "MainPID", "ControlGroup",
               "InvocationID", "PartOf", "BindsTo", "Requires", "Requisite", "Conflicts", "StopWhenUnneeded", "KillMode",
               "RuntimeMaxUSec", "ExecMainStartTimestampMonotonic", "ActiveEnterTimestampMonotonic")

@@ -70,9 +70,13 @@ def oracle_bytes(queries):
     return "".join(json.dumps(row, sort_keys=True) + "\n" for row in queries).encode()
 
 
-def verify_audit(value, job, namespace):
+def verify_audit(value, job, namespace, *, control_identity=None):
     p.require(type(value) is dict, "complete verifier wrapper required")
     expected_job = verification_job(job)
+    if control_identity is not None:
+        expected_job.update(control_identity)
+        p.require(value.get("verification_job") == expected_job and value.get("ingest_job_sha256") == job_seal(job),
+                  "Go verifier/original ingest job seal join required")
     report, queries = value.get("report"), value.get("queries")
     common(report, expected_job, "verify")
     count = job["expected_frames"]
@@ -114,7 +118,14 @@ def verify_audit(value, job, namespace):
         by_class[sample["class"]] += 1
     p.require(all(n == 100 for n in by_class.values()) and oracle.get("classes") ==
               {name: {"expected": 100, "executed": 100, "passed": 100} for name in p.CLASSES}, "16 classes x100 required")
-    p.require(oracle.get("results_sha256") == hashlib.sha256(oracle_bytes(queries)).hexdigest()
+    raw = value.get("query_raw")
+    if raw is not None:
+        p.require(type(raw) is str and raw.endswith("\n") and [json.loads(line) for line in raw.splitlines()] == queries,
+                  "original NDJSON bytes must match retained parsed queries")
+        raw = raw.encode()
+    else:
+        raw = oracle_bytes(queries)
+    p.require(oracle.get("results_sha256") == hashlib.sha256(raw).hexdigest()
               and oracle.get("results_file") == expected_job["verification"]["query_results_file"], "sealed raw oracle artifact required")
     return True
 
@@ -136,8 +147,10 @@ def fake_ingest(job):
             "ingest_wall_ns": 1000000000, "admission_phase_ns": 900000000, "drain_ns": 100000000, "samples": samples}
 
 
-def fake_verify(job):
+def fake_verify(job, *, control_identity=None):
     verify = verification_job(job)
+    if control_identity is not None:
+        verify.update(control_identity)
     count = job["expected_frames"]
     queries = [{"ordinal": i, "class": p.CLASSES[i % 16], "iteration_in_class": i // 16, "query": {"fixture": i},
                 "expected_results": [], "actual_results": [], "expected_digest": "c" * 64, "actual_digest": "c" * 64,
@@ -146,7 +159,7 @@ def fake_verify(job):
     counts = {"header_kvs": 1, "span_record_identities": count, "physical_span_record_kvs": count,
               "baseline_record_identities": 1, "baseline_record_kvs": 1, "unexpected_kvs": 0,
               "index_entries": {key: fixture.get(key, 0) for key in INDEXES}, "baseline_index_entries": {"STORE_META_NAME": 1}}
-    return {"report": {**fake_common(verify), **{key: count for key in ("source_records_expected", "source_records_read_standard_serializer",
+    return {"verification_job": verify, "ingest_job_sha256": job_seal(job), "report": {**fake_common(verify), **{key: count for key in ("source_records_expected", "source_records_read_standard_serializer",
                        "source_records_exact_match", "scanned_distinct_spans", "distinct_spans")}, "otlp_bytes_equal": True,
                        "full_rows_equal": True, "layout_seals_equal": True, "census": {"expected": counts, "actual": copy.deepcopy(counts), "matched": True},
                        "oracle": {"kind": "source_1600_v1", "status": "passed", "required_queries": 1600, "executed_queries": 1600,

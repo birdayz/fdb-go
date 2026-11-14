@@ -4,7 +4,9 @@ import argparse
 import copy
 from decimal import Decimal
 import hashlib
+import gzip
 import json
+import os
 from pathlib import Path
 import re
 import time
@@ -21,6 +23,7 @@ NATIVE_SHA256 = "617572467897d0360f76ffc33f24b58090ee691e3273750d2ff334cc71aae3f
 QUEUE_FIELDS = {"kind", "producers", "producer_batch_spans", "consumers", "queue_capacity_spans", "batch_min_spans", "batch_max_spans", "flush_ms",
                 "block_on_overflow", "export_timeout_ms", "retry_enabled", "retry_initial_ms", "retry_max_ms", "retry_elapsed_ms"}
 BASE_ASSETS = {"fdbserver", "fdbcli", "corpus_100000", "corpus_375000", "layout_template", "descriptor_set"}
+MAX_RAW_RECEIPT = 256 * 1024 ** 2
 
 
 def digest(value):
@@ -30,6 +33,33 @@ def digest(value):
 def job_seal(job):
     # Matches driver.write's exclusive sorted JSON bytes, including its newline.
     return hashlib.sha256((json.dumps(job, sort_keys=True) + "\n").encode()).hexdigest()
+
+
+def write_receipt(path, value, *, receipt_root=None):
+    """Losslessly archive large receipts; never drop per-call or oracle populations."""
+    path = Path(path)
+    versions = (path, path.with_name(path.name + ".gz"), path.with_name(path.name + ".seal.json"))
+    p.require(all(not candidate.exists() and not candidate.is_symlink() for candidate in versions), "receipt already exists")
+    raw = (json.dumps(value, sort_keys=True, allow_nan=False) + "\n").encode()
+    p.require(len(raw) <= MAX_RAW_RECEIPT, "bounded paired raw receipt")
+    packed = gzip.compress(raw, mtime=0) if len(raw) > 65536 else None
+    needed = len(raw) if packed is None else len(packed) + 1024
+    if receipt_root is not None:
+        used = sum(x.stat().st_size for x in Path(receipt_root).rglob("*") if x.is_file())
+        p.require(used + needed < 1024 ** 3, "shared 1GiB receipt allocation exhausted")
+    if packed is None:
+        d.write(path, value)
+        return
+    target = path.with_name(path.name + ".gz")
+    seal = {"schema": "otel_paired_receipt_archive_v1", "encoding": "gzip", "file": target.name,
+            "raw_sha256": hashlib.sha256(raw).hexdigest(), "raw_bytes": len(raw),
+            "sha256": hashlib.sha256(packed).hexdigest(), "bytes": len(packed)}
+    p.require(not path.exists() and not path.is_symlink(), "receipt already exists")
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with open(target, "xb") as stream:
+        os.chmod(target, 0o600)
+        stream.write(packed); stream.flush(); os.fsync(stream.fileno())
+    d.write(path.with_name(path.name + ".seal.json"), seal)
 
 
 def workload(value):
@@ -59,7 +89,35 @@ def asset(value, *, check_assets=True):
               and ".." not in Path(value["path"]).parts and p.hexstr(value["sha256"]), "sealed absolute asset")
     if check_assets:
         path = Path(value["path"])
-        p.require(path.is_file() and not path.is_symlink() and p.sha(path) == value["sha256"], "changed paired asset")
+        p.require(path.is_file() and not path.is_symlink() and path.stat().st_size > 0 and p.sha(path) == value["sha256"], "changed paired asset")
+    return value
+
+
+def native_geometry(value):
+    p.require(type(value) is dict and set(value) == {"storage", "log", "control", "fdb_slice", "client_slice", "gomaxprocs"},
+              "complete shared native geometry required")
+    storage = value["storage"]
+    p.require(type(storage) is dict and set(storage) == {"processes_per_host", "memory_mib", "cache_mib", "max_outstanding"},
+              "exact native storage geometry")
+    p.require(type(storage["processes_per_host"]) is int and storage["processes_per_host"] == 3
+              and type(storage["max_outstanding"]) is int and storage["max_outstanding"] == 64, "three native storage processes/MAX64")
+    for name in ("storage", "log", "control"):
+        spec = value[name]
+        if name != "storage":
+            p.require(type(spec) is dict and set(spec) == {"memory_mib", "cache_mib"}, "exact native process memory geometry")
+        p.require(p.integer(spec.get("memory_mib"), 1) and spec["memory_mib"] <= 56 * 1024
+                  and p.integer(spec.get("cache_mib"), 1) and spec["cache_mib"] < spec["memory_mib"], "bounded native process memory/cache")
+    for name in ("fdb_slice", "client_slice"):
+        spec = value[name]
+        p.require(type(spec) is dict and set(spec) == {"allowed_cpus", "cpu_quota_percent", "memory_max_mib", "swap_max_bytes"},
+                  "exact native role slice")
+        p.require(spec.get("allowed_cpus") == "0-3" and type(spec.get("cpu_quota_percent")) is int and spec["cpu_quota_percent"] == 400
+                  and type(spec.get("swap_max_bytes")) is int and spec["swap_max_bytes"] == 0
+                  and p.integer(spec.get("memory_max_mib"), 1024) and spec["memory_max_mib"] <= 56 * 1024,
+                  "fixed CPU4/swap0 bounded role memory")
+    configured = storage["processes_per_host"] * storage["memory_mib"] + value["log"]["memory_mib"] + 4 * value["control"]["memory_mib"]
+    p.require(configured < value["fdb_slice"]["memory_max_mib"], "configured FDB process memory must leave slice headroom")
+    p.require(type(value["gomaxprocs"]) is int and value["gomaxprocs"] == 4, "same client CPU4 and Go GOMAXPROCS4")
     return value
 
 
@@ -109,8 +167,9 @@ def validate_plan(plan, *, check_assets=True):
     p.require(p.storage(plan.get("storage_options")) == {"record_compression": "zlib-1", "bulk_index_conflicts": False},
               "matched native ordinary index conflict profile required")
     workload(plan.get("workload"))
+    native_geometry(plan.get("native_geometry"))
     p.require(not set(plan) & {"topologies", "measured_topologies", "prerequisite_topologies", "selected_topologies",
-                              "probe_count", "probe_seconds", "cases", "log_memory_gib", "foreground_only"},
+                              "probe_count", "probe_seconds", "cases", "log_memory_gib", "foreground_only", "arm_geometry", "arm_workloads"},
               "paired study cannot inherit other schema overrides")
     orders = plan.get("arm_order")
     p.require(type(orders) is list and len(orders) == len(stages(plan)), "per-stage preregistered arm order required")
@@ -146,6 +205,9 @@ def validate_plan(plan, *, check_assets=True):
                   and p.hexstr(src["revision"], 40), "typed per-arm source identity")
         asset({"path": src["manifest"], "sha256": src["manifest_sha256"]}, check_assets=check_assets)
         p.require(type(src["root"]) is str and Path(src["root"]).is_absolute(), "per-arm source root")
+    if {"go_pure", "go_native"} <= set(plan["arms"]):
+        p.require(all(sources["go_pure"][key] == sources["go_native"][key] for key in ("revision", "manifest_sha256")),
+                  "Go pure/native must share the same collector source and binary")
     p.require(p.hexstr(plan.get("pricing_seal_sha256")) and type(plan.get("pricing")) is dict,
               "sealed admission pricing required")
     p.require(type(plan.get("prior_cost_upper_eur")) is str and re.fullmatch(r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,18})?", plan["prior_cost_upper_eur"])
@@ -156,6 +218,43 @@ def validate_plan(plan, *, check_assets=True):
     p.require(type(plan.get("fake_provider")) is bool, "explicit provider mode required")
     import supervisor
     supervisor.validate_config(plan)
+    if not plan["fake_provider"]:
+        go_arm = "go_pure" if "go_pure" in plan["arms"] else "go_native"
+        source = plan["sources"][go_arm]
+        aliases = {"binary": plan["assets"]["go_binary"]["path"], "binary_sha256": plan["assets"]["go_binary"]["sha256"],
+                   "source_root": source["root"], "source_manifest": source["manifest"],
+                   "input_manifest_sha256": source["manifest_sha256"], "source_revision": source["revision"]}
+        for name in ("fdbserver", "fdbcli"):
+            aliases[name] = plan["assets"][name]["path"]
+            aliases[name + "_sha256"] = plan["assets"][name]["sha256"]
+        p.require(all(plan.get(key) == value for key, value in aliases.items()), "legacy transport aliases must match executing Go control seals")
+        common = {key: value for key, value in plan.items() if key not in
+                  ("storage_process_count", "storage_max_outstanding", "storage_memory_profile")}
+        common.update(schema="otel_horizontal_v1", topologies=[1, 2, 3], measured_topologies=[3, 2, 1],
+                      measured_count=100000, deadline_epoch=plan["first_epoch"] + 7200)
+        p.validate_plan(common, check_assets=check_assets)
+        proofs = plan.get("preflight_verifications")
+        p.require(type(proofs) is dict and set(proofs) == set(plan["arms"]), "paid admission requires sealed Stage0 proof for every selected arm")
+        for arm, proof in proofs.items():
+            p.require(type(proof) is dict and set(proof) == {"ingest_job", "ingest_report", "verification"}, "complete preflight evidence set")
+            for item in proof.values():
+                asset(item, check_assets=check_assets)
+            if check_assets:
+                job = validate_job(d.read(proof["ingest_job"]["path"]))
+                source = plan["sources"][arm]
+                binary = "rust_binary" if arm == "rust_native" else "go_binary"
+                p.require(job["arm"] == arm and job["mode"] == "ingest" and job["expected_frames"] == 100000
+                          and job["binary_sha256"] == plan["assets"][binary]["sha256"]
+                          and job["source_revision"] == source["revision"] and job["source_manifest_sha256"] == source["manifest_sha256"]
+                          and job["corpus_sha256"] == plan["assets"]["corpus_100000"]["sha256"]
+                          and job["client_library_sha256"] == (None if arm == "go_pure" else plan["assets"]["libfdb_c"]["sha256"])
+                          and job["record_compression"] == plan["storage_options"]["record_compression"]
+                          and job["writer_batch_size"] == plan["writer_batch_size"] and job["writer_workers"] == plan["writer_workers"]
+                          and {k: v for k, v in job["workload"].items() if k not in ("producers", "consumers")} ==
+                              {k: v for k, v in plan["workload"].items() if k not in ("producers", "consumers")},
+                          "Stage0 proof must exercise current source/binary/corpus/client and matched pipeline parameters")
+                p.require(reports.envelope(job, d.read(proof["ingest_report"]["path"]))["accepted"], "Stage0 ingest failed")
+                reports.verify_audit(d.read(proof["verification"]["path"]), job, "local", control_identity=control_identity(plan))
     return plan
 
 
@@ -218,7 +317,16 @@ def validate_job(job):
               and job.get("mode") in ("corpus", "setup", "ingest", "verify") and job.get("arm") in ARMS,
               "versioned typed producer job required")
     arm, mode = job["arm"], job["mode"]
-    p.require(arm != "rust_native" or mode in ("ingest", "setup", "verify"), "Rust executable is ingestion only")
+    common = {"schema", "mode", "arm", "binary_sha256", "source_revision", "source_manifest_sha256", "timeout_seconds", "output",
+              "corpus_config", "expected_frames", "row_budget", "corpus_file"}
+    live = {"run", "cluster_file", "cluster_sha256", "client_backend", "client_library", "client_library_sha256", "corpus_sha256"}
+    pipeline = {"workload", "writer_batch_size", "writer_workers", "record_compression", "enable_message_deltas", "enable_message_full_text", "bulk_index_conflicts"}
+    expected = common | (live | pipeline | {"layout_file"} if mode != "corpus" else set())
+    if mode in ("ingest", "verify"):
+        expected.add("layout_sha256")
+    if mode == "verify":
+        expected.add("verification")
+    p.require(set(job) == expected, "exact mode-specific job fields; no defaults or unknown fields")
     for key, length in (("binary_sha256", 64), ("source_revision", 40), ("source_manifest_sha256", 64)):
         p.require(p.hexstr(job.get(key), length), "producer source/binary seals required")
     p.require(type(job.get("timeout_seconds")) is int and 1 <= job["timeout_seconds"] <= 3600, "bounded producer deadline")
@@ -248,6 +356,20 @@ def validate_job(job):
               and type(config.get("tenants")) is int and config["tenants"] == 1
               and type(config.get("attributes")) is int and config["attributes"] == 8
               and p.integer(config.get("match_every"), 1), "complete source-oracle corpus configuration")
+    if mode == "corpus":
+        paths.append(job["corpus_file"])
+    if mode == "setup":
+        paths.append(job["layout_file"])
+    p.require(len(paths) == len(set(paths)), "new corpus/layout outputs cannot alias other paths")
+    if mode == "verify":
+        check = job["verification"]
+        p.require(type(check) is dict and set(check) == {"query_oracle", "query_results_file", "k", "max_candidates", "max_bytes"}
+                  and check["query_oracle"] in ("none", "source_1600_v1") and all(p.integer(check[key], 1) for key in ("k", "max_candidates", "max_bytes")),
+                  "complete independent verifier parameters")
+        p.require((check["query_oracle"] == "none" and check["query_results_file"] is None)
+                  or (check["query_oracle"] == "source_1600_v1" and type(check["query_results_file"]) is str
+                      and Path(check["query_results_file"]).is_absolute() and ".." not in Path(check["query_results_file"]).parts
+                      and check["query_results_file"] not in paths), "exclusive source-oracle output required")
     if mode in ("setup", "ingest", "verify"):
         workload(job.get("workload"))
         p.require(type(job.get("writer_batch_size")) is int and 1 <= job["writer_batch_size"] <= 64
@@ -265,7 +387,7 @@ def invocation(plan, job, job_path, remote_assets):
               "implementation/workload job binding")
     p.require(type(job_path) is str and Path(job_path).is_absolute() and ".." not in Path(job_path).parts,
               "absolute producer job path required")
-    binary = "go_binary" if arm.startswith("go_") else "rust_binary"
+    binary = "rust_binary" if arm == "rust_native" and job["mode"] == "ingest" else "go_binary"
     return [remote_assets[binary], job_path]
 
 
@@ -273,8 +395,15 @@ def envelope(job, report):
     return reports.envelope(job, report)
 
 
-def verify_audit(value, job, ns):
-    return reports.verify_audit(value, job, ns)
+def control_identity(plan):
+    arm = "go_pure" if "go_pure" in plan["arms"] else "go_native"
+    source = plan["sources"][arm]
+    return {"binary_sha256": plan["assets"]["go_binary"]["sha256"], "source_revision": source["revision"],
+            "source_manifest_sha256": source["manifest_sha256"]}
+
+
+def verify_audit(value, job, ns, *, plan=None):
+    return reports.verify_audit(value, job, ns, control_identity=control_identity(plan) if plan is not None else None)
 
 
 class PairedCampaign:
@@ -292,7 +421,10 @@ class PairedCampaign:
         self.active_issue = None
 
     def write(self, name, value):
-        d.write(self.output / name, value)
+        if self.backend.fake:
+            d.write(self.output / name, value)
+        else:
+            write_receipt(self.output / name, value, receipt_root=self.output)
 
     def guard(self, *, active=True):
         now = self.backend.now()
@@ -306,6 +438,8 @@ class PairedCampaign:
             total = Decimal(report["total_upper_eur"])
             p.require(total <= Decimal(self.plan["stage_budget_eur"]) and total + Decimal(self.plan["prior_cost_upper_eur"]) <= 10,
                       "stage allocation or shared EUR10 ceiling exceeded")
+            if self.resources is not None and hasattr(self.backend, "update_cost_ledger"):
+                self.backend.update_cost_ledger(self.ledger)
             self.sequence += 1
             self.write("cost/%04d.json" % self.sequence, {"ledger": self.ledger, "assessment": report})
         p.require(sum(x.stat().st_size for x in self.output.rglob("*") if x.is_file()) < 1024 ** 3,
@@ -413,7 +547,7 @@ class PairedCampaign:
                             ns = namespace(self.plan, hosts, arm, phase, client, repeat)
                             verification = self.call("verify", self.plan, ns, job)
                             self.write(wave + "/client%d-verification.json" % client, verification)
-                            verify_audit(verification, job, ns)
+                            verify_audit(verification, job, ns, plan=self.plan)
                         metrics = {"phase": phase, "rows": count * hosts, "release_ns": started, "ack_end_ns": ack_end,
                                    "drained_end_ns": drained_end, "drain_samples": samples,
                                    "ack_rows_per_second": p.common_throughput(count * hosts, started, ack_end),
@@ -441,6 +575,16 @@ class PairedCampaign:
                 p.require(type(cleanup) is dict and cleanup.get("passed") is True
                           and cleanup.get("exact_baseline") is True, "verified exact-baseline deletion required")
                 if self.ledger is not None:
+                    incoming = cleanup.get("cost_ledger")
+                    if incoming is not None:
+                        scope = ("schema", "first_epoch", "deadline_epoch", "budget_eur", "held_hosts", "pricing", "pricing_seal")
+                        p.require(type(incoming) is dict and all(incoming.get(k) == self.ledger[k] for k in scope)
+                                  and incoming.get("last_epoch", -1) >= self.ledger["last_epoch"], "cleanup cannot reset original cost scope")
+                        existing = {host["host_id"]: host for host in incoming.get("hosts", [])}
+                        p.require(all(host["host_id"] in existing and existing[host["host_id"]]["created_epoch"] == host["created_epoch"]
+                                      and (host["deletion"] is None or existing[host["host_id"]]["deletion"] == host["deletion"])
+                                      for host in self.ledger["hosts"]), "cleanup cannot erase cost ownership history")
+                        self.ledger = incoming
                     for proof in cleanup.get("deletions", []):
                         self.ledger = cost.record_deletion(self.ledger, verification=proof, now_epoch=self.backend.now())
                     self.guard(active=False)
@@ -536,7 +680,7 @@ class FakeBackend:
         return [{"healthy": True, "queue_bytes": 0, "lag_seconds": 0} for _ in range(3)]
 
     def verify(self, plan, ns, job):
-        return reports.fake_verify(job)
+        return reports.fake_verify(job, control_identity=control_identity(plan))
 
     def quiesce(self, plan, cluster):
         self.active = None
@@ -600,6 +744,10 @@ def fake_plan(root, *, profile="scaling", arms=ARMS, kind="writer_direct"):
             "first_epoch": first, "deadline_epoch": first + (3600 if profile == "pilot" else 7200),
             "cleanup_mode": "independent_watch", "workload": {"kind": "writer_direct", "producers": 8, "producer_batch_spans": 64} if kind == "writer_direct" else queue,
             "writer_batch_size": 64, "writer_workers": 1,
+            "native_geometry": {"storage": {"processes_per_host": 3, "memory_mib": 3072, "cache_mib": 1024, "max_outstanding": 64},
+                "log": {"memory_mib": 2048, "cache_mib": 64}, "control": {"memory_mib": 1024, "cache_mib": 64},
+                "fdb_slice": {"allowed_cpus": "0-3", "cpu_quota_percent": 400, "memory_max_mib": 16384, "swap_max_bytes": 0},
+                "client_slice": {"allowed_cpus": "0-3", "cpu_quota_percent": 400, "memory_max_mib": 16384, "swap_max_bytes": 0}, "gomaxprocs": 4},
             "managed_watch": {"root": str(root.parent / "fake-watch"), "output": str(root.parent / "fake-output")}, 
             "assets": assets, "sources": {arm: {"revision": "a" * 40, "root": str(root), "manifest": str(manifest),
                                                 "manifest_sha256": p.sha(manifest)} for arm in arms},

@@ -6,11 +6,13 @@ _HORIZONTAL_TEST_DATA = [
     "policy.py",
     "paired.py",
     "paired_cost.py",
+    "paired_native.py",
     "paired_reports.py",
     "paired_rows.py",
     "paired-job-v1.schema.json",
     "test_paired.py",
     "test_paired_cost.py",
+    "test_paired_native.py",
     "test_paired_rows.py",
     "test_paired_supervisor.py",
     "provision.py",
@@ -36,6 +38,13 @@ sh_test(
     name = "native_paired_test",
     srcs = ["test.sh"],
     args = ["test_paired"],
+    data = _HORIZONTAL_TEST_DATA,
+)
+
+sh_test(
+    name = "native_paired_backend_test",
+    srcs = ["test.sh"],
+    args = ["test_paired_native"],
     data = _HORIZONTAL_TEST_DATA,
 )
 
