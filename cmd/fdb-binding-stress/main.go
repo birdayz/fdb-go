@@ -32,7 +32,10 @@ import (
 	foundationdb "fdb.dev/pkg/testcontainers/foundationdb"
 )
 
-const perSeedTimeout = 5 * time.Minute
+const (
+	perSeedTimeout       = 5 * time.Minute
+	seedCleanupAllowance = 30 * time.Second
+)
 
 // SeedResult is the per-seed result written to the JSON report.
 type SeedResult struct {
@@ -128,7 +131,7 @@ func realRunSeedWithDeps(ctx context.Context, seed int, w workload, btRunDir, se
 		return r
 	}
 	defer func() {
-		cleanupCtx, cleanupCancel := deps.newTimeoutContext(context.Background(), 30*time.Second)
+		cleanupCtx, cleanupCancel := deps.newTimeoutContext(context.Background(), seedCleanupAllowance)
 		defer cleanupCancel()
 		deps.collectLogs(cleanupCtx, container, seedDir)
 		if err := deps.terminateFDB(cleanupCtx, container); err != nil {

@@ -148,7 +148,7 @@ type runnerDeps struct {
 
 func defaultRunnerDeps(seedRunner func(context.Context, int, workload, string, string) SeedResult) runnerDeps {
 	return runnerDeps{
-		newTimeoutContext: context.WithTimeout, now: time.Now, perSeedTimeout: 5 * time.Minute, admissionReserve: 330 * time.Second, seedRunner: seedRunner,
+		newTimeoutContext: context.WithTimeout, now: time.Now, perSeedTimeout: perSeedTimeout, admissionReserve: perSeedTimeout + seedCleanupAllowance, seedRunner: seedRunner,
 		startFDB: startSeedFDB, collectLogs: collectLogs,
 		terminateFDB: func(ctx context.Context, container *foundationdb.Container) error {
 			return foundationdb.Terminate(ctx, container)
@@ -204,8 +204,8 @@ func executeRunWithDeps(parent context.Context, out string, seeds, start int, du
 		fmt.Printf("%s seed=%d concurrency=%d compare=%v pass=%v (%.1fs) %s\n", mode.Test, seed, mode.Concurrency, mode.Compare, result.Pass, result.Duration, result.Error)
 		return persist()
 	}
-	// Do not start work we cannot give its full per-case timeout. The outer
-	// deadline still bounds all work, including startup and cleanup overhead.
+	// The outer deadline bounds active case work; cleanup has its own bounded allowance.
+	// The admission reserve leaves headroom for both before starting another case.
 	available := func() bool {
 		return duration == 0 || started.Add(duration).Sub(deps.now()) >= deps.admissionReserve
 	}
