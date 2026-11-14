@@ -128,8 +128,8 @@ def load_grant(path, *, active=True, check_inputs=True):
     inputs = g["inputs"]
     require(type(inputs) is dict and inputs and inputs.get(g["argv"][0]) == job.get("binary_sha256"), "sealed executable required")
     base = "/srv/otel-horizontal/" + g["namespace"].split("/")[0] + "/bin/"
-    executable = "rust_binary" if mode == "ingest" and job["arm"] == "rust_native" else "go_binary"
-    require(g["argv"][0] == base + executable, "Go control required outside Rust ingestion")
+    executable = {"go_pure": "control_pure_binary", "go_native": "control_native_binary", "rust_native": "rust_binary"}[job["arm"]] if mode == "ingest" else "control_pure_binary"
+    require(g["argv"][0] == base + executable, "exact arm executable or pure Go control required")
     for prefix in ("cluster", "corpus") + (("layout",) if mode != "setup" else ()):
         require(inputs.get(job.get(prefix + "_file")) == job.get(prefix + "_sha256"), "missing input seal: " + prefix)
     if job.get("client_library") is not None:
@@ -644,7 +644,7 @@ class NativeBackend:
         job = self._control_job(job, "setup")
         del job["layout_sha256"]
         node = self.nodes["client" + client]
-        argv = [self.remote_assets(plan)["go_binary"], str(Path(output).with_name("setup-job.json"))]
+        argv = [self.remote_assets(plan)["control_pure_binary"], str(Path(output).with_name("setup-job.json"))]
         staged = self._stage(node, namespace, job, argv, mkdir=True)
         report = self._execute({int(client): staged})[int(client)]
         self._common(report, job)
@@ -665,12 +665,14 @@ class NativeBackend:
         return {"path": job["layout_file"], "sha256": report["layout_sha256"]}
 
     def _common(self, report, job):
+        from paired_reports import native_mapping
         require(type(report) is dict and report.get("schema") == "otel_control_report_v1"
                 and report.get("mode") == job["mode"] and report.get("arm") == job["arm"]
                 and report.get("status") == "ok" and report.get("error") in (None, "")
                 and report.get("effective_job") == job and report.get("job_sha256") == self.q.job_seal(job), "missing/mismatched genuine control capability")
         for key in ("binary_sha256", "source_revision", "source_manifest_sha256", "corpus_sha256", "client_library_sha256"):
             require(report.get(key) == job[key], "control executable/source/input seal mismatch")
+        native_mapping(report, job, paid_host=True)
 
     def ready(self, plan, node, namespace, job, argv):
         self._same(plan)
@@ -792,7 +794,7 @@ class NativeBackend:
         verify = self._control_job(verification_job(job), "verify")
         node = next((x["node"] for x in self.completed if x["namespace"] == namespace and x["job"] == job), None)
         require(node is not None, "verification has no completed ingest job")
-        argv = [self.remote_assets(plan)["go_binary"], str(Path(job["output"]).with_name("verify-job.json"))]
+        argv = [self.remote_assets(plan)["control_pure_binary"], str(Path(job["output"]).with_name("verify-job.json"))]
         staged = self._stage(node, namespace, verify, argv)
         report = self._execute({1: staged})[1]
         path = verify["verification"]["query_results_file"]

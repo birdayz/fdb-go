@@ -21,6 +21,8 @@ def early_error(job, failure="corpus reopen failed"):
     for key in ("frames", "received_spans", "accepted_spans", "rejected_spans", "failed_spans", "queued_spans_at_exit",
                 "ingest_wall_ns", "admission_phase_ns", "drain_ns"):
         value[key] = 0
+    for key in ("native_library_mapped", "native_mapping_rule"):
+        value.pop(key, None)
     for key in r.COUNTERS:
         if value[key]["availability"] == "available":
             value[key]["value"] = 0
@@ -153,13 +155,34 @@ class PlanTests(Fixture):
         with self.assertRaisesRegex(ValueError, "source file"):
             q.verify_sources(self.plan)
 
+    def test_three_executable_seals_and_pure_verifier_exist_without_pure_ingest(self):
+        for name in q.ARM_EXECUTABLES.values():
+            self.assertIn(name, self.plan["assets"])
+        self.assertEqual(len({self.plan["assets"][name]["sha256"] for name in q.ARM_EXECUTABLES.values()}), 3)
+        subset = q.fake_plan(self.root / "without-pure-ingest", arms=("go_native", "rust_native"))
+        q.validate_plan(subset)
+        self.assertIn("go_pure", subset["sources"])
+        self.assertIn("control_pure_binary", subset["assets"])
+        self.assertEqual(q.control_identity(subset)["binary_sha256"], subset["assets"]["control_pure_binary"]["sha256"])
+        for field, key in (("assets", "control_pure_binary"), ("sources", "go_pure")):
+            bad = copy.deepcopy(subset); del bad[field][key]
+            with self.assertRaises(ValueError):
+                q.validate_plan(bad)
+        bad = copy.deepcopy(self.plan)
+        bad["assets"]["control_native_binary"] = copy.deepcopy(bad["assets"]["control_pure_binary"])
+        with self.assertRaisesRegex(ValueError, "distinct executable"):
+            q.validate_plan(bad)
+        bad = copy.deepcopy(subset); bad["sources"]["go_native"]["revision"] = "b" * 40
+        with self.assertRaisesRegex(ValueError, "same collector source"):
+            q.validate_plan(bad)
+
     def test_paid_validation_replays_each_arm_preflight_oracle_before_effects(self):
         self.plan = q.fake_plan(self.root / "local-queue", kind="collector_queue")
         self.assets = self.backend.remote_assets(self.plan)
         value = copy.deepcopy(self.plan)
         value["fake_provider"] = False
         source = value["sources"]["go_pure"]
-        value.update(binary=value["assets"]["go_binary"]["path"], binary_sha256=value["assets"]["go_binary"]["sha256"],
+        value.update(binary=value["assets"]["control_pure_binary"]["path"], binary_sha256=value["assets"]["control_pure_binary"]["sha256"],
                      source_root=source["root"], source_manifest=source["manifest"], input_manifest_sha256=source["manifest_sha256"],
                      source_revision=source["revision"], hcloud="/private/hcloud", controller_private_key="/private/key",
                      controller_public_key="/private/key.pub", controller_cidr="192.0.2.1/32")
@@ -169,7 +192,10 @@ class PlanTests(Fixture):
         for arm in value["arms"]:
             job = self.job(arm)
             files = {}
-            for name, data in (("ingest_job", job), ("ingest_report", r.fake_ingest(job)),
+            ingest = r.fake_ingest(job)
+            if arm != "go_pure":
+                ingest["native_mapping_rule"] = "btrfs_superblock"
+            for name, data in (("ingest_job", job), ("ingest_report", ingest),
                                ("verification", r.fake_verify(job, control_identity=q.control_identity(value)))):
                 path = self.root / (arm + "-" + name + ".json"); d.write(path, data)
                 files[name] = {"path": str(path), "sha256": q.p.sha(path)}
@@ -186,6 +212,13 @@ class PlanTests(Fixture):
             bad = copy.deepcopy(value)
             bad["preflight_verifications"]["rust_native"]["verification"] = {"path": str(path), "sha256": q.p.sha(path)}
             with self.assertRaisesRegex(ValueError, "paid gate"):
+                q.validate_plan(bad)
+            wrong_binary = self.job("go_native")
+            wrong_binary["binary_sha256"] = value["assets"]["control_pure_binary"]["sha256"]
+            path = self.root / "wrong-native-binary-job.json"; d.write(path, wrong_binary)
+            bad = copy.deepcopy(value)
+            bad["preflight_verifications"]["go_native"]["ingest_job"] = {"path": str(path), "sha256": q.p.sha(path)}
+            with self.assertRaisesRegex(ValueError, "current source/binary"):
                 q.validate_plan(bad)
             bad = copy.deepcopy(value); bad["binary_sha256"] = "d" * 64
             with self.assertRaisesRegex(ValueError, "aliases"):
@@ -344,7 +377,7 @@ class ProducerTests(Fixture):
             job = self.job(arm)
             argv = q.invocation(self.plan, job, "/srv/job.json", self.assets)
             self.assertEqual(len(argv), 2)
-            self.assertEqual(argv[0], self.assets["rust_binary" if arm == "rust_native" else "go_binary"])
+            self.assertEqual(argv[0], self.assets[q.ARM_EXECUTABLES[arm]])
             self.assertFalse(any(x.startswith("--") for x in argv))
             self.assertEqual(job["mode"], "ingest")
             self.assertEqual(job["writer_workers"], 1)
@@ -359,6 +392,63 @@ class ProducerTests(Fixture):
             q.go_job(self.plan, "rust_native")
         path = self.root / "job.json"; d.write(path, self.job())
         self.assertEqual(q.job_seal(self.job()), q.p.sha(path))
+
+    def test_wrong_binary_per_arm_is_rejected_and_every_control_mode_uses_pure(self):
+        for arm in self.plan["arms"]:
+            job = self.job(arm)
+            for other in self.plan["arms"]:
+                if other != arm:
+                    bad = copy.deepcopy(job); bad["binary_sha256"] = self.plan["assets"][q.ARM_EXECUTABLES[other]]["sha256"]
+                    with self.subTest(arm=arm, wrong=other), self.assertRaisesRegex(ValueError, "wrong executable"):
+                        q.invocation(self.plan, bad, "/srv/job.json", self.assets)
+            for mode in ("corpus", "setup", "verify"):
+                control = copy.deepcopy(job); control.update(q.control_identity(self.plan), mode=mode)
+                if mode == "corpus":
+                    fields = {"schema", "mode", "arm", "binary_sha256", "source_revision", "source_manifest_sha256",
+                              "timeout_seconds", "output", "corpus_config", "expected_frames", "row_budget", "corpus_file"}
+                    control = {key: value for key, value in control.items() if key in fields}
+                elif mode == "setup":
+                    del control["layout_sha256"]
+                else:
+                    control = r.verification_job(control)
+                self.assertEqual(q.invocation(self.plan, control, "/srv/control-job.json", self.assets)[0], self.assets["control_pure_binary"])
+                control["binary_sha256"] = self.plan["assets"]["control_native_binary"]["sha256"]
+                with self.assertRaisesRegex(ValueError, "wrong executable"):
+                    q.invocation(self.plan, control, "/srv/control-job.json", self.assets)
+
+    def test_mapping_evidence_distinguishes_local_preflight_from_paid_hosts(self):
+        for arm in self.plan["arms"]:
+            job = self.job(arm); raw = r.fake_ingest(job)
+            self.assertTrue(q.envelope(job, raw)["accepted"])
+            self.assertTrue(q.envelope(job, raw, paid_host=True)["accepted"])
+            for bad in (not raw["native_library_mapped"], None, 1):
+                wrong = copy.deepcopy(raw); wrong["native_library_mapped"] = bad
+                self.assertFalse(q.envelope(job, wrong)["accepted"])
+            wrong = copy.deepcopy(raw); del wrong["native_library_mapped"]
+            self.assertFalse(q.envelope(job, wrong)["accepted"])
+            if arm != "go_pure":
+                raw["native_mapping_rule"] = "btrfs_superblock"
+                self.assertTrue(q.envelope(job, raw)["accepted"])
+                self.assertEqual(q.envelope(job, raw)["raw_report"]["native_mapping_rule"], "btrfs_superblock")
+                self.assertFalse(q.envelope(job, raw, paid_host=True)["accepted"])
+                proof = r.fake_verify(job, control_identity=q.control_identity(self.plan))
+                joined = q.joined_envelope(job, raw, proof, "fixture", self.plan)
+                self.assertFalse(joined["paid_host"])
+                joined["paid_host"] = True
+                with self.assertRaises(ValueError):
+                    r.validate_distinct_result(joined)
+                for bad in (None, "unknown"):
+                    wrong = copy.deepcopy(raw); wrong["native_mapping_rule"] = bad
+                    self.assertFalse(q.envelope(job, wrong)["accepted"])
+            else:
+                for bad in (None, "exact_stat", "btrfs_superblock"):
+                    wrong = copy.deepcopy(raw); wrong["native_mapping_rule"] = bad
+                    self.assertFalse(q.envelope(job, wrong)["accepted"])
+            proof = r.fake_verify(job, control_identity=q.control_identity(self.plan))
+            self.assertIs(proof["report"]["native_library_mapped"], False)
+            proof["report"]["native_library_mapped"] = True
+            with self.assertRaises(ValueError):
+                q.verify_audit(proof, job, "fixture", plan=self.plan)
 
     def test_mode_specific_jobs_reject_unknown_inputs_aliases_and_seed_overflow(self):
         job = self.job("go_pure")

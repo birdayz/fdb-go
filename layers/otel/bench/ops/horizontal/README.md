@@ -640,7 +640,16 @@ ceiling overflow fails closed. Outcome does not reduce issued population.
 
 `paired-job-v1.schema.json` defines the one-JSON-argument producer contract. Go
 and Rust have separate typed builders; Rust never receives otelbench flags.
-Source/binary seals remain per arm. `writer_direct` and `collector_queue` are
+Source/binary seals remain per arm. Three executable assets have distinct paths
+and hashes: `assets.control_pure_binary` for `go_pure` ingest AND every corpus,
+setup and verify invocation; `assets.control_native_binary` for `go_native` ingest
+only; `assets.rust_binary` for `rust_native` ingest only. Each asset carries its
+own `path` and `sha256`; jobs/reports retain the existing `binary_sha256` field.
+The pure executable and `sources.go_pure` verifier identity are required even
+when pure ingest is not selected. Go executable variants share collector source
+seals, not executable seals. Per-arm builders, invocation/grant checks, preflight,
+all-host asset transfer and residual-process checks bind the correct executable.
+`writer_direct` and `collector_queue` are
 separate workload kinds; producer request size, internal writer concurrency and
 queue batching are distinct explicit controls. Every collector/retry parameter
 is required without defaults. Only writer_workers=1 is currently matched. Go
@@ -665,7 +674,15 @@ arm/job identity. Admission, ACK operations (including replay), distinct audited
 rows and storage drain are not interchangeable. Top-level `acked_span_operations`
 is exactly `{"availability":"available","value":100000}` for Rust, or for Go
 `{"availability":"unavailable","reason":"Go collector does not expose acknowledged write operations including replays"}`.
-Rust must supply the available numeric value. All six counters
+Rust must supply the available numeric value. Successful reports also attest
+`native_library_mapped:false` for pure ingest and ALL pure control modes, without
+a `native_mapping_rule` field. Native ingest requires `native_library_mapped:true`,
+the sealed `client_library_sha256` and `native_mapping_rule:exact_stat|btrfs_superblock`.
+Replayed LOCAL preflight evidence may use either audited rule and preserves it;
+reports actually produced on paid ext4 hosts MUST use `exact_stat` or fail the arm.
+The runner records this policy context as `paid_host` in its envelopes/results.
+Failed opens may omit mapping evidence rather than inventing a successful check.
+All six counters
 `acked_span_operations`, `committed_batches`, `native_retries`, `outer_retries`,
 `export_attempts` and `queue_retries` require the same explicit availability-marker
 shape. Go must mark the first four unavailable, never a fabricated or inferred zero;
@@ -702,7 +719,7 @@ standard-serializer row/OTLP readback, data-derived physical/index census includ
 all eight indexes and STORE_META_NAME, and the complete sealed source oracle
 NDJSON (16 classes x100, full ordered expected/actual results). Ingest alone is
 never rate eligible. The offered-load600s profile is explicitly refused until
-both binaries supply a sealed schedule/window implementation; a short finite
+all selected producer binaries supply a sealed schedule/window implementation; a short finite
 run is never relabelled sustained.
 
 `paired_cost.py` reserves all held server AND IPv4 hourly quanta from the original

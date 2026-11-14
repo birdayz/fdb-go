@@ -74,6 +74,19 @@ def job_seal(job):
     return hashlib.sha256((json.dumps(job, sort_keys=True) + "\n").encode()).hexdigest()
 
 
+def native_mapping(report, job, *, paid_host=False):
+    native = job["mode"] == "ingest" and job["arm"] != "go_pure"
+    p.require(type(report.get("native_library_mapped")) is bool and report["native_library_mapped"] is native,
+              "executing binary must attest actual native-library mapping or absence")
+    if native:
+        p.require(report.get("client_library_sha256") == job["client_library_sha256"]
+                  and report.get("native_mapping_rule") in (("exact_stat",) if paid_host else ("exact_stat", "btrfs_superblock")),
+                  "sealed native mapping required; paid hosts require exact_stat")
+    else:
+        p.require("native_mapping_rule" not in report, "pure executable must not claim a native mapping check")
+    return True
+
+
 def common(report, job, mode):
     p.require(type(report) is dict and report.get("schema") == "otel_control_report_v1"
               and report.get("mode") == mode and report.get("arm") == job["arm"] and report.get("status") == "ok"
@@ -81,16 +94,19 @@ def common(report, job, mode):
               and report.get("job_sha256") == job_seal(job), "genuine sealed producer path/effective job required")
     for key in ("source_revision", "source_manifest_sha256", "binary_sha256", "corpus_sha256", "layout_sha256", "client_library_sha256"):
         p.require(report.get(key) == job[key], "report/job seal mismatch: " + key)
+    native_mapping(report, job)
 
 
-def envelope(job, report):
+def envelope(job, report, *, paid_host=False):
     p.require(type(report) is dict, "producer report object required")
     value = {"schema": "otel_paired_ingest_envelope_v1", "arm": job["arm"], "workload": copy.deepcopy(job["workload"]),
              "job_sha256": job_seal(job), "raw_report": copy.deepcopy(report), "accepted": False,
-             "rate_eligible": False, "telemetry": {key: {"availability": "unavailable"} for key in TELEMETRY}}
+             "rate_eligible": False, "paid_host": paid_host, "telemetry": {key: {"availability": "unavailable"} for key in TELEMETRY}}
     try:
         ingest_resource_evidence(report)
         common(report, job, "ingest")
+        p.require(type(paid_host) is bool, "explicit host mapping-policy context required")
+        native_mapping(report, job, paid_host=paid_host)
         p.require(all(report.get(key) is None for key in ("spans_per_second", "rate_numerator", "cpu_ms_per_distinct_span", "cpu_denominator")),
                   "ingest alone cannot assert census-verified rates or CPU/span")
         count = job["expected_frames"]
@@ -135,8 +151,8 @@ def envelope(job, report):
     return value
 
 
-def joined_envelope(job, report, verification, namespace, *, control_identity=None):
-    value = envelope(job, report)
+def joined_envelope(job, report, verification, namespace, *, control_identity=None, paid_host=False):
+    value = envelope(job, report, paid_host=paid_host)
     p.require(value["accepted"], value.get("error", "invalid ingest"))
     verify_audit(verification, job, namespace, control_identity=control_identity)
     distinct = verification["report"]["distinct_spans"]
@@ -172,7 +188,8 @@ def validate_distinct_result(value):
               "nonempty independent census is the rate numerator")
     p.require(type(report.get("effective_job")) is dict and report["effective_job"].get("arm") == value["arm"]
               and report["effective_job"].get("workload") == value.get("workload")
-              and report.get("job_sha256") == value.get("job_sha256") and envelope(report["effective_job"], report)["accepted"],
+              and report.get("job_sha256") == value.get("job_sha256") and type(value.get("paid_host")) is bool
+              and envelope(report["effective_job"], report, paid_host=value["paid_host"])["accepted"],
               "joined result requires a complete admitted ingest report")
     for key in COUNTERS:
         p.require(counter(value.get(key), key, value["arm"]) == report.get(key), "original counter availability must be preserved: " + key)
@@ -315,7 +332,9 @@ def verify_audit(value, job, namespace, *, control_identity=None):
 
 
 def fake_common(job):
-    return {"schema": "otel_control_report_v1", "mode": job["mode"], "arm": job["arm"], "status": "ok", "error": None,
+    native = job["mode"] == "ingest" and job["arm"] != "go_pure"
+    return {"native_library_mapped": native, **({"native_mapping_rule": "exact_stat"} if native else {}),
+            "schema": "otel_control_report_v1", "mode": job["mode"], "arm": job["arm"], "status": "ok", "error": None,
             "effective_job": copy.deepcopy(job), "job_sha256": job_seal(job),
             **{key: job[key] for key in ("source_revision", "source_manifest_sha256", "binary_sha256", "corpus_sha256", "layout_sha256", "client_library_sha256")}}
 

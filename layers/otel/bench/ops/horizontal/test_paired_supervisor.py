@@ -281,7 +281,7 @@ class PairedPilotSupervisorTests(PairedSupervisorFixture):
         with self.assertRaisesRegex(ValueError, "reused/changed"):
             self.admit()
         self.set_start(200, 5000)
-        asset = Path(self.plan["assets"]["go_binary"]["path"])
+        asset = Path(self.plan["assets"]["control_pure_binary"]["path"])
         asset.write_bytes(asset.read_bytes() + b"changed\n")
         with self.assertRaisesRegex(ValueError, "paired asset"):
             self.admit()

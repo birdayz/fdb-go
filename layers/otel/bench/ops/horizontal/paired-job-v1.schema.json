@@ -651,6 +651,8 @@
         "queue_retries"
       ],
       "properties": {
+        "native_library_mapped": {"type": "boolean"},
+        "native_mapping_rule": {"enum": ["exact_stat", "btrfs_superblock"]},
         "schema": {
           "const": "otel_control_report_v1"
         },
@@ -782,6 +784,9 @@
           "$ref": "#/$defs/ingest_resource_policy"
         },
         {
+          "$ref": "#/$defs/native_mapping_policy"
+        },
+        {
           "if": {
             "properties": {
               "effective_job": {
@@ -895,6 +900,7 @@
         "arm",
         "accepted",
         "rate_eligible",
+        "paid_host",
         "acked_span_operations",
         "distinct_spans",
         "rate_numerator",
@@ -910,6 +916,7 @@
         "queue_retries"
       ],
       "properties": {
+        "paid_host": {"type": "boolean"},
         "schema": {
           "const": "otel_paired_result_v1"
         },
@@ -988,6 +995,10 @@
       "allOf": [
         {
           "$ref": "#/$defs/counter_policy"
+        },
+        {
+          "if": {"properties": {"paid_host": {"const": true}, "arm": {"enum": ["go_native", "rust_native"]}}},
+          "then": {"properties": {"raw_report": {"properties": {"native_mapping_rule": {"const": "exact_stat"}}}}}
         }
       ]
     },
@@ -1133,6 +1144,36 @@
                 "$ref": "#/$defs/go_unexposed_counter"
               }
             }
+          }
+        }
+      ]
+    },
+    "native_mapping_policy": {
+      "$comment": "Success attests actual mapped-library presence/absence. Local native proofs allow the audited btrfs rule; paid-host enforcement additionally requires exact_stat. Failed opens may lack mapping evidence, never fabricate it.",
+      "type": "object",
+      "required": ["status", "mode", "arm"],
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "ok"}}},
+          "then": {
+            "required": ["native_library_mapped"],
+            "allOf": [
+              {
+                "if": {"properties": {"mode": {"const": "ingest"}, "arm": {"enum": ["go_native", "rust_native"]}}},
+                "then": {
+                  "required": ["native_mapping_rule", "client_library_sha256"],
+                  "properties": {
+                    "native_library_mapped": {"const": true},
+                    "native_mapping_rule": {"enum": ["exact_stat", "btrfs_superblock"]},
+                    "client_library_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+                  }
+                },
+                "else": {
+                  "properties": {"native_library_mapped": {"const": false}},
+                  "not": {"required": ["native_mapping_rule"]}
+                }
+              }
+            ]
           }
         }
       ]

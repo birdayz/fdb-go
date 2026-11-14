@@ -19,10 +19,11 @@ import paired_rows as rows
 
 SCHEMA = "otel_native_paired_v1"
 ARMS = ("go_pure", "go_native", "rust_native")
+ARM_EXECUTABLES = {"go_pure": "control_pure_binary", "go_native": "control_native_binary", "rust_native": "rust_binary"}
 NATIVE_SHA256 = "617572467897d0360f76ffc33f24b58090ee691e3273750d2ff334cc71aae3fa"
 QUEUE_FIELDS = {"kind", "producers", "producer_batch_spans", "consumers", "queue_capacity_spans", "batch_min_spans", "batch_max_spans", "flush_ms",
                 "block_on_overflow", "export_timeout_ms", "retry_enabled", "retry_initial_ms", "retry_max_ms", "retry_elapsed_ms"}
-BASE_ASSETS = {"fdbserver", "fdbcli", "corpus_100000", "corpus_375000", "layout_template", "descriptor_set"}
+BASE_ASSETS = {"control_pure_binary", "fdbserver", "fdbcli", "corpus_100000", "corpus_375000", "layout_template", "descriptor_set"}
 MAX_RAW_RECEIPT = 256 * 1024 ** 2
 
 
@@ -190,26 +191,29 @@ def validate_plan(plan, *, check_assets=True):
               and end - first == (3600 if plan["stage_profile"] == "pilot" else 7200), "one original fixed lease")
     p.require(plan.get("cleanup_mode") == "independent_watch", "paired campaigns require independent cleanup admission")
     assets = plan.get("assets")
-    required = BASE_ASSETS | {"go_binary" if x.startswith("go_") else "rust_binary" for x in plan["arms"]}
+    required = BASE_ASSETS | {ARM_EXECUTABLES[x] for x in plan["arms"]}
     if any(x.endswith("native") for x in plan["arms"]):
         required.add("libfdb_c")
     p.require(type(assets) is dict and set(assets) == required, "complete exact paired asset set")
     for item in assets.values():
         asset(item, check_assets=check_assets)
+    executables = {"control_pure_binary"} | {ARM_EXECUTABLES[x] for x in plan["arms"]}
+    p.require(len({assets[key]["sha256"] for key in executables}) == len(executables)
+              and len({assets[key]["path"] for key in executables}) == len(executables), "distinct executable identity per arm and pure control required")
     if "libfdb_c" in assets:
         p.require(assets["libfdb_c"]["sha256"] == NATIVE_SHA256 or plan.get("fake_provider") is True,
                   "pinned FDB 7.3.77 native client required")
     sources = plan.get("sources")
-    p.require(type(sources) is dict and set(sources) == set(plan["arms"]), "separate per-arm source seals")
-    for arm in plan["arms"]:
+    p.require(type(sources) is dict and set(sources) == set(plan["arms"]) | {"go_pure"}, "separate per-arm source seals")
+    for arm in sources:
         src = sources[arm]
         p.require(type(src) is dict and set(src) == {"revision", "root", "manifest", "manifest_sha256"}
                   and p.hexstr(src["revision"], 40), "typed per-arm source identity")
         asset({"path": src["manifest"], "sha256": src["manifest_sha256"]}, check_assets=check_assets)
         p.require(type(src["root"]) is str and Path(src["root"]).is_absolute(), "per-arm source root")
-    if {"go_pure", "go_native"} <= set(plan["arms"]):
+    if "go_native" in plan["arms"]:
         p.require(all(sources["go_pure"][key] == sources["go_native"][key] for key in ("revision", "manifest_sha256")),
-                  "Go pure/native must share the same collector source and binary")
+                  "Go pure/native executables must share the same collector source, not the same binary")
     p.require(p.hexstr(plan.get("pricing_seal_sha256")) and type(plan.get("pricing")) is dict,
               "sealed admission pricing required")
     p.require(type(plan.get("prior_cost_upper_eur")) is str and re.fullmatch(r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,18})?", plan["prior_cost_upper_eur"])
@@ -221,9 +225,8 @@ def validate_plan(plan, *, check_assets=True):
     import supervisor
     supervisor.validate_config(plan)
     if not plan["fake_provider"]:
-        go_arm = "go_pure" if "go_pure" in plan["arms"] else "go_native"
-        source = plan["sources"][go_arm]
-        aliases = {"binary": plan["assets"]["go_binary"]["path"], "binary_sha256": plan["assets"]["go_binary"]["sha256"],
+        source = plan["sources"]["go_pure"]
+        aliases = {"binary": plan["assets"]["control_pure_binary"]["path"], "binary_sha256": plan["assets"]["control_pure_binary"]["sha256"],
                    "source_root": source["root"], "source_manifest": source["manifest"],
                    "input_manifest_sha256": source["manifest_sha256"], "source_revision": source["revision"]}
         for name in ("fdbserver", "fdbcli"):
@@ -244,7 +247,7 @@ def validate_plan(plan, *, check_assets=True):
             if check_assets:
                 job = validate_job(d.read(proof["ingest_job"]["path"]))
                 source = plan["sources"][arm]
-                binary = "rust_binary" if arm == "rust_native" else "go_binary"
+                binary = ARM_EXECUTABLES[arm]
                 p.require(job["arm"] == arm and job["mode"] == "ingest" and job["expected_frames"] == 100000
                           and job["binary_sha256"] == plan["assets"][binary]["sha256"]
                           and job["source_revision"] == source["revision"] and job["source_manifest_sha256"] == source["manifest_sha256"]
@@ -280,7 +283,7 @@ def _job(plan, arm, hosts, phase, client, layout, cluster, remote_assets, output
     count = 100000 if phase == "prerequisite" else 375000
     ns = namespace(plan, hosts, arm, phase, client, repeat)
     source = plan["sources"][arm]
-    binary = "go_binary" if arm.startswith("go_") else "rust_binary"
+    binary = ARM_EXECUTABLES[arm]
     p.require(type(output) is str and Path(output).is_absolute() and "/" + ns + "/" in output,
               "immutable implementation-specific output path")
     for key in ("path", "sha256"):
@@ -383,22 +386,26 @@ def validate_job(job):
 def invocation(plan, job, job_path, remote_assets):
     validate_job(job)
     arm = job["arm"]
-    p.require(arm in plan["arms"] and job["workload"] == plan["workload"] and job["schema"] == "otel_paired_job_v1",
+    p.require((arm in plan["arms"] or job["mode"] == "corpus" and arm == "go_pure")
+              and (job["mode"] == "corpus" or job["workload"] == plan["workload"]) and job["schema"] == "otel_paired_job_v1",
               "implementation/workload job binding")
     p.require(type(job_path) is str and Path(job_path).is_absolute() and ".." not in Path(job_path).parts,
               "absolute producer job path required")
-    binary = "rust_binary" if arm == "rust_native" and job["mode"] == "ingest" else "go_binary"
+    binary = ARM_EXECUTABLES[arm] if job["mode"] == "ingest" else "control_pure_binary"
+    identity = {"binary_sha256": plan["assets"][binary]["sha256"],
+                "source_revision": plan["sources"][arm if job["mode"] == "ingest" else "go_pure"]["revision"],
+                "source_manifest_sha256": plan["sources"][arm if job["mode"] == "ingest" else "go_pure"]["manifest_sha256"]}
+    p.require(all(job[key] == value for key, value in identity.items()), "wrong executable/source identity for arm or control mode")
     return [remote_assets[binary], job_path]
 
 
-def envelope(job, report):
-    return reports.envelope(job, report)
+def envelope(job, report, *, paid_host=False):
+    return reports.envelope(job, report, paid_host=paid_host)
 
 
 def control_identity(plan):
-    arm = "go_pure" if "go_pure" in plan["arms"] else "go_native"
-    source = plan["sources"][arm]
-    return {"binary_sha256": plan["assets"]["go_binary"]["sha256"], "source_revision": source["revision"],
+    source = plan["sources"]["go_pure"]
+    return {"binary_sha256": plan["assets"]["control_pure_binary"]["sha256"], "source_revision": source["revision"],
             "source_manifest_sha256": source["manifest_sha256"]}
 
 
@@ -407,7 +414,7 @@ def verify_audit(value, job, ns, *, plan=None):
 
 
 def joined_envelope(job, report, verification, ns, plan):
-    value = reports.joined_envelope(job, report, verification, ns, control_identity=control_identity(plan))
+    value = reports.joined_envelope(job, report, verification, ns, control_identity=control_identity(plan), paid_host=not plan["fake_provider"])
     value["fake_provider"] = plan["fake_provider"]
     return value
 
@@ -544,7 +551,7 @@ class PairedCampaign:
                         ack_end = self.backend.monotonic_ns()
                         p.require(type(reports) is dict and set(reports) == set(jobs), "every released producer report required")
                         for client, job in jobs.items():
-                            value = envelope(job, reports[client])
+                            value = envelope(job, reports[client], paid_host=not self.backend.fake)
                             self.write(wave + "/client%d-ingest-envelope.json" % client, value)
                             if not value["accepted"]:
                                 self.write(wave + "/client%d-result.json" % client, value)
@@ -721,7 +728,7 @@ def fake_plan(root, *, profile="scaling", arms=ARMS, kind="writer_direct"):
     manifest = root / "source.manifest"
     manifest.write_text(p.sha(source) + "  source.txt\n")
     assets = {}
-    keys = BASE_ASSETS | {"go_binary" if x.startswith("go_") else "rust_binary" for x in arms} | {"libfdb_c"}
+    keys = BASE_ASSETS | {ARM_EXECUTABLES[x] for x in arms} | {"libfdb_c"}
     for key in keys:
         path = root / key
         path.write_text("synthetic asset " + key + "\n")
@@ -763,7 +770,7 @@ def fake_plan(root, *, profile="scaling", arms=ARMS, kind="writer_direct"):
                 "client_slice": {"allowed_cpus": "0-3", "cpu_quota_percent": 400, "memory_max_mib": 16384, "swap_max_bytes": 0}, "gomaxprocs": 4},
             "managed_watch": {"root": str(root.parent / "fake-watch"), "output": str(root.parent / "fake-output")},
             "assets": assets, "sources": {arm: {"revision": "a" * 40, "root": str(root), "manifest": str(manifest),
-                                                "manifest_sha256": p.sha(manifest)} for arm in arms},
+                                                "manifest_sha256": p.sha(manifest)} for arm in set(arms) | {"go_pure"}},
             "pricing": quote, "pricing_seal_sha256": quote["seal_sha256"], "fake_provider": True}
 
 
