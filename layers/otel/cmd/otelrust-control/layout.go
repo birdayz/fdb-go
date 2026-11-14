@@ -141,27 +141,35 @@ func descriptorDigest() (string, error) {
 	return hex.EncodeToString(h[:]), nil
 }
 
-// expectedMetadata is the OTEL_V1 template bound to the compiled types, as stores open it.
-func expectedMetadata() (*recordlayer.RecordMetaData, error) {
+// expectedTemplate is the OTEL_V1 template exactly as its DDL builds it, unbound: the
+// form whose proto serializes, so the exact comparison is made on it.
+func expectedTemplate() (*recordlayer.RecordMetaData, error) {
 	tmpl, err := embedded.BuildSchemaTemplateFromDDL(otelsql.TemplateDDL())
 	if err != nil {
 		return nil, err
 	}
-	p, err := tmpl.Underlying().ToProto()
+	return tmpl.Underlying(), nil
+}
+
+// expectedMetadata is the OTEL_V1 template bound to the compiled types, as stores open it.
+func expectedMetadata() (*recordlayer.RecordMetaData, error) {
+	tmpl, err := expectedTemplate()
+	if err != nil {
+		return nil, err
+	}
+	p, err := tmpl.ToProto()
 	if err != nil {
 		return nil, err
 	}
 	return recordlayer.RecordMetaDataFromProto(p, recordlayer.WithLocalFileDescriptor(otelv1pb.File_OTEL_V1))
 }
 
-// validateMetadata requires the exact unversioned, count-free OTEL_V1 template whose
-// SPANS has the eight VALUE indexes and whose STORE_META has only STORE_META_NAME.
-func validateMetadata(md *recordlayer.RecordMetaData) error {
-	want, err := expectedMetadata()
-	if err != nil {
-		return err
-	}
-	gotProto, err := md.ToProto()
+// exactTemplate requires stored, a tenant's template metadata as the catalog holds it
+// before any compiled binding, to serialize exactly as the OTEL_V1 template: records
+// descriptor, record types, indexes, version and settings. Bound metadata cannot be
+// serialized (Record Layer refuses a local descriptor), so it is refused here.
+func exactTemplate(stored *recordlayer.RecordMetaData) error {
+	want, err := expectedTemplate()
 	if err != nil {
 		return err
 	}
@@ -169,8 +177,77 @@ func validateMetadata(md *recordlayer.RecordMetaData) error {
 	if err != nil {
 		return err
 	}
+	if stored == nil {
+		return fault("layout", "no stored template metadata to compare")
+	}
+	gotProto, err := stored.ToProto()
+	if err != nil {
+		return fault("layout", "the stored template metadata does not serialize")
+	}
+	if !proto.Equal(gotProto, wantProto) {
+		return fault("layout", "the stored metadata is not exactly the OTEL_V1 template")
+	}
+	return nil
+}
+
+// storedTemplate is the tenant schema's template metadata as the catalog holds it, read
+// in rc's transaction through the catalog API otelsql itself uses.
+func storedTemplate(rc *recordlayer.FDBRecordContext, path, schema string) (*recordlayer.RecordMetaData, error) {
+	cat, err := catalog.NewRecordLayerStoreCatalog(keyspace.New(subspace.Sub()).CatalogSubspace())
+	if err != nil {
+		return nil, err
+	}
+	s, err := cat.LoadSchema(catalog.NewFDBTransaction(rc), path, schema)
+	if err != nil {
+		return nil, err
+	}
+	up, ok := s.SchemaTemplate().(interface {
+		Underlying() *recordlayer.RecordMetaData
+	})
+	if !ok {
+		return nil, fault("layout", "the tenant's template is not Record Layer metadata")
+	}
+	return up.Underlying(), nil
+}
+
+// openTenant opens the tenant's compiled store in one record context. In that context,
+// before otelsql resolves or binds anything, it rereads the stored template and refuses
+// one that is not exactly OTEL_V1. It returns the store with that template, which
+// checkTenantMetadata checks again with the binding.
+func openTenant(newContext func() *recordlayer.FDBRecordContext, path, schema string, serializer *recordlayer.TransformedRecordSerializer) (*otelsql.TenantStore, *recordlayer.RecordMetaData, error) {
+	var stored *recordlayer.RecordMetaData
+	ts, err := otelsql.OpenTenantStoreCompiledIn(func(fn func(*recordlayer.FDBRecordContext) error) error {
+		rc := newContext()
+		var err error
+		if stored, err = storedTemplate(rc, path, schema); err != nil {
+			return err
+		}
+		if err := exactTemplate(stored); err != nil {
+			return err
+		}
+		return fn(rc)
+	}, path, schema, serializer)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ts, stored, nil
+}
+
+// checkTenantMetadata requires the stored template to be exactly OTEL_V1 and the store's
+// compiled binding of it to be that version and keep every invariant writers rely on.
+func checkTenantMetadata(ts *otelsql.TenantStore, stored *recordlayer.RecordMetaData) error {
+	if err := exactTemplate(stored); err != nil {
+		return err
+	}
+	return validateMetadata(ts.MetaData, stored.Version())
+}
+
+// validateMetadata requires md, the compiled binding, to be at the stored template's
+// version: unversioned, count-free and splitting, its SPANS with the eight VALUE indexes
+// and its STORE_META with only STORE_META_NAME.
+func validateMetadata(md *recordlayer.RecordMetaData, version int) error {
 	bad := func(reason string) error { return fault("layout", reason) }
-	if !proto.Equal(gotProto, wantProto) || md.IsStoreRecordVersions() || md.GetRecordCountKey() != nil || !md.IsSplitLongRecords() {
+	if md.Version() != version || md.IsStoreRecordVersions() || md.GetRecordCountKey() != nil || !md.IsSplitLongRecords() {
 		return bad("metadata is not the exact non-versioned, count-free OTEL_V1 template")
 	}
 	rt := md.GetRecordType("SPANS")
@@ -587,13 +664,13 @@ func captureLayout(ctx context.Context, backend fdb.BackendDatabase, j *job, pat
 	points := &pointReads{values: map[string]fdb.FutureByteSlice{}}
 	wrapped := &sealingTransaction{WritableTransaction: tx, points: points}
 	fresh := recordlayer.NewFDBDatabaseWithBackend(backend)
-	ts, err := otelsql.OpenTenantStoreCompiledIn(func(fn func(*recordlayer.FDBRecordContext) error) error {
-		return fn(fresh.NewRecordContextIn(ctx, wrapped))
+	ts, stored, err := openTenant(func() *recordlayer.FDBRecordContext {
+		return fresh.NewRecordContextIn(ctx, wrapped)
 	}, path, schema, serializer)
 	if err != nil {
 		return m, nil, err
 	}
-	if err := validateMetadata(ts.MetaData); err != nil {
+	if err := checkTenantMetadata(ts, stored); err != nil {
 		return m, nil, err
 	}
 	if m.DescriptorSHA256, err = descriptorDigest(); err != nil {
@@ -714,13 +791,13 @@ func openSealed(ctx context.Context, backend fdb.BackendDatabase, j *job, m *lay
 	}
 	path, schema := tenantPaths(j.Run)
 	db := recordlayer.NewFDBDatabaseWithBackend(backend)
-	ts, err := otelsql.OpenTenantStoreCompiledIn(func(fn func(*recordlayer.FDBRecordContext) error) error {
-		return fn(db.NewRecordContextIn(ctx, tx))
+	ts, stored, err := openTenant(func() *recordlayer.FDBRecordContext {
+		return db.NewRecordContextIn(ctx, tx)
 	}, path, schema, serializer)
 	if err != nil {
 		return nil, nil, err
 	}
-	b, err := validateManifest(ts, *m, j.RecordCompression)
+	b, err := validateManifest(ts, stored, *m, j.RecordCompression)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -799,11 +876,11 @@ func checkSeal(tx fdb.ReadTransaction, m layoutManifest) error {
 	return nil
 }
 
-// validateManifest requires m to name ts exactly: its descriptors, prefixes, index-state
-// guards and, among the checks, exactly the tenant's derived baseline. It returns that
-// baseline.
-func validateManifest(ts *otelsql.TenantStore, m layoutManifest, mode string) (*baseline, error) {
-	if err := validateMetadata(ts.MetaData); err != nil {
+// validateManifest requires ts's stored template to be exactly OTEL_V1 and m to name ts
+// exactly: its descriptors, prefixes, index-state guards and, among the checks, exactly
+// the tenant's derived baseline. It returns that baseline.
+func validateManifest(ts *otelsql.TenantStore, stored *recordlayer.RecordMetaData, m layoutManifest, mode string) (*baseline, error) {
+	if err := checkTenantMetadata(ts, stored); err != nil {
 		return nil, err
 	}
 	digest, err := descriptorDigest()

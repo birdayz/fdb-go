@@ -23,16 +23,19 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/descriptorpb"
 )
 
 // tenantFixture is a tenant of the real OTEL_V1 metadata under a test subspace: its
 // baseline, its source rows and each row's stored value, Go's by default.
 type tenantFixture struct {
-	ts     *otelsql.TenantStore
-	base   *baseline
-	mode   string
-	rows   []*sourceRow
-	stored [][]byte
+	ts *otelsql.TenantStore
+	// template is the unbound stored template the store's metadata is bound from.
+	template *recordlayer.RecordMetaData
+	base     *baseline
+	mode     string
+	rows     []*sourceRow
+	stored   [][]byte
 }
 
 func newTenantFixture(t *testing.T, mode string, frames [][]byte) *tenantFixture {
@@ -40,6 +43,13 @@ func newTenantFixture(t *testing.T, mode string, frames [][]byte) *tenantFixture
 	md, err := expectedMetadata()
 	if err != nil {
 		t.Fatal(err)
+	}
+	template, err := expectedTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := exactTemplate(template); err != nil {
+		t.Fatalf("the raw OTEL_V1 template: %v", err)
 	}
 	ts := &otelsql.TenantStore{DatabasePath: "/OTEL/R_CENSUS_TEST", Schema: tenantSchema, MetaData: md, Subspace: subspace.Sub("census", int64(7))}
 	header, err := proto.Marshal(&gen.DataStoreInfo{FormatVersion: proto.Int32(14), MetaDataversion: proto.Int32(int32(md.Version()))})
@@ -50,7 +60,7 @@ func newTenantFixture(t *testing.T, mode string, frames [][]byte) *tenantFixture
 	if err != nil {
 		t.Fatal(err)
 	}
-	tf := &tenantFixture{ts: ts, base: base, mode: mode}
+	tf := &tenantFixture{ts: ts, template: template, base: base, mode: mode}
 	for _, wire := range frames {
 		row, err := buildRow(ts, wire)
 		if err != nil {
@@ -742,7 +752,7 @@ func TestManifestMatchesTheTenant(t *testing.T) {
 	t.Parallel()
 	tf := newTenantFixture(t, "zlib-1", nil)
 	m := tf.manifest(t)
-	if _, err := validateManifest(tf.ts, m, "zlib-1"); err != nil {
+	if _, err := validateManifest(tf.ts, tf.template, m, "zlib-1"); err != nil {
 		t.Fatalf("the sealed manifest was refused: %v", err)
 	}
 	b := encode(t, m)
@@ -783,13 +793,154 @@ func TestManifestMatchesTheTenant(t *testing.T) {
 	} {
 		bad := tf.manifest(t)
 		mutate(&bad)
-		if _, err := validateManifest(tf.ts, bad, "zlib-1"); err == nil {
+		if _, err := validateManifest(tf.ts, tf.template, bad, "zlib-1"); err == nil {
 			t.Errorf("a manifest with a changed %s was accepted", name)
 		}
 	}
 	// The baseline is derived for the job's compression: another mode's bytes differ.
-	if _, err := validateManifest(tf.ts, m, "none"); err == nil {
+	if _, err := validateManifest(tf.ts, tf.template, m, "none"); err == nil {
 		t.Error("a zlib-1 baseline validated as compression none")
+	}
+	// The manifest is checked only with an exact stored template: none, or the bound form.
+	if _, err := validateManifest(tf.ts, nil, m, "zlib-1"); err == nil {
+		t.Error("a manifest validated without a stored template")
+	}
+	if _, err := validateManifest(tf.ts, tf.ts.MetaData, m, "zlib-1"); err == nil {
+		t.Error("a manifest validated against the bound metadata as its template")
+	}
+}
+
+// The exact comparison is made on the unbound stored template: the compiled binding keeps
+// only structural invariants, which alone accept a changed descriptor or index expression.
+func TestMetadataIsComparedBeforeTheCompiledBinding(t *testing.T) {
+	t.Parallel()
+	template, err := expectedTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, err := expectedMetadata()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := exactTemplate(template); err != nil {
+		t.Fatalf("the raw OTEL_V1 template: %v", err)
+	}
+	if err := validateMetadata(bound, template.Version()); err != nil {
+		t.Fatalf("its compiled binding: %v", err)
+	}
+	// Record Layer refuses to serialize a binding, so it is never the compared form.
+	if _, err := bound.ToProto(); err == nil {
+		t.Fatal("bound metadata serialized")
+	}
+	if err := exactTemplate(bound); err == nil {
+		t.Fatal("bound metadata was accepted as the stored template")
+	}
+	if err := validateMetadata(bound, template.Version()+1); err == nil {
+		t.Fatal("a binding of another template version was accepted")
+	}
+	original, err := template.ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := func(p *gen.MetaData, name string) *gen.Index {
+		for _, idx := range p.GetIndexes() {
+			if idx.GetName() == name {
+				return idx
+			}
+		}
+		t.Fatalf("no index %s", name)
+		return nil
+	}
+	spans := func(p *gen.MetaData) *descriptorpb.DescriptorProto {
+		for _, m := range p.GetRecords().GetMessageType() {
+			if m.GetName() == "SPANS" {
+				return m
+			}
+		}
+		t.Fatal("no SPANS message")
+		return nil
+	}
+	hasField := func(p *gen.MetaData, name string) bool {
+		return slices.ContainsFunc(spans(p).GetField(), func(f *descriptorpb.FieldDescriptorProto) bool { return f.GetName() == name })
+	}
+	cases := []struct {
+		name   string
+		change func(*gen.MetaData)
+		// applied checks the mutation is in the built metadata's own proto.
+		applied func(got *gen.MetaData, md *recordlayer.RecordMetaData) bool
+		// structural reports whether the binding invariants alone still accept it.
+		structural bool
+	}{
+		{
+			"an optional descriptor field",
+			func(p *gen.MetaData) {
+				m := spans(p)
+				next := int32(0)
+				for _, f := range m.GetField() {
+					next = max(next, f.GetNumber())
+				}
+				m.Field = append(m.Field, &descriptorpb.FieldDescriptorProto{
+					Name: proto.String("extra_field"), Number: proto.Int32(next + 1),
+					Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+				})
+			},
+			func(got *gen.MetaData, _ *recordlayer.RecordMetaData) bool {
+				return hasField(got, "extra_field") && !hasField(original, "extra_field")
+			},
+			true,
+		},
+		{
+			"two index expressions swapped",
+			func(p *gen.MetaData) {
+				a, b := index(p, "SPANS_TIME"), index(p, "SPANS_SPAN_ID")
+				a.RootExpression, b.RootExpression = b.RootExpression, a.RootExpression
+			},
+			func(got *gen.MetaData, _ *recordlayer.RecordMetaData) bool {
+				return proto.Equal(index(got, "SPANS_TIME").GetRootExpression(), index(original, "SPANS_SPAN_ID").GetRootExpression()) &&
+					!proto.Equal(index(got, "SPANS_TIME").GetRootExpression(), index(original, "SPANS_TIME").GetRootExpression())
+			},
+			true,
+		},
+		{
+			"record versions stored",
+			func(p *gen.MetaData) { p.StoreRecordVersions = proto.Bool(true) },
+			func(_ *gen.MetaData, md *recordlayer.RecordMetaData) bool {
+				return md.IsStoreRecordVersions() && !original.GetStoreRecordVersions()
+			},
+			false,
+		},
+		{
+			"long records not split",
+			func(p *gen.MetaData) { p.SplitLongRecords = proto.Bool(false) },
+			func(_ *gen.MetaData, md *recordlayer.RecordMetaData) bool {
+				return !md.IsSplitLongRecords() && original.GetSplitLongRecords()
+			},
+			false,
+		},
+	}
+	if len(cases) != 4 {
+		t.Fatalf("%d metadata mutations", len(cases))
+	}
+	for _, c := range cases {
+		p := proto.Clone(original).(*gen.MetaData)
+		c.change(p)
+		if proto.Equal(p, original) {
+			t.Fatalf("%s: the mutation changed nothing", c.name)
+		}
+		md, err := recordlayer.RecordMetaDataFromProto(p)
+		if err != nil {
+			t.Fatalf("%s: the mutated template does not build: %v", c.name, err)
+		}
+		got, err := md.ToProto()
+		if err != nil || !c.applied(got, md) {
+			t.Fatalf("%s: the built metadata does not carry the mutation: %v", c.name, err)
+		}
+		if err := validateMetadata(md, md.Version()); (err == nil) != c.structural {
+			t.Fatalf("%s: structural checks alone: %v", c.name, err)
+		}
+		if err := exactTemplate(md); err == nil {
+			t.Errorf("%s: a changed template passed the exact comparison", c.name)
+		}
 	}
 }
 

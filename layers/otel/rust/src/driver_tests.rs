@@ -93,6 +93,33 @@ fn exe_sha256() -> &'static str {
 }
 
 static TEMP_ID: AtomicUsize = AtomicUsize::new(0);
+
+/// The test's private temporary root: Bazel's per-test TEST_TMPDIR, else the system one.
+fn test_root() -> PathBuf {
+    std::env::var_os("TEST_TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+/// Creates `<root>/<prefix>-<pid>-<n>` for the next `n` whose path does not exist. An
+/// existing path, such as one an interrupted run left under a reused process id, is
+/// skipped: never reused, changed or deleted.
+fn private_dir(root: &Path, prefix: &str, ids: &AtomicUsize) -> PathBuf {
+    for _ in 0..1000 {
+        let dir = root.join(format!(
+            "{prefix}-{}-{}",
+            std::process::id(),
+            ids.fetch_add(1, Ordering::Relaxed)
+        ));
+        match fs::create_dir(&dir) {
+            Ok(()) => return dir,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => panic!("cannot create a private test directory: {err}"),
+        }
+    }
+    panic!("no free private test directory name in 1000 attempts");
+}
+
 /// A private directory with one layout, cluster file and stand-in client library.
 struct Files {
     dir: PathBuf,
@@ -101,12 +128,11 @@ struct Files {
 }
 impl Files {
     fn new() -> Self {
-        let dir = std::env::temp_dir().join(format!(
-            "otel-rust-driver-{}-{}",
-            std::process::id(),
-            TEMP_ID.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&dir).unwrap();
+        Self::new_in(&test_root(), &TEMP_ID)
+    }
+    /// Files in a new directory of `root`; dropping it removes only that directory.
+    fn new_in(root: &Path, ids: &AtomicUsize) -> Self {
+        let dir = private_dir(root, "otel-rust-driver", ids);
         let layout = Layout {
             version: 1,
             descriptor_sha256: sha256(include_bytes!("../testdata/descriptors.pb")),
@@ -2301,4 +2327,27 @@ fn mapping_provenance_is_never_forged_and_strictly_paired() {
     let (mut r, sealed) = pinned();
     r["client_library_sha256"] = json!("0".repeat(64));
     assert!(report_contract(&r, &sealed).is_err());
+}
+
+#[test]
+fn private_dirs_skip_existing_paths_and_clean_only_their_own() {
+    let root = private_dir(&test_root(), "otel-rust-driver-collision", &TEMP_ID);
+    let ids = AtomicUsize::new(0);
+    let pid = std::process::id();
+    // A path an earlier run left under the same process id and counter, with contents.
+    let stale = root.join(format!("otel-rust-driver-{pid}-0"));
+    fs::create_dir(&stale).unwrap();
+    fs::write(stale.join("sentinel"), b"stale").unwrap();
+    let files = Files::new_in(&root, &ids);
+    let owned = files.dir.clone();
+    assert_eq!(owned, root.join(format!("otel-rust-driver-{pid}-1")));
+    drop(files);
+    assert!(!owned.exists(), "the new directory was not cleaned up");
+    assert_eq!(fs::read(stale.join("sentinel")).unwrap(), b"stale");
+    assert_eq!(fs::read_dir(&stale).unwrap().count(), 1);
+    assert_eq!(
+        private_dir(&root, "otel-rust-driver", &ids),
+        root.join(format!("otel-rust-driver-{pid}-2"))
+    );
+    fs::remove_dir_all(&root).unwrap();
 }

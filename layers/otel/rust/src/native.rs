@@ -1574,15 +1574,41 @@ mod tests {
 
     /// A private, resolved directory of real files, removed on drop.
     struct Dir(std::path::PathBuf);
+    static DIR_IDS: AtomicUsize = AtomicUsize::new(0);
+
+    /// The test's private temporary root: Bazel's per-test TEST_TMPDIR, else the system one.
+    fn test_root() -> std::path::PathBuf {
+        std::env::var_os("TEST_TMPDIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+    }
+
+    /// Creates `<root>/<prefix>-<pid>-<n>` for the next `n` whose path does not exist. An
+    /// existing path, such as one an interrupted run left under a reused process id, is
+    /// skipped: never reused, changed or deleted.
+    fn private_dir(root: &Path, prefix: &str, ids: &AtomicUsize) -> std::path::PathBuf {
+        for _ in 0..1000 {
+            let dir = root.join(format!(
+                "{prefix}-{}-{}",
+                std::process::id(),
+                ids.fetch_add(1, Ordering::Relaxed)
+            ));
+            match fs::create_dir(&dir) {
+                Ok(()) => return dir,
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => panic!("cannot create a private test directory: {err}"),
+            }
+        }
+        panic!("no free private test directory name in 1000 attempts");
+    }
+
     impl Dir {
         fn new(name: &str) -> Self {
-            static NEXT: AtomicUsize = AtomicUsize::new(0);
-            let dir = std::env::temp_dir().join(format!(
-                "otel-rust-native-{name}-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            fs::create_dir(&dir).unwrap();
+            Self::new_in(&test_root(), &format!("otel-rust-native-{name}"), &DIR_IDS)
+        }
+        /// A new directory of `root`; dropping it removes only that directory.
+        fn new_in(root: &Path, prefix: &str, ids: &AtomicUsize) -> Self {
+            let dir = private_dir(root, prefix, ids);
             // The kernel names a mapping by its resolved path, which mount points contain.
             Self(fs::canonicalize(&dir).unwrap())
         }
@@ -2388,5 +2414,32 @@ mod tests {
             ],
             ["exact_stat", "btrfs_superblock"]
         );
+    }
+
+    #[test]
+    fn private_dirs_skip_existing_paths_and_clean_only_their_own() {
+        let root = private_dir(&test_root(), "otel-rust-native-collision", &DIR_IDS);
+        let ids = AtomicUsize::new(0);
+        let pid = std::process::id();
+        // A path an earlier run left under the same process id and counter, with contents.
+        let stale = root.join(format!("dir-{pid}-0"));
+        fs::create_dir(&stale).unwrap();
+        fs::write(stale.join("sentinel"), b"stale").unwrap();
+        let dir = Dir::new_in(&root, "dir", &ids);
+        let owned = dir.0.clone();
+        assert_eq!(
+            owned,
+            fs::canonicalize(root.join(format!("dir-{pid}-1"))).unwrap()
+        );
+        assert_eq!(fs::read_dir(&owned).unwrap().count(), 0);
+        drop(dir);
+        assert!(!owned.exists(), "the new directory was not cleaned up");
+        assert_eq!(fs::read(stale.join("sentinel")).unwrap(), b"stale");
+        assert_eq!(fs::read_dir(&stale).unwrap().count(), 1);
+        assert_eq!(
+            private_dir(&root, "dir", &ids),
+            root.join(format!("dir-{pid}-2"))
+        );
+        fs::remove_dir_all(&root).unwrap();
     }
 }
