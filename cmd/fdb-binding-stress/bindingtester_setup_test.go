@@ -328,10 +328,18 @@ func TestHarnessLifecycleChild(t *testing.T) {
 		return
 	}
 	flag.CommandLine = flag.NewFlagSet("binding-stress-lifecycle", flag.ExitOnError)
-	os.Args = []string{"binding-stress", "-seeds", "1", "-out", os.Getenv("FDB_STRESS_TEST_OUT")}
+	if !configureCLIContractChild(t) {
+		os.Args = []string{"binding-stress", "-seeds", "1", "-out", os.Getenv("FDB_STRESS_TEST_OUT")}
+	}
 	os.Exit(run(func(_ context.Context, seed int, w workload, harness, dir string) SeedResult {
 		if fi, err := os.Stat(harness); err != nil || !fi.IsDir() {
 			t.Fatalf("runner did not own live harness: %v", err)
+		}
+		if mode == "cli" {
+			if err := os.WriteFile(os.Getenv("FDB_STRESS_CLI_SEED_MARKER"), []byte("seed invoked\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return SeedResult{Seed: seed, Workload: w, Pass: true, FDBAlive: true, Command: testerArgs(seed, w, "CLUSTER", "HARNESS")}
 		}
 		if strings.HasPrefix(mode, "report_") {
 			if err := os.WriteFile(filepath.Join(dir, "tester.log"), []byte("controlled seed completed\n"), 0o644); err != nil {

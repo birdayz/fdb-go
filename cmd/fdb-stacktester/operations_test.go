@@ -5,9 +5,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -99,8 +101,12 @@ func TestLogStackUsesRawPrefixAndPreservesBatchIndexes(t *testing.T) {
 	cancel()
 	sm.push(1, []byte("must not silently discard failed logging"))
 	sm.push(2, prefix)
-	if err := sm.execute(cancelled, 3, "LOG_STACK", nil); err == nil {
-		t.Fatal("failed log transaction reported success")
+	err = sm.execute(cancelled, 3, "LOG_STACK", nil)
+	if err == nil || !strings.HasPrefix(err.Error(), "log stack: ") || !errors.Is(err, context.Canceled) {
+		t.Fatalf("failed nonempty LOG_STACK lost diagnostic or cause: %v", err)
+	}
+	if len(sm.stack) != 0 {
+		t.Fatalf("LOG_STACK retained operands after failure: %+v", sm.stack)
 	}
 }
 

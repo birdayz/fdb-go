@@ -389,3 +389,40 @@ func TestSuccessfulChildDoesNotCancelParentOrSibling(t *testing.T) {
 		t.Fatalf("sibling output=%q", result)
 	}
 }
+
+func TestExecuteStartThreadFailureWithoutRunDoesNotPanic(t *testing.T) {
+	t.Parallel()
+	db, ctx := stacktesterDatabase(t)
+	child := "execute-only/failed-child"
+	writeThreadInstructions(t, ctx, db, map[string][]tuple.Tuple{child: {{"CHILD_FAILURE"}}}, nil)
+	parent := NewStackMachine(db, []byte("execute-only/parent"))
+	if parent.cancelRun != nil {
+		t.Fatal("execute-only fixture unexpectedly installed Run callback")
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	parent.push(0, []byte(child))
+	if err := parent.execute(runCtx, 1, "START_THREAD", nil); err != nil {
+		t.Fatal(err)
+	}
+	joined := make(chan struct{})
+	go func() { parent.wg.Wait(); close(joined) }()
+	select {
+	case <-joined:
+	case <-time.After(10 * time.Second):
+		t.Fatal("execute-only failed child did not finish")
+	}
+	err := parent.childError()
+	if err == nil || !strings.Contains(err.Error(), child) || !strings.Contains(err.Error(), "CHILD_FAILURE") {
+		t.Fatalf("execute-only caller lost child diagnostic: %v", err)
+	}
+	if parent.cancelRun != nil || runCtx.Err() != nil {
+		t.Fatalf("execute-only failed child installed callback or canceled caller: %v", runCtx.Err())
+	}
+	parent.childMu.Lock()
+	active := len(parent.children)
+	parent.childMu.Unlock()
+	if active != 0 {
+		t.Fatalf("failed child remained registered: %d children", active)
+	}
+}

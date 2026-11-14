@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -32,6 +33,8 @@ func TestRunnerAssemblesPinnedHarnessAndPersistsRealResults(t *testing.T) {
 	}{
 		{"default_output", "api", "", true, true, true},
 		{"relative_output", "directory", "relative/results", true, true, true},
+		{"cli_nondefault_api", "api", "results", false, true, true},
+		{"cli_nondefault_directory_hca", "directory_hca", "results", false, true, true},
 		{"tester_failure", "api", "results", true, false, true},
 		{"failed_child", "api", "results", false, false, true},
 		{"blocked_child", "api", "results", false, false, true},
@@ -102,7 +105,7 @@ func TestRunnerAssemblesPinnedHarnessAndPersistsRealResults(t *testing.T) {
 				fixture := `import json, subprocess, sys
 cluster = open(sys.argv[sys.argv.index('--cluster-file') + 1]).read()
 ip = cluster.split('@')[1].split(':')[0]
-ids = subprocess.check_output(['docker', 'ps', '-q'], text=True).split()
+ids = subprocess.check_output(['docker', 'ps', '-q', '--no-trunc'], text=True).split()
 found = False
 for cid in ids:
     info = json.loads(subprocess.check_output(['docker', 'inspect', cid]))[0]
@@ -122,10 +125,12 @@ print('Test had 0 incorrect result(s) and 0 error(s)')
 				if tc.name == "active_cancel" {
 					fixture = strings.Replace(fixture, "        if sys.argv[0].endswith('bindingtester.py') and FIXTURE_UNAVAILABLE:", `        if True:
             import os, time
+            listed = subprocess.check_output(['docker', 'ps', '-aq', '--no-trunc', '--filter', 'id=' + cid], text=True).split()
+            assert listed == [cid], ('active container query failed positive control', cid, listed)
             child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(600)'])
             ready = os.environ['CANCEL_READY']
             with open(ready + '.tmp', 'w') as f:
-                json.dump({'pid': child.pid, 'container': cid}, f)
+                json.dump({'pid': child.pid, 'container': cid, 'listed': listed}, f)
             print('active harness ready with child', flush=True)
             os.replace(ready + '.tmp', ready)
             time.sleep(600)
@@ -186,6 +191,19 @@ print('Test had 0 incorrect result(s) and 0 error(s)')
 				t.Fatal(err)
 			}
 			args := []string{"-seeds", "1", "-seed-start", "146", "-ops", "20", "-test-name", tc.mode}
+			nondefaultCLI := strings.HasPrefix(tc.name, "cli_nondefault_")
+			if nondefaultCLI {
+				args = append(args, "-concurrency", "5", "-api-version", "610")
+				python, err := exec.LookPath("python3")
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Observe exec's actual argv, not the separately reported Command.
+				wrapper := "#!/bin/sh\ncase \"$1\" in */bindingtester/bindingtester.py) printf '%s\\0' \"$@\" > \"$ACTUAL_TESTER_ARGV\";; esac\nexec " + strconv.Quote(python) + " \"$@\"\n"
+				if err := os.WriteFile(filepath.Join(tools, "python3"), []byte(wrapper), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if tc.compare {
 				args = append(args, "-compare-python")
 			}
@@ -217,7 +235,7 @@ print('Test had 0 incorrect result(s) and 0 error(s)')
 			configureTesterProcess(cmd)
 			defer killTesterGroup(cmd)
 			cmd.Dir = initial
-			cmd.Env = append(os.Environ(), "BUILD_WORKSPACE_DIRECTORY="+ws, "FIXTURE_OUTPUT_BASE="+base, "PATH="+tools+":"+os.Getenv("PATH"), "LD_LIBRARY_PATH="+native+":"+os.Getenv("LD_LIBRARY_PATH"), "ACTUAL_STACKTESTER="+stacktester)
+			cmd.Env = append(os.Environ(), "BUILD_WORKSPACE_DIRECTORY="+ws, "FIXTURE_OUTPUT_BASE="+base, "PATH="+tools+":"+os.Getenv("PATH"), "LD_LIBRARY_PATH="+native+":"+os.Getenv("LD_LIBRARY_PATH"), "ACTUAL_STACKTESTER="+stacktester, "ACTUAL_TESTER_ARGV="+filepath.Join(root, "actual-tester-argv"))
 			if tc.name == "scheduled" {
 				cmd.Env = append(cmd.Env, "SCHEDULED_RUNNER_FIXTURE=1")
 			}
@@ -330,7 +348,27 @@ print('Test had 0 incorrect result(s) and 0 error(s)')
 				t.Fatalf("wrong report: %s", data)
 			}
 			r := report.Seeds[0]
-			if r.Seed != 146 || r.Workload != (workload{tc.mode, 20, 1, tc.compare, 730}) || r.Pass != tc.pass || r.FDBAlive != tc.alive || len(r.Command) == 0 || r.Command[len(r.Command)-1] != "pure_go" {
+			wantWorkload := workload{tc.mode, 20, 1, tc.compare, 730}
+			if nondefaultCLI {
+				wantWorkload = workload{tc.mode, 20, 5, false, 610}
+				actual, err := os.ReadFile(filepath.Join(root, "actual-tester-argv"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				argv := strings.Split(strings.TrimSuffix(string(actual), "\x00"), "\x00")
+				if len(argv) < 3 || !strings.HasSuffix(argv[0], "/bindingtester/bindingtester.py") || argv[1] != "--cluster-file" || !strings.HasSuffix(argv[2], "/fdb.cluster") {
+					t.Fatalf("actual tester argv missing owned paths: %q", argv)
+				}
+				want := []string{"--test-name", tc.mode, "--api-version", "610", "--num-ops", "20", "--seed", "146", "--timeout", "300", "--concurrency", "5", "--no-tenants"}
+				if tc.mode == "directory_hca" {
+					want = append(want, "--no-directory-snapshot-ops")
+				}
+				want = append(want, "pure_go")
+				if !reflect.DeepEqual(argv[3:], want) || !reflect.DeepEqual(r.Command, append([]string{"python3"}, argv...)) {
+					t.Fatalf("actual tester argv=%q report=%q want suffix=%q", argv, r.Command, want)
+				}
+			}
+			if r.Seed != 146 || r.Workload != wantWorkload || r.Pass != tc.pass || r.FDBAlive != tc.alive || len(r.Command) == 0 || r.Command[len(r.Command)-1] != "pure_go" {
 				t.Fatalf("wrong case: %s", data)
 			}
 			if tc.pass {
@@ -366,11 +404,12 @@ print('Test had 0 incorrect result(s) and 0 error(s)')
 			}
 			if tc.name == "active_cancel" {
 				var ready struct {
-					PID       int    `json:"pid"`
-					Container string `json:"container"`
+					PID       int      `json:"pid"`
+					Container string   `json:"container"`
+					Listed    []string `json:"listed"`
 				}
 				data, err := os.ReadFile(filepath.Join(root, "ready"))
-				if err != nil || json.Unmarshal(data, &ready) != nil || ready.PID <= 0 || ready.Container == "" {
+				if err != nil || json.Unmarshal(data, &ready) != nil || ready.PID <= 0 || len(ready.Container) != 64 || !reflect.DeepEqual(ready.Listed, []string{ready.Container}) {
 					t.Fatalf("active cancellation never became ready: %s %v", data, err)
 				}
 				info, err := os.Stat(filepath.Join(root, "ready"))
@@ -381,14 +420,22 @@ print('Test had 0 incorrect result(s) and 0 error(s)')
 				if !os.IsNotExist(err) && !(err == nil && strings.Contains(string(stat), ") Z ")) {
 					t.Fatalf("tester child survived cancellation: %s %v", stat, err)
 				}
-				if out, err := exec.Command("docker", "inspect", ready.Container).CombinedOutput(); err == nil || !strings.Contains(string(out), "No such") {
-					t.Fatalf("case container not removed: %s %v", out, err)
+				queryCtx, queryCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer queryCancel()
+				out, err := exec.CommandContext(queryCtx, "docker", "ps", "-aq", "--no-trunc", "--filter", "id="+ready.Container).CombinedOutput()
+				if err != nil || len(strings.Fields(string(out))) != 0 {
+					t.Fatalf("case container removal query failed or found retained container: %s %v", out, err)
 				}
 				if !strings.Contains(string(log), "active harness ready with child") {
 					t.Fatalf("cancelled tester log lost: %s", log)
 				}
 				if _, err := os.Stat(filepath.Join(filepath.Dir(logs[0]), "docker.log")); err != nil {
 					t.Fatalf("cleanup logs missing after canceled context: %v", err)
+				}
+			}
+			if tc.name == "dead_fdb" || tc.name == "unavailable_fdb" {
+				if !strings.HasSuffix(r.Error, "; FDB liveness check failed") {
+					t.Fatalf("assembled runner lost liveness suffix: %+v", r)
 				}
 			}
 			if tc.name == "unavailable_fdb" && !strings.Contains(string(log), "zero-exit unavailable status confirmed") {

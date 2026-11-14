@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"fdb.dev/pkg/testcontainers/foundationdb"
 )
 
 // A seed is reproducible only together with its generator settings and pinned harness.
@@ -139,10 +141,19 @@ type runnerDeps struct {
 	perSeedTimeout    time.Duration
 	admissionReserve  time.Duration
 	seedRunner        func(context.Context, int, workload, string, string) SeedResult
+	startFDB          func(context.Context, string) (*foundationdb.Container, error)
+	collectLogs       func(context.Context, *foundationdb.Container, string)
+	terminateFDB      func(context.Context, *foundationdb.Container) error
 }
 
 func defaultRunnerDeps(seedRunner func(context.Context, int, workload, string, string) SeedResult) runnerDeps {
-	return runnerDeps{newTimeoutContext: context.WithTimeout, now: time.Now, perSeedTimeout: 5 * time.Minute, admissionReserve: 330 * time.Second, seedRunner: seedRunner}
+	return runnerDeps{
+		newTimeoutContext: context.WithTimeout, now: time.Now, perSeedTimeout: 5 * time.Minute, admissionReserve: 330 * time.Second, seedRunner: seedRunner,
+		startFDB: startSeedFDB, collectLogs: collectLogs,
+		terminateFDB: func(ctx context.Context, container *foundationdb.Container) error {
+			return foundationdb.Terminate(ctx, container)
+		},
+	}
 }
 
 func runSeedWithDeps(parent context.Context, seed int, w workload, harness, dir string, deps runnerDeps) SeedResult {

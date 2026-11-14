@@ -68,7 +68,12 @@ go_test(
     # Integration sources belong to the test-full target above.
     srcs = [
         "bindingtester_setup_test.go",
+        "cli_contract_test.go",
+        "container_cleanup_test.go",
+        "defensive_runner_test.go",
+        "json_contract_test.go",
         "main_test.go",
+        "pipe_wait_test.go",
         "runner_guard_test.go",
         "scheduled_test.go",
         "setup_guard_test.go",
@@ -79,4 +84,5 @@ go_test(
     ],
     embed = [":fdb-binding-stress_lib"],
     tags = ["resources:memory:400"],
+    deps = ["//pkg/testcontainers/foundationdb"],
 )

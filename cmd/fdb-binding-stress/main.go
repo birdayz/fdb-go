@@ -108,26 +108,30 @@ func run(seedRunner func(context.Context, int, workload, string, string) SeedRes
 	return 0
 }
 
-func realRunSeed(ctx context.Context, seed int, w workload, btRunDir, seedDir string) (r SeedResult) {
+func startSeedFDB(ctx context.Context, image string) (*foundationdb.Container, error) {
+	return foundationdb.Run(ctx, image, foundationdb.WithDirectIP(), foundationdb.WithStorageEngine("memory"))
+}
+
+func realRunSeed(ctx context.Context, seed int, w workload, btRunDir, seedDir string) SeedResult {
+	return realRunSeedWithDeps(ctx, seed, w, btRunDir, seedDir, defaultRunnerDeps(realRunSeed))
+}
+
+func realRunSeedWithDeps(ctx context.Context, seed int, w workload, btRunDir, seedDir string, deps runnerDeps) (r SeedResult) {
 	r = SeedResult{Seed: seed, Workload: w}
 
 	// Start FDB via testcontainers. WithDirectIP avoids Docker DNAT which
 	// confuses FDB's canonicalRemotePort tracking in the C binding (used by
 	// the Python tester), triggering assertion spam at FlowTransport.actor.cpp.
-	container, err := foundationdb.Run(
-		ctx, "foundationdb/foundationdb:"+testedFDBVersion,
-		foundationdb.WithDirectIP(),
-		foundationdb.WithStorageEngine("memory"),
-	)
+	container, err := deps.startFDB(ctx, "foundationdb/foundationdb:"+testedFDBVersion)
 	if err != nil {
 		r.Error = "container start failed: " + err.Error()
 		return r
 	}
 	defer func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		cleanupCtx, cleanupCancel := deps.newTimeoutContext(context.Background(), 30*time.Second)
 		defer cleanupCancel()
-		collectLogs(cleanupCtx, container, seedDir)
-		if err := foundationdb.Terminate(cleanupCtx, container); err != nil {
+		deps.collectLogs(cleanupCtx, container, seedDir)
+		if err := deps.terminateFDB(cleanupCtx, container); err != nil {
 			fmt.Fprintf(os.Stderr, "seed %d: %v\n", seed, err)
 			r.Pass = false
 			if r.Error != "" {
@@ -173,17 +177,19 @@ func realRunSeed(ctx context.Context, seed int, w workload, btRunDir, seedDir st
 		return r
 	}
 
-	r.FDBAlive = isFDBAlive(ctx, container)
-	r.Pass = successfulVerdict(output, err) && r.FDBAlive
+	applyTesterVerdict(&r, output, err, isFDBAlive(ctx, container))
+	return r
+}
 
+func applyTesterVerdict(r *SeedResult, output string, commandErr error, alive bool) {
+	r.FDBAlive = alive
+	r.Pass = successfulVerdict(output, commandErr) && r.FDBAlive
 	if !r.Pass && r.Error == "" {
-		r.Error = summarizeFailure(output, err)
+		r.Error = summarizeFailure(output, commandErr)
 		if !r.FDBAlive {
 			r.Error += "; FDB liveness check failed"
 		}
 	}
-
-	return r
 }
 
 // The Python harness spawns both bindings. Killing just its PID leaves those
@@ -195,10 +201,14 @@ func configureTesterProcess(cmd *exec.Cmd) {
 }
 
 func killTesterGroup(cmd *exec.Cmd) error {
+	return killTesterGroupWithKill(cmd, syscall.Kill)
+}
+
+func killTesterGroupWithKill(cmd *exec.Cmd, kill func(int, syscall.Signal) error) error {
 	if cmd.Process == nil {
 		return nil
 	}
-	err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	err := kill(-cmd.Process.Pid, syscall.SIGKILL)
 	if errors.Is(err, syscall.ESRCH) {
 		return os.ErrProcessDone
 	}
@@ -288,6 +298,12 @@ func databaseAvailable(output string, err error) bool {
 }
 
 func setup() (stacktester string, btRunDir string, err error) {
+	return setupWithRegistryOpener(func(path string, flags int, perm os.FileMode) (io.WriteCloser, error) {
+		return os.OpenFile(path, flags, perm)
+	})
+}
+
+func setupWithRegistryOpener(openRegistry func(string, int, os.FileMode) (io.WriteCloser, error)) (stacktester string, btRunDir string, err error) {
 	// When run via `bazelisk run`, cwd is the sandbox. Use workspace dir.
 	wsDir := os.Getenv("BUILD_WORKSPACE_DIRECTORY")
 	if wsDir != "" {
@@ -344,16 +360,12 @@ func setup() (stacktester string, btRunDir string, err error) {
 		return "", "", fmt.Errorf("copy Python oracle: %s: %w", out, err)
 	}
 	known := filepath.Join(btRunDir, "bindingtester", "known_testers.py")
-	f, err := os.OpenFile(known, os.O_APPEND|os.O_WRONLY, 0)
+	f, err := openRegistry(known, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		return "", "", fmt.Errorf("open known testers: %w", err)
 	}
-	_, err = fmt.Fprintf(f, "\ntesters['python'] = Tester('python', 'python3 %s', 2040, 23, 730, types=ALL_TYPES, tenants_enabled=True)\ntesters['pure_go'] = Tester('pure_go', '%s', 2040, 510, 730, types=ALL_TYPES)\n", filepath.Join(btRunDir, "python", "tester.py"), stacktester)
-	if closeErr := f.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return "", "", fmt.Errorf("register testers: %w", err)
+	if err = registerTesters(f, btRunDir, stacktester); err != nil {
+		return "", "", err
 	}
 
 	if err = installPythonFDB(btRunDir); err != nil {
@@ -365,6 +377,17 @@ func setup() (stacktester string, btRunDir string, err error) {
 
 	fmt.Fprintf(os.Stderr, "Stacktester: %s\nHarness: %s\n\n", stacktester, btRunDir)
 	return stacktester, btRunDir, nil
+}
+
+func registerTesters(f io.WriteCloser, btRunDir, stacktester string) error {
+	_, err := fmt.Fprintf(f, "\ntesters['python'] = Tester('python', 'python3 %s', 2040, 23, 730, types=ALL_TYPES, tenants_enabled=True)\ntesters['pure_go'] = Tester('pure_go', '%s', 2040, 510, 730, types=ALL_TYPES)\n", filepath.Join(btRunDir, "python", "tester.py"), stacktester)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return fmt.Errorf("register testers: %w", err)
+	}
+	return nil
 }
 
 // installPythonFDB unpacks the pinned FDB Python client into the harness dir,

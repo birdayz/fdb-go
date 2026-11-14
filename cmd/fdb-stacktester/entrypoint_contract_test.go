@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -307,5 +308,38 @@ func TestWaitEmptyDispatchReturnsReadAndBackoffErrors(t *testing.T) {
 	}
 	if len(sm.stack) != 1 || sm.stack[0].idx != 12 || !bytes.Equal(sm.popBytes(), []byte("WAITED_FOR_EMPTY")) {
 		t.Fatalf("successful WAIT_EMPTY stack=%+v", sm.stack)
+	}
+}
+
+func TestCLIRejectsUnsupportedAPIVersionBeforeDatabaseOpen(t *testing.T) {
+	t.Parallel()
+	binary := filepath.Join(os.Getenv("TEST_SRCDIR"), os.Getenv("TEST_WORKSPACE"), "cmd/fdb-stacktester/fdb-stacktester_/fdb-stacktester")
+	if info, err := os.Stat(binary); err != nil || info.IsDir() {
+		t.Fatalf("declared stacktester binary unavailable: %s: %v", binary, err)
+	}
+	missingCluster := filepath.Join(t.TempDir(), "missing.cluster")
+	if _, err := os.Stat(missingCluster); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing-cluster fixture unexpectedly exists or failed: %v", err)
+	}
+	for _, tc := range []struct {
+		name, api, want string
+		forbid          string
+	}{
+		{"invalid_api_before_invalid_cluster", "0", "select api-version: ", "open database:"},
+		{"valid_api_reaches_invalid_cluster", "730", "open database: ", "select api-version:"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, binary, "unsupported-api/instructions", tc.api, missingCluster)
+			output, err := cmd.CombinedOutput()
+			var exit *exec.ExitError
+			if ctx.Err() != nil || !errors.As(err, &exit) || exit.ExitCode() != 1 {
+				t.Fatalf("actual CLI API%s exit=%v budget=%v output=%s; want exit1", tc.api, err, ctx.Err(), output)
+			}
+			if !strings.HasPrefix(string(output), tc.want) || strings.Contains(string(output), tc.forbid) {
+				t.Fatalf("actual CLI API%s output=%q want prefix%q and no%q", tc.api, output, tc.want, tc.forbid)
+			}
+		})
 	}
 }
