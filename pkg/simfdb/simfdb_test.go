@@ -260,8 +260,8 @@ func TestDeterministicVersions(t *testing.T) {
 		}
 		return db.lastVersion
 	}
-	if a, b := run(), run(); a != b || a != 10 {
-		t.Fatalf("versions not deterministic: %d vs %d (want 10)", a, b)
+	if a, b := run(), run(); a != b || a != 11 {
+		t.Fatalf("versions not deterministic: %d vs %d (want 11)", a, b)
 	}
 }
 

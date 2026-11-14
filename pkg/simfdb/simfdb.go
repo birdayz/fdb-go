@@ -165,14 +165,15 @@ func New(env *dst.Env) *SimDB {
 	if !fdb.IsAPIVersionSelected() {
 		fdb.MustAPIVersion(simDefaultAPIVersion)
 	}
-	return &SimDB{store: &mvccStore{}, env: env}
+	// Version 0 is not a valid FDB read version; commits advance beyond this empty snapshot.
+	return &SimDB{store: &mvccStore{}, lastVersion: 1, env: env}
 }
 
 // Compile-time assertion that SimDB satisfies the backend contract.
 var _ fdb.BackendDatabase = (*SimDB)(nil)
 
-// currentReadVersion returns the version a new transaction reads at: the highest committed
-// version. Caller holds db.mu.
+// currentReadVersion returns the highest committed version, or the empty snapshot's version 1.
+// Caller holds db.mu.
 func (db *SimDB) currentReadVersion() int64 { return db.lastVersion }
 
 // Transact runs fn inside a writable transaction with the retry loop the real backends'
