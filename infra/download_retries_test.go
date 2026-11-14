@@ -546,8 +546,14 @@ type starlarkCall struct {
 	kwargs  map[string]bool
 	strings []string // every string literal inside the call, nested ones included
 	// values holds each keyword argument's value tokens; a repeated keyword maps to nil.
-	values map[string][]starlarkToken
-	stmt   int // index of the statement holding the call
+	values   map[string][]starlarkToken
+	stmt     int   // index of the statement holding the call
+	first    int   // token index of the callee
+	real     bool  // the callee is in the call's statement, not the end of the one before
+	whole    bool  // the call is its whole statement, so nothing keeps or uses its result
+	assigned bool  // the call is the whole value of a `target = call(...)` statement
+	args     []int // token index of each positional argument's first token
+	maps     []int // token index of each `sha256s = name` argument's plain name
 }
 
 type starlarkToken struct {
@@ -683,29 +689,39 @@ func starlarkParse(src string) ([]*starlarkCall, map[string]*starlarkBinding, er
 			stmtOf[k] = s
 		}
 	}
+	last := func(s int) int { // index of statement s's last token, a trailing ';' aside
+		end := len(toks) - 1
+		if s+1 < len(starts) {
+			end = starts[s+1] - 1
+		}
+		if end > 0 && !toks[end].str && toks[end].text == ";" {
+			end--
+		}
+		return end
+	}
 	type kwarg struct {
-		name  string
-		start int
+		name       string
+		start, arg int // first token of the keyword's value and of the whole argument
 	}
 	var calls, open []*starlarkCall
-	var depths []int       // bracket depth of each open call's arguments
-	var pending []kwarg    // the keyword argument each open call is reading, if any
-	refs := map[int]bool{} // token index of each whole `sha256s = name` argument's name
-	closeKwarg := func(i int) {
+	var depths []int    // bracket depth of each open call's arguments
+	var pending []kwarg // the argument each open call is reading
+	closeArg := func(i int) {
 		p := &pending[len(pending)-1]
-		if p.name == "" {
-			return
-		}
-		if p.name == "sha256s" && i == p.start+1 {
-			refs[p.start] = true
-		}
 		c := open[len(open)-1]
-		if _, dup := c.values[p.name]; dup {
-			c.values[p.name] = nil
+		if p.name == "" {
+			c.args = append(c.args, p.arg)
 		} else {
-			c.values[p.name] = toks[p.start:i]
+			if v := toks[p.start]; p.name == "sha256s" && i == p.start+1 && !v.str && isName(v.text) && !strings.Contains(v.text, ".") {
+				c.maps = append(c.maps, p.start)
+			}
+			if _, dup := c.values[p.name]; dup {
+				c.values[p.name] = nil
+			} else {
+				c.values[p.name] = toks[p.start:i]
+			}
 		}
-		p.name = ""
+		*p = kwarg{arg: i + 1}
 	}
 	depth := 0
 	for i, tok := range toks {
@@ -724,12 +740,16 @@ func starlarkParse(src string) ([]*starlarkCall, map[string]*starlarkBinding, er
 			depth++
 			if tok.text == "(" && !prev.str && prev.text != "" && isIdentByte(prev.text[0]) {
 				s := stmtOf[i]
-				c := &starlarkCall{fn: prev.text, line: prev.line, kwargs: map[string]bool{}, values: map[string][]starlarkToken{}, stmt: s}
-				calls, open, depths, pending = append(calls, c), append(open, c), append(depths, depth), append(pending, kwarg{})
+				c := &starlarkCall{fn: prev.text, line: prev.line, kwargs: map[string]bool{}, values: map[string][]starlarkToken{}, stmt: s, first: i - 1, real: stmtOf[i-1] == s}
+				calls, open, depths, pending = append(calls, c), append(open, c), append(depths, depth), append(pending, kwarg{arg: i + 1})
 			}
 		case ")", "]", "}":
 			if len(open) > 0 && depths[len(depths)-1] == depth {
-				closeKwarg(i)
+				closeArg(i)
+				c := open[len(open)-1]
+				start, end := starts[c.stmt], last(c.stmt)
+				c.whole = c.first == start && i == end
+				c.assigned = c.first == start+2 && i == end && !toks[start+1].str && toks[start+1].text == "="
 				open, depths, pending = open[:len(open)-1], depths[:len(depths)-1], pending[:len(pending)-1]
 			}
 			if depth--; depth < 0 {
@@ -737,35 +757,84 @@ func starlarkParse(src string) ([]*starlarkCall, map[string]*starlarkBinding, er
 			}
 		case ",":
 			if len(open) > 0 && depths[len(depths)-1] == depth {
-				closeKwarg(i)
+				closeArg(i)
 			}
 		case "=":
 			if len(open) > 0 && depths[len(depths)-1] == depth && !prev.str {
 				open[len(open)-1].kwargs[prev.text] = true
-				pending[len(pending)-1] = kwarg{prev.text, i + 1}
+				p := &pending[len(pending)-1]
+				p.name, p.start = prev.text, i+1
 			}
 		}
 	}
 	if depth != 0 {
 		return nil, nil, errors.New("unbalanced brackets at end of file")
 	}
+	// def, lambda and load bring in user code and for binds names a call's parentheses can hide, so
+	// such a file consumes no map. Elsewhere only a whole-statement download on a proxy does.
+	opaque := slices.ContainsFunc(toks, func(t starlarkToken) bool {
+		return !t.str && slices.Contains([]string{"def", "lambda", "load", "for"}, t.text)
+	})
+	refs := map[int]bool{} // token index of each consumed `sha256s = name` argument's name
+	if !opaque {
+		proxies := starlarkProxies(toks, starts, calls)
+		for _, c := range calls {
+			if root, _, _ := strings.Cut(c.fn, "."); c.whole && (c.kwargs["url"] || c.kwargs["urls"]) && proxies[root] {
+				for _, k := range c.maps {
+					refs[k] = true
+				}
+			}
+		}
+	}
 	return calls, starlarkBindings(toks, starts, refs), nil
+}
+
+// starlarkProxies reports the names bound only by `name = use_extension(...)` or use_repo_rule(...)
+// with neither rebound: Bazel proxies, whose calls return None and expose nothing they are given.
+func starlarkProxies(toks []starlarkToken, starts []int, calls []*starlarkCall) map[string]bool {
+	safe := map[int]bool{}    // a callee or a positional argument's first token, which no binding can be
+	ctors := map[int]string{} // the target of each `name = use_extension(...)` or use_repo_rule binding
+	for _, c := range calls {
+		if !c.real {
+			continue
+		}
+		safe[c.first] = true
+		for _, k := range c.args {
+			safe[k] = true
+		}
+		if c.assigned && (c.fn == "use_extension" || c.fn == "use_repo_rule") {
+			ctors[starts[c.stmt]] = c.fn
+		}
+	}
+	bound, rebound, made := map[string]bool{}, map[string]bool{}, map[string][]string{}
+	for k, t := range toks {
+		if t.str || !isName(t.text) || strings.Contains(t.text, ".") || safe[k] {
+			continue // name.attr cannot bind name either
+		}
+		bound[t.text] = true
+		if ctor := ctors[k]; ctor != "" {
+			made[t.text] = append(made[t.text], ctor)
+		} else {
+			rebound[t.text] = true
+		}
+	}
+	proxies := map[string]bool{}
+	for name, cs := range made {
+		proxies[name] = !rebound[name] && !slices.ContainsFunc(cs, func(c string) bool { return bound[c] })
+	}
+	return proxies
 }
 
 // starlarkBinding is what a file does with one name.
 type starlarkBinding struct {
-	uses  int             // its bindings and references, other than whole `sha256s = name` arguments
+	uses  int             // its bindings and references, other than consumed `sha256s = name` arguments
 	value []starlarkToken // value of a plain `name = value` statement when that is the name's first use
 	stmt  int             // that statement's index
 	top   bool            // it is the first statement of a line that starts in column 0
 }
 
-// starlarkBindings counts, per name, its bindings and references. Only a plain `name = value`
-// statement records a value. Every other occurrence of the name counts against it: a second
-// binding, an alias (`other = name`), any argument but a whole `sha256s = name` (refs), a load()
-// import or alias, a def, for or lambda name or parameter, a subscript, tuple or augmented
-// target, and an attribute use such as name.update(...). So a name that is rebound, mutated or
-// escapes into another value or call never resolves.
+// starlarkBindings counts every occurrence of each name but refs and records a plain `name = value`
+// statement's value, so a name that is rebound, mutated or escapes never resolves.
 func starlarkBindings(toks []starlarkToken, starts []int, refs map[int]bool) map[string]*starlarkBinding {
 	out := map[string]*starlarkBinding{}
 	use := func(name string) *starlarkBinding {
@@ -835,10 +904,8 @@ func starlarkBindings(toks []starlarkToken, starts []int, refs map[int]bool) map
 
 var sha256Hex = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 
-// sha256sChecked reports whether a call's sha256s argument is a checksum map: an inline dict
-// literal, or a bare name the same file binds exactly once, at top level and before the call,
-// to one. The dict must be non-empty, every key a string literal and every value a string
-// literal of 64 hex digits; any other expression, an empty dict included, does not count.
+// sha256sChecked reports whether a call's sha256s argument is a sha256sMap, inline or through a
+// name used only by consuming calls and its one top-level binding before the call.
 func sha256sChecked(c *starlarkCall, bindings map[string]*starlarkBinding) bool {
 	v := c.values["sha256s"]
 	if len(v) == 1 && !v[0].str && isName(v[0].text) && !strings.Contains(v[0].text, ".") {
@@ -1021,6 +1088,13 @@ func TestSha256sChecksumMaps(t *testing.T) {
 	indent := func(src string) string {
 		return "    " + strings.ReplaceAll(strings.TrimSuffix(src, "\n"), "\n", "\n    ") + "\n"
 	}
+	consume := strings.TrimSuffix(fetch("pins"), "\n")
+	retain := func(callee string) string {
+		return callee + "(sha256s = pins, urls = [\"https://example.invalid/s\"])\n"
+	}
+	kit := "kit = use_extension(\"@kit//:kit.bzl\", \"kit\")\n"
+	// Every fixture starts with the extension proxy binding its rust.repository_set calls go through.
+	ext := "rust = use_extension(\"@rules_rust//rust:extensions.bzl\", \"rust\")\n"
 	read := func(path string) (string, error) { return "", fmt.Errorf("%s is not a fixture", path) }
 	for _, tc := range []struct {
 		name, module string
@@ -1037,7 +1111,10 @@ func TestSha256sChecksumMaps(t *testing.T) {
 		{"accept-binding-continued-by-backslash", "pins = \\\n    " + pin(hex) + "\n" + fetch("pins"), true},
 		{"accept-binding-between-multiline-string-and-comments", "doc = \"\"\"\npins = {}\npins.update(x)\n\"\"\"\n# pins = {}\n" + bind + "# pins.update({})\n" + fetch("pins"), true},
 		{"accept-two-sha256s-arguments", bind + fetch("pins") + fetch("pins"), true},
-		{"accept-name-in-def-body-call", bind + "def f():\n" + indent(fetch("pins")), true},
+		{"accept-name-in-if-body-call", bind + "if True:\n" + indent(fetch("pins")), true},
+		{"accept-consumer-between-semicolon-statements", bind + "x = 1; " + consume + "; y = 2\n", true},
+		{"accept-repo-rule-consumer", "fetch_rule = use_repo_rule(\"@fetch//:fetch.bzl\", \"fetch_rule\")\n" + bind + retain("fetch_rule"), true},
+		{"accept-proxy-passed-to-use-repo", bind + fetch("pins") + "use_repo(rust, \"r\")\n", true},
 		{"reject-no-checksum", "http_file(name = \"f\", urls = [\"https://example.invalid/f\"])\n", false},
 		{"reject-unbound-name", fetch("pins"), false},
 		{"reject-bound-twice", bind + bind + fetch("pins"), false},
@@ -1052,6 +1129,31 @@ func TestSha256sChecksumMaps(t *testing.T) {
 		{"reject-lambda-parameter-shadow", bind + "g = lambda pins: pins\n" + fetch("pins"), false},
 		{"reject-augmented-shift", bind + "pins <<= 1\n" + fetch("pins"), false},
 		{"reject-alias-escape-mutation", bind + "other = pins\nother.update(" + pin(hex) + ")\n" + fetch("pins"), false},
+		{"reject-dict-keyword-escape-mutation", bind + "holder = dict(sha256s = pins)\nholder[\"sha256s\"].clear()\nrust.repository_set(sha256s = pins, urls = [\"https://example.invalid/{}.tar.xz\"])\n", false},
+		{"reject-struct-keyword-escape-mutation", bind + "holder = struct(sha256s = pins)\nholder.sha256s.clear()\n" + fetch("pins"), false},
+		{"reject-nested-keyword-escape", bind + "keep([dict(sha256s = pins)])\n" + fetch("pins"), false},
+		{"reject-discarded-non-download-keyword", bind + "rust.toolchain(sha256s = pins)\n" + fetch("pins"), false},
+		{"reject-retained-download-result", bind + "holder = " + fetch("pins") + "holder.clear()\n" + fetch("pins"), false},
+		{"reject-nested-download-call", bind + "keep(" + consume + ")\n" + fetch("pins"), false},
+		{"reject-download-result-used", bind + consume + ".sha256s.clear()\n" + fetch("pins"), false},
+		{"reject-bound-method-argument", bind + fetch("pins.clear") + fetch("pins"), false},
+		{"reject-update-receiver-escape-mutation", bind + "holder = {}\nholder.update(sha256s = pins, urls = [\"https://example.invalid/s\"])\nholder[\"sha256s\"].clear()\nrust.repository_set(sha256s = pins, urls = [\"https://example.invalid/{}.tar.xz\"])\n", false},
+		{"reject-dict-call-receiver", bind + "holder = dict()\n" + retain("holder.update") + "holder.pop(\"sha256s\").clear()\n" + fetch("pins"), false},
+		{"reject-receiver-alias", bind + "holder = {}\nalias = holder\n" + retain("alias.update") + "holder[\"sha256s\"].clear()\n" + fetch("pins"), false},
+		{"reject-bound-method-alias", bind + "holder = {}\nput = holder.update\n" + retain("put") + "holder[\"sha256s\"].clear()\n" + fetch("pins"), false},
+		{"reject-setdefault-receiver", bind + "holder = {}\nnested = holder.setdefault(\"k\", {})\n" + retain("nested.update") + "holder[\"k\"][\"sha256s\"].clear()\n" + fetch("pins"), false},
+		{"reject-constructor-in-conditional", bind + "held = {}\nkit = held if True else use_extension(\"@kit//:kit.bzl\", \"kit\")\n" + retain("kit.update") + "held[\"sha256s\"].clear()\n" + fetch("pins"), false},
+		{"reject-augmented-constructor-binding", bind + "kit += use_extension(\"@kit//:kit.bzl\", \"kit\")\n" + retain("kit.update") + fetch("pins"), false},
+		{"reject-constructor-result-combined", bind + "held = {}\nkit = use_extension(\"@kit//:kit.bzl\", \"kit\") and held\n" + retain("kit.update") + "held[\"sha256s\"].clear()\n" + fetch("pins"), false},
+		{"reject-rebound-proxy", bind + "held = {}\n" + kit + "kit = held\n" + retain("kit.update") + "held[\"sha256s\"].clear()\n" + fetch("pins"), false},
+		{"reject-parenthesized-target-after-name", bind + "held = {}\n" + kit + "alias = held\n(kit, n) = (alias, 0)\n" + retain("kit.update") + "held[\"sha256s\"].clear()\n" + fetch("pins"), false},
+		{"reject-shadowed-constructor", bind + "held = {}\nuse_repo_rule = held.setdefault\nkit = use_repo_rule(\"k\", held)\n" + retain("kit.update") + "held[\"sha256s\"].clear()\n" + fetch("pins"), false},
+		{"reject-unbound-receiver-root", bind + strings.Replace(fetch("pins"), "rust.", "kit.", 1), false},
+		{"reject-def-parameter-shadows-proxy", "def f(rust):\n    " + retain("rust.update") + bind + "held = {}\nf(held)\nheld[\"sha256s\"].clear()\n" + fetch("pins"), false},
+		{"reject-lambda-in-file", bind + "noop = lambda: None\n" + fetch("pins"), false},
+		{"reject-loaded-constructor", "load(\"@kit//:kit.bzl\", \"use_repo_rule\")\n" + bind + "kit = use_repo_rule(\"@kit//:kit.bzl\", \"kit\")\n" + retain("kit.update") + "kit.pop(\"sha256s\").clear()\n" + fetch("pins"), false},
+		{"reject-for-target-shadows-proxy", bind + "held = {}\n" + kit + "for (kit, n) in [(held, 0)]:\n    " + retain("kit.update") + "held[\"sha256s\"].clear()\n" + fetch("pins"), false},
+		{"reject-name-in-def-body-call", bind + "def f():\n" + indent(fetch("pins")), false},
 		{"reject-positional-reference", bind + "keep(pins)\n" + fetch("pins"), false},
 		{"reject-other-keyword-reference", bind + "keep(m = pins)\n" + fetch("pins"), false},
 		{"reject-augmented-union", bind + "pins |= " + pin(hex) + "\n" + fetch("pins"), false},
@@ -1083,7 +1185,7 @@ func TestSha256sChecksumMaps(t *testing.T) {
 		{"reject-escaped-value", fetch(pin(`\x30` + hex[4:])), false},
 		{"reject-repeated-keyword", strings.Replace(fetch(pin(hex)), "    urls", "    sha256s = "+pin(hex)+",\n    urls", 1), false},
 	} {
-		found, err := remoteDownloads(tc.module, read)
+		found, err := remoteDownloads(ext+tc.module, read)
 		if err != nil {
 			t.Errorf("%s: %v", tc.name, err)
 			continue
@@ -1144,8 +1246,8 @@ func TestRemoteDownloadsAreChecksummed(t *testing.T) {
 	if !fdb || len(found) < 2 {
 		t.Fatalf("scan missed the FoundationDB archive_override: %v", found)
 	}
-	// Positive control: the Rust toolchain fetches are in the scanned population and are
-	// checksummed through the single top-level otel_rust_sha256s map; unbound, both fail.
+	// Positive control: the Rust toolchain fetches are in the scanned population and checksummed
+	// through the single top-level otel_rust_sha256s map; each mutation below fails both.
 	var rust []string
 	for _, d := range found {
 		if d.file == "MODULE.bazel" && (d.line == 109 || d.line == 129) {
@@ -1160,10 +1262,16 @@ func TestRemoteDownloadsAreChecksummed(t *testing.T) {
 	if strings.Count(module, binding) != 1 {
 		t.Fatalf("%q is not bound exactly once in MODULE.bazel", binding)
 	}
-	unbound := strings.Replace(module, binding, "otel_rust_sha256s_moved = {", 1)
-	for _, want := range []string{"MODULE.bazel:109 rust.repository_set fetches", "MODULE.bazel:129 otel_rust_host.host_tools fetches"} {
-		if err := check(unbound); err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("unbound-rust-sha256s: %v, want %q", err, want)
+	for _, m := range []struct{ name, module string }{
+		{"unbound-rust-sha256s", strings.Replace(module, binding, "otel_rust_sha256s_moved = {", 1)},
+		{"escaped-rust-sha256s", module + "\notel_rust_kept = dict(sha256s = otel_rust_sha256s)\n"},
+		{"receiver-escaped-rust-sha256s", module + "\notel_rust_kept = {}\notel_rust_kept.update(sha256s = otel_rust_sha256s, urls = otel_rust_urls)\n"},
+		{"def-in-module", module + "\ndef otel_rust_f():\n    pass\n"},
+	} {
+		for _, want := range []string{"MODULE.bazel:109 rust.repository_set fetches", "MODULE.bazel:129 otel_rust_host.host_tools fetches"} {
+			if err := check(m.module); err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: %v, want %q", m.name, err, want)
+			}
 		}
 	}
 	if err := check(module); err != nil {
