@@ -789,6 +789,9 @@ func openSealed(ctx context.Context, backend fdb.BackendDatabase, j *job, m *lay
 	if err := checkSeal(tx, *m); err != nil {
 		return nil, nil, err
 	}
+	// Domain registration is process-local: ingest and verify run in fresh processes,
+	// not the setup process. It does not create or repair persisted keys.
+	keyspace.RegisterDomainIfNotExists(otelDomain)
 	path, schema := tenantPaths(j.Run)
 	db := recordlayer.NewFDBDatabaseWithBackend(backend)
 	ts, stored, err := openTenant(func() *recordlayer.FDBRecordContext {
