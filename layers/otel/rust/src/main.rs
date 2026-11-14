@@ -3,7 +3,7 @@
 use fdb_otel_rust::{
     Error, ErrorKind, Result,
     collector::{self, Collector},
-    native::{self, NativeDatabase},
+    native::{self, MappedClientProof, NativeDatabase},
     row::Schema,
     storage::RecordCompression,
     writer::{Context, Database, Diagnostics, Layout, WriteStats, Writer},
@@ -525,6 +525,11 @@ struct Report {
     layout_sha256: String,
     cluster_sha256: String,
     client_library_sha256: String,
+    /// Both present only once an actual native open proved its mapped client; never false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_library_mapped: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_mapping_rule: Option<&'static str>,
     boundary: &'static str,
     latency_boundary: &'static str,
     /// The sealed job exactly as parsed: itself a valid ingest job.
@@ -693,11 +698,29 @@ fn native_policy() -> serde_json::Value {
     })
 }
 
+impl Report {
+    /// Records an actual native open's proof; nothing else can construct one.
+    fn mapped(&mut self, proof: MappedClientProof) {
+        self.native_library_mapped = Some(true);
+        self.native_mapping_rule = Some(proof.rule());
+    }
+}
+
+/// An opened database and, only for an actual native open, its mapped-client proof.
+struct Opened<D> {
+    database: D,
+    mapping: Option<MappedClientProof>,
+}
+
 fn run(job_path: &Path) -> Result<()> {
     run_spawning(
         job_path,
         native::CLIENT_SHA256,
-        NativeDatabase::open,
+        |client, cluster| {
+            let database = NativeDatabase::open(client, cluster)?;
+            let mapping = Some(database.mapping_proof());
+            Ok(Opened { database, mapping })
+        },
         |_| Ok(()),
     )
 }
@@ -707,7 +730,7 @@ fn run(job_path: &Path) -> Result<()> {
 fn run_spawning<D: Database + 'static>(
     job_path: &Path,
     client_pin: &str,
-    open: impl FnOnce(&Path, &Path) -> Result<D>,
+    open: impl FnOnce(&Path, &Path) -> Result<Opened<D>>,
     mut before_spawn: impl FnMut(usize) -> std::io::Result<()>,
 ) -> Result<()> {
     let deadline_start = Instant::now();
@@ -776,6 +799,8 @@ fn run_spawning<D: Database + 'static>(
         layout_sha256: job.layout_sha256.clone(),
         cluster_sha256: job.cluster_sha256.clone(),
         client_library_sha256: job.client_library_sha256.clone(),
+        native_library_mapped: None,
+        native_mapping_rule: None,
         boundary: BOUNDARY,
         latency_boundary: if collector {
             QUEUE_LATENCY
@@ -853,12 +878,19 @@ fn ingest<D: Database + 'static>(
     job: &Job,
     compression: RecordCompression,
     layout: &Layout,
-    open: impl FnOnce(&Path, &Path) -> Result<D>,
+    open: impl FnOnce(&Path, &Path) -> Result<Opened<D>>,
     before_spawn: &mut impl FnMut(usize) -> std::io::Result<()>,
     deadline: Instant,
     report: &mut Report,
 ) -> Result<()> {
-    let db = open(&job.client_library, &job.cluster_file)?;
+    let Opened {
+        database: db,
+        mapping,
+    } = open(&job.client_library, &job.cluster_file)?;
+    // A later failure keeps the proof: it is about this open's handle, not the ingest.
+    if let Some(proof) = mapping {
+        report.mapped(proof);
+    }
     let writer = Arc::new(Writer::new_with_diagnostics(
         db,
         layout,

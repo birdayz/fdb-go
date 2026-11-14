@@ -20,7 +20,9 @@ use std::{
 };
 
 const FROZEN_SCHEMA_SHA256: &str =
-    "c7d9ae94ed71db095f0de48999e2683a2c12f96525241f1e9a7471f836f57ec6";
+    "1581c3dd4891579949d52cb5ac70717d54f5488784e17a2c993c5769aaacb18b";
+/// The only rules by which an actual native open can prove its mapped client.
+const MAPPING_RULES: [&str; 2] = ["exact_stat", "btrfs_superblock"];
 /// The frozen schema's ingest-mode fields; `Job` must require exactly these.
 const JOB_FIELDS: [&str; 28] = [
     "schema",
@@ -205,7 +207,7 @@ impl Files {
             |client, cluster| {
                 assert_eq!(client, self.dir.join("libfdb_c.so"));
                 assert_eq!(cluster, self.dir.join("fdb.cluster"));
-                Ok(db.clone())
+                unproved(db)
             },
             hook,
         )
@@ -215,7 +217,7 @@ impl Files {
         let err = run_spawning(
             &self.write(bytes),
             &self.pin,
-            |_: &Path, _: &Path| -> Result<Fake> {
+            |_: &Path, _: &Path| -> Result<Opened<Fake>> {
                 panic!("{case}: invalid job reached the opener")
             },
             |_| Ok(()),
@@ -232,6 +234,13 @@ impl Drop for Files {
     fn drop(&mut self) {
         fs::remove_dir_all(&self.dir).unwrap();
     }
+}
+/// The generic opener loads no client, so it never carries a mapping proof.
+fn unproved(db: &Fake) -> Result<Opened<Fake>> {
+    Ok(Opened {
+        database: db.clone(),
+        mapping: None,
+    })
 }
 fn output(job: &Json) -> PathBuf {
     PathBuf::from(job["output"].as_str().unwrap())
@@ -350,6 +359,26 @@ fn report_contract(r: &Json, job: &Json) -> std::result::Result<(), String> {
     };
     if r["effective_job"] != *job {
         return fail("effective_job is not the sealed job".into());
+    }
+    if r["client_library_sha256"] != job["client_library_sha256"] {
+        return fail("client_library_sha256 is not the sealed client".into());
+    }
+    // Mapping provenance comes only from an actual native open's proof. A source-only
+    // run (whose opener loads no client) or an unopened one has neither field; the
+    // schema's requirement that a successful native ingest has both is the real CLI's,
+    // checked by the Go-owned native integration. A claim is literally true, an
+    // authorized rule and the one pinned client.
+    match (
+        object.get("native_library_mapped"),
+        object.get("native_mapping_rule"),
+    ) {
+        (None, None) => {}
+        (Some(Json::Bool(true)), Some(Json::String(rule)))
+            if MAPPING_RULES.contains(&rule.as_str())
+                && r["client_library_sha256"] == native::CLIENT_SHA256 => {}
+        (mapped, rule) => {
+            return fail(format!("native mapping provenance {mapped:?} {rule:?}"));
+        }
     }
     // Distinct spans exist only after the census: absent, not even null.
     if object.contains_key("distinct_spans") {
@@ -784,6 +813,52 @@ fn frozen_schema_copy_pins_the_ingest_corpus_and_workload_field_sets() {
     );
     assert_eq!(branches[1]["properties"]["status"]["const"], "error");
     assert!(str_set(&branches[1]["required"]).contains("ingest_resources_unavailable_reason"));
+    // Mapping provenance: a successful native ingest is literally mapped, by an authorized
+    // rule, with the client hash; any other successful report is literally unmapped.
+    assert_eq!(
+        report["properties"]["native_library_mapped"],
+        json!({"type": "boolean"})
+    );
+    assert_eq!(
+        report["properties"]["native_mapping_rule"],
+        json!({"enum": MAPPING_RULES})
+    );
+    assert!(
+        report["allOf"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"$ref": "#/$defs/native_mapping_policy"}))
+    );
+    let succeeded = &defs["native_mapping_policy"]["allOf"][0];
+    assert_eq!(
+        succeeded["if"],
+        json!({"properties": {"status": {"const": "ok"}}})
+    );
+    assert_eq!(
+        succeeded["then"]["required"],
+        json!(["native_library_mapped"])
+    );
+    let ingest_arm = &succeeded["then"]["allOf"][0];
+    assert_eq!(
+        ingest_arm["if"],
+        json!({"properties": {"mode": {"const": "ingest"}, "arm": {"enum": ["go_native", "rust_native"]}}})
+    );
+    assert_eq!(
+        ingest_arm["then"]["required"],
+        json!(["native_mapping_rule", "client_library_sha256"])
+    );
+    assert_eq!(
+        ingest_arm["then"]["properties"]["native_library_mapped"],
+        json!({"const": true})
+    );
+    assert_eq!(
+        ingest_arm["then"]["properties"]["native_mapping_rule"],
+        json!({"enum": MAPPING_RULES})
+    );
+    assert_eq!(
+        ingest_arm["else"],
+        json!({"properties": {"native_library_mapped": {"const": false}}, "not": {"required": ["native_mapping_rule"]}})
+    );
     let files = Files::new();
     let job = files.job(&frames()[..2], direct(1, 1));
     assert_eq!(key_set(&job), names(&JOB_FIELDS));
@@ -1152,7 +1227,7 @@ fn stage0_point2_workload_text_runs_verbatim_through_the_collector() {
     run_spawning(
         &files.write(text.as_bytes()),
         &files.pin,
-        |_, _| Ok(db.clone()),
+        |_, _| unproved(&db),
         |_| Ok(()),
     )
     .unwrap();
@@ -1188,7 +1263,7 @@ fn failures_after_reservation_write_synced_error_receipts_with_exact_progress() 
     let err = run_spawning(
         &files.write(&serde_json::to_vec(&job).unwrap()),
         &files.pin,
-        |_: &Path, _: &Path| -> Result<Fake> {
+        |_: &Path, _: &Path| -> Result<Opened<Fake>> {
             Err(Error::new(ErrorKind::Operation, "injected open failure"))
         },
         |_| Ok(()),
@@ -1797,7 +1872,7 @@ fn report_contract_rejects_marker_count_resource_sample_and_policy_violations() 
     run_spawning(
         &files.write(&serde_json::to_vec(&early_job).unwrap()),
         &files.pin,
-        |_: &Path, _: &Path| -> Result<Fake> {
+        |_: &Path, _: &Path| -> Result<Opened<Fake>> {
             Err(Error::new(
                 ErrorKind::Operation,
                 "native client open failed",
@@ -2118,4 +2193,112 @@ fn report_contract_rejects_marker_count_resource_sample_and_policy_violations() 
             "null {field} on report {base} was accepted"
         );
     }
+}
+
+#[test]
+fn mapping_provenance_is_never_forged_and_strictly_paired() {
+    let files = Files::new();
+    let source = frames();
+    let job = files.job(&source[..2], direct(1, 1));
+    files.run(&job, &Fake::new(Mode::Success)).unwrap();
+    let early = files.job(&source[..2], direct(1, 1));
+    run_spawning(
+        &files.write(&serde_json::to_vec(&early).unwrap()),
+        &files.pin,
+        |_: &Path, _: &Path| -> Result<Opened<Fake>> {
+            Err(Error::new(
+                ErrorKind::Operation,
+                "native client open failed",
+            ))
+        },
+        |_| Ok(()),
+    )
+    .unwrap_err();
+    // A successful source-only run and an unopened one claim nothing about a mapping.
+    for (sealed, status) in [(&job, "ok"), (&early, "error")] {
+        let r = checked_receipt(sealed);
+        assert_eq!(r["status"], status);
+        assert!(
+            r.get("native_library_mapped").is_none() && r.get("native_mapping_rule").is_none(),
+            "{r}"
+        );
+        assert_eq!(r["client_library_sha256"], sealed["client_library_sha256"]);
+    }
+    // The same report, sealed for the pinned client, as an actual native open reports it.
+    let base = checked_receipt(&job);
+    let pinned = || {
+        let mut r = base.clone();
+        r["client_library_sha256"] = json!(native::CLIENT_SHA256);
+        r["effective_job"]["client_library_sha256"] = json!(native::CLIENT_SHA256);
+        let sealed = r["effective_job"].clone();
+        (r, sealed)
+    };
+    let claim = |mapped: Option<Json>, rule: Option<Json>, pin: bool| {
+        let (mut r, sealed) = if pin {
+            pinned()
+        } else {
+            (base.clone(), job.clone())
+        };
+        if let Some(mapped) = mapped {
+            r["native_library_mapped"] = mapped;
+        }
+        if let Some(rule) = rule {
+            r["native_mapping_rule"] = rule;
+        }
+        report_contract(&r, &sealed)
+    };
+    for rule in MAPPING_RULES {
+        assert!(
+            claim(Some(json!(true)), Some(json!(rule)), true).is_ok(),
+            "{rule}"
+        );
+    }
+    let cases: [(&str, Option<Json>, Option<Json>, bool); 9] = [
+        ("true only", Some(json!(true)), None, true),
+        ("rule only", None, Some(json!("exact_stat")), true),
+        (
+            "false with a rule",
+            Some(json!(false)),
+            Some(json!("exact_stat")),
+            true,
+        ),
+        ("false alone", Some(json!(false)), None, true),
+        (
+            "null with a rule",
+            Some(Json::Null),
+            Some(json!("exact_stat")),
+            true,
+        ),
+        (
+            "true with a null rule",
+            Some(json!(true)),
+            Some(Json::Null),
+            true,
+        ),
+        (
+            "an unknown rule",
+            Some(json!(true)),
+            Some(json!("mount_device")),
+            true,
+        ),
+        (
+            "a string true",
+            Some(json!("true")),
+            Some(json!("exact_stat")),
+            true,
+        ),
+        (
+            "the stand-in client",
+            Some(json!(true)),
+            Some(json!("exact_stat")),
+            false,
+        ),
+    ];
+    for (name, mapped, rule, pin) in cases {
+        assert!(claim(mapped, rule, pin).is_err(), "{name} was accepted");
+    }
+    // The echoed client hash must be the sealed one, claim or not.
+    let (mut r, sealed) = pinned();
+    r["client_library_sha256"] = json!("0".repeat(64));
+    assert!(report_contract(&r, &sealed).is_err());
 }

@@ -237,7 +237,7 @@ func (c queueCase) run(t *testing.T) (*ingestReport, error) {
 		}
 		return c.sink, nil
 	}
-	r := newIngestReport(j, newCommon(j, strings.Repeat("c", 64), encode(t, raw), ingestBoundary))
+	r := newIngestReport(j, newCommon(j, pureFlavor.tags, strings.Repeat("c", 64), encode(t, raw), ingestBoundary))
 	ctx, cancel := context.WithTimeout(t.Context(), c.deadline)
 	defer cancel()
 	// A scripted sink opens no client, so no mapping rule precedes it.

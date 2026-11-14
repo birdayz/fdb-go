@@ -58,6 +58,32 @@ go_library(
     ],
 )
 
+# Without either tag the package is the stub and fdbclient is pure-Go.
+go_test(
+    name = "backend_stub_test",
+    srcs = ["backend_stub_test.go"],
+    deps = [
+        ":libfdbc",
+        "//pkg/internal/fdbclient",
+    ],
+)
+
+# libfdbc_backend compiles the native backend while fdbclient stays pure-Go.
+go_test(
+    name = "backend_tag_test",
+    srcs = ["backend_tag_test.go"],
+    gotags = ["libfdbc_backend"],
+    pure = "off",
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+    deps = [
+        ":libfdbc_native",
+        "//pkg/internal/fdbclient",
+    ],
+)
+
 go_test(
     name = "network_lifecycle_test",
     srcs = ["network_lifecycle_test.go"],

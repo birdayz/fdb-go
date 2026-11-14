@@ -34,6 +34,8 @@ fn applied_commit_unknown_result() {
         &path("OTEL_NATIVE_PROOF_CLUSTER"),
     )
     .unwrap();
+    // This open's own mapped-client proof, taken before the database moves into the Writer.
+    let mapping = db.mapping_proof();
     let writer = Writer::new(db, &layout, 64, RecordCompression::None).unwrap();
     let (stats, result) = writer.write(&Context::default(), &[wire]);
     let c = native::fault::counters();
@@ -67,6 +69,9 @@ fn applied_commit_unknown_result() {
         "committed_batches": stats.committed_batches,
         "retries": stats.retries,
         "logical_otlp_bytes": stats.logical_otlp_bytes,
+        "native_library_mapped": true,
+        "native_mapping_rule": mapping.rule(),
+        "client_library_sha256": native::CLIENT_SHA256,
     });
     fs::write(
         path("OTEL_NATIVE_PROOF_REPORT"),
@@ -88,5 +93,6 @@ fn applied_commit_unknown_result() {
         [1021]
     );
     assert_eq!((stats.committed_batches, stats.retries), (1, 1));
+    assert!(["exact_stat", "btrfs_superblock"].contains(&mapping.rule()));
     assert!(stats.committed_spans > 0);
 }

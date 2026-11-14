@@ -106,6 +106,44 @@ func rejectNetworkEnv(env []string) error {
 	return nil
 }
 
+// checkNoNativeClient requires a nonempty, well-formed /proc/self/maps naming no
+// libfdb_c anywhere in a pathname, so a deleted, renamed or versioned copy counts too.
+func checkNoNativeClient(maps string) error {
+	if maps == "" {
+		return fault("client", "the process mappings are empty")
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(maps, "\n"), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 || !mapsLineShape(fields[:5]) {
+			return fault("client", "the process mappings are malformed")
+		}
+		if strings.Contains(strings.Join(fields[5:], " "), "libfdb_c") {
+			return fault("client", "control-pure has a native libfdb_c client mapped")
+		}
+	}
+	return nil
+}
+
+// mapsLineShape checks a maps line's address range, which must cover at least one byte,
+// permissions, offset, 32-bit device halves and inode (proc(5)).
+func mapsLineShape(f []string) bool {
+	parseHex := func(s string, bits int) (uint64, bool) {
+		v, err := strconv.ParseUint(s, 16, bits)
+		return v, s != "" && err == nil
+	}
+	loText, hiText, rangeOK := strings.Cut(f[0], "-")
+	lo, loOK := parseHex(loText, 64)
+	hi, hiOK := parseHex(hiText, 64)
+	_, offsetOK := parseHex(f[2], 64)
+	majorText, minorText, devOK := strings.Cut(f[3], ":")
+	_, majorOK := parseHex(majorText, 32)
+	_, minorOK := parseHex(minorText, 32)
+	_, inodeErr := strconv.ParseUint(f[4], 10, 64)
+	perms := len(f[1]) == 4 && strings.ContainsRune("r-", rune(f[1][0])) && strings.ContainsRune("w-", rune(f[1][1])) &&
+		strings.ContainsRune("x-", rune(f[1][2])) && strings.ContainsRune("ps", rune(f[1][3]))
+	return rangeOK && loOK && hiOK && hi > lo && perms && offsetOK && devOK && majorOK && minorOK && inodeErr == nil
+}
+
 // device is a Linux device number as major:minor.
 type device struct{ major, minor uint64 }
 

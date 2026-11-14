@@ -10,6 +10,8 @@ use std::{
     collections::HashMap,
     ffi::{CString, OsString, c_char, c_void},
     fs,
+    io::Read,
+    os::unix::fs::MetadataExt,
     path::Path,
     ptr,
     sync::{
@@ -115,6 +117,264 @@ unsafe fn start_network(select: Select, option: NetworkOption, setup: Setup) -> 
     }
 }
 
+/// The rule that proved every mapping of the loaded libfdb_c is the sealed artifact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MappingRule {
+    /// Each mapping names the artifact's own stat device.
+    ExactStat,
+    /// mountinfo proves the artifact's mount is btrfs, whose mappings name the
+    /// superblock device rather than the subvolume's stat device.
+    BtrfsSuperblock,
+}
+
+/// Proof, read from this process's own mappings right after the client was loaded, that
+/// the loaded libfdb_c is the sealed artifact. Only a successful native open creates one.
+#[derive(Clone, Copy, Debug)]
+pub struct MappedClientProof {
+    rule: MappingRule,
+}
+impl MappedClientProof {
+    /// `exact_stat` or `btrfs_superblock`.
+    pub fn rule(&self) -> &'static str {
+        match self.rule {
+            MappingRule::ExactStat => "exact_stat",
+            MappingRule::BtrfsSuperblock => "btrfs_superblock",
+        }
+    }
+}
+
+const NOT_THE_ARTIFACT: &str = "a mapped native client is not the sealed job artifact";
+
+fn mapping_error(message: &'static str) -> Error {
+    Error::new(ErrorKind::Config, message)
+}
+
+/// A Linux device number as major:minor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Device {
+    major: u64,
+    minor: u64,
+}
+
+/// Splits a userspace st_dev the way glibc's gnu_dev_major and gnu_dev_minor do.
+fn stat_device(dev: u64) -> Device {
+    Device {
+        major: ((dev & 0x0000_0000_000f_ff00) >> 8) | ((dev & 0xffff_f000_0000_0000) >> 32),
+        minor: (dev & 0x0000_0000_0000_00ff) | ((dev & 0x0000_0fff_fff0_0000) >> 12),
+    }
+}
+
+/// A file as the kernel identifies it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileIdentity {
+    dev: u64,
+    ino: u64,
+}
+impl FileIdentity {
+    fn of(meta: &fs::Metadata) -> Self {
+        Self {
+            dev: meta.dev(),
+            ino: meta.ino(),
+        }
+    }
+}
+
+/// A nonempty all-digit decimal (or hexadecimal) number: no sign, prefix or space.
+fn number(s: &str, radix: u32) -> Option<u64> {
+    if s.is_empty() || !s.chars().all(|c| c.is_digit(radix)) {
+        return None;
+    }
+    u64::from_str_radix(s, radix).ok()
+}
+
+/// A maps line's hexadecimal major:minor device (32-bit halves) and nonzero decimal inode.
+fn mapped_identity(dev: &str, inode: &str) -> Option<(Device, u64)> {
+    let (major, minor) = dev.split_once(':')?;
+    let half = |s| number(s, 16).filter(|&n| n <= u64::from(u32::MAX));
+    let ino = number(inode, 10).filter(|&n| n != 0)?;
+    Some((
+        Device {
+            major: half(major)?,
+            minor: half(minor)?,
+        },
+        ino,
+    ))
+}
+
+/// An absolute path in its clean form with no escape (`\040` for a space, ...); nothing
+/// is decoded or cleaned into a match.
+fn clean_path(p: &str) -> bool {
+    p == "/"
+        || (p.starts_with('/')
+            && !p.contains('\\')
+            && p[1..]
+                .split('/')
+                .all(|c| !c.is_empty() && c != "." && c != ".."))
+}
+
+/// One strictly parsed mountinfo line (proc(5)).
+#[derive(Debug)]
+struct Mount {
+    device: Device,
+    root: String,
+    point: String,
+    fstype: String,
+}
+
+/// Parses every line or none: decimal IDs and major:minor, a root, a clean mount point,
+/// options, optional fields, the `-` separator, then exactly the filesystem type, source
+/// and super options. A root need not be a path (nsfs shows `net:[inode]`); it is
+/// checked wherever it matters, by `longest_containing`.
+fn parse_mountinfo(text: &str) -> Option<Vec<Mount>> {
+    let mut out = Vec::new();
+    for line in text.strip_suffix('\n').unwrap_or(text).split('\n') {
+        let fields: Vec<&str> = line.split(' ').collect();
+        let sep = (6..fields.len()).find(|&i| fields[i] == "-")?;
+        if fields.len() != sep + 4 || fields.iter().any(|f| f.is_empty()) {
+            return None;
+        }
+        number(fields[0], 10)?;
+        number(fields[1], 10)?;
+        let (major, minor) = fields[2].split_once(':')?;
+        let half = |s| number(s, 10).filter(|&n| n <= u64::from(u32::MAX));
+        if !clean_path(fields[4]) {
+            return None;
+        }
+        out.push(Mount {
+            device: Device {
+                major: half(major)?,
+                minor: half(minor)?,
+            },
+            root: fields[3].into(),
+            point: fields[4].into(),
+            fstype: fields[sep + 1].into(),
+        });
+    }
+    Some(out)
+}
+
+/// The mounts whose point contains `path` at a component boundary and is longest, or
+/// None if any containing mount's root is not a clean path.
+fn longest_containing<'a>(mounts: &'a [Mount], path: &str) -> Option<Vec<&'a Mount>> {
+    let mut best: Vec<&Mount> = Vec::new();
+    for m in mounts {
+        let within = m.point == "/"
+            || path == m.point
+            || path
+                .strip_prefix(m.point.as_str())
+                .is_some_and(|rest| rest.starts_with('/'));
+        if !within {
+            continue;
+        }
+        if !clean_path(&m.root) {
+            return None;
+        }
+        match best.first().map(|b| b.point.len()) {
+            Some(len) if len > m.point.len() => {}
+            Some(len) if len == m.point.len() => best.push(m),
+            _ => best = vec![m],
+        }
+    }
+    Some(best)
+}
+
+/// The superblock device of `path`'s mount when mountinfo proves it unambiguously: the
+/// unique longest containing mount, of type btrfs. Anything else gives no proof.
+fn btrfs_device(mountinfo: &str, path: &str) -> Option<Device> {
+    let mounts = parse_mountinfo(mountinfo)?;
+    match longest_containing(&mounts, path)?.as_slice() {
+        [m] if m.fstype == "btrfs" => Some(m.device),
+        _ => None,
+    }
+}
+
+/// Requires every mapped libfdb_c, whatever its version suffix, to be `artifact`: the
+/// maps inode is the artifact's, the mapped pathname still names it, and the maps device
+/// is the artifact's stat device or, only when mountinfo proves the pathname's mount is
+/// btrfs, that mount's superblock device. Returns the one rule that proved them all and
+/// how many mappings it checked. A deleted, ambiguous, malformed, replaced, second or
+/// absent client, or mixed rules, fail with a message naming no path.
+fn check_mapped_client(
+    maps: &str,
+    mountinfo: &str,
+    artifact: FileIdentity,
+    stat: impl Fn(&str) -> Option<FileIdentity>,
+) -> Result<(MappingRule, usize)> {
+    let exact = stat_device(artifact.dev);
+    let mut rule = None;
+    let mut checked = 0;
+    for line in maps.split('\n') {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 6 {
+            continue;
+        }
+        let pathname = fields[5..].join(" ");
+        if !pathname
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .contains("libfdb_c")
+        {
+            continue;
+        }
+        checked += 1;
+        if fields.len() != 6 {
+            return Err(mapping_error(
+                "a mapped native client is deleted or ambiguous",
+            ));
+        }
+        let (dev, ino) = mapped_identity(fields[3], fields[4])
+            .ok_or_else(|| mapping_error("a native client mapping is malformed"))?;
+        let named = stat(fields[5]);
+        if ino != artifact.ino || named != Some(artifact) {
+            return Err(mapping_error(NOT_THE_ARTIFACT));
+        }
+        let proved = if dev == exact {
+            MappingRule::ExactStat
+        } else if btrfs_device(mountinfo, fields[5]) == Some(dev) {
+            MappingRule::BtrfsSuperblock
+        } else {
+            return Err(mapping_error(NOT_THE_ARTIFACT));
+        };
+        if rule.is_some_and(|r| r != proved) {
+            return Err(mapping_error(
+                "the native client's mappings were proved by different rules",
+            ));
+        }
+        rule = Some(proved);
+    }
+    rule.map(|r| (r, checked))
+        .ok_or_else(|| mapping_error("the pinned native client is not mapped"))
+}
+
+/// Reads this process's mappings and mounts with `read` (production: the real files),
+/// failing closed on any read error, invalid UTF-8 included, and proves the loaded
+/// client is `artifact`.
+fn prove_mapped(
+    read: impl Fn(&str) -> std::io::Result<String>,
+    artifact: FileIdentity,
+) -> Result<MappingRule> {
+    let maps =
+        read("/proc/self/maps").map_err(|_| mapping_error("cannot read the process mappings"))?;
+    let mountinfo = read("/proc/self/mountinfo")
+        .map_err(|_| mapping_error("cannot read the process mounts"))?;
+    check_mapped_client(&maps, &mountinfo, artifact, |p| {
+        fs::metadata(p).ok().map(|m| FileIdentity::of(&m))
+    })
+    .map(|(rule, _)| rule)
+}
+
+/// Loads, then proves what was loaded: a refused proof drops the loaded value before
+/// anything can use it, and nothing is proved about a load that failed.
+fn load_proved<L>(
+    load: impl FnOnce() -> Result<L>,
+    prove: impl FnOnce() -> Result<MappingRule>,
+) -> Result<(L, MappingRule)> {
+    let loaded = load()?;
+    let rule = prove()?;
+    Ok((loaded, rule))
+}
+
 const RANGE_BYTES: usize = 16 * 1024 * 1024;
 const RANGE_ENTRIES: usize = 100_000;
 
@@ -175,9 +435,15 @@ fn checked(code: Code) -> Result<()> {
 }
 
 impl Api {
-    fn load(path: &Path) -> Result<Self> {
-        let wire = fs::read(path)
-            .map_err(|_| Error::new(ErrorKind::Config, "cannot read explicit libfdb_c file"))?;
+    /// Loads the pinned artifact and proves, before any C API call, that what the
+    /// process mapped is that artifact.
+    fn load(path: &Path) -> Result<(Self, MappingRule)> {
+        let unreadable = || Error::new(ErrorKind::Config, "cannot read explicit libfdb_c file");
+        // The identity is the hashed file's own: taken from the same open handle.
+        let mut file = fs::File::open(path).map_err(|_| unreadable())?;
+        let artifact = FileIdentity::of(&file.metadata().map_err(|_| unreadable())?);
+        let mut wire = Vec::new();
+        file.read_to_end(&mut wire).map_err(|_| unreadable())?;
         if hex::encode(Sha256::digest(&wire)) != CLIENT_SHA256 {
             return Err(Error::new(
                 ErrorKind::Config,
@@ -185,12 +451,28 @@ impl Api {
             ));
         }
         // Only an explicitly named, hash-verified local artifact is executable.
-        let library = unsafe { Library::new(path) }.map_err(|_| {
-            Error::new(
-                ErrorKind::Config,
-                "cannot load pinned libfdb_c or its system dependencies",
-            )
-        })?;
+        let (library, rule) = load_proved(
+            || {
+                let library = unsafe { Library::new(path) };
+                library.map_err(|_| {
+                    Error::new(
+                        ErrorKind::Config,
+                        "cannot load pinned libfdb_c or its system dependencies",
+                    )
+                })
+            },
+            || {
+                // dlopen named the path again: it must still be the hashed, pinned file.
+                let now = fs::metadata(path).map_err(|_| mapping_error(NOT_THE_ARTIFACT))?;
+                let again = fs::read(path).map_err(|_| mapping_error(NOT_THE_ARTIFACT))?;
+                if FileIdentity::of(&now) != artifact
+                    || hex::encode(Sha256::digest(&again)) != CLIENT_SHA256
+                {
+                    return Err(mapping_error(NOT_THE_ARTIFACT));
+                }
+                prove_mapped(|p| fs::read_to_string(p), artifact)
+            },
+        )?;
         macro_rules! symbol {
             ($name:literal) => {
                 unsafe {
@@ -200,7 +482,7 @@ impl Api {
                 }
             };
         }
-        Ok(Self {
+        let api = Self {
             select: symbol!("fdb_select_api_version_impl"),
             network_option: symbol!("fdb_network_set_option"),
             setup: symbol!("fdb_setup_network"),
@@ -226,7 +508,8 @@ impl Api {
             future_kvs: symbol!("fdb_future_get_keyvalue_array"),
             future_int64: symbol!("fdb_future_get_int64"),
             _library: library,
-        })
+        };
+        Ok((api, rule))
     }
 }
 
@@ -249,6 +532,8 @@ impl Drop for Runtime {
 pub struct NativeDatabase {
     runtime: Arc<Runtime>,
     handle: usize,
+    /// This open's own proof of the mapped client, never another open's.
+    proof: MappedClientProof,
 }
 // libfdb_c databases are documented thread-safe; all transaction handles remain
 // thread-local and futures copy their borrowed C data before destruction.
@@ -273,7 +558,8 @@ impl NativeDatabase {
         }
         let cluster = CString::new(cluster_file.as_os_str().as_encoded_bytes())
             .map_err(|_| Error::new(ErrorKind::Config, "invalid cluster path"))?;
-        let mut api = Api::load(client)?;
+        // The mapped-client proof precedes the first C API call and every global change.
+        let (mut api, rule) = Api::load(client)?;
         adapt(&mut api);
         let api = Arc::new(api);
         if NETWORK_STARTED.swap(true, Ordering::AcqRel) {
@@ -319,7 +605,13 @@ impl NativeDatabase {
         Ok(Self {
             runtime,
             handle: handle as usize,
+            proof: MappedClientProof { rule },
         })
+    }
+
+    /// The proof that this database's loaded libfdb_c is the sealed artifact.
+    pub fn mapping_proof(&self) -> MappedClientProof {
+        self.proof
     }
 }
 impl Drop for NativeDatabase {
@@ -1275,5 +1567,826 @@ mod tests {
             ErrorKind::Canceled
         );
         assert_eq!(calls, 1);
+    }
+
+    // The mapped-client proof. Fixtures are real-format maps and mountinfo text over real
+    // temporary files; none of them is a claim about this process's own mappings.
+
+    /// A private, resolved directory of real files, removed on drop.
+    struct Dir(std::path::PathBuf);
+    impl Dir {
+        fn new(name: &str) -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "otel-rust-native-{name}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&dir).unwrap();
+            // The kernel names a mapping by its resolved path, which mount points contain.
+            Self(fs::canonicalize(&dir).unwrap())
+        }
+        fn file(&self, name: &str, bytes: &[u8]) -> String {
+            let path = self.0.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, bytes).unwrap();
+            path.to_str().unwrap().to_owned()
+        }
+        fn path(&self) -> &str {
+            self.0.to_str().unwrap()
+        }
+        fn parent(&self) -> &str {
+            self.0.parent().unwrap().to_str().unwrap()
+        }
+    }
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn identity(path: &str) -> FileIdentity {
+        FileIdentity::of(&fs::metadata(path).unwrap())
+    }
+
+    /// A real-format maps line: hexadecimal device, decimal inode.
+    fn map_line(
+        range: &str,
+        perms: &str,
+        offset: &str,
+        dev: Device,
+        ino: u64,
+        path: &str,
+    ) -> String {
+        format!(
+            "{range} {perms} {offset} {:02x}:{:02x} {ino} {path}",
+            dev.major, dev.minor
+        )
+    }
+    fn mapping(dev: Device, ino: u64, path: &str) -> String {
+        map_line(
+            "7f3a10200000-7f3a10e00000",
+            "r-xp",
+            "00200000",
+            dev,
+            ino,
+            path,
+        )
+    }
+    /// The three segments a loader maps for one shared object.
+    fn segments(dev: Device, ino: u64, path: &str) -> String {
+        [
+            map_line(
+                "7f3a10000000-7f3a10200000",
+                "r--p",
+                "00000000",
+                dev,
+                ino,
+                path,
+            ),
+            mapping(dev, ino, path),
+            map_line(
+                "7f3a10e00000-7f3a10f00000",
+                "rw-p",
+                "00e00000",
+                dev,
+                ino,
+                path,
+            ),
+        ]
+        .join("\n")
+    }
+    const LIBC: &str =
+        "7f3a20000000-7f3a20028000 r--p 00000000 08:01 1312 /usr/lib/x86_64-linux-gnu/libc.so.6";
+    const ROOT_EXT4: &str =
+        "1 0 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw,errors=remount-ro\n";
+    const PROC: &str =
+        "22 1 0:21 / /proc rw,nosuid,nodev,noexec,relatime shared:12 - proc proc rw\n";
+    const NSFS: &str = "60 25 0:4 net:[4026533080] /run/netns/a rw shared:9 - nsfs nsfs rw\n";
+
+    /// A real-format mountinfo line; mountinfo devices are decimal.
+    fn mount(dev: Device, root: &str, point: &str, optional: &str, fstype: &str) -> String {
+        format!(
+            "36 1 {}:{} {root} {point} rw,relatime{optional} - {fstype} /dev/nvme0n1p2 rw\n",
+            dev.major, dev.minor
+        )
+    }
+
+    /// A superblock device that is not the file's own stat device.
+    fn superblock(id: FileIdentity) -> Device {
+        let mut sb = Device {
+            major: 0,
+            minor: 0x1d,
+        };
+        if sb == stat_device(id.dev) {
+            sb.minor += 1;
+        }
+        sb
+    }
+
+    type Verdict = std::result::Result<(MappingRule, usize), String>;
+
+    /// The checker over real stat, with how many mapped pathnames it stat'ed.
+    fn verdict(maps: &str, mounts: &str, artifact: FileIdentity) -> (Verdict, usize) {
+        let stats = std::cell::Cell::new(0);
+        let result = check_mapped_client(maps, mounts, artifact, |p| {
+            stats.set(stats.get() + 1);
+            fs::metadata(p).ok().map(|m| FileIdentity::of(&m))
+        });
+        (result.map_err(|e| e.message), stats.get())
+    }
+
+    #[test]
+    fn stat_device_matches_glibc_vectors() {
+        let dev = |major, minor| Device { major, minor };
+        for (raw, want) in [
+            (0x801, dev(8, 1)),
+            (0x10302, dev(259, 2)),
+            (0x1231_0345, dev(259, 74565)),
+            (1 << 44, dev(4096, 0)),
+            (1 << 20, dev(0, 256)),
+            (0xffff_f000_0000_0000, dev(0xffff_f000, 0)),
+            (0x0000_0fff_fff0_0000, dev(0, 0xffff_ff00)),
+            (u64::MAX, dev(0xffff_ffff, 0xffff_ffff)),
+        ] {
+            assert_eq!(stat_device(raw), want, "{raw:#x}");
+        }
+        // Maps devices are hexadecimal, mountinfo devices decimal.
+        assert_eq!(mapped_identity("00:1d", "7"), Some((dev(0, 29), 7)));
+        assert_eq!(
+            parse_mountinfo("36 1 0:29 / / rw - btrfs /dev/x rw").unwrap()[0].device,
+            dev(0, 29)
+        );
+    }
+
+    #[test]
+    fn mapped_client_populations() {
+        let dir = Dir::new("populations");
+        let client = dir.file("libfdb_c.so", b"pinned client");
+        let id = identity(&client);
+        let exact = stat_device(id.dev);
+        let three = format!("{}\n{LIBC}\n", segments(exact, id.ino, &client));
+        assert_eq!(three.lines().count(), 4);
+        assert_eq!(
+            verdict(&three, "", id),
+            (Ok((MappingRule::ExactStat, 3)), 3)
+        );
+        let one = mapping(exact, id.ino, &client);
+        assert_eq!(verdict(&one, "", id), (Ok((MappingRule::ExactStat, 1)), 1));
+        assert_eq!(
+            verdict(LIBC, "", id),
+            (Err("the pinned native client is not mapped".into()), 0)
+        );
+        let other = dir.file("other/libfdb_c.so", b"pinned client");
+        let other_id = identity(&other);
+        assert_ne!(other_id.ino, id.ino);
+        let four = format!(
+            "{three}{}\n",
+            mapping(stat_device(other_id.dev), other_id.ino, &other)
+        );
+        assert_eq!(verdict(&four, "", id), (Err(NOT_THE_ARTIFACT.into()), 4));
+    }
+
+    #[test]
+    fn btrfs_mount_population_and_selection() {
+        let dir = Dir::new("mounts");
+        let client = dir.file("libfdb_c.so", b"pinned client");
+        let id = identity(&client);
+        let sb = superblock(id);
+        let info = format!(
+            "{ROOT_EXT4}{PROC}{}{NSFS}",
+            mount(sb, "/@home", dir.path(), " shared:2", "btrfs")
+        );
+        let mounts = parse_mountinfo(&info).unwrap();
+        assert_eq!(mounts.len(), 4);
+        let winner = longest_containing(&mounts, &client).unwrap();
+        assert_eq!(winner.len(), 1);
+        assert_eq!(
+            (winner[0].point.as_str(), winner[0].fstype.as_str()),
+            (dir.path(), "btrfs")
+        );
+        let maps = mapping(sb, id.ino, &client);
+        assert_eq!(
+            verdict(&maps, &info, id),
+            (Ok((MappingRule::BtrfsSuperblock, 1)), 1)
+        );
+        let tied = format!(
+            "{info}{}",
+            mount(sb, "/@home", dir.path(), " shared:5", "btrfs")
+        );
+        let mounts = parse_mountinfo(&tied).unwrap();
+        assert_eq!(mounts.len(), 5);
+        assert_eq!(longest_containing(&mounts, &client).unwrap().len(), 2);
+        assert_eq!(verdict(&maps, &tied, id).0, Err(NOT_THE_ARTIFACT.into()));
+    }
+
+    #[test]
+    fn mapped_client_cases() {
+        let dir = Dir::new("cases");
+        let client = dir.file("libfdb_c.so", b"pinned client");
+        let other = dir.file("other/libfdb_c.so", b"pinned client");
+        let id = identity(&client);
+        let other_id = identity(&other);
+        let (exact, sb) = (stat_device(id.dev), superblock(id));
+        let d = dir.path();
+        let ex1 = mapping(exact, id.ino, &client);
+        let sb1 = mapping(sb, id.ino, &client);
+        let btrfs = |root: &str, point: &str| mount(sb, root, point, " shared:2", "btrfs");
+        let info = format!("{ROOT_EXT4}{PROC}{}{NSFS}", btrfs("/@home", d));
+        let raw = |dev: &str, ino: &str, path: &str| {
+            format!("7f3a10200000-7f3a10e00000 r-xp 00200000 {dev} {ino} {path}")
+        };
+        let ino = id.ino.to_string();
+        let exact_text = format!("{:02x}:{:02x}", exact.major, exact.minor);
+        let malformed = "a native client mapping is malformed";
+        let ambiguous = "a mapped native client is deleted or ambiguous";
+        let other_fs =
+            |dev: Device, fstype: &str| format!("{ROOT_EXT4}{}", mount(dev, "/", d, "", fstype));
+        let line = |text: &str| format!("{ROOT_EXT4}{text}\n");
+        let cases: Vec<(&str, String, String, std::result::Result<MappingRule, &str>)> = vec![
+            // Accepted: exact stat needs no mount evidence; btrfs only with strict proof.
+            (
+                "exact on btrfs",
+                ex1.clone(),
+                info.clone(),
+                Ok(MappingRule::ExactStat),
+            ),
+            (
+                "exact, no mounts",
+                ex1.clone(),
+                String::new(),
+                Ok(MappingRule::ExactStat),
+            ),
+            (
+                "exact, escaped mounts",
+                ex1.clone(),
+                format!("{info}31 1 0:40 / /mnt/a\\040b rw - tmpfs t rw\n"),
+                Ok(MappingRule::ExactStat),
+            ),
+            (
+                "exact, malformed mounts",
+                ex1.clone(),
+                "not mountinfo".into(),
+                Ok(MappingRule::ExactStat),
+            ),
+            (
+                "btrfs subvolume",
+                sb1.clone(),
+                info.clone(),
+                Ok(MappingRule::BtrfsSuperblock),
+            ),
+            (
+                "btrfs ancestor mount",
+                sb1.clone(),
+                format!("{ROOT_EXT4}{}", btrfs("/@home", dir.parent())),
+                Ok(MappingRule::BtrfsSuperblock),
+            ),
+            (
+                "nested subvolume root",
+                sb1.clone(),
+                format!("{ROOT_EXT4}{}", btrfs("/@home/.snapshots/1/snapshot", d)),
+                Ok(MappingRule::BtrfsSuperblock),
+            ),
+            (
+                "no optional fields",
+                sb1.clone(),
+                format!("{ROOT_EXT4}{}", mount(sb, "/@home", d, "", "btrfs")),
+                Ok(MappingRule::BtrfsSuperblock),
+            ),
+            (
+                "several optional fields",
+                sb1.clone(),
+                format!(
+                    "{ROOT_EXT4}{}",
+                    mount(sb, "/@home", d, " shared:2 master:1", "btrfs")
+                ),
+                Ok(MappingRule::BtrfsSuperblock),
+            ),
+            (
+                "no trailing newline",
+                sb1.clone(),
+                info.trim_end_matches('\n').into(),
+                Ok(MappingRule::BtrfsSuperblock),
+            ),
+            (
+                "the longest of nested btrfs mounts",
+                sb1.clone(),
+                format!(
+                    "{ROOT_EXT4}{}{}",
+                    mount(
+                        Device {
+                            major: 0,
+                            minor: 99
+                        },
+                        "/@",
+                        dir.parent(),
+                        "",
+                        "btrfs"
+                    ),
+                    btrfs("/@home", d)
+                ),
+                Ok(MappingRule::BtrfsSuperblock),
+            ),
+            (
+                "unrelated equal mount points",
+                sb1.clone(),
+                format!(
+                    "{info}50 1 8:17 / /mnt/media rw - ext4 /dev/sdb1 rw\n51 1 8:33 / /mnt/media rw - ext4 /dev/sdc1 rw\n"
+                ),
+                Ok(MappingRule::BtrfsSuperblock),
+            ),
+            (
+                "sibling nested ext4",
+                sb1.clone(),
+                format!(
+                    "{info}{}",
+                    mount(
+                        Device {
+                            major: 259,
+                            minor: 3
+                        },
+                        "/",
+                        &format!("{d}/data"),
+                        "",
+                        "ext4"
+                    )
+                ),
+                Ok(MappingRule::BtrfsSuperblock),
+            ),
+            // Refused: another filesystem never supplies a device, even a coinciding one.
+            (
+                "ext4, mismatching device",
+                sb1.clone(),
+                other_fs(Device { major: 8, minor: 2 }, "ext4"),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "ext4, coinciding device",
+                sb1.clone(),
+                other_fs(sb, "ext4"),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "tmpfs, coinciding device",
+                sb1.clone(),
+                other_fs(sb, "tmpfs"),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "overlay, coinciding device",
+                sb1.clone(),
+                other_fs(sb, "overlay"),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "ext4 nested over btrfs",
+                sb1.clone(),
+                format!(
+                    "{ROOT_EXT4}{}{}",
+                    btrfs("/@home", dir.parent()),
+                    mount(sb, "/", d, "", "ext4")
+                ),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "not a component boundary",
+                sb1.clone(),
+                format!("{ROOT_EXT4}{}", btrfs("/@home", &d[..d.len() - 1])),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "equal longest mounts",
+                sb1.clone(),
+                format!("{info}{}", btrfs("/@home", d)),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "equal longest, conflicting devices",
+                sb1.clone(),
+                format!(
+                    "{info}{}",
+                    mount(
+                        Device {
+                            major: 0,
+                            minor: 98
+                        },
+                        "/@home",
+                        d,
+                        "",
+                        "btrfs"
+                    )
+                ),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "relative root",
+                sb1.clone(),
+                format!("{ROOT_EXT4}{}", btrfs("@home", d)),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "dotted root",
+                sb1.clone(),
+                format!("{ROOT_EXT4}{}", btrfs("/@home/../@", d)),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "trailing-slash root",
+                sb1.clone(),
+                format!("{ROOT_EXT4}{}", btrfs("/@home/", d)),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "escaped root",
+                sb1.clone(),
+                format!("{ROOT_EXT4}{}", btrfs("/@ho\\040me", d)),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "malformed ancestor root",
+                sb1.clone(),
+                format!(
+                    "1 0 8:1 rel / rw - ext4 /dev/sda1 rw\n{}",
+                    btrfs("/@home", d)
+                ),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "escaped unrelated point",
+                sb1.clone(),
+                format!("{info}31 1 0:40 / /mnt/a\\040b rw - tmpfs t rw\n"),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "dotted unrelated point",
+                sb1.clone(),
+                format!("{info}31 1 0:40 / /mnt/../x rw - tmpfs t rw\n"),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "trailing-slash unrelated point",
+                sb1.clone(),
+                format!("{info}31 1 0:40 / /mnt/x/ rw - tmpfs t rw\n"),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "relative unrelated point",
+                sb1.clone(),
+                format!("{info}31 1 0:40 / mnt rw - tmpfs t rw\n"),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "no separator",
+                sb1.clone(),
+                line(&format!("36 1 0:29 /@home {d} rw btrfs /dev/x rw")),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "separator before the options",
+                sb1.clone(),
+                line(&format!("36 1 0:29 /@home {d} - btrfs /dev/x rw")),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "an extra field after it",
+                sb1.clone(),
+                line(&format!("36 1 0:29 /@home {d} rw - btrfs /dev/x rw extra")),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "a missing field after it",
+                sb1.clone(),
+                line(&format!("36 1 0:29 /@home {d} rw - btrfs /dev/x")),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "a doubled space",
+                sb1.clone(),
+                line(&format!("36 1 0:29 /@home {d} rw  - btrfs /dev/x rw")),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "a blank line",
+                sb1.clone(),
+                format!("{info}\n"),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "empty mountinfo",
+                sb1.clone(),
+                String::new(),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "a nonnumeric mount ID",
+                sb1.clone(),
+                info.replacen("36 1 ", "x 1 ", 1),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "an overflowing mount ID",
+                sb1.clone(),
+                info.replacen("36 1 ", "99999999999999999999999 1 ", 1),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "a hexadecimal mount device",
+                sb1.clone(),
+                line(&format!("36 1 0:1d /@home {d} rw - btrfs /dev/x rw")),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "a mount device without a minor",
+                sb1.clone(),
+                line(&format!("36 1 0: /@home {d} rw - btrfs /dev/x rw")),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "a mount device without a major",
+                sb1.clone(),
+                line(&format!("36 1 :29 /@home {d} rw - btrfs /dev/x rw")),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            // Refused mappings.
+            (
+                "forged inode",
+                mapping(exact, id.ino + 1, &client),
+                String::new(),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "zero inode",
+                raw(&exact_text, "0", &client),
+                String::new(),
+                Err(malformed),
+            ),
+            (
+                "malformed inode",
+                raw(&exact_text, "12a", &client),
+                String::new(),
+                Err(malformed),
+            ),
+            (
+                "overflowing inode",
+                raw(&exact_text, "99999999999999999999999", &client),
+                String::new(),
+                Err(malformed),
+            ),
+            (
+                "wrong device",
+                mapping(
+                    Device {
+                        major: 0xfe,
+                        minor: 0xfe,
+                    },
+                    id.ino,
+                    &client,
+                ),
+                ROOT_EXT4.into(),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "0x device",
+                raw("0x08:01", &ino, &client),
+                String::new(),
+                Err(malformed),
+            ),
+            (
+                "signed device",
+                raw("+8:01", &ino, &client),
+                String::new(),
+                Err(malformed),
+            ),
+            (
+                "device without a minor",
+                raw("08:", &ino, &client),
+                String::new(),
+                Err(malformed),
+            ),
+            (
+                "overflowing device",
+                raw("100000000:01", &ino, &client),
+                String::new(),
+                Err(malformed),
+            ),
+            (
+                "another inode, same bytes",
+                mapping(stat_device(other_id.dev), other_id.ino, &other),
+                String::new(),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "a wrong second client",
+                format!(
+                    "{ex1}\n{}",
+                    mapping(stat_device(other_id.dev), other_id.ino, &other)
+                ),
+                String::new(),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "a renamed versioned client",
+                format!(
+                    "{ex1}\n{}",
+                    mapping(exact, id.ino, &format!("{d}/libfdb_c_7.1.so"))
+                ),
+                String::new(),
+                Err(NOT_THE_ARTIFACT),
+            ),
+            (
+                "deleted",
+                format!("{ex1} (deleted)"),
+                String::new(),
+                Err(ambiguous),
+            ),
+            (
+                "ambiguous pathname",
+                mapping(exact, id.ino, &format!("{d}/a b/libfdb_c.so")),
+                String::new(),
+                Err(ambiguous),
+            ),
+            (
+                "malformed after a passing segment",
+                format!("{ex1}\n{}", raw("0x08:01", &ino, &client)),
+                String::new(),
+                Err(malformed),
+            ),
+            (
+                "mixed rules",
+                format!("{ex1}\n{sb1}"),
+                info.clone(),
+                Err("the native client's mappings were proved by different rules"),
+            ),
+            (
+                "absent",
+                LIBC.into(),
+                info.clone(),
+                Err("the pinned native client is not mapped"),
+            ),
+        ];
+        assert_eq!(cases.len(), 59);
+        assert_eq!(cases.iter().filter(|c| c.3.is_ok()).count(), 13);
+        for (name, maps, mounts, want) in cases {
+            let (got, _) = verdict(&maps, &mounts, id);
+            match (want, got) {
+                (Ok(rule), Ok(got)) => assert_eq!(got, (rule, 1), "{name}"),
+                (Err(message), Err(got)) => {
+                    assert_eq!(got, message, "{name}");
+                    assert!(!got.contains(d) && !got.contains(".so"), "{name}: {got}");
+                }
+                (want, got) => panic!("{name}: got {got:?}, want {want:?}"),
+            }
+        }
+        // A job may name a symlink to the artifact: identity, not spelling, is compared.
+        let link = format!("{d}/link.so");
+        std::os::unix::fs::symlink(&client, &link).unwrap();
+        assert_ne!(link, client);
+        assert_eq!(
+            verdict(&ex1, "", identity(&link)),
+            (Ok((MappingRule::ExactStat, 1)), 1)
+        );
+    }
+
+    #[test]
+    fn a_replaced_artifact_path_no_longer_proves_its_old_mapping() {
+        let dir = Dir::new("replaced");
+        let client = dir.file("libfdb_c.so", b"pinned client");
+        let old = identity(&client);
+        let sb = superblock(old);
+        let info = format!(
+            "{ROOT_EXT4}{}",
+            mount(sb, "/@home", dir.path(), "", "btrfs")
+        );
+        let old_exact = mapping(stat_device(old.dev), old.ino, &client);
+        let old_btrfs = mapping(sb, old.ino, &client);
+        assert_eq!(
+            verdict(&old_exact, &info, old).0,
+            Ok((MappingRule::ExactStat, 1))
+        );
+        assert_eq!(
+            verdict(&old_btrfs, &info, old).0,
+            Ok((MappingRule::BtrfsSuperblock, 1))
+        );
+        let replacement = dir.file("replacement", b"pinned client");
+        fs::rename(&replacement, &client).unwrap();
+        let new = identity(&client);
+        assert_ne!(new.ino, old.ino, "the replacement kept the inode");
+        assert_eq!(fs::read(&client).unwrap(), b"pinned client");
+        for (name, maps) in [("exact", &old_exact), ("btrfs", &old_btrfs)] {
+            for artifact in [old, new] {
+                assert_eq!(
+                    verdict(maps, &info, artifact).0,
+                    Err(NOT_THE_ARTIFACT.into()),
+                    "old {name} mapping"
+                );
+            }
+        }
+        let own = mapping(stat_device(new.dev), new.ino, &client);
+        assert_eq!(verdict(&own, &info, new).0, Ok((MappingRule::ExactStat, 1)));
+    }
+
+    #[test]
+    fn unreadable_process_files_fail_closed() {
+        let dir = Dir::new("unreadable");
+        let client = dir.file("libfdb_c.so", b"pinned client");
+        let id = identity(&client);
+        let maps = mapping(stat_device(id.dev), id.ino, &client);
+        let denied = || std::io::Error::other("denied");
+        let err = prove_mapped(|_| Err(denied()), id).unwrap_err();
+        assert_eq!(err.message, "cannot read the process mappings");
+        // An exact mapping does not excuse unreadable mounts.
+        let err = prove_mapped(
+            |p| {
+                if p == "/proc/self/maps" {
+                    Ok(maps.clone())
+                } else {
+                    Err(denied())
+                }
+            },
+            id,
+        )
+        .unwrap_err();
+        assert_eq!(err.message, "cannot read the process mounts");
+        let read = |p: &str| {
+            Ok(if p == "/proc/self/maps" {
+                maps.clone()
+            } else {
+                String::new()
+            })
+        };
+        assert_eq!(prove_mapped(read, id).unwrap(), MappingRule::ExactStat);
+    }
+
+    #[test]
+    fn the_pin_is_checked_before_loading() {
+        let dir = Dir::new("pin");
+        let wrong = dir.file("libfdb_c.so", b"not the pinned client");
+        let message = |path: &str| Api::load(Path::new(path)).err().unwrap().message;
+        assert_eq!(
+            message(&wrong),
+            "libfdb_c SHA256 does not match MODULE.bazel 7.3.77 pin"
+        );
+        assert_eq!(
+            message(&format!("{}/absent.so", dir.path())),
+            "cannot read explicit libfdb_c file"
+        );
+    }
+
+    #[test]
+    fn mapping_is_proved_after_loading_and_a_refusal_releases_the_load() {
+        let events = std::cell::RefCell::new(Vec::<&str>::new());
+        struct Loaded<'a>(&'a std::cell::RefCell<Vec<&'static str>>);
+        impl Drop for Loaded<'_> {
+            fn drop(&mut self) {
+                self.0.borrow_mut().push("drop");
+            }
+        }
+        let load = || {
+            events.borrow_mut().push("load");
+            Ok(Loaded(&events))
+        };
+        let refused = load_proved(load, || {
+            events.borrow_mut().push("prove");
+            Err(mapping_error(NOT_THE_ARTIFACT))
+        });
+        assert_eq!(refused.err().unwrap().message, NOT_THE_ARTIFACT);
+        assert_eq!(*events.borrow(), ["load", "prove", "drop"]);
+        events.borrow_mut().clear();
+        let failed = load_proved(
+            || {
+                events.borrow_mut().push("load");
+                Err::<Loaded, _>(Error::new(ErrorKind::Config, "load failed"))
+            },
+            || {
+                events.borrow_mut().push("prove");
+                Ok(MappingRule::ExactStat)
+            },
+        );
+        assert!(failed.is_err());
+        assert_eq!(*events.borrow(), ["load"]);
+        events.borrow_mut().clear();
+        let (loaded, rule) = load_proved(load, || {
+            events.borrow_mut().push("prove");
+            Ok(MappingRule::BtrfsSuperblock)
+        })
+        .ok()
+        .unwrap();
+        assert_eq!(rule, MappingRule::BtrfsSuperblock);
+        assert_eq!(*events.borrow(), ["load", "prove"]);
+        drop(loaded);
+        assert_eq!(*events.borrow(), ["load", "prove", "drop"]);
+        assert_eq!(
+            [
+                MappedClientProof {
+                    rule: MappingRule::ExactStat
+                }
+                .rule(),
+                MappedClientProof {
+                    rule: MappingRule::BtrfsSuperblock
+                }
+                .rule(),
+            ],
+            ["exact_stat", "btrfs_superblock"]
+        );
     }
 }

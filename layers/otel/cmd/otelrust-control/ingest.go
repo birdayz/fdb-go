@@ -182,6 +182,15 @@ type ingestReport struct {
 	NativeMappingRule *string `json:"native_mapping_rule,omitempty"`
 }
 
+// provedClient records that a native open proved the mapped libfdb_c is the sealed
+// artifact; a pure open proves nothing about one.
+func (r *ingestReport) provedClient(rule string) {
+	if rule != "" {
+		mapped := true
+		r.NativeLibraryMapped = &mapped
+	}
+}
+
 // claimMapping records the rule of the measured native handle; pure opens prove none.
 func (r *ingestReport) claimMapping(rule string) {
 	if rule != "" {
@@ -398,6 +407,7 @@ func runIngest(ctx context.Context, rt runtime, j *job, m *layoutManifest, r *in
 	if err != nil {
 		return err
 	}
+	r.provedClient(rule)
 	// Seals first, on the arm's own client, without committing or repairing anything.
 	ts, _, err := openSealed(ctx, backend, j, m, true)
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"syscall"
@@ -19,7 +20,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb"
 )
 
-const frozenSchemaSHA256 = "c7d9ae94ed71db095f0de48999e2683a2c12f96525241f1e9a7471f836f57ec6"
+const frozenSchemaSHA256 = "1581c3dd4891579949d52cb5ac70717d54f5488784e17a2c993c5769aaacb18b"
 
 // point2 is the sealed pilot configuration's workload, verbatim.
 const point2 = `{"kind":"collector_queue","producers":8,"producer_batch_spans":1,"consumers":8,"queue_capacity_spans":10000,"batch_min_spans":64,"batch_max_spans":256,"flush_ms":200,"block_on_overflow":true,"export_timeout_ms":120000,"retry_enabled":true,"retry_initial_ms":500,"retry_max_ms":10000,"retry_elapsed_ms":300000}`
@@ -348,15 +349,36 @@ func TestJobEnvelopeIsStrict(t *testing.T) {
 	}
 }
 
-// fakeRuntime opens nothing real: it records which client a job asked for.
+// fakeRuntime opens nothing real: it records which client a job asked for, and how
+// often the mappings and resource usage were read.
 type fakeRuntime struct {
-	pure, native int
+	pure, native, maps, usage int
 }
 
 var errNoCluster = errors.New("fake runtime: no cluster")
 
+// The two compiled flavors, as the fakes present them.
+var (
+	pureFlavor   = flavor{tags: []string{}}
+	nativeFlavor = flavor{native: true, tags: []string{"libfdbc_backend"}}
+)
+
+// cleanMaps is a real-format mapping table of a pure process: no libfdb_c anywhere.
+const cleanMaps = "00400000-00c00000 r-xp 00000000 08:01 1234 /opt/control-pure\n" +
+	"00c00000-00d00000 rw-p 00800000 08:01 1234 /opt/control-pure\n" +
+	"01000000-01200000 rw-p 00000000 00:00 0 [heap]\n" +
+	"7f0000000000-7f0000200000 r-xp 00000000 08:01 77 /usr/lib/x86_64-linux-gnu/libc.so.6\n" +
+	"7ffc00000000-7ffc00021000 rw-p 00000000 00:00 0 [stack]\n" +
+	"ffffffffff600000-ffffffffff601000 --xp 00000000 00:00 0 [vsyscall]\n"
+
+// runtime is control-pure over the fakes; nativeRuntime is control-native.
 func (f *fixture) runtime(rec *fakeRuntime) runtime {
 	return runtime{
+		flavor: pureFlavor,
+		maps: func() ([]byte, error) {
+			rec.maps++
+			return []byte(cleanMaps), nil
+		},
 		executable: func() (string, error) { return f.exe, nil },
 		openPure: func(context.Context, string) (fdb.BackendDatabase, error) {
 			rec.pure++
@@ -366,9 +388,18 @@ func (f *fixture) runtime(rec *fakeRuntime) runtime {
 			rec.native++
 			return nil, "", errNoCluster
 		},
-		usage:     selfUsage,
+		usage: func() (syscall.Rusage, error) {
+			rec.usage++
+			return selfUsage()
+		},
 		joinBound: time.Second,
 	}
+}
+
+func (f *fixture) nativeRuntime(rec *fakeRuntime) runtime {
+	rt := f.runtime(rec)
+	rt.flavor = nativeFlavor
+	return rt
 }
 
 func readReport(t *testing.T, p string) map[string]any {
@@ -416,20 +447,225 @@ func TestDispatchSetupAndVerifyArePureGo(t *testing.T) {
 		f := newFixture(t)
 		rec := &fakeRuntime{}
 		j := f.job(c.mode, c.arm, c.workload)
-		if c.mode == "ingest" && c.arm == "go_native" {
+		rt, tags, reads := f.runtime(rec), []any{}, 1
+		if c.native > 0 {
 			// A native ingest hashes the artifact before its report: give it the real pin.
 			j["client_library"] = pinnedLibrary(t)
+			rt, tags, reads = f.nativeRuntime(rec), []any{"libfdbc_backend"}, 0
 		}
-		r, err := runJob(t, f, f.runtime(rec), j)
+		r, err := runJob(t, f, rt, j)
 		if !errors.Is(err, errNoCluster) || r == nil {
 			t.Fatalf("%s %s: %v", c.mode, c.arm, err)
 		}
-		if rec.pure != c.pure || rec.native != c.native {
-			t.Fatalf("%s %s opened pure %d, native %d times; want %d, %d", c.mode, c.arm, rec.pure, rec.native, c.pure, c.native)
+		if rec.pure != c.pure || rec.native != c.native || rec.maps != reads {
+			t.Fatalf("%s %s opened pure %d, native %d times, read maps %d; want %d, %d, %d", c.mode, c.arm, rec.pure, rec.native, rec.maps, c.pure, c.native, reads)
 		}
-		if r["status"] != "error" || r["mode"] != c.mode || r["schema"] != reportSchema {
+		if r["status"] != "error" || r["mode"] != c.mode || r["schema"] != reportSchema || !reflect.DeepEqual(r["build_tags"], tags) {
 			t.Fatalf("%s %s report %v", c.mode, c.arm, r)
 		}
+		// control-pure checked its mappings; control-native never got to prove its client.
+		if mapped, ok := r["native_library_mapped"]; (c.native == 0) != ok || (ok && mapped != false) {
+			t.Fatalf("%s %s native_library_mapped %v", c.mode, c.arm, mapped)
+		}
+		if _, ok := r["native_mapping_rule"]; ok {
+			t.Fatalf("%s %s claims a native mapping", c.mode, c.arm)
+		}
+	}
+}
+
+// Each executable runs exactly its jobs: control-native only go_native ingest,
+// control-pure everything else, including setup and verify of the native arms.
+func TestFlavorAdmits(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	pairs := 0
+	for _, mode := range []string{"corpus", "setup", "ingest", "verify"} {
+		for _, arm := range []string{"go_pure", "go_native", "rust_native"} {
+			if mode == "ingest" && arm == "rust_native" {
+				continue // refused by validate: the Rust executable runs it
+			}
+			pairs++
+			j := parseTestJob(t, f.job(mode, arm, point2))
+			nativeIngest := mode == "ingest" && arm == "go_native"
+			if err := pureFlavor.admits(j); (err == nil) == nativeIngest {
+				t.Errorf("control-pure %s %s: %v", mode, arm, err)
+			}
+			if err := nativeFlavor.admits(j); (err == nil) != nativeIngest {
+				t.Errorf("control-native %s %s: %v", mode, arm, err)
+			}
+		}
+	}
+	if pairs != 11 {
+		t.Fatalf("%d mode and arm pairs", pairs)
+	}
+}
+
+// A job for the other executable is refused like any job error: before the report or
+// diagnostic is reserved, the corpus is read or written, the mappings are read, a
+// client opens or a resource sample is taken.
+func TestFlavorRefusesBeforeTheReport(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		mode, arm string
+		native    bool
+	}{
+		{"corpus", "go_pure", true},
+		{"setup", "go_native", true},
+		{"verify", "rust_native", true},
+		{"ingest", "go_pure", true},
+		{"ingest", "go_native", false},
+	} {
+		f := newFixture(t)
+		rec := &fakeRuntime{}
+		rt := f.runtime(rec)
+		if c.native {
+			rt = f.nativeRuntime(rec)
+		}
+		j := f.job(c.mode, c.arm, point2)
+		if c.mode == "ingest" && c.arm == "go_native" {
+			j["client_library"] = pinnedLibrary(t)
+		}
+		_, err := runJob(t, f, rt, j)
+		var ce *configError
+		if !errors.As(err, &ce) || !strings.Contains(err.Error(), "control-") {
+			t.Fatalf("%s %s on the other executable: %v", c.mode, c.arm, err)
+		}
+		output := j["output"].(string)
+		fresh := []string{output, diagnosticPath(output)}
+		if c.mode == "corpus" {
+			fresh = append(fresh, j["corpus_file"].(string))
+		}
+		if c.mode == "setup" {
+			fresh = append(fresh, j["layout_file"].(string))
+		}
+		for _, p := range fresh {
+			if _, err := os.Lstat(p); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("%s %s created %s", c.mode, c.arm, p)
+			}
+		}
+		if *rec != (fakeRuntime{}) {
+			t.Fatalf("%s %s had side effects %+v", c.mode, c.arm, *rec)
+		}
+	}
+}
+
+// control-pure refuses to run with a libfdb_c mapped, or without a readable, well-formed
+// mapping table: the report is its error, claims nothing about a mapped client, and
+// nothing was read, written, opened or measured.
+func TestPureMappingFailureIsTheReportError(t *testing.T) {
+	t.Parallel()
+	reads := map[string]func() ([]byte, error){
+		"a mapped client": func() ([]byte, error) {
+			return []byte(cleanMaps + mapping("08:01", "99", "/usr/lib/libfdb_c.so") + "\n"), nil
+		},
+		"unreadable":     func() ([]byte, error) { return nil, errors.New("permission denied") },
+		"malformed":      func() ([]byte, error) { return []byte("not a mapping\n"), nil },
+		"an empty table": func() ([]byte, error) { return nil, nil },
+		"a deleted client": func() ([]byte, error) {
+			return []byte(mapping("08:01", "99", "/opt/libfdb_c.so (deleted)") + "\n"), nil
+		},
+		"a versioned client": func() ([]byte, error) { return []byte(mapping("08:01", "99", "/tmp/libfdb_c_7.3.77.so") + "\n"), nil },
+	}
+	if len(reads) != 6 {
+		t.Fatalf("%d mapping failures", len(reads))
+	}
+	runs := 0
+	for name, read := range reads {
+		for _, mode := range []string{"corpus", "setup", "ingest", "verify"} {
+			runs++
+			f := newFixture(t)
+			rec := &fakeRuntime{}
+			rt := f.runtime(rec)
+			rt.maps = read
+			j := f.job(mode, "go_native", point2)
+			if mode == "ingest" {
+				j = f.job(mode, "go_pure", point2)
+			}
+			r, err := runJob(t, f, rt, j)
+			if err == nil || r == nil || r["status"] != "error" || !reflect.DeepEqual(r["build_tags"], []any{}) {
+				t.Fatalf("%s, %s: %v %v", name, mode, err, r)
+			}
+			if _, ok := r["native_library_mapped"]; ok {
+				t.Fatalf("%s, %s: a failed check claimed %v", name, mode, r["native_library_mapped"])
+			}
+			if *rec != (fakeRuntime{}) {
+				t.Fatalf("%s, %s had side effects %+v", name, mode, *rec)
+			}
+			if mode == "corpus" {
+				if _, err := os.Lstat(j["corpus_file"].(string)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("%s: a corpus was written", name)
+				}
+			}
+			if mode == "ingest" {
+				checkIngestShape(t, r)
+				if r["ingest_resources"] != nil || r["ingest_wall_ns"] != float64(0) || r["frames"] != float64(0) {
+					t.Fatalf("%s: a refused ingest measured %v", name, r)
+				}
+			}
+		}
+	}
+	if runs != 24 {
+		t.Fatalf("%d refused runs, want 6 failures in 4 modes", runs)
+	}
+}
+
+// The mapping table check accepts a pure process's table and refuses any libfdb_c,
+// live, deleted, renamed or versioned, and any table it cannot parse.
+func TestCheckNoNativeClient(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		maps string
+		ok   bool
+	}{
+		"a pure process":         {cleanMaps, true},
+		"no trailing newline":    {strings.TrimSuffix(cleanMaps, "\n"), true},
+		"a client path in a dir": {cleanMaps + mapping("08:01", "5", "/opt/fdb/libfdb_c.so"), false},
+		"a mapped client":        {cleanMaps + mapping("08:01", "99", "/usr/lib/libfdb_c.so"), false},
+		"a deleted client":       {cleanMaps + mapping("08:01", "99", "/usr/lib/libfdb_c.so (deleted)"), false},
+		"a renamed client":       {cleanMaps + mapping("08:01", "99", "/tmp/libfdb_c.so.old"), false},
+		"a versioned client":     {cleanMaps + mapping("08:01", "99", "/tmp/libfdb_c_7.3.77.so"), false},
+		"a spaced client path":   {cleanMaps + mapping("08:01", "99", "/tmp/a b/libfdb_c.so"), false},
+		"a client on btrfs":      {cleanMaps + mapping("00:1d", "99", "/home/x/libfdb_c.so"), false},
+		"empty":                  {"", false},
+		"a blank line":           {cleanMaps + "\n", false},
+		"too few fields":         {cleanMaps + "7f00-7f01 r-xp 00000000 08:01\n", false},
+		"a bad address":          {cleanMaps + "7f00 r-xp 00000000 08:01 5 /x\n", false},
+		"bad permissions":        {cleanMaps + "7f00-7f01 rwx 00000000 08:01 5 /x\n", false},
+		"a bad offset":           {cleanMaps + "7f00-7f01 r-xp 0000000g 08:01 5 /x\n", false},
+		"a bad device":           {cleanMaps + "7f00-7f01 r-xp 00000000 0801 5 /x\n", false},
+		"a bad inode":            {cleanMaps + "7f00-7f01 r-xp 00000000 08:01 5a /x\n", false},
+		"unrelated libfdb text":  {cleanMaps + mapping("08:01", "5", "/usr/lib/libfdb.so"), true},
+		"a one-byte range":       {cleanMaps + "7f00-7f01 r-xp 00000000 08:01 5 /x\n", true},
+		"a zero-width range":     {cleanMaps + "7f00-7f00 r-xp 00000000 08:01 5 /x\n", false},
+		"a reversed range":       {cleanMaps + "7f01-7f00 r-xp 00000000 08:01 5 /x\n", false},
+		"a 32-bit device half":   {cleanMaps + "7f00-7f01 r-xp 00000000 ffffffff:01 5 /x\n", true},
+		"a 33-bit device half":   {cleanMaps + "7f00-7f01 r-xp 00000000 100000000:01 5 /x\n", false},
+	}
+	accepted := 0
+	for _, c := range cases {
+		if c.ok {
+			accepted++
+		}
+	}
+	if len(cases) != 23 || accepted != 5 {
+		t.Fatalf("%d cases, %d accepted", len(cases), accepted)
+	}
+	for name, c := range cases {
+		if err := checkNoNativeClient(c.maps); (err == nil) != c.ok {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// This test binary is control-pure's flavor, so its own real mapping table passes.
+func TestRealPureProcessMaps(t *testing.T) {
+	t.Parallel()
+	table, err := productionRuntime().maps()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkNoNativeClient(string(table)); err != nil {
+		t.Fatalf("the pure test process: %v", err)
 	}
 }
 
@@ -514,9 +750,9 @@ func TestNativeIngestNeedsThePinnedArtifact(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	rec := &fakeRuntime{}
-	_, err := runJob(t, f, f.runtime(rec), f.job("ingest", "go_native", point2))
+	_, err := runJob(t, f, f.nativeRuntime(rec), f.job("ingest", "go_native", point2))
 	var ce *configError
-	if !errors.As(err, &ce) || rec.native != 0 {
+	if !errors.As(err, &ce) || !strings.Contains(err.Error(), "pinned libfdb_c") || rec.native != 0 {
 		t.Fatalf("an unpinned client artifact: %v", err)
 	}
 }
@@ -724,14 +960,16 @@ func checkIngestShape(t *testing.T, r map[string]any) {
 	if p := diagnosticsProblem(r); p != "" {
 		t.Fatal(p)
 	}
+	if p := receiptProblem(r); p != "" {
+		t.Fatal(p)
+	}
 }
 
 var queueDiagnosticFields = []string{"max_outstanding_spans", "blocked_requests", "blocked_ns", "export_call_spans", "completion_samples", "completion_samples_omitted"}
 
 // diagnosticsProblem checks a decoded ingest report's optional diagnostics, Go or Rust:
-// each is exactly an unavailable marker with a reason; the queue object belongs only to
-// a collector report, which has it whenever it succeeded; and only a go_native report
-// names the rule that proved its mapped client, which a successful one must.
+// each is exactly an unavailable marker with a reason, and the queue object belongs
+// only to a collector report, which has it whenever it succeeded.
 func diagnosticsProblem(r map[string]any) string {
 	off := func(v any) bool {
 		m, ok := v.(map[string]any)
@@ -756,15 +994,136 @@ func diagnosticsProblem(r map[string]any) string {
 	if (!collectorJob && queue != nil) || (collectorJob && !settled && (r["status"] == "ok" || queue != nil)) {
 		return fmt.Sprintf("queue diagnostics %v", queue)
 	}
+	return ""
+}
+
+// receiptProblem checks any decoded report's client receipt. A native ingest, Go or
+// Rust, claims a mapped libfdb_c only with the rule that proved it, and a successful one
+// must; every other report never claims a native mapping, and a successful one proved
+// no libfdb_c was mapped. A Go report names its compiled build tags: [] for
+// control-pure, ["libfdbc_backend"] for control-native's go_native ingest.
+func receiptProblem(r map[string]any) string {
+	nativeIngest := r["mode"] == "ingest" && (r["arm"] == "go_native" || r["arm"] == "rust_native")
+	ok := r["status"] == "ok"
 	rule, claimed := r["native_mapping_rule"]
 	known := rule == exactStat || rule == btrfsSuperblock
-	switch {
-	case r["arm"] != "go_native" && claimed:
-		return fmt.Sprintf("a %v report claims a native mapping rule %v", r["arm"], rule)
-	case claimed && !known, r["arm"] == "go_native" && r["status"] == "ok" && !known:
-		return fmt.Sprintf("native mapping rule %v", rule)
+	mapped, checked := r["native_library_mapped"]
+	if nativeIngest {
+		if (claimed && !known) || (checked && mapped != true) || (claimed && !checked) || (ok && (!known || !checked)) {
+			return fmt.Sprintf("a native ingest receipt: rule %v, mapped %v", rule, mapped)
+		}
+		// A successful or proved native ingest names the one pinned client its job sealed;
+		// any echoed client hash is the sealed one.
+		sealed, _ := r["effective_job"].(map[string]any)
+		hash, echoed := r["client_library_sha256"]
+		if ((ok || checked) && (hash != clientSHA256 || sealed["client_library_sha256"] != clientSHA256)) ||
+			(echoed && sealed != nil && hash != sealed["client_library_sha256"]) {
+			return fmt.Sprintf("a native ingest receipt for client %v, sealed %v", hash, sealed["client_library_sha256"])
+		}
+	} else if claimed || (checked && mapped != false) || (ok && !checked) {
+		return fmt.Sprintf("a %v %v receipt: rule %v, mapped %v", r["mode"], r["arm"], rule, mapped)
+	}
+	if r["mode"] == "ingest" && r["arm"] == "rust_native" {
+		return "" // the Rust executable has no Go build tags
+	}
+	want := []any{}
+	if r["mode"] == "ingest" && r["arm"] == "go_native" {
+		want = []any{"libfdbc_backend"}
+	}
+	if !reflect.DeepEqual(r["build_tags"], want) {
+		return fmt.Sprintf("build_tags %v, want %v", r["build_tags"], want)
 	}
 	return ""
+}
+
+// The receipt accepts what each executable truthfully reports and refuses a missing,
+// premature or contradictory claim about the native client or the build.
+func TestReceiptContract(t *testing.T) {
+	t.Parallel()
+	report := func(mode, arm, status string, fields map[string]any) map[string]any {
+		r := map[string]any{"mode": mode, "arm": arm, "status": status, "build_tags": []any{}}
+		if mode == "ingest" && arm == "go_native" {
+			r["build_tags"] = []any{"libfdbc_backend"}
+		}
+		if mode == "ingest" && arm == "rust_native" {
+			delete(r, "build_tags")
+		}
+		if mode == "ingest" && arm != "go_pure" {
+			r["client_library_sha256"] = clientSHA256
+			r["effective_job"] = map[string]any{"client_library_sha256": clientSHA256}
+		}
+		for k, v := range fields {
+			if v == nil {
+				delete(r, k)
+				continue
+			}
+			r[k] = v
+		}
+		return r
+	}
+	pure := map[string]any{"native_library_mapped": false}
+	proved := func(rule any) map[string]any {
+		return map[string]any{"native_library_mapped": true, "native_mapping_rule": rule}
+	}
+	// set changes one field of a report, null included.
+	set := func(r map[string]any, field string, v any) map[string]any {
+		r[field] = v
+		return r
+	}
+	sealedFor := func(hash string) map[string]any { return map[string]any{"client_library_sha256": hash} }
+	other := strings.Repeat("0", 64)
+	for name, r := range map[string]map[string]any{
+		"corpus":                        report("corpus", "go_pure", "ok", pure),
+		"setup of a native arm":         report("setup", "go_native", "ok", pure),
+		"verify of the Rust arm":        report("verify", "rust_native", "ok", pure),
+		"go_pure ingest":                report("ingest", "go_pure", "ok", pure),
+		"pure, failed before a check":   report("setup", "go_pure", "error", nil),
+		"go_native exact_stat":          report("ingest", "go_native", "ok", proved(exactStat)),
+		"go_native btrfs_superblock":    report("ingest", "go_native", "ok", proved(btrfsSuperblock)),
+		"go_native, failed unproved":    report("ingest", "go_native", "error", nil),
+		"go_native, proved then failed": report("ingest", "go_native", "error", map[string]any{"native_library_mapped": true}),
+		"rust_native":                   report("ingest", "rust_native", "ok", proved(exactStat)),
+	} {
+		if p := receiptProblem(r); p != "" {
+			t.Errorf("%s: %s", name, p)
+		}
+	}
+	refused := map[string]map[string]any{
+		"pure ok, unchecked":           report("setup", "go_native", "ok", nil),
+		"pure claims a mapped client":  report("verify", "go_pure", "ok", map[string]any{"native_library_mapped": true}),
+		"pure claims a rule":           report("ingest", "go_pure", "ok", map[string]any{"native_library_mapped": false, "native_mapping_rule": exactStat}),
+		"pure, a string":               report("corpus", "go_pure", "ok", map[string]any{"native_library_mapped": "false"}),
+		"pure with native tags":        report("setup", "go_pure", "ok", map[string]any{"native_library_mapped": false, "build_tags": []any{"libfdbc_backend"}}),
+		"pure without tags":            report("setup", "go_pure", "ok", map[string]any{"native_library_mapped": false, "build_tags": nil}),
+		"pure with null tags":          report("setup", "go_pure", "ok", map[string]any{"native_library_mapped": false, "build_tags": []any(nil)}),
+		"go_native ok without a rule":  report("ingest", "go_native", "ok", map[string]any{"native_library_mapped": true}),
+		"go_native ok, unmapped":       report("ingest", "go_native", "ok", map[string]any{"native_library_mapped": false, "native_mapping_rule": exactStat}),
+		"go_native rule, no mapping":   report("ingest", "go_native", "ok", map[string]any{"native_mapping_rule": exactStat}),
+		"go_native another rule":       report("ingest", "go_native", "ok", proved("mount_device")),
+		"go_native null rule":          report("ingest", "go_native", "ok", proved([]any(nil))),
+		"go_native error, unmapped":    report("ingest", "go_native", "error", map[string]any{"native_library_mapped": false}),
+		"go_native with pure tags":     report("ingest", "go_native", "ok", map[string]any{"native_library_mapped": true, "native_mapping_rule": exactStat, "build_tags": []any{}}),
+		"rust_native without a rule":   report("ingest", "rust_native", "ok", nil),
+		"rust_native rule, no mapping": report("ingest", "rust_native", "ok", map[string]any{"native_mapping_rule": exactStat}),
+	}
+	// The client hash of each native arm: missing, null, another client sealed and echoed,
+	// a stale echo of another sealed job, and a proved failure naming another client.
+	for _, arm := range []string{"go_native", "rust_native"} {
+		refused[arm+" without a client hash"] = report("ingest", arm, "ok", map[string]any{"native_library_mapped": true, "native_mapping_rule": exactStat, "client_library_sha256": nil})
+		refused[arm+" with a null client hash"] = set(report("ingest", arm, "ok", proved(exactStat)), "client_library_sha256", nil)
+		refused[arm+" for another client"] = report("ingest", arm, "ok", map[string]any{"native_library_mapped": true, "native_mapping_rule": exactStat, "client_library_sha256": other, "effective_job": sealedFor(other)})
+		refused[arm+" with a stale client hash"] = report("ingest", arm, "ok", map[string]any{"native_library_mapped": true, "native_mapping_rule": exactStat, "effective_job": sealedFor(other)})
+		refused[arm+" proved, failed, another client"] = report("ingest", arm, "error", map[string]any{"native_library_mapped": true, "client_library_sha256": other, "effective_job": sealedFor(other)})
+		refused[arm+" unproved, an inconsistent echo"] = report("ingest", arm, "error", map[string]any{"client_library_sha256": other})
+	}
+	if len(refused) != 28 {
+		t.Fatalf("%d refusal cases", len(refused))
+	}
+	for name, r := range refused {
+		if receiptProblem(r) == "" {
+			t.Errorf("%s was accepted: %v", name, r)
+		}
+	}
 }
 
 // The explicit unavailable diagnostics accept exactly the markers the Go report emits
@@ -791,11 +1150,6 @@ func TestDiagnosticsContract(t *testing.T) {
 			"transaction_spans": maps.Clone(marker), "queue": q,
 		}
 	}
-	native := func(rule any) map[string]any {
-		r := report("collector_queue", "go_native", "ok")
-		r["native_mapping_rule"] = rule
-		return r
-	}
 	beforeStart := report("collector_queue", "go_pure", "error")
 	beforeStart["queue"] = nil
 	for name, r := range map[string]map[string]any{
@@ -803,8 +1157,6 @@ func TestDiagnosticsContract(t *testing.T) {
 		"direct ok":              report("writer_direct", "go_pure", "ok"),
 		"collector before start": beforeStart,
 		"rust collector":         report("collector_queue", "rust_native", "ok"),
-		"native exact_stat":      native(exactStat),
-		"native btrfs":           native(btrfsSuperblock),
 	} {
 		if p := diagnosticsProblem(r); p != "" {
 			t.Errorf("%s: %s", name, p)
@@ -827,19 +1179,14 @@ func TestDiagnosticsContract(t *testing.T) {
 		"blank reason": mutate("writer_direct", "go_pure", func(r map[string]any) {
 			r["transaction_spans"] = map[string]any{"availability": "unavailable", "reason": " "}
 		}),
-		"marker extra field":       mutate("writer_direct", "go_pure", func(r map[string]any) { r["transaction_spans"].(map[string]any)["value"] = float64(0) }),
-		"marker missing reason":    mutate("collector_queue", "go_pure", queueField(map[string]any{"availability": "unavailable"})),
-		"no transaction_spans":     mutate("writer_direct", "go_pure", func(r map[string]any) { delete(r, "transaction_spans") }),
-		"no queue field":           mutate("writer_direct", "go_pure", func(r map[string]any) { delete(r, "queue") }),
-		"queue missing field":      mutate("collector_queue", "go_pure", func(r map[string]any) { delete(r["queue"].(map[string]any), "completion_samples") }),
-		"queue extra field":        mutate("collector_queue", "go_pure", func(r map[string]any) { r["queue"].(map[string]any)["depth"] = maps.Clone(marker) }),
-		"collector ok, null":       mutate("collector_queue", "go_pure", func(r map[string]any) { r["queue"] = nil }),
-		"direct with a queue":      mutate("writer_direct", "go_pure", func(r map[string]any) { r["queue"] = maps.Clone(queue) }),
-		"pure claims a mapping":    mutate("writer_direct", "go_pure", func(r map[string]any) { r["native_mapping_rule"] = exactStat }),
-		"rust claims a mapping":    mutate("writer_direct", "rust_native", func(r map[string]any) { r["native_mapping_rule"] = exactStat }),
-		"native without a rule":    mutate("writer_direct", "go_native", func(map[string]any) {}),
-		"native with another rule": native("mount_device"),
-		"native with a null rule":  native(nil),
+		"marker extra field":    mutate("writer_direct", "go_pure", func(r map[string]any) { r["transaction_spans"].(map[string]any)["value"] = float64(0) }),
+		"marker missing reason": mutate("collector_queue", "go_pure", queueField(map[string]any{"availability": "unavailable"})),
+		"no transaction_spans":  mutate("writer_direct", "go_pure", func(r map[string]any) { delete(r, "transaction_spans") }),
+		"no queue field":        mutate("writer_direct", "go_pure", func(r map[string]any) { delete(r, "queue") }),
+		"queue missing field":   mutate("collector_queue", "go_pure", func(r map[string]any) { delete(r["queue"].(map[string]any), "completion_samples") }),
+		"queue extra field":     mutate("collector_queue", "go_pure", func(r map[string]any) { r["queue"].(map[string]any)["depth"] = maps.Clone(marker) }),
+		"collector ok, null":    mutate("collector_queue", "go_pure", func(r map[string]any) { r["queue"] = nil }),
+		"direct with a queue":   mutate("writer_direct", "go_pure", func(r map[string]any) { r["queue"] = maps.Clone(queue) }),
 	} {
 		if diagnosticsProblem(r) == "" {
 			t.Errorf("%s was accepted: %v", name, r)

@@ -390,4 +390,13 @@ func TestNativeMappingRuleIsPropagated(t *testing.T) {
 	if r.NativeMappingRule == nil || *r.NativeMappingRule != btrfsSuperblock {
 		t.Fatalf("claimed %v", r.NativeMappingRule)
 	}
+	// A mapped client is claimed only by an open that proved it.
+	r.provedClient("")
+	if r.NativeLibraryMapped != nil {
+		t.Fatal("a pure open claimed a mapped client")
+	}
+	r.provedClient(exactStat)
+	if r.NativeLibraryMapped == nil || !*r.NativeLibraryMapped {
+		t.Fatalf("a proved open: %v", r.NativeLibraryMapped)
+	}
 }

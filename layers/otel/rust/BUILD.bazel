@@ -19,7 +19,7 @@ filegroup(
     visibility = ["//layers/otel/cmd/otelrust-fixture:__pkg__"],
 )
 
-# Byte-exact copy of the frozen runner schema (SHA256 c7d9ae94...7ec6); the driver
+# Byte-exact copy of the frozen runner schema (SHA256 1581c3dd...b18b); the driver
 # tests pin its hash and field sets. For the Rust driver and the forthcoming Go control.
 filegroup(
     name = "paired_job_schema",

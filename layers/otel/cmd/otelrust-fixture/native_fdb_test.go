@@ -48,6 +48,8 @@ const (
 	childTimeout   = 2 * time.Minute
 	proofTimeout   = 4 * time.Minute
 	storeMetaValue = otel.StoreLayoutNone
+	// clientPin is MODULE.bazel's libfdb_c 7.3.77 pin, the only client a native open loads.
+	clientPin = "617572467897d0360f76ffc33f24b58090ee691e3273750d2ff334cc71aae3fa"
 )
 
 // TestNativeRustAgainstOwnedFDB is the live native proof: the production otel-rust
@@ -669,7 +671,11 @@ type ingestReport struct {
 	DrainNs                          *int64           `json:"drain_ns"`
 	IngestResources                  *ingestResources `json:"ingest_resources"`
 	IngestResourcesUnavailableReason *string          `json:"ingest_resources_unavailable_reason"`
-	Samples                          []struct {
+	ClientLibrarySHA256              string           `json:"client_library_sha256"`
+	// Raw, so that absent, null and false stay distinct.
+	NativeLibraryMapped json.RawMessage `json:"native_library_mapped"`
+	NativeMappingRule   json.RawMessage `json:"native_mapping_rule"`
+	Samples             []struct {
 		ReceivedSpans int  `json:"received_spans"`
 		AcceptedSpans *int `json:"accepted_spans"`
 		// Present only on writer_direct samples; collector samples carry no ACK field.
@@ -687,6 +693,26 @@ type ingestResources struct {
 	CPUSeconds        float64 `json:"cpu_seconds"`
 	PeakRSSBytes      int64   `json:"peak_rss_bytes"`
 	MeasurementSource string  `json:"measurement_source"`
+}
+
+// mappingRule returns the rule by which the run's actual native open proved its mapped
+// libfdb_c is the pinned artifact: literally true, an authorized rule and the pinned
+// client's hash, or "" when the report claims nothing at all. Anything else fails.
+func (r ingestReport) mappingRule(t *testing.T) string {
+	t.Helper()
+	return mappingProof(t, r.NativeLibraryMapped, r.NativeMappingRule, r.ClientLibrarySHA256)
+}
+
+func mappingProof(t *testing.T, mapped, rule json.RawMessage, client string) string {
+	t.Helper()
+	if mapped == nil && rule == nil {
+		return ""
+	}
+	var name string
+	if string(mapped) != "true" || json.Unmarshal(rule, &name) != nil || (name != "exact_stat" && name != "btrfs_superblock") || client != clientPin {
+		t.Fatalf("native mapping provenance %s %s for client %s", mapped, rule, client)
+	}
+	return name
 }
 
 // measured: real ingest-window resources and timings, with no unavailable reason.
@@ -849,6 +875,10 @@ func (h *nativeHarness) productionCLI(t *testing.T, want []vector, cfg corpusCon
 		r.IngestResourcesUnavailableReason == nil || strings.TrimSpace(*r.IngestResourcesUnavailableReason) == "" || !r.echoes(t, path) {
 		t.Fatalf("refused report: %s", b)
 	}
+	// Refused before libfdb_c loaded: no mapped client was proved, and none is claimed.
+	if rule := r.mappingRule(t); rule != "" {
+		t.Fatalf("refused report claims a mapped client by %s: %s", rule, b)
+	}
 	if diff := mapDiff(h.physical(t, c.ts), c.base); diff != "" {
 		t.Fatalf("refused run changed the tenant: %s", diff)
 	}
@@ -875,7 +905,11 @@ func (h *nativeHarness) productionCLI(t *testing.T, want []vector, cfg corpusCon
 				t.Fatalf("%s report sample: %s", name, b)
 			}
 		}
-		t.Logf("%s writer_direct run: 8 frames, 8 ACK operations, 2 batches, %d native retries", name, *r.NativeRetries.Value)
+		rule := r.mappingRule(t)
+		if rule == "" {
+			t.Fatalf("%s report has no mapped-client proof: %s", name, b)
+		}
+		t.Logf("%s writer_direct run: 8 frames, 8 ACK operations, 2 batches, %d native retries; client mapping proved by %s", name, *r.NativeRetries.Value, rule)
 		got := h.audit(t, c.ts, c.base, c.ref, want)
 		if written != nil {
 			if diff := mapDiff(got, written); diff != "" {
@@ -912,7 +946,11 @@ func (h *nativeHarness) collectorCLI(t *testing.T, want []vector, cfg corpusConf
 			t.Fatalf("collector report sample: %s", b)
 		}
 	}
-	t.Logf("collector_queue run: %d frames, %d ACK operations, %d batches, %d export attempts", n, *r.AckedSpanOperations.Value, *r.CommittedBatches.Value, *r.ExportAttempts.Value)
+	rule := r.mappingRule(t)
+	if rule == "" {
+		t.Fatalf("collector report has no mapped-client proof: %s", b)
+	}
+	t.Logf("collector_queue run: %d frames, %d ACK operations, %d batches, %d export attempts; client mapping proved by %s", n, *r.AckedSpanOperations.Value, *r.CommittedBatches.Value, *r.ExportAttempts.Value, rule)
 	h.audit(t, c.ts, c.base, c.ref, want)
 	if !sameKVs(h.outside(t, c.ts), c.outside) {
 		t.Fatal("collector run changed keys outside the tenant")
@@ -934,6 +972,10 @@ type proofReport struct {
 	CommittedBatches    int        `json:"committed_batches"`
 	Retries             int        `json:"retries"`
 	LogicalOTLPBytes    int        `json:"logical_otlp_bytes"`
+	// The actual open's mapped-client proof, raw so that absent, null and false differ.
+	NativeLibraryMapped json.RawMessage `json:"native_library_mapped"`
+	NativeMappingRule   json.RawMessage `json:"native_mapping_rule"`
+	ClientLibrarySHA256 string          `json:"client_library_sha256"`
 }
 
 // appliedCommitUnknown runs the driver: one Writer call whose single batch really
@@ -980,6 +1022,9 @@ func (h *nativeHarness) appliedCommitUnknown(t *testing.T, c wireCase) {
 		r.CommitCalls != 2 || r.RealCommitSuccesses != 2 || r.Exposed != 1 || !slices.Equal(r.OnErrorCodes, []int{1021}) ||
 		r.CommittedSpans != len(c.Outputs) || r.CommittedBatches != 1 || r.Retries != 1 || r.LogicalOTLPBytes != otlpBytes {
 		t.Fatalf("applied-1021 report: %s", b)
+	}
+	if mappingProof(t, r.NativeLibraryMapped, r.NativeMappingRule, r.ClientLibrarySHA256) == "" {
+		t.Fatalf("applied-1021 report has no mapped-client proof: %s", b)
 	}
 	t.Logf("%s: %s", proofScenario, b)
 	h.audit(t, target, base, ref, c.Outputs)

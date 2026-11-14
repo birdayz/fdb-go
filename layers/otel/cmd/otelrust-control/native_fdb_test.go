@@ -32,7 +32,8 @@ import (
 )
 
 var (
-	controlRunfile = flag.String("control", "", "runfile of //layers/otel/cmd/otelrust-control:otelrust-control")
+	pureRunfile    = flag.String("control-pure", "", "runfile of //layers/otel/cmd/otelrust-control:control-pure")
+	nativeRunfile  = flag.String("control-native", "", "runfile of //layers/otel/cmd/otelrust-control:control-native")
 	libfdbCRunfile = flag.String("libfdb-c", "", "runfile of @libfdb_c_linux_x86_64//file")
 	otelRustFile   = flag.String("otel-rust", "", "runfile of //layers/otel/rust:otel-rust")
 )
@@ -40,7 +41,7 @@ var (
 func runfile(t *testing.T, p string) string {
 	t.Helper()
 	if p == "" {
-		t.Fatal("the -control, -libfdb-c and -otel-rust runfile flags are required")
+		t.Fatal("the -control-pure, -control-native, -libfdb-c and -otel-rust runfile flags are required")
 	}
 	rf, err := runfiles.New()
 	if err != nil {
@@ -60,12 +61,15 @@ func runfile(t *testing.T, p string) string {
 // pinnedLibrary is the repository's libfdb_c 7.3.77 artifact.
 func pinnedLibrary(t *testing.T) string { return runfile(t, *libfdbCRunfile) }
 
-// live runs the real executables as child processes against one owned FDB container.
+// live runs the real executables as child processes against one owned FDB container:
+// control-pure for corpus, setup, verify and go_pure ingest, control-native for
+// go_native ingest, and the Rust executable for rust_native ingest.
 type live struct {
 	t                   *testing.T
 	ctx                 context.Context
 	dir                 string
-	control, controlSHA string
+	pure, pureSHA       string
+	native, nativeSHA   string
 	rust, rustSHA       string
 	library             string
 	cluster, clusterSHA string
@@ -94,13 +98,19 @@ func newLive(t *testing.T) *live {
 	ctx, stop := context.WithTimeout(t.Context(), 15*time.Minute)
 	t.Cleanup(stop)
 	l := &live{
-		t: t, ctx: ctx, dir: t.TempDir(), control: runfile(t, *controlRunfile), rust: runfile(t, *otelRustFile),
-		library: pinnedLibrary(t), frames: 24,
+		t: t, ctx: ctx, dir: t.TempDir(), pure: runfile(t, *pureRunfile), native: runfile(t, *nativeRunfile),
+		rust: runfile(t, *otelRustFile), library: pinnedLibrary(t), frames: 24,
 	}
 	l.cluster = filepath.Join(l.dir, "fdb.cluster")
 	l.clusterSHA = writeFile(t, l.cluster, []byte(text))
-	if l.controlSHA, err = hashFile(l.control); err != nil {
+	if l.pureSHA, err = hashFile(l.pure); err != nil {
 		t.Fatal(err)
+	}
+	if l.nativeSHA, err = hashFile(l.native); err != nil {
+		t.Fatal(err)
+	}
+	if l.pureSHA == l.nativeSHA {
+		t.Fatal("control-pure and control-native are the same executable")
 	}
 	if l.rustSHA, err = hashFile(l.rust); err != nil {
 		t.Fatal(err)
@@ -115,10 +125,14 @@ func newLive(t *testing.T) *live {
 	return l
 }
 
-// job is a mode's job: the control executes it, except a rust_native ingest.
+// job is a mode's job, sealed for the executable that runs it: control-pure, except
+// the go_native and rust_native ingests.
 func (l *live) job(name, mode, arm, run, workload, compression string) map[string]any {
-	binary := l.controlSHA
-	if mode == "ingest" && arm == "rust_native" {
+	binary := l.pureSHA
+	switch {
+	case mode == "ingest" && arm == "go_native":
+		binary = l.nativeSHA
+	case mode == "ingest" && arm == "rust_native":
 		binary = l.rustSHA
 	}
 	j := map[string]any{
@@ -178,11 +192,11 @@ func jobPath(j map[string]any) string {
 // exec runs the executable a job names on it with exactly env, never the test's.
 func (l *live) exec(j map[string]any, env ...string) (map[string]any, string, error) {
 	l.t.Helper()
-	writeFile(l.t, jobPath(j), encode(l.t, j))
-	binary := l.control
-	if j["binary_sha256"] == l.rustSHA {
-		binary = l.rust
+	binary, ok := map[any]string{l.pureSHA: l.pure, l.nativeSHA: l.native, l.rustSHA: l.rust}[j["binary_sha256"]]
+	if !ok {
+		l.t.Fatalf("job %v names no executable", j["binary_sha256"])
 	}
+	writeFile(l.t, jobPath(j), encode(l.t, j))
 	ctx, cancel := context.WithTimeout(l.ctx, 3*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, jobPath(j))
@@ -217,6 +231,17 @@ func (l *live) ok(j map[string]any, env ...string) map[string]any {
 		r["source_revision"] != l.revision || !reflect.DeepEqual(r["effective_job"], sealed) {
 		l.t.Fatalf("%s %s report names something else than ran: %v", j["mode"], j["arm"], r)
 	}
+	// The report echoes the sealed client hash exactly: the pin for a native arm's job,
+	// null for go_pure and corpus.
+	if (j["client_library_sha256"] != nil && j["client_library_sha256"] != clientSHA256) ||
+		!reflect.DeepEqual(r["client_library_sha256"], j["client_library_sha256"]) {
+		l.t.Fatalf("%s %s client hash %v, sealed %v", j["mode"], j["arm"], r["client_library_sha256"], j["client_library_sha256"])
+	}
+	// control-pure proved its real mappings hold no libfdb_c; a native ingest proved its
+	// mapped client; the build tags name the executable that ran.
+	if p := receiptProblem(r); p != "" {
+		l.t.Fatalf("%s %s receipt: %s: %v", j["mode"], j["arm"], p, r)
+	}
 	return r
 }
 
@@ -229,10 +254,10 @@ func (l *live) arm(run, arm, workload, compression string) map[string]any {
 	}
 	ingest := l.ok(l.job(run+".ingest", "ingest", arm, run, workload, compression))
 	checkIngestShape(l.t, ingest)
-	// Only the go_native ingest validated a mapped client; which rule proved it depends
-	// on this host's filesystem, and checkIngestShape requires one of the two.
+	// Only a native ingest validated a mapped client; which rule proved it depends on
+	// this host's filesystem, and checkIngestShape requires one of the two.
 	rule, claimed := ingest["native_mapping_rule"]
-	if claimed != (arm == "go_native") {
+	if claimed != (arm != "go_pure") {
 		l.t.Fatalf("%s ingest native mapping rule %v", arm, rule)
 	}
 	if claimed {
@@ -480,7 +505,23 @@ func sealed(m layoutManifest, key []byte) bool {
 	return false
 }
 
-// refusals: inherited network options, an unmapped client copy and a reused namespace.
+// flavorRefused requires the executable j is sealed for to refuse it as a job error:
+// a failed exit naming why, and no report, diagnostic or other output created.
+func (l *live) flavorRefused(j map[string]any, why string, outputs ...string) {
+	l.t.Helper()
+	r, stderr, err := l.exec(j)
+	if err == nil || r != nil || !strings.Contains(stderr, why) {
+		l.t.Fatalf("%s %s on the other executable: %v %q %v", j["mode"], j["arm"], err, stderr, r)
+	}
+	for _, p := range append(outputs, diagnosticPath(j["output"].(string))) {
+		if _, err := os.Lstat(p); !errors.Is(err, os.ErrNotExist) {
+			l.t.Fatalf("a refused %s %s created %s", j["mode"], j["arm"], p)
+		}
+	}
+}
+
+// refusals: inherited network options, an unmapped client copy, each executable's
+// foreign jobs and a reused namespace.
 func (l *live) refusals(t *testing.T) {
 	// Setup and verify of a native arm never initialize the native client: an inherited
 	// network option is ignored by them, and refused by the native ingest before a write.
@@ -516,6 +557,19 @@ func (l *live) refusals(t *testing.T) {
 		t.Fatalf("an unmapped client copy: %v %v", err, r)
 	}
 
+	// Each executable refuses the other's jobs before reserving a report: control-native
+	// a setup of its own arm, control-pure a go_native ingest sealed for it.
+	run = "control_smoke_flavor"
+	l.ok(l.job(run+".setup", "setup", "go_native", run, point2, "zlib-1"))
+	wrong := l.job(run+".native-setup", "setup", "go_native", run+"_other", point2, "zlib-1")
+	wrong["binary_sha256"] = l.nativeSHA
+	l.flavorRefused(wrong, "control-native runs only go_native ingest", wrong["layout_file"].(string))
+	wrong = l.job(run+".pure-ingest", "ingest", "go_native", run, point2, "zlib-1")
+	wrong["binary_sha256"] = l.pureSHA
+	l.flavorRefused(wrong, "control-pure never runs a native ingest")
+	// The refusals left the sealed baseline: control-native ingests it as sealed.
+	l.ok(l.job(run+".ingest", "ingest", "go_native", run, point2, "zlib-1"))
+
 	// A namespace is set up once: a second setup cannot adopt the reserved one.
 	run = "control_smoke_reused"
 	l.ok(l.job(run+".setup", "setup", "go_native", run, point2, "zlib-1"))
@@ -543,8 +597,9 @@ func (l *live) unsettled(t *testing.T) {
 		}
 	})
 	usage := 0
+	// This test process is control-pure's flavor and seals control-pure's hash.
 	rt := productionRuntime()
-	rt.executable = func() (string, error) { return l.control, nil }
+	rt.executable = func() (string, error) { return l.pure, nil }
 	rt.openNative = func(context.Context, string, string) (fdb.BackendDatabase, string, error) {
 		return nil, "", errors.New("a pure ingest opened the native client")
 	}

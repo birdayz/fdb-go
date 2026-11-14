@@ -1,4 +1,4 @@
-//go:build cgo && libfdbc
+//go:build cgo && libfdbc_backend
 
 package main
 
@@ -10,6 +10,10 @@ import (
 	"fdb.dev/pkg/fdbgo/libfdbc"
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
 )
+
+// compiledFlavor is control-native: the pinned libfdb_c is linked in, for go_native
+// ingest only.
+var compiledFlavor = flavor{native: true, tags: []string{"libfdbc_backend"}}
 
 var native = &nativeOpener{nativeSteps: nativeSteps{
 	environ:    os.Environ,

@@ -172,7 +172,9 @@ The Record Layer targets Java's tuple keys, record serialization, split records,
 versions, store headers and supported index layouts. The conformance suite in
 `conformance/` performs bidirectional reads/writes for covered cases. The
 `libfdbc` build tag changes the Record Layer / SQL transport backend, not the
-higher-level storage layout; it does not remove the exceptions below.
+higher-level storage layout; it does not remove the exceptions below. The
+`libfdbc_backend` tag only compiles that backend package and leaves the Record Layer on
+the pure-Go client.
 
 ### Exceptions to check before mixed Go/Java use
 

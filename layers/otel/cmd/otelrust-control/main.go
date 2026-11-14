@@ -1,6 +1,7 @@
 // otelrust-control is the Go side of the paired Go/Rust OTel benchmark. One sealed
 // otel_paired_job_v1 job per process generates the corpus, sets up or verifies any arm's
 // tenant through the pure-Go client, or ingests a Go arm. It never provisions a cluster.
+// The sources build two executables, control-pure and control-native; see flavor.
 package main
 
 import (
@@ -512,8 +513,35 @@ func checkSeals(rt runtime, j *job) (*layoutManifest, error) {
 	return &m, nil
 }
 
+// flavor is one of the two control executables built from these sources: control-pure
+// (no build tag, no cgo) runs corpus, setup and verify of every arm and go_pure ingest;
+// control-native (libfdbc_backend) runs only go_native ingest.
+type flavor struct {
+	native bool
+	// tags are the build tags the executable was compiled with, as reported.
+	tags []string
+}
+
+// admits refuses, like any other job error and before a report, a job this flavor was
+// not built to run. A setup or verify job of a native arm describes its target writer;
+// it never opens the native client, so it belongs to control-pure.
+func (f flavor) admits(j *job) error {
+	nativeIngest := j.Mode == "ingest" && j.ClientBackend == "native_c"
+	switch {
+	case f.native && !nativeIngest:
+		return refuse("control-native runs only go_native ingest; corpus, setup, verify and go_pure ingest run on control-pure")
+	case !f.native && nativeIngest:
+		return refuse("control-pure never runs a native ingest; go_native ingest runs on control-native")
+	}
+	return nil
+}
+
 // runtime is what a job may open and measure; tests substitute parts of it.
 type runtime struct {
+	// flavor is what the executable was compiled to run.
+	flavor flavor
+	// maps reads the process mapping table the pure flavor proves free of libfdb_c.
+	maps       func() ([]byte, error)
 	executable func() (string, error)
 	openPure   func(ctx context.Context, clusterFile string) (fdb.BackendDatabase, error)
 	openNative func(ctx context.Context, library, clusterFile string) (fdb.BackendDatabase, string, error)
@@ -527,12 +555,32 @@ type runtime struct {
 
 func productionRuntime() runtime {
 	return runtime{
+		flavor:     compiledFlavor,
+		maps:       func() ([]byte, error) { return os.ReadFile("/proc/self/maps") },
 		executable: os.Executable,
 		openPure:   openPureBackend,
 		openNative: openNativeBackend,
 		usage:      selfUsage,
 		joinBound:  30 * time.Second,
 	}
+}
+
+// pureClientOnly, in control-pure, reads the process mappings and records that no
+// libfdb_c is mapped; control-native proves its mapping per open instead.
+func (rt runtime) pureClientOnly(c *reportCommon) error {
+	if rt.flavor.native {
+		return nil
+	}
+	maps, err := rt.maps()
+	if err != nil {
+		return fault("client", "cannot read the process mappings")
+	}
+	if err := checkNoNativeClient(string(maps)); err != nil {
+		return err
+	}
+	mapped := false
+	c.NativeLibraryMapped = &mapped
+	return nil
 }
 
 // openPureBackend opens the production pure-Go client on clusterFile.
@@ -600,6 +648,12 @@ type reportCommon struct {
 	Boundary             string          `json:"boundary"`
 	EffectiveJob         json.RawMessage `json:"effective_job"`
 	Artifacts            []artifact      `json:"artifacts"`
+	// BuildTags are the executable's compiled build tags: [] for control-pure.
+	BuildTags []string `json:"build_tags"`
+	// NativeLibraryMapped is false once control-pure proved no libfdb_c is mapped, true
+	// once control-native proved the mapped client is the sealed artifact, and absent
+	// until either check succeeded.
+	NativeLibraryMapped *bool `json:"native_library_mapped,omitempty"`
 }
 
 func (r *reportCommon) common() *reportCommon { return r }
@@ -613,7 +667,7 @@ func optional(s string) *string {
 	return &s
 }
 
-func newCommon(j *job, jobSHA256 string, effective json.RawMessage, boundary string) reportCommon {
+func newCommon(j *job, tags []string, jobSHA256 string, effective json.RawMessage, boundary string) reportCommon {
 	r := reportCommon{
 		Schema: reportSchema, Mode: j.Mode, Arm: j.Arm, Status: "error",
 		SourceRevision: j.SourceRevision, SourceManifestSHA256: j.SourceManifestSHA256,
@@ -621,6 +675,8 @@ func newCommon(j *job, jobSHA256 string, effective json.RawMessage, boundary str
 		CorpusSHA256: optional(j.CorpusSHA256), LayoutSHA256: optional(j.LayoutSHA256),
 		ClusterSHA256: optional(j.ClusterSHA256), ClientLibrarySHA256: j.ClientLibrarySHA256,
 		Boundary: boundary, EffectiveJob: effective, Artifacts: []artifact{},
+		// Never null: control-pure reports [].
+		BuildTags: append([]string{}, tags...),
 	}
 	return r
 }
@@ -671,6 +727,9 @@ func run(rt runtime, jobPath string) error {
 	if err := validate(j, jobPath); err != nil {
 		return err
 	}
+	if err := rt.flavor.admits(j); err != nil {
+		return err
+	}
 	if err := checkFiles(j, jobPath); err != nil {
 		return err
 	}
@@ -690,20 +749,26 @@ func run(rt runtime, jobPath string) error {
 	ctx, cancel := context.WithDeadline(context.Background(), start.Add(time.Duration(j.TimeoutSeconds)*time.Second))
 	defer cancel()
 	var r report
-	var outcome error
+	var execute func() error
 	switch j.Mode {
 	case "corpus":
-		cr := &corpusReport{reportCommon: newCommon(j, jobSHA256, effective.Bytes(), corpusBoundary), CorpusConfig: j.CorpusConfig}
-		r, outcome = cr, generateCorpus(ctx, j, cr)
+		cr := &corpusReport{reportCommon: newCommon(j, rt.flavor.tags, jobSHA256, effective.Bytes(), corpusBoundary), CorpusConfig: j.CorpusConfig}
+		r, execute = cr, func() error { return generateCorpus(ctx, j, cr) }
 	case "setup":
-		sr := &setupReport{reportCommon: newCommon(j, jobSHA256, effective.Bytes(), setupBoundary)}
-		r, outcome = sr, runSetup(ctx, rt, j, sr)
+		sr := &setupReport{reportCommon: newCommon(j, rt.flavor.tags, jobSHA256, effective.Bytes(), setupBoundary)}
+		r, execute = sr, func() error { return runSetup(ctx, rt, j, sr) }
 	case "ingest":
-		ir := newIngestReport(j, newCommon(j, jobSHA256, effective.Bytes(), ingestBoundary))
-		r, outcome = ir, runIngest(ctx, rt, j, layout, ir)
+		ir := newIngestReport(j, newCommon(j, rt.flavor.tags, jobSHA256, effective.Bytes(), ingestBoundary))
+		r, execute = ir, func() error { return runIngest(ctx, rt, j, layout, ir) }
 	default:
-		vr := newVerifyReport(newCommon(j, jobSHA256, effective.Bytes(), verifyBoundary))
-		r, outcome = vr, runVerify(ctx, rt, j, layout, vr)
+		vr := newVerifyReport(newCommon(j, rt.flavor.tags, jobSHA256, effective.Bytes(), verifyBoundary))
+		r, execute = vr, func() error { return runVerify(ctx, rt, j, layout, vr) }
+	}
+	// control-pure proves no native client is mapped before reading, opening, writing or
+	// measuring anything; a failure is this report's error, with no claim either way.
+	outcome := rt.pureClientOnly(r.common())
+	if outcome == nil {
+		outcome = execute()
 	}
 	var unsettled *unsettledError
 	if errors.As(outcome, &unsettled) {
@@ -786,7 +851,7 @@ func completeUnsettled(out *os.File, j *job, jobSHA256 string, u *unsettledError
 
 func main() {
 	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: otelrust-control ABSOLUTE_JOB_JSON")
+		fmt.Fprintln(os.Stderr, "usage: control-pure|control-native ABSOLUTE_JOB_JSON")
 		os.Exit(2)
 	}
 	if err := run(productionRuntime(), os.Args[1]); err != nil {

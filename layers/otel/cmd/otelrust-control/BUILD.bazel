@@ -1,96 +1,126 @@
 load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
-# Hand-maintained: one native-enabled executable dispatches both Go clients (the
-# libfdbc tag selects native_cgo.go over native_stub.go), which Gazelle cannot express.
+# Hand-maintained: one source set builds two executables. control-pure has no build tag
+# and no cgo, so native_stub.go is compiled and nothing native is linked; control-native
+# sets only libfdbc_backend, which compiles native_cgo.go and the native backend while
+# pkg/internal/fdbclient (keyed on libfdbc) keeps the Record Layer pure-Go. Gazelle
+# cannot express the two variants of one import path.
 # gazelle:ignore
 
+_SRCS = [
+    "census.go",
+    "corpus.go",
+    "ingest.go",
+    "layout.go",
+    "main.go",
+    "native.go",
+    "native_cgo.go",
+    "native_stub.go",
+    "verify.go",
+]
+
+_DEPS = [
+    "//gen",
+    "//layers/otel",
+    "//layers/otel/collector",
+    "//layers/otel/otelsql",
+    "//layers/otel/otelsql/otelv1pb",
+    "//pkg/fdbgo/client",
+    "//pkg/fdbgo/fdb",
+    "//pkg/fdbgo/fdb/subspace",
+    "//pkg/fdbgo/fdb/tuple",
+    "//pkg/recordlayer",
+    "//pkg/relational/core/catalog",
+    "//pkg/relational/core/embedded",
+    "//pkg/relational/core/keyspace",
+    "@io_opentelemetry_go_proto_otlp//trace/v1:trace",
+    "@org_golang_google_protobuf//encoding/protowire",
+    "@org_golang_google_protobuf//proto",
+    "@org_golang_google_protobuf//reflect/protodesc",
+    "@org_golang_google_protobuf//reflect/protoreflect",
+    "@org_golang_google_protobuf//types/descriptorpb",
+]
+
+_LINUX_X86_64 = [
+    "@platforms//cpu:x86_64",
+    "@platforms//os:linux",
+]
+
 go_library(
-    name = "otelrust-control_lib",
+    name = "control_pure_lib",
     testonly = True,
-    srcs = [
-        "census.go",
-        "corpus.go",
-        "ingest.go",
-        "layout.go",
-        "main.go",
-        "native.go",
-        "native_cgo.go",
-        "native_stub.go",
-        "verify.go",
-    ],
+    srcs = _SRCS,
     importpath = "fdb.dev/layers/otel/cmd/otelrust-control",
-    target_compatible_with = [
-        "@platforms//cpu:x86_64",
-        "@platforms//os:linux",
-    ],
+    target_compatible_with = _LINUX_X86_64,
     visibility = ["//visibility:private"],
-    deps = [
-        "//gen",
-        "//layers/otel",
-        "//layers/otel/collector",
-        "//layers/otel/otelsql",
-        "//layers/otel/otelsql/otelv1pb",
-        "//pkg/fdbgo/client",
-        "//pkg/fdbgo/fdb",
-        "//pkg/fdbgo/fdb/subspace",
-        "//pkg/fdbgo/fdb/tuple",
+    deps = _DEPS,
+)
+
+# The same sources; only native_cgo.go imports these two.
+go_library(
+    name = "control_native_lib",
+    testonly = True,
+    srcs = _SRCS,
+    importpath = "fdb.dev/layers/otel/cmd/otelrust-control",
+    target_compatible_with = _LINUX_X86_64,
+    visibility = ["//visibility:private"],
+    deps = _DEPS + [
         "//pkg/fdbgo/libfdbc:libfdbc_native",
-        "//pkg/recordlayer",
-        "//pkg/relational/core/catalog",
-        "//pkg/relational/core/embedded",
-        "//pkg/relational/core/keyspace",
         "@com_github_apple_foundationdb_bindings_go//src/fdb",
-        "@io_opentelemetry_go_proto_otlp//trace/v1:trace",
-        "@org_golang_google_protobuf//encoding/protowire",
-        "@org_golang_google_protobuf//proto",
-        "@org_golang_google_protobuf//reflect/protodesc",
-        "@org_golang_google_protobuf//reflect/protoreflect",
-        "@org_golang_google_protobuf//types/descriptorpb",
     ],
 )
 
-# A campaign executable, not a measurement inside the test lane.
+# Campaign executables, not measurements inside the test lane. control-pure runs
+# corpus, setup and verify of every arm and go_pure ingest; control-native runs only
+# go_native ingest.
 go_binary(
-    name = "otelrust-control",
+    name = "control-pure",
     testonly = True,
-    embed = [":otelrust-control_lib"],
-    gotags = ["libfdbc"],
-    pure = "off",
-    target_compatible_with = [
-        "@platforms//cpu:x86_64",
-        "@platforms//os:linux",
-    ],
+    embed = [":control_pure_lib"],
+    pure = "on",
+    target_compatible_with = _LINUX_X86_64,
     visibility = ["//visibility:public"],
 )
 
+go_binary(
+    name = "control-native",
+    testonly = True,
+    embed = [":control_native_lib"],
+    gotags = ["libfdbc_backend"],
+    pure = "off",
+    target_compatible_with = _LINUX_X86_64,
+    visibility = ["//visibility:public"],
+)
+
+# Unit tests and the composed chain, built as control-pure; the chain runs all three
+# producer executables.
 go_test(
     name = "otelrust-control_test",
     timeout = "long",
     srcs = [
         "census_test.go",
+        "flavor_pure_test.go",
         "ingest_test.go",
         "main_test.go",
         "native_fdb_test.go",
         "native_test.go",
     ],
     args = [
-        "-control=$(rlocationpath :otelrust-control)",
+        "-control-pure=$(rlocationpath :control-pure)",
+        "-control-native=$(rlocationpath :control-native)",
         "-libfdb-c=$(rlocationpath @libfdb_c_linux_x86_64//file)",
         "-otel-rust=$(rlocationpath //layers/otel/rust:otel-rust)",
     ],
     data = [
         "testdata/paired-job-v1.schema.json",
-        ":otelrust-control",
+        ":control-native",
+        ":control-pure",
         "//layers/otel/rust:otel-rust",
         "@libfdb_c_linux_x86_64//file",
     ],
-    embed = [":otelrust-control_lib"],
-    gotags = ["libfdbc"],
-    pure = "off",
-    target_compatible_with = [
-        "@platforms//cpu:x86_64",
-        "@platforms//os:linux",
-    ],
+    embed = [":control_pure_lib"],
+    pure = "on",
+    target_compatible_with = _LINUX_X86_64,
     deps = [
         "//gen",
         "//layers/otel",
@@ -107,4 +137,14 @@ go_test(
         "@org_golang_google_protobuf//proto",
         "@rules_go//go/runfiles",
     ],
+)
+
+# The native flavor's compiled configuration: control-native's library under its tag.
+go_test(
+    name = "control_native_flavor_test",
+    srcs = ["flavor_native_test.go"],
+    embed = [":control_native_lib"],
+    gotags = ["libfdbc_backend"],
+    pure = "off",
+    target_compatible_with = _LINUX_X86_64,
 )
