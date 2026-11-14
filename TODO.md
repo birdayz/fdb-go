@@ -3159,7 +3159,12 @@ key prefixes and guards; nothing below transfers to it unmeasured.
   before increasing batches. Retain the 300KB estimate, 500KB actual-size,
   save/time/retry guards and warning/backlog stops. More workers alone already
   failed the earlier backlog gate. No 20k/s measurement or runtime change yet.
-  The owner authorized a reviewed read-only inode-flags probe and a guarded
+  **RETIRED, do not continue: the inode-flags probe and guarded fresh-volume
+  profiling tooling described from here through "No runtime is admitted until fixes
+  pass validation and formal re-review" (`layers/otel/bench/ops/ingest20k/`) was removed from the
+  repository; Kubernetes is the method ([report](docs/benchmarks/otel-ingest-25k-k8s-cilium-scaling.md)).
+  Its implementation, review and runtime gates are history only.**
+  The owner had authorized a reviewed read-only inode-flags probe and a guarded
   fresh-volume 100k profiling run to replace the pinned image's missing `lsattr`
   check. Implementation, test, formal-review and actual-inode gates remain;
   no filesystem flag changes, retained-data changes or guard relaxation are
@@ -3282,10 +3287,13 @@ key prefixes and guards; nothing below transfers to it unmeasured.
   No 10M physical/maintenance gate has run. Diagnose the observed sync stalls
   and conditional Btrfs direct-I/O fallback before a larger/faster profile;
   do not infer a client bug or change filesystem flags on existing data.
-  A fresh-empty-volume NOCOW prototype is prepared but unapproved. Its 297 pure
-  policy cases and 27 C predicates pass; distinct listen ports, formal review,
+  **RETIRED, do not continue: the fresh-empty-volume NOCOW prototype (the
+  `layers/otel/bench/ops/ingest20k/` tooling) was removed from the repository;
+  Kubernetes is the method ([report](docs/benchmarks/otel-ingest-25k-k8s-cilium-scaling.md)).**
+  It had been prepared but unapproved. Its 297 pure
+  policy cases and 27 C predicates passed; distinct listen ports, formal review,
   real empty-Btrfs/minimum-capability validation, bootstrap and actual storage/
-  log inode gates remain open. No existing-volume flag change is authorized;
+  log inode gates were still open when this work was retired. No existing-volume flag change is authorized;
   filesystem checksum/compression changes are not durability-equivalent evidence.
 - [ ] Load and verify the final 10M population and ClickHouse comparison, then
   retain repeated needle-query latency/work receipts and bounded ingest-plus-
@@ -3293,7 +3301,9 @@ key prefixes and guards; nothing below transfers to it unmeasured.
   populations, failures, CPU/RAM, physical storage and write amplification. Keep
   cold/warm policy and durability boundaries explicit; the current local single-
   node runs are not HA/SLO proof. Stop at 10M; the former 100M load is out of scope.
-- [ ] Complete the native horizontal campaign in
+- **RETIRED, do not run: the native method is retired; Kubernetes is the method
+  ([report](docs/benchmarks/otel-ingest-25k-k8s-cilium-scaling.md)).** Former item:
+  complete the native horizontal campaign in
   `layers/otel/bench/ops/horizontal/` under a newly approved runtime window/budget;
   there is still **no accepted 1M-pair result or sustained 20k/scaling proof**.
   Keep the two 2026-10-29 windows distinct:
@@ -3332,7 +3342,9 @@ key prefixes and guards; nothing below transfers to it unmeasured.
   Retain failed/partial evidence and separate logical active-topology cost from
   rounded held-server/IPv4 charges. Single R1 is non-HA; role/counter observations
   alone cannot prove complete run-specific placement or that extra storage helped.
-- [ ] Establish sustained horizontal 20k ingestion and identify the native
+- **RETIRED, do not run: the native method is retired; Kubernetes is the method
+  ([report](docs/benchmarks/otel-ingest-25k-k8s-cilium-scaling.md)).** Former item:
+  establish sustained horizontal 20k ingestion and identify the native
   CPU-versus-I/O limit; this work is **not completed**. In the fresh 2026-10-29
   selected two-/three-storage-host study, both independent-store 100k pairs
   passed strict health, full censuses and 1,600 oracle checks per producer:
@@ -3396,7 +3408,9 @@ key prefixes and guards; nothing below transfers to it unmeasured.
   and manual 8,624-file/three-asset source verification were preserved. Post-run
   source verification now runs in a nested finally even if cleanup fails/raises;
   this evidence fix does not waive the failed inventory gate.
-- [ ] Runtime-verify the prepared diagnostic two-storage-process candidate in a
+- **RETIRED, do not run: the native method is retired; Kubernetes is the method
+  ([report](docs/benchmarks/otel-ingest-25k-k8s-cilium-scaling.md)).** Former item:
+  runtime-verify the prepared diagnostic two-storage-process candidate in a
   **new explicitly approved window**. Two colocated SS use 2GiB/1GiB cache each,
   preserving aggregate4GiB/2GiB, CPU4/memory16GiB and unchanged controls/guards.
   Only (storage processes, max_outstanding) profiles (1,64), (1,128), (2,64) are
@@ -3432,7 +3446,9 @@ key prefixes and guards; nothing below transfers to it unmeasured.
   archived failures/cause UNKNOWN are not rewritten. The original setup cutoff
   closed before forensic readiness, so the draft single balanced repro was
   forgone without creating resources or resetting/extending that lease.
-- [ ] Execute the separately authorized bounded independent-namespace weak-scaling
+- **RETIRED, do not run: the native method is retired; Kubernetes is the method
+  ([report](docs/benchmarks/otel-ingest-25k-k8s-cilium-scaling.md)).** Former item:
+  execute the separately authorized bounded independent-namespace weak-scaling
   candidate only after its OPS inputs, new immutable2h lease and independent
   watchdog are sealed. `otel_native_scaling_v1` prepares six ccx43 HEL1 role hosts
   once and reuses them for ordered active (storage hosts,producers)1/1,2/2,3/3
@@ -3468,7 +3484,9 @@ key prefixes and guards; nothing below transfers to it unmeasured.
   auxiliaries, with fresh exact17-ID/ten-kind inventory equality and unchanged
   source seals. No scaling measurements completed, and the owner declined a
   restart. Evidence: `/var/tmp/fdb-native-scaling.NjSZRv/`.
-- [ ] Obtain explicit operator authorization for a harmless local managed-watch
+- **RETIRED, do not run: the native method is retired; Kubernetes is the method
+  ([report](docs/benchmarks/otel-ingest-25k-k8s-cilium-scaling.md)).** Former item:
+  obtain explicit operator authorization for a harmless local managed-watch
   isolation probe before any future scaling launch. The scaling-only corrective
   candidate adds offline private helper-bundle/USER-service preparation and live
   pre-mutation admission, not automatic installation/start or runtime detachment.
@@ -3485,7 +3503,9 @@ key prefixes and guards; nothing below transfers to it unmeasured.
   new lease/resources is implied, and legacy native argv/application/rows remain
   unchanged. Preserve old native PID12998 cause UNKNOWN separately from the now
   confirmed runtime-restart failure domain.
-- [ ] Run the user's explicitly approved plain foreground scaling perf test with
+- **RETIRED, do not run: the native method is retired; Kubernetes is the method
+  ([report](docs/benchmarks/otel-ingest-25k-k8s-cilium-scaling.md)).** Former item:
+  run the user's explicitly approved plain foreground scaling perf test with
   `foreground_only:true` and no `managed_watch`; no external service/bundle or
   managed admission/registration is required. The mode is explicit and typed,
   reports `execution_mode:bounded_foreground`, and retains bounded prepare,
@@ -3502,7 +3522,9 @@ key prefixes and guards; nothing below transfers to it unmeasured.
   This is not a storage/kernel OOM; older storage4510/PID12998 remains UNKNOWN.
   All six hosts/auxiliaries were deleted, fresh exact17-ID/ten-kind inventory
   equality passed, and source seals stayed unchanged. Pairs3 was never issued.
-- [ ] Run only the separately approved bounded log-memory follow-up if the original
+- **RETIRED, do not run: the native method is retired; Kubernetes is the method
+  ([report](docs/benchmarks/otel-ingest-25k-k8s-cilium-scaling.md)).** Former item:
+  run only the separately approved bounded log-memory follow-up if the original
   lease/cutoffs still fit after committed hook readiness. Optional scaling-only
   `log_memory_gib:2` requires integer2, foreground true/no managed watch, exact
   stages2/2 then1/1 and prior issued upper8425000. Only node1 transaction/log4504
@@ -3523,25 +3545,6 @@ key prefixes and guards; nothing below transfers to it unmeasured.
   expired; comparison stays INCONCLUSIVE. All six hosts/auxiliaries were deleted,
   fresh exact17-ID/ten-kind equality passed, and source seals stayed unchanged.
   Evidence: `/var/tmp/fdb-perf-scaling.v4O6xf/log2g/native-analysis.json`.
-- [ ] Test exact measured-range conditioning before adding more ingest workers or
-  hosts. OTEL_V1 benchmark stores live at `/OTELBENCH/R_<RUN>` in the relational
-  keyspace, so a rerun re-derives the prefix layout; the append experiment
-  below relied on the deleted store's ready/loading manifests and must be
-  restated against the relational catalog first. The measured, sealed app (the
-  custom store) used physical prefix `("otel_otelbench_v2", Run, "store")`;
-  gate Runs9310/9311 and measured Runs9313/9314 are disjoint. Early observed native
-  input concentrated85.1153% on one of six SS, with a1.499GB raw MVCC queue; these
-  counters include setup/DD activity, so cold-prefix causality is a hypothesis,
-  not proven shard-placement evidence. Count is part of corpus/owner identity;
-  simply reusing a100k Run with375k Count would violate existing guards. A future
-  FDB-only append experiment must transactionally authenticate ready100k, claim
-  loading475k with unchanged layout/corpus parameters, write only ordinals
-  [100000,475000), preserve all ordinary owner/old-image/conflict/transaction
-  checks, and publish ready475k only after375k acknowledged additions. Partial
-  failure must remain fail-closed, not implicit resume. Final census/query truth
-  must cover all475k; measured rates must count only375k additions. Generation is
-  prefix-stable, but this is a changed benchmark boundary requiring a fresh
-  same-protocol baseline. No application/storage change is implemented or implied.
 
 ### OTel log payload storage migration
 

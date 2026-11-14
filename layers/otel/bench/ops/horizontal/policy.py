@@ -236,7 +236,9 @@ def storage_counter(role, name):
 
 
 def strict_status(d, layout):
-    """Same strict health/probe conditions as ingest20k; only process identities differ."""
+    """Strict health gate for a native cluster status: client and cluster available, healthy and fully recovered with no
+    warnings, exact configuration, process/role/identity layout and memory limits, and every latency probe under 5 s.
+    Anything else raises; the result carries per-storage-host counters."""
     c, client = d["cluster"], d["client"]
     require(client["database_status"]["available"] is True and client["database_status"]["healthy"] is True
             and client["coordinators"]["quorum_reachable"] is True and client["cluster_file"]["up_to_date"] is True,
