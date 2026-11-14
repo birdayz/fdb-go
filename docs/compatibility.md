@@ -176,6 +176,15 @@ higher-level storage layout; it does not remove the exceptions below. The
 `libfdbc_backend` tag only compiles that backend package and leaves the Record Layer on
 the pure-Go client.
 
+**Unreleased (post-v0.2.0):** The shared R-tree storage adapter preserves
+persisted Hilbert integers exactly,
+including tuple values decoded as `uint64` above `MaxInt64`. Floating-point
+values follow Java `Tuple.getBigInteger` / `Number.longValue` narrowing; only a
+null leaf value requests recomputation. Invalid nonnumeric values and null child
+bounds fail explicitly. This is a read-side correction, not a storage-format
+migration or repair of entries previously misrouted by an older decoder. See
+DIVERGENCES.md, “R-tree persisted Hilbert values”.
+
 ### Exceptions to check before mixed Go/Java use
 
 | Area | Boundary |
