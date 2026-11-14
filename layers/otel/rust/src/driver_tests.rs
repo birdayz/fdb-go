@@ -20,7 +20,7 @@ use std::{
 };
 
 const FROZEN_SCHEMA_SHA256: &str =
-    "1581c3dd4891579949d52cb5ac70717d54f5488784e17a2c993c5769aaacb18b";
+    "4295b5f0131808aa2505722dde097a054feb8a71136381a9821ce5a9dab83d97";
 /// The only rules by which an actual native open can prove its mapped client.
 const MAPPING_RULES: [&str; 2] = ["exact_stat", "btrfs_superblock"];
 /// The frozen schema's ingest-mode fields; `Job` must require exactly these.
@@ -1038,12 +1038,12 @@ fn values_bounds_seals_and_cross_field_rules_fail_before_open_or_output() {
         ("cluster_sha256", json!("0".repeat(64))),
         ("workload.kind", json!("collector")),
         ("workload.producers", json!(0)),
-        ("workload.producers", json!(33)),
+        ("workload.producers", json!(257)),
         ("workload.producer_batch_spans", json!(0)),
         ("workload.producer_batch_spans", json!(65)),
         ("workload.producer_batch_spans", json!(9)),
         ("workload.consumers", json!(0)),
-        ("workload.consumers", json!(33)),
+        ("workload.consumers", json!(257)),
         ("workload.queue_capacity_spans", json!(0)),
         ("workload.batch_min_spans", json!(0)),
         ("workload.batch_min_spans", json!(9)),
@@ -1196,6 +1196,37 @@ fn assert_queue_diagnostics_disabled(r: &Json) {
         assert_eq!(queue[field], disabled_diagnostic(), "{field}");
     }
     assert_eq!(r["transaction_spans"], disabled_diagnostic());
+}
+
+/// Above the former 32-worker cap: 64 and the new 256 maximum, as producers and as
+/// consumers, through the real collector and writer over the fake transaction layer.
+#[test]
+fn many_producers_and_consumers_commit_the_exact_population() {
+    let source = frames();
+    for workers in [64, 256] {
+        let files = Files::new();
+        let mut job = files.job(&source, queue(workers, workers, 2, 4));
+        job["writer_batch_size"] = json!(4);
+        let db = Fake::new(Mode::Success);
+        files.run(&job, &db).unwrap();
+        let r = checked_receipt(&job);
+        assert_eq!(r["status"], "ok", "{workers}: {r}");
+        for (field, want) in [
+            ("frames", 8),
+            ("accepted_spans", 8),
+            ("rejected_spans", 0),
+            ("exported_spans", 8),
+            ("failed_spans", 0),
+            ("queued_spans_at_exit", 0),
+        ] {
+            assert_eq!(value(&r, field), &json!(want), "{workers} {field}");
+        }
+        assert_eq!(
+            db.0.lock().unwrap().data,
+            expected_physical(&(0..8).collect::<Vec<_>>()),
+            "{workers}"
+        );
+    }
 }
 
 #[test]

@@ -148,7 +148,7 @@ impl Collector {
         config: Config,
         diagnostics: Diagnostics,
     ) -> Result<Self> {
-        if !(1..=32).contains(&config.consumers)
+        if !(1..=256).contains(&config.consumers)
             || !(1..=10_000_000).contains(&config.queue_spans)
             || config.batch_min == 0
             || config.batch_min > config.queue_spans

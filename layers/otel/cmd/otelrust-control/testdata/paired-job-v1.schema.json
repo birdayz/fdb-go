@@ -154,7 +154,7 @@
             "producers": {
               "type": "integer",
               "minimum": 1,
-              "maximum": 32
+              "maximum": 256
             },
             "producer_batch_spans": {
               "type": "integer",
@@ -189,12 +189,12 @@
             "producers": {
               "type": "integer",
               "minimum": 1,
-              "maximum": 32
+              "maximum": 256
             },
             "consumers": {
               "type": "integer",
               "minimum": 1,
-              "maximum": 32
+              "maximum": 256
             },
             "queue_capacity_spans": {
               "type": "integer",

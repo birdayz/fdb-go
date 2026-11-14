@@ -367,13 +367,13 @@ func validate(j *job, jobPath string) error {
 
 // validateWorkload is the Rust executable's workload rules, plus the schema's bounds.
 func validateWorkload(c *checker, w workload) {
-	c.ok(between(w.Producers, 1, 32), "workload.producers")
+	c.ok(between(w.Producers, 1, 256), "workload.producers")
 	c.ok(between(w.ProducerBatchSpans, 1, 64), "workload.producer_batch_spans")
 	if w.Kind != "collector_queue" {
 		return
 	}
 	ms := func(v int64) bool { return between(v, 1, 3_600_000) }
-	c.ok(between(w.Consumers, 1, 32), "workload.consumers")
+	c.ok(between(w.Consumers, 1, 256), "workload.consumers")
 	c.ok(between(w.QueueCapacitySpans, 1, 10_000_000), "workload.queue_capacity_spans")
 	c.ok(between(w.BatchMinSpans, 1, 10_000_000) && w.BatchMinSpans <= w.QueueCapacitySpans, "workload.batch_min_spans")
 	c.ok(between(w.BatchMaxSpans, 1, 10_000_000) && w.BatchMaxSpans >= w.BatchMinSpans, "workload.batch_max_spans")

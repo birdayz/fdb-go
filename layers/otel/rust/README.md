@@ -58,8 +58,9 @@ replacement. There are no measured performance or economics results yet.
   export attempts, committed batches and native retries are separate counters.
   Only an independent post-drain census establishes unique stored identities.
 - The binary runs exactly one `otel_paired_job_v1` job (the frozen runner
-  schema, copied byte-exact into `testdata/paired-job-v1.schema.json` and
-  hash-pinned by `driver_test`) with `mode=ingest`, `arm=rust_native`,
+  schema, copied into `testdata/paired-job-v1.schema.json` and hash-pinned by
+  `driver_test`; the copy differs from PR #1049's schema only in `producers` and
+  `consumers`, whose maximum is 256 instead of 32, the same in the Go control) with `mode=ingest`, `arm=rust_native`,
   `client_backend=native_c` and `writer_workers=1`. Every field is required, with
   no defaults; unknown, duplicate, null, trailing or out-of-bound values fail
   closed. Job, executable, client, cluster, layout and corpus seals and clean,

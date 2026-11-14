@@ -205,7 +205,7 @@ fn validate(job: &Job, job_path: &Path) -> Result<RecordCompression> {
         _ => return Err(invalid("record_compression")),
     };
     let (producers, producer_batch) = job.workload.producers();
-    check((1..=32).contains(&producers), "workload.producers")?;
+    check((1..=256).contains(&producers), "workload.producers")?;
     check(
         (1..=64).contains(&producer_batch),
         "workload.producer_batch_spans",
@@ -225,7 +225,7 @@ fn validate(job: &Job, job_path: &Path) -> Result<RecordCompression> {
     } = job.workload
     {
         let ms = 1..=3_600_000;
-        check((1..=32).contains(&consumers), "workload.consumers")?;
+        check((1..=256).contains(&consumers), "workload.consumers")?;
         check(
             (1..=10_000_000).contains(&queue_capacity_spans),
             "workload.queue_capacity_spans",

@@ -20,7 +20,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb"
 )
 
-const frozenSchemaSHA256 = "1581c3dd4891579949d52cb5ac70717d54f5488784e17a2c993c5769aaacb18b"
+const frozenSchemaSHA256 = "4295b5f0131808aa2505722dde097a054feb8a71136381a9821ce5a9dab83d97"
 
 // point2 is the sealed pilot configuration's workload, verbatim.
 const point2 = `{"kind":"collector_queue","producers":8,"producer_batch_spans":1,"consumers":8,"queue_capacity_spans":10000,"batch_min_spans":64,"batch_max_spans":256,"flush_ms":200,"block_on_overflow":true,"export_timeout_ms":120000,"retry_enabled":true,"retry_initial_ms":500,"retry_max_ms":10000,"retry_elapsed_ms":300000}`
@@ -218,6 +218,9 @@ func TestJobEnvelopeIsStrict(t *testing.T) {
 		"verify pure":      f.job("verify", "go_pure", direct),
 		"corpus rust arm":  f.job("corpus", "rust_native", ""),
 		"verify go native": f.job("verify", "go_native", point1),
+		// The schema and both validators accept up to 256 producers and consumers.
+		"ingest 256 workers": f.job("ingest", "go_native", strings.NewReplacer(`"producers":8`, `"producers":256`, `"consumers":8`, `"consumers":256`).Replace(point2)),
+		"ingest 256 direct":  f.job("ingest", "go_pure", strings.Replace(direct, `"producers":2`, `"producers":256`, 1)),
 	}
 	for name, j := range valid {
 		if _, err := parsed(encode(t, j), jobPath); err != nil {
@@ -269,7 +272,8 @@ func TestJobEnvelopeIsStrict(t *testing.T) {
 		{"message full text", set("enable_message_full_text", true)},
 		{"bulk conflicts", set("bulk_index_conflicts", true)},
 		{"bool as string", set("bulk_index_conflicts", "false")},
-		{"producers 33", nested("workload", "producers", 33)},
+		{"producers 257", nested("workload", "producers", 257)},
+		{"consumers 257", nested("workload", "consumers", 257)},
 		{"consumers 0", nested("workload", "consumers", 0)},
 		{"min above capacity", nested("workload", "batch_min_spans", 10001)},
 		{"max below min", nested("workload", "batch_max_spans", 63)},
