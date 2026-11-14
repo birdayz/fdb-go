@@ -104,6 +104,20 @@ or Go/Java cross-read conformance**. Native FDB integration and independent Go
 record/index census plus the complete query oracle remain mandatory before a
 benchmark can be accepted. No service/cloud execution is authorized by this file.
 
+The minimum live native proof is `TestNativeRustAgainstOwnedFDB` in
+`cmd/otelrust-fixture`. It starts its own FDB 7.3.77 container and creates real
+tenants through the production Go Exporter. It then runs the production
+`otel-rust` executable (2 workers x 4-frame calls, an identical replay and a
+refused inherited `FDB_NETWORK_OPTION_*` run) and the test-only `native_proof`
+driver. That driver lets one commit really apply, reports it once as
+commit_unknown_result at the client boundary (fault-injected, not server- or
+transport-generated), and replays through real OnError(1021) on the same
+handle. After each run Go requires the complete tenant key map, the same
+non-baseline keys as a Go `SaveRecord` reference tenant, every row read back
+byte-exact through the Go serializer and unchanged keys outside the tenant.
+Broader native lifecycle, cancellation, timeout, conflict and pagination cases
+are still owed.
+
 Still missing: the live tenant/corpus/control adapter, matched Go-native driver,
 live cross-read and fault cases, producer/cluster telemetry and a validated
 comparison runner; logs, GenAI message dedup/restoration, message TEXT indexes,

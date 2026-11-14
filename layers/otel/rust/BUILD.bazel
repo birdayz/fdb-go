@@ -49,6 +49,28 @@ rust_binary(
     edition = "2024",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     rustc_flags = ["-Dwarnings"],
+    visibility = ["//layers/otel/cmd/otelrust-fixture:__pkg__"],
+    deps = [":fdb_otel_rust"] + all_crate_deps(normal = True),
+)
+
+# Test-only live native proof: a libtest executable (for native.rs's cfg(test) hooks)
+# run only as data by the Go native integration test, never as a standalone test.
+rust_binary(
+    name = "native_proof",
+    testonly = True,
+    srcs = [
+        "proof/native_proof.rs",
+        "src/native.rs",
+    ],
+    aliases = aliases(),
+    crate_root = "proof/native_proof.rs",
+    edition = "2024",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_flags = [
+        "--test",
+        "-Dwarnings",
+    ],
+    visibility = ["//layers/otel/cmd/otelrust-fixture:__pkg__"],
     deps = [":fdb_otel_rust"] + all_crate_deps(normal = True),
 )
 

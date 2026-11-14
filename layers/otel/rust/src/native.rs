@@ -258,6 +258,11 @@ impl NativeDatabase {
     /// Opening starts the native client's one-shot network thread, but never
     /// starts an FDB server. Call only against an explicitly admitted cluster.
     pub fn open(client: &Path, cluster_file: &Path) -> Result<Self> {
+        Self::open_with(client, cluster_file, |_| {})
+    }
+
+    /// `adapt` sees the loaded API before network setup; production passes a no-op.
+    fn open_with(client: &Path, cluster_file: &Path, adapt: impl FnOnce(&mut Api)) -> Result<Self> {
         refuse_network_option_env(std::env::vars_os())?;
         if !client.is_absolute() || !cluster_file.is_absolute() {
             return Err(Error::new(
@@ -267,7 +272,9 @@ impl NativeDatabase {
         }
         let cluster = CString::new(cluster_file.as_os_str().as_encoded_bytes())
             .map_err(|_| Error::new(ErrorKind::Config, "invalid cluster path"))?;
-        let api = Arc::new(Api::load(client)?);
+        let mut api = Api::load(client)?;
+        adapt(&mut api);
+        let api = Arc::new(api);
         if NETWORK_STARTED.swap(true, Ordering::AcqRel) {
             return Err(Error::new(
                 ErrorKind::Operation,
@@ -621,6 +628,143 @@ impl Transaction for NativeTransaction<'_> {
     }
 }
 
+/// Test-only C-boundary interceptor: forwards the real libfdb_c calls and, only after a
+/// commit future really reports success, can report literal 1021 once for that future.
+#[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "entry points used only by the native proof driver"
+)]
+pub(crate) mod fault {
+    use super::*;
+    use std::{
+        collections::HashSet,
+        sync::{LazyLock, MutexGuard},
+    };
+
+    #[derive(Clone, Copy)]
+    pub(super) struct Real {
+        pub create: unsafe extern "C" fn(Handle, *mut Handle) -> Code,
+        pub option: unsafe extern "C" fn(Handle, i32, *const u8, i32) -> Code,
+        pub commit: unsafe extern "C" fn(Handle) -> Handle,
+        pub future_error: unsafe extern "C" fn(Handle) -> Code,
+        pub future_destroy: unsafe extern "C" fn(Handle),
+        pub on_error: unsafe extern "C" fn(Handle, Code) -> Handle,
+    }
+
+    /// Calls seen at the boundary; handles are opaque addresses.
+    #[derive(Clone, Debug, Default)]
+    pub(crate) struct Counters {
+        pub created: Vec<usize>,
+        pub options: Vec<(usize, i32, Vec<u8>)>,
+        pub commits: Vec<usize>,
+        pub real_commit_successes: usize,
+        pub exposed_1021: usize,
+        pub on_errors: Vec<(usize, Code)>,
+    }
+
+    #[derive(Default)]
+    struct State {
+        counters: Counters,
+        commit_futures: HashSet<usize>,
+        expose: usize,
+    }
+    static REAL: OnceLock<Real> = OnceLock::new();
+    static STATE: LazyLock<Mutex<State>> = LazyLock::new(Default::default);
+
+    fn state() -> MutexGuard<'static, State> {
+        STATE.lock().unwrap_or_else(|p| p.into_inner())
+    }
+    fn real() -> Real {
+        *REAL.get().expect("interceptor installed")
+    }
+
+    pub(super) fn install_real(real: Real) {
+        assert!(REAL.set(real).is_ok(), "one interceptor per process");
+    }
+
+    /// Routes the loaded API through the interceptor; every other symbol stays real.
+    fn install(api: &mut Api) {
+        install_real(Real {
+            create: api.create,
+            option: api.option,
+            commit: api.commit,
+            future_error: api.future_error,
+            future_destroy: api.future_destroy,
+            on_error: api.on_error,
+        });
+        api.create = create;
+        api.option = option;
+        api.commit = commit;
+        api.future_error = future_error;
+        api.future_destroy = future_destroy;
+        api.on_error = on_error;
+    }
+
+    impl NativeDatabase {
+        pub(crate) fn open_intercepted(client: &Path, cluster_file: &Path) -> Result<Self> {
+            Self::open_with(client, cluster_file, install)
+        }
+    }
+
+    pub(crate) fn expose_commit_unknown_once() {
+        state().expose = 1;
+    }
+    pub(crate) fn counters() -> Counters {
+        state().counters.clone()
+    }
+
+    pub(super) unsafe extern "C" fn create(db: Handle, out: *mut Handle) -> Code {
+        let code = unsafe { (real().create)(db, out) };
+        if code == 0 {
+            state().counters.created.push(unsafe { *out } as usize);
+        }
+        code
+    }
+    pub(super) unsafe extern "C" fn option(
+        tx: Handle,
+        option: i32,
+        value: *const u8,
+        length: i32,
+    ) -> Code {
+        let bytes = if value.is_null() || length <= 0 {
+            Vec::new()
+        } else {
+            unsafe { std::slice::from_raw_parts(value, length as usize) }.to_vec()
+        };
+        state().counters.options.push((tx as usize, option, bytes));
+        unsafe { (real().option)(tx, option, value, length) }
+    }
+    pub(super) unsafe extern "C" fn commit(tx: Handle) -> Handle {
+        let future = unsafe { (real().commit)(tx) };
+        let mut state = state();
+        state.counters.commits.push(tx as usize);
+        state.commit_futures.insert(future as usize);
+        future
+    }
+    pub(super) unsafe extern "C" fn future_error(future: Handle) -> Code {
+        let code = unsafe { (real().future_error)(future) };
+        let mut state = state();
+        if code == 0 && state.commit_futures.contains(&(future as usize)) {
+            state.counters.real_commit_successes += 1;
+            if state.expose > 0 {
+                state.expose -= 1;
+                state.counters.exposed_1021 += 1;
+                return 1021;
+            }
+        }
+        code
+    }
+    pub(super) unsafe extern "C" fn future_destroy(future: Handle) {
+        state().commit_futures.remove(&(future as usize));
+        unsafe { (real().future_destroy)(future) }
+    }
+    pub(super) unsafe extern "C" fn on_error(tx: Handle, code: Code) -> Handle {
+        state().counters.on_errors.push((tx as usize, code));
+        unsafe { (real().on_error)(tx, code) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -917,6 +1061,66 @@ mod tests {
         let (result, fetched) = drive(vec![(Vec::new(), true)]);
         assert_eq!(result.unwrap_err().message, "empty nonterminal FDB range");
         assert_eq!(fetched, 0);
+    }
+
+    static FAKE_CODE: AtomicI32 = AtomicI32::new(0);
+    static FAKE_FUTURE: AtomicUsize = AtomicUsize::new(0x1000);
+    extern "C" fn fake_create(_: Handle, out: *mut Handle) -> Code {
+        unsafe { *out = 0x70 as Handle };
+        0
+    }
+    extern "C" fn fake_tx_option(_: Handle, _: i32, _: *const u8, _: i32) -> Code {
+        0
+    }
+    extern "C" fn fake_commit(_: Handle) -> Handle {
+        FAKE_FUTURE.fetch_add(1, Ordering::Relaxed) as Handle
+    }
+    extern "C" fn fake_future_error(_: Handle) -> Code {
+        FAKE_CODE.load(Ordering::Relaxed)
+    }
+    extern "C" fn fake_destroy(_: Handle) {}
+    extern "C" fn fake_on_error(_: Handle, _: Code) -> Handle {
+        0x90 as Handle
+    }
+
+    #[test]
+    fn interceptor_exposes_1021_once_and_only_after_a_real_commit_success() {
+        fault::install_real(fault::Real {
+            create: fake_create,
+            option: fake_tx_option,
+            commit: fake_commit,
+            future_error: fake_future_error,
+            future_destroy: fake_destroy,
+            on_error: fake_on_error,
+        });
+        fault::expose_commit_unknown_once();
+        let mut tx = ptr::null_mut();
+        let ten_seconds = 10_000i64.to_le_bytes();
+        unsafe {
+            assert_eq!(fault::create(ptr::null_mut(), &mut tx), 0);
+            assert_eq!(fault::option(tx, 500, ten_seconds.as_ptr(), 8), 0);
+            // A real commit failure passes through and keeps the exposure armed.
+            FAKE_CODE.store(1020, Ordering::Relaxed);
+            let failed = fault::commit(tx);
+            assert_eq!(fault::future_error(failed), 1020);
+            fault::future_destroy(failed);
+            // A non-commit future's success is never rewritten.
+            FAKE_CODE.store(0, Ordering::Relaxed);
+            assert_eq!(fault::future_error(0x5 as Handle), 0);
+            let applied = fault::commit(tx);
+            assert_eq!(fault::future_error(applied), 1021);
+            fault::future_destroy(applied);
+            assert_eq!(fault::on_error(tx, 1021), 0x90 as Handle);
+            let replay = fault::commit(tx);
+            assert_eq!(fault::future_error(replay), 0);
+            fault::future_destroy(replay);
+        }
+        let c = fault::counters();
+        assert_eq!(c.created, [0x70]);
+        assert_eq!(c.options, [(0x70, 500, ten_seconds.to_vec())]);
+        assert_eq!(c.commits, [0x70; 3]);
+        assert_eq!((c.real_commit_successes, c.exposed_1021), (2, 1));
+        assert_eq!(c.on_errors, [(0x70, 1021)]);
     }
 
     const CHILD_EXPECT: &str = "OTEL_RUST_NATIVE_ENV_EXPECT";

@@ -29,11 +29,35 @@ go_library(
 
 go_test(
     name = "otelrust-fixture_test",
-    srcs = ["fixture_test.go"],
-    data = ["//layers/otel/rust:compatibility_fixtures"],
+    timeout = "long",
+    srcs = [
+        "fixture_test.go",
+        "native_fdb_test.go",
+    ],
+    args = [
+        "-otel-rust=$(rlocationpath //layers/otel/rust:otel-rust)",
+        "-native-proof=$(rlocationpath //layers/otel/rust:native_proof)",
+        "-libfdb-c=$(rlocationpath @libfdb_c_linux_x86_64//file)",
+    ],
+    data = [
+        "//layers/otel/rust:compatibility_fixtures",
+        "//layers/otel/rust:native_proof",
+        "//layers/otel/rust:otel-rust",
+        "@libfdb_c_linux_x86_64//file",
+    ],
     embed = [":otelrust-fixture_lib"],
     deps = [
+        "//layers/otel",
+        "//layers/otel/otelsql",
+        "//layers/otel/otelsql/otelv1pb",
+        "//pkg/fdbgo/client",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "//pkg/testcontainers/foundationdb",
         "@io_opentelemetry_go_proto_otlp//trace/v1:trace",
+        "@org_golang_google_protobuf//encoding/protowire",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protoreflect",
         "@rules_go//go/runfiles",
