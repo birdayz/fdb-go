@@ -600,3 +600,92 @@ Tests use fake procfs, USER-manager replies, clocks and provider operations only
 No OS unit is installed, started, killed or proved to survive a real runtime
 restart. **Actual OS isolation/survival remains UNVERIFIED** pending explicit
 operator authorization; this correction does not authorize a benchmark restart.
+
+## Versioned Go/Rust paired campaign (offline contract)
+
+`paired.py` introduces **otel_native_paired_v1**, not another scaling-v1 sweep.
+The sealed arm subset contains two or three of `go_pure`, `go_native`,
+`rust_native`. Every stage has an explicit arm order. `pilot` holds exactly
+node1/client1 for one hour, with active cutoff +2700s and cleanup +3000s;
+`scaling` holds all six hosts for the original two hours, with active cutoff
++6000s and cleanup +6600s. Every implementation/repetition gets a fresh native
+cluster/datadir, and every prerequisite/measured producer its own namespace and
+exclusive output path. Any failure ends the entire comparison; released rows
+are never reclaimed or retried.
+
+The finite pilot runs the arm list followed by its reverse (two repetitions per
+arm); the sweep runs the explicitly ordered arms once at each 1x/2x/3x tier.
+Each producer receives 100k prerequisite plus 375k measured rows. Two/three-arm
+pilot allocations are 1.9M/2.85M; two/three-arm sweeps are 5.7M/8.55M. The named
+**otel_paired_go_rust_v1** family has a separate, explicitly approved 15M ceiling
+and zero initial prior. This is not a reset of the older native family's 10M
+history. `paired_rows.py` owns a private append-only, flock/fsync/hash-chained
+JSONL ledger with a durable inode-xattr head witness. The runner appends an issue
+BEFORE every release and an outcome after validation. Local Stage0 must use the
+same authoritative ledger, including failed/aborted populations:
+
+```sh
+python3 -B layers/otel/bench/ops/horizontal/paired_rows.py init /private/family/rows.jsonl
+python3 -B layers/otel/bench/ops/horizontal/paired_rows.py issue /private/family/rows.jsonl \
+  --campaign local-campaign --stage local --arm rust_native --repeat 0 --phase local --rows 100000
+python3 -B layers/otel/bench/ops/horizontal/paired_rows.py outcome /private/family/rows.jsonl \
+  --issue-id ISSUED_HASH --status passed
+python3 -B layers/otel/bench/ops/horizontal/paired_rows.py show /private/family/rows.jsonl
+```
+
+Initialize exactly once, in an existing private0700 directory outside worktrees;
+never create a substitute ledger after a corruption/refusal. A complete suffix
+truncation, changed witness, symlink, hardlink, partial write, duplicate issue or
+ceiling overflow fails closed. Outcome does not reduce issued population.
+
+`paired-job-v1.schema.json` defines the one-JSON-argument producer contract. Go
+and Rust have separate typed builders; Rust never receives otelbench flags.
+Source/binary seals remain per arm. `writer_direct` and `collector_queue` are
+separate workload kinds; producer request size, internal writer concurrency and
+queue batching are distinct explicit controls. Every collector/retry parameter
+is required without defaults. Only writer_workers=1 is currently matched. Go
+control alone owns corpus/setup/verify, with an independent pure-Go verifier.
+All inputs include hashes, and pure Go explicitly names no C library. Native
+arms require the pinned7.3.77 libfdb_c. Every asset (executables, FDB tools,
+library, corpus, descriptor and layout template) requires per-held-host transfer
+receipts. The existing zstd roundtrip/private-fanout transfer accepts the paired
+asset set without changing legacy asset bytes.
+
+`otel_paired_result_v1` preserves each original `otel_control_report_v1` and its
+arm/job identity. Admission, ACK operations (including replay), distinct audited
+rows and storage drain are not interchangeable. Unavailable telemetry remains
+`availability:unavailable`, never an invented zero. A paid gate requires complete
+standard-serializer row/OTLP readback, data-derived physical/index census including
+all eight indexes and STORE_META_NAME, and the complete sealed source oracle
+NDJSON (16 classes x100, full ordered expected/actual results). Ingest alone is
+never rate eligible. The offered-load600s profile is explicitly refused until
+both binaries supply a sealed schedule/window implementation; a short finite
+run is never relabelled sustained.
+
+`paired_cost.py` reserves all held server AND IPv4 hourly quanta from the original
+lease start until verified provider absence, plus conservative whole-campaign
+traffic/other bounds. EUR2 pilot/EUR8 sweep allocations and the cumulative EUR10
+ceiling are checked before active transitions. Missing/stale/non-EUR prices,
+unknown extras, changed IDs, renewal and cleanup uncertainty refuse continuation.
+Price integrity seals are not provider signatures: live response provenance and
+enforced traffic bounds remain admission requirements. Cleanup is never blocked
+by an admission failure. Paired managed watches use the same sealed USER-manager
+root-slice isolation and exact-owned/baseline cleanup checks; fake procfs/provider
+tests simulate controller loss, not actual OS survival.
+
+Exercise the complete three-arm sequence without any provider call:
+
+```sh
+python3 -B layers/otel/bench/ops/horizontal/paired.py \
+  --dry-run --workload collector_queue --output /private/new-paired-fake
+```
+
+The command creates private synthetic fixtures and a separate fake row ledger,
+then runs readiness/release, both waves, report/oracle gates, storage drain,
+quiescence and cleanup. It must print `FAKE_PASSED`, 8,550,000 charged rows,
+18 released waves and `accepted_comparison:false`. Synthetic fixtures are not
+benchmarks or real authorizations. Add `--profile pilot` for the two-host/repeated
+sequence. A new output path is mandatory; nothing overwrites or resumes a run.
+The real producer/control, native geometry and independent-watch runtime evidence
+must still pass before paid execution; the offline CLI currently refuses
+`--execute-approved` rather than claiming these missing gates passed.

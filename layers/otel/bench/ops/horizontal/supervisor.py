@@ -21,13 +21,15 @@ REPO = HERE.parents[4] if len(HERE.parents) > 4 else HERE  # Remote producer imp
 FILES = tuple("layers/otel/bench/ops/horizontal/" + name for name in
               ("supervisor.py", "provision.py", "policy.py", "driver.py", "diagnostic.py", "session.py", "scaling.py")) + tuple(
               "tools/benchcampaign/multinode/" + name for name in ("inventory.py", "mn_common.py", "render_cloud_init.py", "teardown_guard.py"))
+PAIRED_SCHEMA = "otel_native_paired_v1"
+PAIRED_FILES = tuple("layers/otel/bench/ops/horizontal/" + name for name in ("paired.py", "paired_cost.py", "paired_reports.py", "paired_rows.py"))
 PROPERTIES = ("Id", "LoadState", "ActiveState", "SubState", "FragmentPath", "DropInPaths", "MainPID", "ControlGroup",
               "InvocationID", "PartOf", "BindsTo", "Requires", "Requisite", "Conflicts", "StopWhenUnneeded", "KillMode",
               "RuntimeMaxUSec", "ExecMainStartTimestampMonotonic", "ActiveEnterTimestampMonotonic")
 
 
 def validate_config(plan):
-    p.require(type(plan) is dict and plan.get("schema") == "otel_native_scaling_v1", "managed watch is scaling-only")
+    p.require(type(plan) is dict and plan.get("schema") in ("otel_native_scaling_v1", PAIRED_SCHEMA), "managed watch requires scaling or paired schema")
     value = plan.get("managed_watch")
     p.require(type(value) is dict and set(value) == {"root", "output"}, "exact managed_watch root/output required")
     for name in ("root", "output"):
@@ -38,6 +40,22 @@ def validate_config(plan):
     p.require(not root.is_relative_to(output) and not output.is_relative_to(root), "watch bundle and run must not overlap")
     p.require(type(plan.get("campaign")) is str and re.fullmatch(r"[a-z][a-z0-9-]{7,47}", plan["campaign"]), "watch campaign identity")
     return value
+
+
+def _lease_seconds(plan):
+    if plan["schema"] == PAIRED_SCHEMA:
+        p.require(plan.get("stage_profile") in ("pilot", "scaling"), "explicit paired watch stage profile")
+        return 3600 if plan["stage_profile"] == "pilot" else 7200
+    return 7200
+
+
+def _active_deadline(plan):
+    reserve = 900 if plan["schema"] == PAIRED_SCHEMA and plan.get("stage_profile") == "pilot" else 1200
+    return plan["deadline_epoch"] - reserve
+
+
+def _files(plan):
+    return FILES + PAIRED_FILES if plan["schema"] == PAIRED_SCHEMA else FILES
 
 
 def _path(path):
@@ -88,12 +106,18 @@ def _template(plan, manifest, root):
 
 
 def prepare(plan_path, *, clock=time.time):
-    import scaling
     plan_path = _path(plan_path)
-    plan = scaling.validate_plan(d.read(plan_path))
-    p.verify_source(plan)
+    plan = d.read(plan_path)
+    if type(plan) is dict and plan.get("schema") == PAIRED_SCHEMA:
+        import paired
+        plan = paired.validate_plan(plan)
+        paired.verify_sources(plan)
+    else:
+        import scaling
+        plan = scaling.validate_plan(plan)
+        p.verify_source(plan)
     value = validate_config(plan)
-    p.require(plan["first_epoch"] <= clock() < plan["first_epoch"] + 4000, "watch preparation original admission window")
+    p.require(plan["first_epoch"] <= clock() < min(plan["first_epoch"] + 4000, _active_deadline(plan)), "watch preparation original admission window")
     root = _path(value["root"])
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
     python = str(Path(sys.executable).resolve())
@@ -103,7 +127,7 @@ def prepare(plan_path, *, clock=time.time):
                 "source_root": str(REPO), "python": python, "python_sha256": p.sha(python), "path": path,
                 "unit": _unit(plan), "unit_path": str(Path.home() / ".config/systemd/user" / _unit(plan)),
                 "first_epoch": plan["first_epoch"], "deadline_epoch": plan["deadline_epoch"], "files": {}}
-    for name in FILES:
+    for name in _files(plan):
         source, target = _path(REPO / name), _path(root / "bundle" / name)
         parent = root
         for part in target.parent.relative_to(root).parts:
@@ -132,18 +156,23 @@ def load_bundle(plan, *, check_source=True):
               and p.sha(_path(manifest["approved_plan_path"])) == manifest["plan_sha256"]
               and manifest.get("first_epoch") == plan["first_epoch"] and manifest.get("deadline_epoch") == plan["deadline_epoch"]
               and type(plan["first_epoch"]) is int and type(plan["deadline_epoch"]) is int
-              and plan["deadline_epoch"] == plan["first_epoch"] + 7200, "immutable managed watch plan/absolute lease changed")
+              and plan["deadline_epoch"] == plan["first_epoch"] + _lease_seconds(plan), "immutable managed watch plan/absolute lease changed")
     p.require(manifest.get("seal") == _seal(manifest), "managed watch bootstrap seal changed")
     p.require(manifest.get("unit") == _unit(plan) and manifest.get("unit_path") == str(Path.home() / ".config/systemd/user" / _unit(plan))
               and manifest.get("python") == str(Path(sys.executable).resolve()) and p.sha(manifest["python"]) == manifest.get("python_sha256")
-              and type(manifest.get("files")) is dict and set(manifest["files"]) == set(FILES), "sealed managed watch bundle identity")
+              and type(manifest.get("files")) is dict and set(manifest["files"]) == set(_files(plan)), "sealed managed watch bundle identity")
     for name, digest in manifest["files"].items():
         p.require(p.hexstr(digest) and p.sha(_path(root / "bundle" / name)) == digest, "managed watch helper bundle changed")
         if check_source:
             p.require(p.sha(_path(Path(manifest["source_root"]) / name)) == digest, "managed watch source helper changed")
     p.require((root / manifest["unit"]).read_text() == _template(plan, manifest, root)
               and p.sha(_path(root / manifest["unit"])) == manifest.get("template_sha256"), "managed watch template changed")
-    if check_source:
+    if plan["schema"] == PAIRED_SCHEMA:
+        import paired
+        paired.validate_plan(plan, check_assets=check_source)
+        if check_source:
+            paired.verify_sources(plan)
+    elif check_source:
         for name in p.ASSETS:
             expected = plan["input_manifest_sha256" if name == "source_manifest" else name + "_sha256"]
             p.require(p.sha(_path(plan[name])) == expected, "managed watch sealed application asset changed")
@@ -278,7 +307,7 @@ def _controller(manifest, root, plan, *, proc_root):
 
 def admit(plan, out, *, runner=None, proc_root="/proc", clock=time.time):
     p.require(Path(out).resolve() == Path(validate_config(plan)["output"]) / "provision", "managed watch provision output mismatch")
-    p.require(plan["first_epoch"] <= clock() < plan["first_epoch"] + 6000, "original active admission window expired")
+    p.require(plan["first_epoch"] <= clock() < _active_deadline(plan), "original active admission window expired")
     manifest, root = load_bundle(plan)
     proof = verify_unit(plan, runner=runner, proc_root=proc_root, clock=clock)
     registration = _controller(manifest, root, plan, proc_root=proc_root)
@@ -290,24 +319,27 @@ def admit(plan, out, *, runner=None, proc_root="/proc", clock=time.time):
     p.require(ack.get("schema") == SCHEMA and ack.get("healthy") is True and ack.get("proof") == proof
               and ack.get("controller_sha256") == p.sha(root / "controller.json") and p.number(ack.get("epoch"))
               and 0 <= clock() - ack["epoch"] <= 3, "stale/forged/unknown external watch heartbeat")
-    p.require(clock() < plan["first_epoch"] + 6000, "original active admission window expired")
+    p.require(clock() < _active_deadline(plan), "original active admission window expired")
     return {"admitted": True, "plan_sha256": manifest["plan_sha256"], "unit": manifest["unit"], "epoch": clock()}
 
 
 def register(plan, out, *, runner=None, proc_root="/proc", clock=time.time, sleep=time.sleep):
     p.require(Path(out).resolve() == Path(validate_config(plan)["output"]), "managed watch controller output mismatch")
+    p.require(plan["first_epoch"] <= clock() < _active_deadline(plan), "original active admission window expired")
     manifest, root = load_bundle(plan)
     proof = verify_unit(plan, runner=runner, proc_root=proc_root, clock=clock)
     controller = process_identity(os.getpid(), proc_root)
     argv = controller["argv"]
-    script = str(Path(manifest["source_root"]) / "layers/otel/bench/ops/horizontal/scaling.py")
-    p.require(controller["exe"] == manifest["python"] and script in argv and argv[argv.index(script) + 1:] ==
-              ["run", "--plan", manifest["approved_plan_path"], "--output", str(out), "--execute-approved"]
-              and all(x in ("-u", "-B") for x in argv[1:argv.index(script)])
-              and _inside(controller["cgroup"], proof["runtime"]["cgroup"]), "exact scaling controller command/runtime identity required")
+    paired_plan = plan["schema"] == PAIRED_SCHEMA
+    script = str(Path(manifest["source_root"]) / ("layers/otel/bench/ops/horizontal/paired.py" if paired_plan else "layers/otel/bench/ops/horizontal/scaling.py"))
+    command = ([] if paired_plan else ["run"]) + ["--plan", manifest["approved_plan_path"], "--output", str(out), "--execute-approved"]
+    p.require(controller["exe"] == manifest["python"] and script in argv and argv[argv.index(script) + 1:] == command
+              and (argv[1:argv.index(script)] == ["-B"] if paired_plan
+                   else all(x in ("-u", "-B") for x in argv[1:argv.index(script)]))
+              and _inside(controller["cgroup"], proof["runtime"]["cgroup"]), "exact scaling/paired controller command/runtime identity required")
     _write(root / "controller.json", {"manifest_sha256": p.sha(root / "manifest.json"), "plan_sha256": manifest["plan_sha256"], "output": str(out), "first_epoch": plan["first_epoch"],
            "deadline_epoch": plan["deadline_epoch"], "controller": controller, "runtime": proof["runtime"], "runtime_invocation": proof["runtime_invocation"]}, exclusive=True)
-    until = min(clock() + 5, plan["first_epoch"] + 6000)
+    until = min(clock() + 5, _active_deadline(plan))
     while clock() < until:
         try:
             return admit(plan, Path(out) / "provision", runner=runner, proc_root=proc_root, clock=clock)
@@ -358,7 +390,7 @@ def watch(root, *, runner=None, proc_root="/proc", clock=time.time, sleep=time.s
                     registration = _controller(manifest, root, plan, proc_root=proc_root)
                     p.require(registration["runtime"] == proof["runtime"] and registration["runtime_invocation"] == proof["runtime_invocation"], "runtime invocation changed")
                     controller_sha = p.sha(root / "controller.json")
-                if clock() >= plan["first_epoch"] + 6600:
+                if clock() >= plan["deadline_epoch"] - 600:
                     reason = "original absolute cleanup time"
                 else:
                     _write(root / "heartbeat.json", {"schema": SCHEMA, "healthy": True, "proof": proof,

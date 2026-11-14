@@ -1,0 +1,634 @@
+#!/usr/bin/env python3
+"""Sealed multi-implementation native campaign. Fake mode never imports a provider."""
+import argparse
+import copy
+from decimal import Decimal
+import hashlib
+import json
+from pathlib import Path
+import re
+import time
+
+import driver as d
+import policy as p
+import paired_cost as cost
+import paired_reports as reports
+import paired_rows as rows
+
+SCHEMA = "otel_native_paired_v1"
+ARMS = ("go_pure", "go_native", "rust_native")
+NATIVE_SHA256 = "617572467897d0360f76ffc33f24b58090ee691e3273750d2ff334cc71aae3fa"
+QUEUE_FIELDS = {"kind", "producers", "producer_batch_spans", "consumers", "queue_capacity_spans", "batch_min_spans", "batch_max_spans", "flush_ms",
+                "block_on_overflow", "export_timeout_ms", "retry_enabled", "retry_initial_ms", "retry_max_ms", "retry_elapsed_ms"}
+BASE_ASSETS = {"fdbserver", "fdbcli", "corpus_100000", "corpus_375000", "layout_template", "descriptor_set"}
+
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+
+
+def job_seal(job):
+    # Matches driver.write's exclusive sorted JSON bytes, including its newline.
+    return hashlib.sha256((json.dumps(job, sort_keys=True) + "\n").encode()).hexdigest()
+
+
+def workload(value):
+    p.require(type(value) is dict, "typed shared workload required")
+    if value.get("kind") == "writer_direct":
+        p.require(set(value) == {"kind", "producers", "producer_batch_spans"}, "writer_direct requires explicit producer concurrency")
+        p.require(type(value["producers"]) is int and 1 <= value["producers"] <= 32, "bounded producer concurrency")
+    else:
+        p.require(value.get("kind") == "collector_queue" and set(value) == QUEUE_FIELDS,
+                  "complete collector_queue parameters required; no defaults")
+        for key in QUEUE_FIELDS - {"kind", "block_on_overflow", "retry_enabled"}:
+            p.require(p.integer(value[key], 0 if key in ("retry_initial_ms", "retry_elapsed_ms") else 1),
+                      "typed queue/retry parameter: " + key)
+        p.require(type(value["block_on_overflow"]) is bool and type(value["retry_enabled"]) is bool, "typed overflow/retry policy")
+        p.require(value["producers"] <= 32 and value["consumers"] <= 32 and value["queue_capacity_spans"] <= 10000000
+                  and value["batch_min_spans"] <= value["batch_max_spans"] <= 10000000
+                  and value["batch_min_spans"] <= value["queue_capacity_spans"]
+                  and value["retry_initial_ms"] <= value["retry_max_ms"], "bounded matched batching/retry")
+    p.require(type(value.get("producer_batch_spans")) is int and 1 <= value["producer_batch_spans"] <= 64,
+              "explicit source request grouping required")
+    return value
+
+
+def asset(value, *, check_assets=True):
+    p.require(type(value) is dict and set(value) == {"path", "sha256"}
+              and type(value["path"]) is str and Path(value["path"]).is_absolute()
+              and ".." not in Path(value["path"]).parts and p.hexstr(value["sha256"]), "sealed absolute asset")
+    if check_assets:
+        path = Path(value["path"])
+        p.require(path.is_file() and not path.is_symlink() and p.sha(path) == value["sha256"], "changed paired asset")
+    return value
+
+
+def stages(plan):
+    profile = plan.get("stage_profile")
+    p.require(profile in ("pilot", "scaling"), "explicit paired stage profile")
+    expected = [1] if profile == "pilot" else [1, 2, 3]
+    actual = plan.get("stages")
+    p.require(type(actual) is list and all(type(x) is int for x in actual) and actual == expected,
+              "exact typed paired stages")
+    return expected
+
+
+def authorized_rows(plan):
+    arms = plan.get("arms")
+    p.require(type(arms) is list and 2 <= len(arms) <= 3 and all(type(x) is str and x in ARMS for x in arms)
+              and len(set(arms)) == len(arms), "sealed distinct comparison arm set")
+    rows = len(arms) * sum(stages(plan)) * 475000 * (2 if plan["stage_profile"] == "pilot" else 1)
+    p.require(rows <= 15000000, "paired named-family allocation ceiling")
+    p.require("prior_rows_upper" not in plan and plan.get("row_budget_name") == "otel_paired_go_rust_v1",
+              "named persisted row budget required; caller prior is forbidden")
+    p.require(type(plan.get("row_ledger")) is str and Path(plan["row_ledger"]).is_absolute(), "persisted row ledger path required")
+    return rows
+
+
+def held_roles(plan):
+    hosts = max(stages(plan))
+    return [kind + str(i) for kind in ("node", "client") for i in range(1, hosts + 1)]
+
+
+def validate_plan(plan, *, check_assets=True):
+    p.require(type(plan) is dict and plan.get("schema") == SCHEMA and plan.get("approved") is True,
+              "explicit new paired schema approval required")
+    authorized_rows(plan)
+    for key in ("campaign", "prefix"):
+        p.require(type(plan.get(key)) is str and re.fullmatch(r"[a-z][a-z0-9-]{7,47}", plan[key]), "invalid " + key)
+    p.require(plan.get("location") == "hel1" and plan.get("server_type") == "ccx43"
+              and plan.get("replication") == "single", "fixed native hardware and single replication")
+    for key, expected in (("count", 100000), ("measured_count", 375000), ("measured_seconds", 120),
+                          ("batch", 64), ("workers", 8), ("gomaxprocs", 4), ("storage_process_count", 3),
+                          ("storage_max_outstanding", 64)):
+        p.require(type(plan.get(key)) is int and plan[key] == expected, "fixed paired field: " + key)
+    p.require(type(plan.get("writer_batch_size")) is int and 1 <= plan["writer_batch_size"] <= 64
+              and type(plan.get("writer_workers")) is int and plan["writer_workers"] == 1,
+              "matched internal writer concurrency must be exactly one; batch is bounded")
+    p.require(plan.get("storage_memory_profile") == "scaling3ss3g", "fixed native memory geometry")
+    p.require(p.storage(plan.get("storage_options")) == {"record_compression": "zlib-1", "bulk_index_conflicts": False},
+              "matched native ordinary index conflict profile required")
+    workload(plan.get("workload"))
+    p.require(not set(plan) & {"topologies", "measured_topologies", "prerequisite_topologies", "selected_topologies",
+                              "probe_count", "probe_seconds", "cases", "log_memory_gib", "foreground_only"},
+              "paired study cannot inherit other schema overrides")
+    orders = plan.get("arm_order")
+    p.require(type(orders) is list and len(orders) == len(stages(plan)), "per-stage preregistered arm order required")
+    for order in orders:
+        repeats = 2 if plan["stage_profile"] == "pilot" else 1
+        p.require(type(order) is list and len(order) == len(plan["arms"]) * repeats and all(type(x) is str for x in order)
+                  and set(order) == set(plan["arms"]) and all(order.count(arm) == repeats for arm in plan["arms"]),
+                  "every stage runs the preregistered repetition population")
+        if plan["stage_profile"] == "pilot":
+            p.require(order == plan["arms"] + list(reversed(plan["arms"])), "pilot balanced reversed second repetition required")
+    p.require(plan.get("load_profile") == "finite_queued_v1",
+              "only finite profile implemented; offered-load600 requires sealed scheduling/window contract")
+    p.require(plan.get("oracle") == "source_1600_v1", "paid profiles require complete independent source oracle")
+    first, end = plan.get("first_epoch"), plan.get("deadline_epoch")
+    p.require(p.integer(first, 1) and p.integer(end, 1)
+              and end - first == (3600 if plan["stage_profile"] == "pilot" else 7200), "one original fixed lease")
+    p.require(plan.get("cleanup_mode") == "independent_watch", "paired campaigns require independent cleanup admission")
+    assets = plan.get("assets")
+    required = BASE_ASSETS | {"go_binary" if x.startswith("go_") else "rust_binary" for x in plan["arms"]}
+    if any(x.endswith("native") for x in plan["arms"]):
+        required.add("libfdb_c")
+    p.require(type(assets) is dict and set(assets) == required, "complete exact paired asset set")
+    for item in assets.values():
+        asset(item, check_assets=check_assets)
+    if "libfdb_c" in assets:
+        p.require(assets["libfdb_c"]["sha256"] == NATIVE_SHA256 or plan.get("fake_provider") is True,
+                  "pinned FDB 7.3.77 native client required")
+    sources = plan.get("sources")
+    p.require(type(sources) is dict and set(sources) == set(plan["arms"]), "separate per-arm source seals")
+    for arm in plan["arms"]:
+        src = sources[arm]
+        p.require(type(src) is dict and set(src) == {"revision", "root", "manifest", "manifest_sha256"}
+                  and p.hexstr(src["revision"], 40), "typed per-arm source identity")
+        asset({"path": src["manifest"], "sha256": src["manifest_sha256"]}, check_assets=check_assets)
+        p.require(type(src["root"]) is str and Path(src["root"]).is_absolute(), "per-arm source root")
+    p.require(p.hexstr(plan.get("pricing_seal_sha256")) and type(plan.get("pricing")) is dict,
+              "sealed admission pricing required")
+    p.require(type(plan.get("prior_cost_upper_eur")) is str and re.fullmatch(r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,18})?", plan["prior_cost_upper_eur"])
+              and Decimal(plan["prior_cost_upper_eur"]) <= 10, "explicit cumulative prior paid-cost upper bound")
+    p.require(type(plan.get("prior_cost_basis")) is str and plan["prior_cost_basis"].strip(), "prior paid cost evidence required")
+    p.require(type(plan.get("stage_budget_eur")) is str and plan["stage_budget_eur"] == ("2" if plan["stage_profile"] == "pilot" else "8"),
+              "sealed EUR2 pilot / EUR8 sweep allocations")
+    p.require(type(plan.get("fake_provider")) is bool, "explicit provider mode required")
+    import supervisor
+    supervisor.validate_config(plan)
+    return plan
+
+
+def verify_sources(plan):
+    return {arm: p.verify_source({"source_root": src["root"], "source_manifest": src["manifest"],
+                                 "input_manifest_sha256": src["manifest_sha256"]}) for arm, src in plan["sources"].items()}
+
+
+def arm_id(hosts, arm, repeat=1):
+    p.require(type(hosts) is int and hosts in (1, 2, 3) and arm in ARMS, "typed stage/arm identity")
+    p.require(type(repeat) is int and repeat in (1, 2), "bounded preregistered repetition")
+    return "pairs%d-%s-rep%d" % (hosts, arm, repeat)
+
+
+def namespace(plan, hosts, arm, phase, client, repeat=1):
+    p.require(hosts in stages(plan) and arm in plan["arms"] and phase in ("prerequisite", "measured")
+              and type(client) is int and 1 <= client <= hosts, "sealed producer population")
+    return "/".join((plan["campaign"], arm_id(hosts, arm, repeat), phase, "client" + str(client)))
+
+
+def _job(plan, arm, hosts, phase, client, layout, cluster, remote_assets, output, *, repeat=1):
+    count = 100000 if phase == "prerequisite" else 375000
+    ns = namespace(plan, hosts, arm, phase, client, repeat)
+    source = plan["sources"][arm]
+    binary = "go_binary" if arm.startswith("go_") else "rust_binary"
+    p.require(type(output) is str and Path(output).is_absolute() and "/" + ns + "/" in output,
+              "immutable implementation-specific output path")
+    for key in ("path", "sha256"):
+        p.require(key in layout and key in cluster, "sealed dynamic cluster/layout required")
+    return {"schema": "otel_paired_job_v1", "arm": arm,
+            "client_backend": "pure_go" if arm == "go_pure" else "native_c",
+            "client_library": None if arm == "go_pure" else remote_assets["libfdb_c"],
+            "client_library_sha256": None if arm == "go_pure" else plan["assets"]["libfdb_c"]["sha256"],
+            "cluster_file": cluster["path"], "cluster_sha256": cluster["sha256"],
+            "layout_file": layout["path"], "layout_sha256": layout["sha256"],
+            "corpus_file": remote_assets["corpus_" + str(count)], "corpus_sha256": plan["assets"]["corpus_" + str(count)]["sha256"],
+            "binary_sha256": plan["assets"][binary]["sha256"], "source_revision": source["revision"],
+            "source_manifest_sha256": source["manifest_sha256"], "expected_frames": count, "row_budget": count,
+            "writer_batch_size": plan["writer_batch_size"], "writer_workers": plan["writer_workers"], "record_compression": "zlib-1",
+            "mode": "ingest", "enable_message_deltas": False, "enable_message_full_text": False, "bulk_index_conflicts": False,
+            "run": hashlib.sha256(ns.encode()).hexdigest()[:24],
+            "corpus_config": {"generator": "otel_fixture_v2", "seed": 283, "count": count,
+                              "tenants": 1, "attributes": 8, "match_every": 100},
+            "timeout_seconds": 300 if phase == "prerequisite" else 120, "output": output,
+            "workload": copy.deepcopy(plan["workload"])}
+
+
+def go_job(plan, arm, *args, **kwargs):
+    p.require(arm in ("go_pure", "go_native"), "Go builder requires a Go arm")
+    return _job(plan, arm, *args, **kwargs)
+
+
+def rust_job(plan, arm, *args, **kwargs):
+    p.require(arm == "rust_native", "Rust builder requires the Rust arm")
+    return _job(plan, arm, *args, **kwargs)
+
+
+def validate_job(job):
+    p.require(type(job) is dict and job.get("schema") == "otel_paired_job_v1"
+              and job.get("mode") in ("corpus", "setup", "ingest", "verify") and job.get("arm") in ARMS,
+              "versioned typed producer job required")
+    arm, mode = job["arm"], job["mode"]
+    p.require(arm != "rust_native" or mode in ("ingest", "setup", "verify"), "Rust executable is ingestion only")
+    for key, length in (("binary_sha256", 64), ("source_revision", 40), ("source_manifest_sha256", 64)):
+        p.require(p.hexstr(job.get(key), length), "producer source/binary seals required")
+    p.require(type(job.get("timeout_seconds")) is int and 1 <= job["timeout_seconds"] <= 3600, "bounded producer deadline")
+    paths = [job.get("output")]
+    if mode != "corpus":
+        p.require(type(job.get("run")) is str and re.fullmatch(r"[a-z0-9_]{8,48}", job["run"]), "fresh production run identity")
+        for name in ("cluster", "corpus") + (("layout",) if mode in ("ingest", "verify") else ()):
+            paths.append(job.get(name + "_file"))
+            p.require(p.hexstr(job.get(name + "_sha256")), "sealed producer input: " + name)
+        if arm == "go_pure":
+            p.require(job.get("client_backend") == "pure_go" and job.get("client_library") is None
+                      and job.get("client_library_sha256") is None, "pure Go must not load native C")
+        else:
+            paths.append(job.get("client_library"))
+            p.require(job.get("client_backend") == "native_c" and p.hexstr(job.get("client_library_sha256")), "native client seal required")
+    for path in paths:
+        p.require(type(path) is str and Path(path).is_absolute() and ".." not in Path(path).parts
+                  and "\x00" not in path, "clean absolute producer paths")
+    p.require(len(paths) == len(set(paths)), "producer input/output paths must be distinct")
+    p.require(type(job.get("expected_frames")) is int and 1 <= job["expected_frames"] <= 1000000
+              and type(job.get("row_budget")) is int and job["expected_frames"] <= job["row_budget"] <= 10000000,
+              "bounded complete corpus population")
+    config = job.get("corpus_config")
+    p.require(type(config) is dict and set(config) == {"generator", "seed", "count", "tenants", "attributes", "match_every"}
+              and config.get("generator") == "otel_fixture_v2" and type(config.get("count")) is int
+              and config["count"] == job["expected_frames"] and p.integer(config.get("seed"))
+              and type(config.get("tenants")) is int and config["tenants"] == 1
+              and type(config.get("attributes")) is int and config["attributes"] == 8
+              and p.integer(config.get("match_every"), 1), "complete source-oracle corpus configuration")
+    if mode in ("setup", "ingest", "verify"):
+        workload(job.get("workload"))
+        p.require(type(job.get("writer_batch_size")) is int and 1 <= job["writer_batch_size"] <= 64
+                  and type(job.get("writer_workers")) is int and job["writer_workers"] == 1
+                  and job.get("record_compression") in ("none", "zlib-1", "zlib-default")
+                  and job.get("enable_message_deltas") is False and job.get("enable_message_full_text") is False
+                  and job.get("bulk_index_conflicts") is False, "matched span-only writer configuration")
+    return job
+
+
+def invocation(plan, job, job_path, remote_assets):
+    validate_job(job)
+    arm = job["arm"]
+    p.require(arm in plan["arms"] and job["workload"] == plan["workload"] and job["schema"] == "otel_paired_job_v1",
+              "implementation/workload job binding")
+    p.require(type(job_path) is str and Path(job_path).is_absolute() and ".." not in Path(job_path).parts,
+              "absolute producer job path required")
+    binary = "go_binary" if arm.startswith("go_") else "rust_binary"
+    return [remote_assets[binary], job_path]
+
+
+def envelope(job, report):
+    return reports.envelope(job, report)
+
+
+def verify_audit(value, job, ns):
+    return reports.verify_audit(value, job, ns)
+
+
+class PairedCampaign:
+    """Backend contract: no methods may renew leases or retry a released wave.
+
+    Every backend is responsible for pinned-host transport, exact identity, strict
+    health and bounded monitoring inside each blocking method. cleanup is never
+    cost/admission gated. The fake backend supplies no live acceptance evidence.
+    """
+    def __init__(self, plan, output, backend):
+        self.plan, self.output, self.backend = plan, Path(output), backend
+        self.ledger, self.resources = None, None
+        self.released, self.charged_rows = set(), 0
+        self.sequence = 0
+        self.active_issue = None
+
+    def write(self, name, value):
+        d.write(self.output / name, value)
+
+    def guard(self, *, active=True):
+        now = self.backend.now()
+        if active:
+            p.require(now < self.plan["deadline_epoch"] - (900 if self.plan["stage_profile"] == "pilot" else 1200),
+                      "original active deadline exhausted; cleanup required")
+        if self.ledger is not None:
+            self.ledger = cost.checkpoint(self.ledger, now_epoch=now, owned_ids=self.backend.owned_ids(),
+                                          deadline_epoch=self.plan["deadline_epoch"])
+            report = cost.assess(self.ledger, now_epoch=now, owned_ids=self.backend.owned_ids())
+            total = Decimal(report["total_upper_eur"])
+            p.require(total <= Decimal(self.plan["stage_budget_eur"]) and total + Decimal(self.plan["prior_cost_upper_eur"]) <= 10,
+                      "stage allocation or shared EUR10 ceiling exceeded")
+            self.sequence += 1
+            self.write("cost/%04d.json" % self.sequence, {"ledger": self.ledger, "assessment": report})
+        p.require(sum(x.stat().st_size for x in self.output.rglob("*") if x.is_file()) < 1024 ** 3,
+                  "shared 1GiB receipt ceiling")
+
+    def call(self, method, *args):
+        self.guard()
+        result = getattr(self.backend, method)(*args)
+        self.guard()
+        return result
+
+    def run(self):
+        validate_plan(self.plan)
+        p.require(self.plan["fake_provider"] is self.backend.fake, "provider mode cannot be substituted")
+        before = verify_sources(self.plan)
+        if self.output.exists():
+            raise FileExistsError("paired output already exists; no replay or reset")
+        population = rows.inspect(self.plan["row_ledger"])
+        p.require(population["remaining_rows"] >= authorized_rows(self.plan), "named family row budget insufficient")
+        self.output.mkdir(mode=0o700, parents=True, exist_ok=False)
+        self.write("approved-plan.json", self.plan)
+        self.write("source-before.json", before)
+        result = {"schema": "otel_paired_campaign_result_v1", "status": "FAILED", "fake_provider": self.backend.fake,
+                  "accepted_comparison": False, "arms": [], "authorized_rows": authorized_rows(self.plan),
+                  "row_budget_name": rows.BUDGET_NAME, "previous_issued_rows": population["issued_rows"], "first_epoch": self.plan["first_epoch"],
+                  "deadline_epoch": self.plan["deadline_epoch"], "held_host_count": len(held_roles(self.plan))}
+        failure = None
+        try:
+            self.guard()
+            quote = self.backend.capture_pricing(self.plan)
+            p.require(digest(quote) == digest(self.plan["pricing"]), "fresh price capture differs from approved quote")
+            self.ledger = cost.admit(quote, first_epoch=self.plan["first_epoch"], deadline_epoch=self.plan["deadline_epoch"],
+                                     now_epoch=self.backend.now(), expected_seal=self.plan["pricing_seal_sha256"],
+                                     held_host_count=len(held_roles(self.plan)))
+            self.guard()
+            # prepare must internally enforce the ledger on every provider mutation;
+            # reserving all held slots first also accounts for ambiguous creates.
+            self.resources = self.backend.prepare(self.plan, self.ledger)
+            p.require(type(self.resources) is dict and set(self.resources) == set(held_roles(self.plan)), "exact newly held host set")
+            for node in self.resources.values():
+                self.ledger = cost.record_creation(self.ledger, host_id=node["id"], created_epoch=node["created_epoch"],
+                                                   now_epoch=self.backend.now())
+            self.guard()
+            transfers = self.call("transfer_assets", self.plan, self.resources)
+            self.write("asset-transfer.json", transfers)
+            validate_transfers(self.plan, self.resources, transfers)
+            for hosts, order in zip(stages(self.plan), self.plan["arm_order"]):
+                occurrences = {arm: 0 for arm in self.plan["arms"]}
+                for arm in order:
+                    occurrences[arm] += 1
+                    repeat = occurrences[arm]
+                    identity = arm_id(hosts, arm, repeat)
+                    directory = "arms/" + identity
+                    self.call("quiet", self.plan, self.resources)
+                    cluster = self.call("fresh_cluster", self.plan, self.resources, hosts, identity)
+                    asset(cluster, check_assets=False)
+                    self.write(directory + "/cluster.json", cluster)
+                    record = {"hosts": hosts, "arm": arm, "status": "FAILED", "waves": []}
+                    result["arms"].append(record)
+                    for phase in ("prerequisite", "measured"):
+                        count = 100000 if phase == "prerequisite" else 375000
+                        wave = directory + "/" + phase
+                        jobs, ready = {}, {}
+                        for client in range(1, hosts + 1):
+                            ns = namespace(self.plan, hosts, arm, phase, client, repeat)
+                            layout = self.call("setup", self.plan, cluster, ns, count)
+                            asset(layout, check_assets=False)
+                            remote_assets = self.backend.remote_assets(self.plan)
+                            builder = go_job if arm.startswith("go_") else rust_job
+                            job = builder(self.plan, arm, hosts, phase, client, layout, cluster, remote_assets,
+                                          "/srv/otel-paired/" + ns + "/ingest.json", repeat=repeat)
+                            path = "/srv/otel-paired/" + ns + "/job.json"
+                            argv = invocation(self.plan, job, path, remote_assets)
+                            self.write(wave + "/client%d-job.json" % client, {"job": job, "argv": argv, "namespace": ns})
+                            jobs[client] = job
+                            receipt = self.call("ready", self.plan, self.resources["client" + str(client)], ns, job, argv)
+                            p.require(receipt == {"namespace": ns, "job_sha256": job_seal(job), "node_id": self.resources["client" + str(client)]["id"]},
+                                      "all producers must bind ready to exact host/job before release")
+                            ready[client] = receipt
+                        key = (hosts, arm, repeat, phase)
+                        p.require(key not in self.released, "duplicate release refused")
+                        self.charged_rows += hosts * count
+                        p.require(self.charged_rows <= authorized_rows(self.plan), "no row reclamation or extra release")
+                        self.active_issue = rows.issue(self.plan["row_ledger"], campaign=self.plan["campaign"],
+                            stage="pilot" if self.plan["stage_profile"] == "pilot" else "pairs" + str(hosts),
+                            arm=arm, repeat=repeat, phase=phase, rows=hosts * count)
+                        self.released.add(key)
+                        self.write(wave + "/release.json", {"ready": ready, "charged_rows": self.charged_rows,
+                                                           "lease_deadline_epoch": self.plan["deadline_epoch"]})
+                        started = self.backend.monotonic_ns()
+                        reports = self.call("release_and_wait", self.plan, ready, jobs)
+                        ack_end = self.backend.monotonic_ns()
+                        p.require(type(reports) is dict and set(reports) == set(jobs), "every released producer report required")
+                        for client, job in jobs.items():
+                            value = envelope(job, reports[client])
+                            self.write(wave + "/client%d-result.json" % client, value)
+                            p.require(value["accepted"], value.get("error", "producer refused"))
+                        samples = self.call("drain", self.plan, cluster)
+                        drained_end = self.backend.monotonic_ns()
+                        p.require(type(samples) is list and len(samples) >= 3 and all(type(x) is dict and x.get("healthy") is True
+                                  and p.integer(x.get("queue_bytes")) and x["queue_bytes"] < 16777216
+                                  and p.number(x.get("lag_seconds")) and x["lag_seconds"] < 10 for x in samples[-3:]),
+                                  "three strict healthy stable drain observations")
+                        for client, job in jobs.items():
+                            ns = namespace(self.plan, hosts, arm, phase, client, repeat)
+                            verification = self.call("verify", self.plan, ns, job)
+                            self.write(wave + "/client%d-verification.json" % client, verification)
+                            verify_audit(verification, job, ns)
+                        metrics = {"phase": phase, "rows": count * hosts, "release_ns": started, "ack_end_ns": ack_end,
+                                   "drained_end_ns": drained_end, "drain_samples": samples,
+                                   "ack_rows_per_second": p.common_throughput(count * hosts, started, ack_end),
+                                   "drained_rows_per_second": p.common_throughput(count * hosts, started, drained_end)}
+                        record["waves"].append(metrics)
+                        self.write(wave + "/wave-result.json", metrics)
+                        rows.outcome(self.plan["row_ledger"], issue_id=self.active_issue["issue_id"], status="passed")
+                        self.active_issue = None
+                    stopped = self.call("quiesce", self.plan, cluster)
+                    self.write(directory + "/quiescence.json", stopped)
+                    p.require(type(stopped) is dict and stopped.get("quiescent") is True and stopped.get("passed") is True,
+                              "exact old-arm units/scopes/PIDs must be quiescent")
+                    record["status"] = "PASS"
+            result["status"] = "FAKE_PASSED" if self.backend.fake else "PASSED"
+        except BaseException as exc:
+            failure = exc
+            result["error"] = str(exc)
+            if self.active_issue is not None:
+                rows.outcome(self.plan["row_ledger"], issue_id=self.active_issue["issue_id"], status="failed")
+                self.active_issue = None
+        finally:
+            try:
+                cleanup = self.backend.cleanup(self.plan)
+                self.write("cleanup.json", cleanup)
+                p.require(type(cleanup) is dict and cleanup.get("passed") is True
+                          and cleanup.get("exact_baseline") is True, "verified exact-baseline deletion required")
+                if self.ledger is not None:
+                    for proof in cleanup.get("deletions", []):
+                        self.ledger = cost.record_deletion(self.ledger, verification=proof, now_epoch=self.backend.now())
+                    self.guard(active=False)
+                result["cleanup_passed"] = True
+            except BaseException as exc:
+                failure = failure or exc
+                result.update(status="FAILED", cleanup_passed=False, cleanup_error=str(exc))
+            try:
+                self.write("source-after.json", verify_sources(self.plan))
+            except BaseException as exc:
+                failure = failure or exc
+                result.update(status="FAILED", source_error=str(exc))
+            result.update(charged_rows=self.charged_rows, released_waves=len(self.released),
+                          accepted_comparison=result["status"] == "PASSED" and result.get("cleanup_passed") is True)
+            self.write("paired-result.json", result)
+        if failure:
+            raise failure
+        return result
+
+
+def validate_transfers(plan, resources, receipts):
+    p.require(type(receipts) is dict and set(receipts) == set(resources), "per-held-host asset receipts required")
+    for role, node in resources.items():
+        receipt = receipts[role]
+        p.require(type(receipt) is dict and receipt.get("node_id") == node["id"] and type(receipt.get("assets")) is dict
+                  and set(receipt["assets"]) == set(plan["assets"]), "exact asset receipt host/population binding")
+        for name, sealed in plan["assets"].items():
+            entry = receipt["assets"][name]
+            p.require(type(entry) is dict and entry.get("sha256") == sealed["sha256"]
+                      and p.hexstr(entry.get("transfer_sha256")) and p.integer(entry.get("bytes"), 1), "sealed asset transfer mismatch")
+
+
+class FakeBackend:
+    """In-memory provider/producer stand-in; reports are synthetic, never benchmarks."""
+    fake = True
+
+    def __init__(self, first_epoch):
+        self.epoch, self.ns = first_epoch, 1000000000
+        self.nodes, self.events = {}, []
+        self.active, self.ready_jobs = None, {}
+
+    def now(self):
+        return self.epoch
+
+    def monotonic_ns(self):
+        self.ns += 1000000000
+        return self.ns
+
+    def owned_ids(self):
+        return sorted(node["id"] for node in self.nodes.values())
+
+    def capture_pricing(self, plan):
+        return copy.deepcopy(plan["pricing"])
+
+    def prepare(self, plan, ledger):
+        self.events.append("prepare")
+        self.nodes = {role: {"id": 100 + i, "created_epoch": self.epoch} for i, role in enumerate(held_roles(plan))}
+        return copy.deepcopy(self.nodes)
+
+    def remote_assets(self, plan):
+        return {key: "/srv/otel-paired/" + plan["campaign"] + "/assets/" + key for key in plan["assets"]}
+
+    def transfer_assets(self, plan, resources):
+        return {role: {"node_id": node["id"], "assets": {name: {"sha256": value["sha256"],
+                        "transfer_sha256": digest({"synthetic": value["sha256"]}), "bytes": Path(value["path"]).stat().st_size}
+                        for name, value in plan["assets"].items()}} for role, node in resources.items()}
+
+    def quiet(self, plan, resources):
+        self.events.append("quiet")
+
+    def fresh_cluster(self, plan, resources, hosts, identity):
+        p.require(self.active is None, "old arm still active")
+        self.active = identity
+        self.events.append(identity)
+        return {"path": "/srv/otel-paired/" + plan["campaign"] + "/" + identity + "/fdb.cluster",
+                "sha256": digest(identity)}
+
+    def setup(self, plan, cluster, ns, count):
+        return {"path": "/srv/otel-paired/" + ns + "/layout.json", "sha256": digest(ns)}
+
+    def ready(self, plan, node, ns, job, argv):
+        p.require(ns not in self.ready_jobs, "duplicate ready namespace")
+        self.ready_jobs[ns] = job_seal(job)
+        return {"namespace": ns, "job_sha256": job_seal(job), "node_id": node["id"]}
+
+    def release_and_wait(self, plan, ready, jobs):
+        self.events.append("release")
+        self.epoch += 1
+        return {client: reports.fake_ingest(job) for client, job in jobs.items()}
+
+    def drain(self, plan, cluster):
+        self.epoch += 10
+        return [{"healthy": True, "queue_bytes": 0, "lag_seconds": 0} for _ in range(3)]
+
+    def verify(self, plan, ns, job):
+        return reports.fake_verify(job)
+
+    def quiesce(self, plan, cluster):
+        self.active = None
+        return {"passed": True, "quiescent": True}
+
+    def cleanup(self, plan):
+        self.events.append("cleanup")
+        self.epoch += 1
+        proofs = []
+        for node in self.nodes.values():
+            proof = {"host_id": node["id"], "observed_epoch": self.epoch,
+                     "source": "https://api.hetzner.cloud/v1/servers/" + str(node["id"]), "status": "not_found"}
+            proof["seal_sha256"] = cost.seal_receipt(proof)
+            proofs.append(proof)
+        self.nodes = {}
+        return {"passed": True, "exact_baseline": True, "deletions": proofs}
+
+
+def fake_plan(root, *, profile="scaling", arms=ARMS, kind="writer_direct"):
+    """Create real local hash fixtures only, never executable binaries or cloud inputs."""
+    root = Path(root)
+    root.mkdir(mode=0o700, parents=True, exist_ok=False)
+    source = root / "source.txt"
+    source.write_text("synthetic source, not a benchmark\n")
+    manifest = root / "source.manifest"
+    manifest.write_text(p.sha(source) + "  source.txt\n")
+    assets = {}
+    keys = BASE_ASSETS | {"go_binary" if x.startswith("go_") else "rust_binary" for x in arms} | {"libfdb_c"}
+    for key in keys:
+        path = root / key
+        path.write_text("synthetic asset " + key + "\n")
+        path.chmod(0o600)
+        assets[key] = {"path": str(path), "sha256": p.sha(path)}
+    ledger = root / "rows.jsonl"
+    rows.init(str(ledger))
+    first = int(time.time())
+    quote = {"schema": "paired_pricing_v1", "provider": "hetzner", "source": "https://api.hetzner.cloud/v1/pricing",
+             "captured_epoch": first, "currency": "EUR", "server_type": "ccx43", "location": "hel1",
+             "server_hourly_net_eur": "0.3758", "server_hourly_gross_eur": "0.447202",
+             "ipv4_hourly_net_eur": "0.0008", "ipv4_hourly_gross_eur": "0.000952",
+             "traffic_upper_eur": "0.10" if profile == "pilot" else "1.19",
+             "other_upper_eur": "0.10" if profile == "pilot" else "1.00", "bounds_conservative": True,
+             "provenance": {"response_sha256": digest("synthetic-not-a-quote"), "pricing_path": "pricing.server_types[ccx43].prices[hel1]", "vat_rate": "0.19"}}
+    quote["seal_sha256"] = cost.seal_receipt(quote)
+    order = list(arms)
+    queue = {"kind": "collector_queue", "producers": 8, "producer_batch_spans": 64, "consumers": 8, "queue_capacity_spans": 10000,
+             "batch_min_spans": 64, "batch_max_spans": 256, "flush_ms": 200, "block_on_overflow": True,
+             "export_timeout_ms": 120000, "retry_enabled": True, "retry_initial_ms": 500,
+             "retry_max_ms": 10000, "retry_elapsed_ms": 300000}
+    return {"schema": SCHEMA, "approved": True, "campaign": "paired-fake-test", "prefix": "paired-fake-test",
+            "location": "hel1", "server_type": "ccx43", "replication": "single", "stage_profile": profile,
+            "stages": [1] if profile == "pilot" else [1, 2, 3], "arms": order,
+            "arm_order": [order + list(reversed(order))] if profile == "pilot" else [order, list(reversed(order)), order],
+            "load_profile": "finite_queued_v1", "oracle": "source_1600_v1",
+            "row_budget_name": rows.BUDGET_NAME, "row_ledger": str(ledger),
+            "prior_cost_upper_eur": "0", "prior_cost_basis": "synthetic fixture, not an authorization",
+            "stage_budget_eur": "2" if profile == "pilot" else "8",
+            "count": 100000, "measured_count": 375000, "measured_seconds": 120, "batch": 64, "workers": 8,
+            "gomaxprocs": 4, "storage_process_count": 3, "storage_max_outstanding": 64,
+            "storage_memory_profile": "scaling3ss3g", "storage_options": {"record_compression": "zlib-1", "bulk_index_conflicts": False},
+            "first_epoch": first, "deadline_epoch": first + (3600 if profile == "pilot" else 7200),
+            "cleanup_mode": "independent_watch", "workload": {"kind": "writer_direct", "producers": 8, "producer_batch_spans": 64} if kind == "writer_direct" else queue,
+            "writer_batch_size": 64, "writer_workers": 1,
+            "managed_watch": {"root": str(root.parent / "fake-watch"), "output": str(root.parent / "fake-output")}, 
+            "assets": assets, "sources": {arm: {"revision": "a" * 40, "root": str(root), "manifest": str(manifest),
+                                                "manifest_sha256": p.sha(manifest)} for arm in arms},
+            "pricing": quote, "pricing_seal_sha256": quote["seal_sha256"], "fake_provider": True}
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--plan")
+    parser.add_argument("--output")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--profile", choices=("pilot", "scaling"), default="scaling")
+    parser.add_argument("--workload", choices=("writer_direct", "collector_queue"), default="writer_direct")
+    parser.add_argument("--execute-approved", action="store_true")
+    args = parser.parse_args(argv)
+    p.require(not (args.dry_run and args.execute_approved), "dry-run cannot authorize paid execution")
+    if args.dry_run:
+        p.require(args.output and Path(args.output).is_absolute(), "new absolute dry-run output required")
+        plan = d.read(args.plan) if args.plan else fake_plan(Path(args.output + "-fixtures"), profile=args.profile, kind=args.workload)
+        p.require(plan.get("fake_provider") is True, "dry-run refuses live plans")
+        result = PairedCampaign(plan, args.output, FakeBackend(plan["first_epoch"])).run()
+        print(json.dumps({key: result[key] for key in ("status", "fake_provider", "accepted_comparison", "authorized_rows", "charged_rows",
+                                                     "held_host_count", "released_waves", "cleanup_passed")}, sort_keys=True))
+    else:
+        p.require(args.plan, "explicit paired plan required")
+        plan = validate_plan(d.read(args.plan))
+        p.require(not args.execute_approved, "live paired backend not admitted: control setup/oracle and independent-watch contract required")
+        print(json.dumps({"validated": True, "schema": SCHEMA, "authorized_rows": authorized_rows(plan), "provisioned": False}, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()

@@ -3892,6 +3892,21 @@ boundary in `docs/benchmarks/otel-relational-local-20261107.md`.
   runs only on `workflow_dispatch`; measure it on the runners and move it to
   pull requests if it fits.
 
+## Paired native collector campaign
+
+- [ ] Finish and live-validate the paired native backend against the frozen
+  `otel_paired_job_v1` control/producer contract, including Go-control setup and
+  independent pure-Go full-row/census/1600-query verification for every arm.
+  `paired.py` currently exercises the complete fake lifecycle but refuses paid
+  execution; ingest-only success is not campaign admission.
+- [ ] Add the separately sealed offered-load600/60/10 schedule and window
+  telemetry to both queued producers and the paired runner before permitting
+  that profile. Finite queued waves cannot stand in for sustained capacity.
+- [ ] Obtain explicitly authorized real USER-unit cleanup-isolation/survival
+  proof on sealed paired inputs; fake procfs controller-loss coverage is not OS
+  runtime evidence. Resolve native log-memory geometry through bounded live
+  admission, with fatal stop/cleanup on the memory monitor and no profile waiver.
+
 ## TEXT SQL access paths
 
 - [ ] Recover and diagnose the historical RFC-258 fail-on-scan-limit failure

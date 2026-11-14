@@ -1,0 +1,601 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:fdb-go:otel-paired-job:v1",
+  "title": "Versioned span-only Go control and Rust ingest jobs",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "mode",
+    "arm",
+    "binary_sha256",
+    "source_revision",
+    "source_manifest_sha256",
+    "timeout_seconds",
+    "output",
+    "corpus_config",
+    "expected_frames",
+    "row_budget",
+    "corpus_file"
+  ],
+  "properties": {
+    "schema": {
+      "const": "otel_paired_job_v1"
+    },
+    "mode": {
+      "enum": [
+        "corpus",
+        "setup",
+        "ingest",
+        "verify"
+      ]
+    },
+    "arm": {
+      "enum": [
+        "go_pure",
+        "go_native",
+        "rust_native"
+      ]
+    },
+    "client_backend": {
+      "enum": [
+        "pure_go",
+        "native_c"
+      ]
+    },
+    "client_library": {
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^/[^\\u0000]+$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "client_library_sha256": {
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cluster_file": {
+      "type": "string",
+      "pattern": "^/[^\\u0000]+$"
+    },
+    "cluster_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "layout_file": {
+      "type": "string",
+      "pattern": "^/[^\\u0000]+$"
+    },
+    "layout_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "corpus_file": {
+      "type": "string",
+      "pattern": "^/[^\\u0000]+$"
+    },
+    "corpus_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "binary_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "source_revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "source_manifest_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "expected_frames": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+    },
+    "row_budget": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10000000
+    },
+    "writer_batch_size": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 64
+    },
+    "writer_workers": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8
+    },
+    "record_compression": {
+      "enum": [
+        "none",
+        "zlib-1",
+        "zlib-default"
+      ]
+    },
+    "timeout_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3600
+    },
+    "output": {
+      "type": "string",
+      "pattern": "^/[^\\u0000]+$"
+    },
+    "workload": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "producers",
+            "producer_batch_spans"
+          ],
+          "properties": {
+            "kind": {
+              "const": "writer_direct"
+            },
+            "producers": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 32
+            },
+            "producer_batch_spans": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 64
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "producers",
+            "consumers",
+            "queue_capacity_spans",
+            "batch_min_spans",
+            "batch_max_spans",
+            "flush_ms",
+            "block_on_overflow",
+            "export_timeout_ms",
+            "retry_enabled",
+            "retry_initial_ms",
+            "retry_max_ms",
+            "retry_elapsed_ms",
+            "producer_batch_spans"
+          ],
+          "properties": {
+            "kind": {
+              "const": "collector_queue"
+            },
+            "producers": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 32
+            },
+            "consumers": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 32
+            },
+            "queue_capacity_spans": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000000
+            },
+            "batch_min_spans": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000000
+            },
+            "batch_max_spans": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000000
+            },
+            "flush_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3600000
+            },
+            "block_on_overflow": {
+              "type": "boolean"
+            },
+            "export_timeout_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3600000
+            },
+            "retry_enabled": {
+              "type": "boolean"
+            },
+            "retry_initial_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 3600000
+            },
+            "retry_max_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3600000
+            },
+            "retry_elapsed_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 3600000
+            },
+            "producer_batch_spans": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 64
+            }
+          }
+        }
+      ]
+    },
+    "enable_message_deltas": {
+      "const": false
+    },
+    "enable_message_full_text": {
+      "const": false
+    },
+    "run": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]{8,48}$"
+    },
+    "bulk_index_conflicts": {
+      "const": false
+    },
+    "corpus_config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generator",
+        "seed",
+        "count",
+        "tenants",
+        "attributes",
+        "match_every"
+      ],
+      "properties": {
+        "generator": {
+          "const": "otel_fixture_v2"
+        },
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 1000000
+        },
+        "tenants": {
+          "const": 1
+        },
+        "attributes": {
+          "const": 8
+        },
+        "match_every": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "query_oracle",
+        "query_results_file",
+        "k",
+        "max_candidates",
+        "max_bytes"
+      ],
+      "properties": {
+        "query_oracle": {
+          "enum": [
+            "none",
+            "source_1600_v1"
+          ]
+        },
+        "query_results_file": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^/[^\\u0000]+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "k": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "max_candidates": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000000
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000000
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "allOf": [
+          {
+            "properties": {
+              "arm": {
+                "const": "go_pure"
+              }
+            }
+          },
+          {
+            "properties": {
+              "mode": {
+                "enum": [
+                  "setup",
+                  "ingest",
+                  "verify"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "then": {
+        "properties": {
+          "client_backend": {
+            "const": "pure_go"
+          },
+          "client_library": {
+            "type": "null"
+          },
+          "client_library_sha256": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "if": {
+          "properties": {
+            "mode": {
+              "enum": [
+                "setup",
+                "ingest",
+                "verify"
+              ]
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "client_backend": {
+              "const": "native_c"
+            },
+            "client_library": {
+              "type": "string",
+              "pattern": "^/[^\\u0000]+$"
+            },
+            "client_library_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "arm": {
+            "const": "rust_native"
+          },
+          "mode": {
+            "const": "ingest"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "writer_workers": {
+            "const": 1
+          }
+        }
+      }
+    }
+  ],
+  "$comment": "Control modes execute the Go control binary even for arm=rust_native; ingest selects measured arm. Cross-field bounds and output exclusivity are additionally checked by runner and binaries. Verify with oracle none is local-only and never a paid gate.",
+  "oneOf": [
+    {
+      "properties": {
+        "mode": {
+          "const": "corpus"
+        }
+      },
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "run"
+            ]
+          },
+          {
+            "required": [
+              "cluster_file"
+            ]
+          },
+          {
+            "required": [
+              "cluster_sha256"
+            ]
+          },
+          {
+            "required": [
+              "client_backend"
+            ]
+          },
+          {
+            "required": [
+              "client_library"
+            ]
+          },
+          {
+            "required": [
+              "client_library_sha256"
+            ]
+          },
+          {
+            "required": [
+              "record_compression"
+            ]
+          },
+          {
+            "required": [
+              "writer_batch_size"
+            ]
+          },
+          {
+            "required": [
+              "writer_workers"
+            ]
+          },
+          {
+            "required": [
+              "enable_message_deltas"
+            ]
+          },
+          {
+            "required": [
+              "enable_message_full_text"
+            ]
+          },
+          {
+            "required": [
+              "bulk_index_conflicts"
+            ]
+          },
+          {
+            "required": [
+              "workload"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "properties": {
+        "mode": {
+          "const": "setup"
+        }
+      },
+      "required": [
+        "run",
+        "cluster_file",
+        "cluster_sha256",
+        "client_backend",
+        "client_library",
+        "client_library_sha256",
+        "record_compression",
+        "writer_batch_size",
+        "writer_workers",
+        "enable_message_deltas",
+        "enable_message_full_text",
+        "bulk_index_conflicts",
+        "workload",
+        "layout_file",
+        "corpus_sha256"
+      ],
+      "not": {
+        "required": [
+          "layout_sha256"
+        ]
+      }
+    },
+    {
+      "properties": {
+        "mode": {
+          "const": "ingest"
+        }
+      },
+      "required": [
+        "run",
+        "cluster_file",
+        "cluster_sha256",
+        "client_backend",
+        "client_library",
+        "client_library_sha256",
+        "record_compression",
+        "writer_batch_size",
+        "writer_workers",
+        "enable_message_deltas",
+        "enable_message_full_text",
+        "bulk_index_conflicts",
+        "workload",
+        "layout_file",
+        "layout_sha256",
+        "corpus_sha256"
+      ],
+      "not": {
+        "required": [
+          "verification"
+        ]
+      }
+    },
+    {
+      "properties": {
+        "mode": {
+          "const": "verify"
+        }
+      },
+      "required": [
+        "run",
+        "cluster_file",
+        "cluster_sha256",
+        "client_backend",
+        "client_library",
+        "client_library_sha256",
+        "record_compression",
+        "writer_batch_size",
+        "writer_workers",
+        "enable_message_deltas",
+        "enable_message_full_text",
+        "bulk_index_conflicts",
+        "workload",
+        "layout_file",
+        "layout_sha256",
+        "corpus_sha256",
+        "verification"
+      ]
+    }
+  ]
+}
