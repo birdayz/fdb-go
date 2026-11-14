@@ -17,10 +17,13 @@ type readVersionState struct {
 	readVersion        int64
 	hasReadVersion     bool
 	userSetReadVersion bool
-	setterRejection    *wire.FDBError
-	pendingReadVersion *pendingReadVersion
-	inlinePending      pendingReadVersion
-	inlinePendingUsed  bool
+	// Public/retained-native admission survives caller cancellation and retries;
+	// only replacing this incarnation's state clears the future's existence.
+	readVersionAdmitted bool
+	setterRejection     *wire.FDBError
+	pendingReadVersion  *pendingReadVersion
+	inlinePending       pendingReadVersion
+	inlinePendingUsed   bool
 	// Total latency spans OnError retries; the MVCC instant belongs to one GRV.
 	metricStart        time.Time
 	readVersionInstant time.Time
@@ -129,6 +132,7 @@ func (state *readVersionState) cachedOrFetchReadVersion(ctx context.Context, req
 			pending = &pendingReadVersion{}
 		}
 		state.pendingReadVersion = pending
+		state.readVersionAdmitted = true
 		state.readVersionMu.Unlock()
 		var fetch readVersionRequest
 		if request != nil {

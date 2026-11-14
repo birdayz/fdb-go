@@ -2853,9 +2853,9 @@ func (tx *Transaction) stateSetReadVersion(version int64) {
 	if tx.deferredErr.Load() != nil {
 		return
 	}
-	// NativeAPI::setVersion rejects an existing (including pending) GRV
+	// NativeAPI::setVersion rejects any admitted GRV future, even after failure,
 	// before validating the supplied version. The void C API defers that error.
-	if tx.hasReadVersion || tx.pendingReadVersion != nil {
+	if tx.hasReadVersion || tx.readVersionAdmitted || tx.pendingReadVersion != nil {
 		if tx.beforeReadVersionReject != nil {
 			tx.beforeReadVersionReject()
 		}
