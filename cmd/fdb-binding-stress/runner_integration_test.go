@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -17,6 +19,7 @@ import (
 // Exercise the shipped executable and setup, not a fabricated runner report.
 // Only nested Bazel discovery is substituted: every build input is a declared runfile.
 func TestRunnerAssemblesPinnedHarnessAndPersistsRealResults(t *testing.T) {
+	requireRunnerDockerAvailable(t)
 	runfiles := os.Getenv("TEST_SRCDIR")
 	workspace := os.Getenv("TEST_WORKSPACE")
 	binary := filepath.Join(runfiles, workspace, "cmd/fdb-binding-stress/fdb-binding-stress_/fdb-binding-stress")

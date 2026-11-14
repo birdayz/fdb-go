@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -5,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"flag"
 	"io/fs"
 	"os"
@@ -336,6 +339,10 @@ func TestHarnessLifecycleChild(t *testing.T) {
 			t.Fatalf("runner did not own live harness: %v", err)
 		}
 		if mode == "cli" {
+			if os.Getenv("FDB_STRESS_CLEANUP_FAILURE") == "1" {
+				d, _ := successfulCleanupDeps(t, harness, errors.New("injected container removal failure"), nil)
+				return realRunSeedWithDeps(context.Background(), seed, w, harness, dir, d)
+			}
 			if err := os.WriteFile(os.Getenv("FDB_STRESS_CLI_SEED_MARKER"), []byte("seed invoked\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}

@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -12,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	foundationdb "fdb.dev/pkg/testcontainers/foundationdb"
 )
 
 func TestTesterTimeoutKillsChildrenHoldingOutputPipes(t *testing.T) {
@@ -100,7 +104,14 @@ print('Test had 0 incorrect result(s) and 0 error(s)', flush=True)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	r := realRunSeed(ctx, 146, workload{"api", 20, 1, false, 730}, harness, seedDir)
+	d := defaultRunnerDeps(realRunSeed)
+	startFDB := d.startFDB
+	d.startFDB = func(ctx context.Context, image string) (*foundationdb.Container, error) {
+		container, err := startFDB(ctx, image)
+		requireRunnerDocker(t, err)
+		return container, err
+	}
+	r := realRunSeedWithDeps(ctx, 146, workload{"api", 20, 1, false, 730}, harness, seedDir, d)
 	if !r.Pass || !r.FDBAlive || r.Error != "" || ctx.Err() != nil {
 		t.Fatalf("successful tester=%+v context=%v", r, ctx.Err())
 	}

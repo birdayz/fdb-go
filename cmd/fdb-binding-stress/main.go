@@ -1,3 +1,5 @@
+//go:build linux
+
 // fdb-binding-stress runs the FDB binding tester across many seeds and reports results.
 //
 // Each seed gets a fresh FDB Docker container (via testcontainers). All output — FDB

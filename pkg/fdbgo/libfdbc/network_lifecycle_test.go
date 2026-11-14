@@ -22,6 +22,9 @@ func TestCNetworkUsesSharedOpenOwnership(t *testing.T) {
 	defer cancel()
 	container, err := foundationdbtc.Run(ctx, "", foundationdbtc.WithDirectIP())
 	if err != nil {
+		if os.Getenv("FDB_REQUIRE_DOCKER") == "" && foundationdbtc.SkipWithoutDocker(err) {
+			t.Skipf("FDB not available (no Docker): %v", err)
+		}
 		t.Fatalf("start FoundationDB: %v", err)
 	}
 	t.Cleanup(func() {
