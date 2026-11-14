@@ -158,10 +158,10 @@ class ProvisionAdapterTests(NativeFixture):
         self.backend._copy = mock.Mock(side_effect=copy_request)
         self.backend.command = mock.Mock(side_effect=installed)
         result = self.backend.transfer_assets(self.plan, self.backend.nodes)
-        self.assertEqual(self.backend.command.call_count, 6)
-        self.assertEqual(self.backend._copy.call_count, 6)
+        self.assertEqual(self.backend.command.call_count, 8)
+        self.assertEqual(self.backend._copy.call_count, 8)
         self.assertTrue(any(len(json.dumps(request).encode()) > 128 * 1024 for request, _ in requests.values()))
-        self.assertTrue(all(len(value["deployments"]) == 3 for value in result.values()))
+        self.assertTrue(all(len(value["deployments"]) == 4 for value in result.values()))
         q.validate_transfers(self.plan, self.backend.nodes, result)
         self.assertEqual(set(result), set(self.backend.nodes))
         self.assertTrue(all(set(x["assets"]) == set(self.plan["assets"]) for x in result.values()))
@@ -169,11 +169,11 @@ class ProvisionAdapterTests(NativeFixture):
         original = missing.read_bytes(); missing.unlink()
         with self.assertRaises(FileNotFoundError):
             self.backend.transfer_assets(self.plan, self.backend.nodes)
-        self.assertEqual(self.backend._copy.call_count, 6)
+        self.assertEqual(self.backend._copy.call_count, 8)
         missing.write_bytes(original)
         with self.assertRaises(FileExistsError):
             self.backend.transfer_assets(self.plan, self.backend.nodes)
-        self.assertEqual(self.backend._copy.call_count, 6)
+        self.assertEqual(self.backend._copy.call_count, 8)
 
 
 class PricingTests(NativeFixture):
@@ -242,7 +242,7 @@ class JobHookTests(NativeFixture):
         for arm in q.ARMS:
             _, job = self.job(arm)
             control = self.backend._control_job(job, "verify")
-            for key, value in q.control_identity(self.plan).items():
+            for key, value in q.verifier_identity(self.plan).items():
                 self.assertEqual(control[key], value)
             self.assertEqual(control["arm"], arm)
             self.assertEqual(control["run"], job["run"])
@@ -287,9 +287,9 @@ class JobHookTests(NativeFixture):
         self.assertNotIn("layout_sha256", seen["job"])
         self.assertEqual(result["sha256"], "c" * 64)
 
-    def test_verify_uses_go_pure_control_provenance_and_complete_raw_oracle(self):
+    def test_verify_uses_dedicated_pure_verifier_provenance_and_complete_raw_oracle(self):
         ns, job = self.job()
-        wrapped = reports.fake_verify(job, control_identity=q.control_identity(self.plan))
+        wrapped = reports.fake_verify(job, control_identity=q.verifier_identity(self.plan))
         staged = self.staged()
         self.backend.completed = [staged]
         with mock.patch.object(self.backend, "_stage", return_value=staged) as stage, \
@@ -297,7 +297,7 @@ class JobHookTests(NativeFixture):
                 mock.patch.object(self.backend, "_remote", return_value={"artifacts": {"queries.ndjson": reports.oracle_bytes(wrapped["queries"]).decode()}}):
             result = self.backend.verify(self.plan, ns, job)
         self.assertEqual(stage.call_args.args[2]["mode"], "verify")
-        self.assertTrue(stage.call_args.args[3][0].endswith("control_pure_binary"))
+        self.assertTrue(stage.call_args.args[3][0].endswith("verifier_binary"))
         self.assertTrue(q.verify_audit(result, job, ns, plan=self.plan))
         self.assertEqual(result["ingest_job_sha256"], q.job_seal(job))
         self.assertEqual(len(result["queries"]), 1600)
@@ -530,7 +530,7 @@ class RemoteBoundaryTests(NativeFixture):
         if mode != "ingest":
             job = self.backend._control_job(reports.verification_job(job), mode)
         root = "/srv/otel-paired/" + ns
-        argv = [self.backend.remote_assets(self.plan)[q.ARM_EXECUTABLES[arm] if mode == "ingest" else "control_pure_binary"],
+        argv = [self.backend.remote_assets(self.plan)[q.executable_for_mode(arm, mode)],
                 root + ("/job.json" if mode == "ingest" else "/" + mode + "-job.json")]
         job["output"] = root + "/" + mode + ".json"
         inputs = {argv[0]: job["binary_sha256"]}
@@ -540,7 +540,7 @@ class RemoteBoundaryTests(NativeFixture):
         for key in ("cluster", "corpus", "layout"):
             inputs[job[key + "_file"]] = job[key + "_sha256"]
         seal = q.job_seal(job)
-        binary = q.ARM_EXECUTABLES[arm] if mode == "ingest" else "control_pure_binary"
+        binary = q.executable_for_mode(arm, mode)
         deployment = q.deployment(self.plan, binary, "/srv/otel-horizontal/" + self.plan["campaign"] + "/bin")
         return root + "/" + mode + "-grant.json", {"schema": "otel_paired_grant_v1", "node_id": 2, "namespace": ns,
             "job": job, "job_sha256": seal, "argv": argv, "inputs": inputs, "deployment": deployment,
@@ -569,8 +569,8 @@ class RemoteBoundaryTests(NativeFixture):
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 self.load(path, grant)
 
-    def test_native_executables_cannot_verify_even_with_resealed_job(self):
-        for arm in ("go_native", "rust_native"):
+    def test_all_ingest_executables_cannot_verify_even_with_resealed_job(self):
+        for arm in q.ARMS:
             path, grant = self.grant(arm, "verify")
             binary = q.ARM_EXECUTABLES[arm]
             grant["argv"][0] = self.backend.remote_assets(self.plan)[binary]
@@ -585,16 +585,16 @@ class RemoteBoundaryTests(NativeFixture):
         for arm in q.ARMS:
             path, grant = self.grant(arm)
             self.assertEqual(self.load(path, grant), grant)
-            for wrong in q.ARMS:
-                if wrong == arm:
+            for binary in q.builds.EXECUTABLES:
+                if binary == q.ARM_EXECUTABLES[arm]:
                     continue
-                bad = copy.deepcopy(grant); binary = q.ARM_EXECUTABLES[wrong]
+                bad = copy.deepcopy(grant)
                 bad["argv"][0] = self.backend.remote_assets(self.plan)[binary]
                 bad["job"]["binary_sha256"] = self.plan["assets"][binary]["sha256"]
                 bad["inputs"][bad["argv"][0]] = bad["job"]["binary_sha256"]
                 bad["job_sha256"] = q.job_seal(bad["job"])
                 bad["scope"] = "otel-paired-" + bad["job_sha256"][:24] + ".scope"
-                with self.subTest(arm=arm, wrong=wrong), self.assertRaisesRegex(ValueError, "exact arm executable"):
+                with self.subTest(arm=arm, wrong=binary), self.assertRaisesRegex(ValueError, "exact arm executable"):
                     self.load(path, bad)
 
     def test_remote_all_input_sha_checks_precede_ready(self):

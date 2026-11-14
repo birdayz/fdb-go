@@ -66,7 +66,7 @@ def main(argv=None):
         assets = {name: {**binary, "build_receipt": sealed(candidate)}, builds.deployment_asset(name): deployment}
         if args.client_library:
             assets["libfdb_c"] = sealed(args.client_library)
-        arm = dict(zip(builds.EXECUTABLES, ("go_pure", "go_native", "rust_native")))[name]
+        arm = builds.EXECUTABLE_SOURCES[name]
         plan = {"assets": assets, "sources": {arm: source}, "fake_provider": False}
         builds.validate(plan, name)
         fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)

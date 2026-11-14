@@ -1,0 +1,50 @@
+{
+  "schema": "otel_paired_build_receipt_v1",
+  "executable_asset": "verifier_binary",
+  "binary_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+  "source_revision": "1111111111111111111111111111111111111111",
+  "source_manifest_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+  "build_command": [
+    "bazelisk",
+    "--nohome_rc",
+    "build",
+    "--announce_rc",
+    "--compilation_mode=opt",
+    "//layers/otel/cmd/otelrust-control:verifier"
+  ],
+  "compilation_mode": "opt",
+  "configured_output_path": "bazel-out/k8-opt/bin/layers/otel/cmd/otelrust-control/verifier",
+  "developer_home": "/home/bench",
+  "rc_set": [
+    {
+      "path": "/work/fdb-go/.bazelrc",
+      "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  ],
+  "build_exit_code": 0,
+  "readelf_command": [
+    "readelf",
+    "-d",
+    "/work/measured/verifier_binary"
+  ],
+  "readelf_output": "There is no dynamic section in this file.\n",
+  "readelf_exit_code": 0,
+  "deployment_asset": "verifier_binary_deployment",
+  "deployment_sha256": "8888888888888888888888888888888888888888888888888888888888888888",
+  "executable_relative_path": "layers/otel/cmd/otelrust-control/verifier",
+  "client_library_relative_path": null,
+  "files": [
+    {
+      "path": "layers/otel/cmd/otelrust-control/verifier",
+      "sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+      "bytes": 4096,
+      "mode": 493
+    },
+    {
+      "path": "layers/otel/cmd/otelrust-control/verifier.runfiles/_repo_mapping",
+      "sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+      "bytes": 32,
+      "mode": 420
+    }
+  ]
+}

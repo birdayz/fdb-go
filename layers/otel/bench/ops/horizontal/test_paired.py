@@ -155,16 +155,17 @@ class PlanTests(Fixture):
         with self.assertRaisesRegex(ValueError, "source file"):
             q.verify_sources(self.plan)
 
-    def test_three_executable_seals_and_pure_verifier_exist_without_pure_ingest(self):
-        for name in q.ARM_EXECUTABLES.values():
+    def test_four_executable_seals_and_dedicated_verifier_exist_without_pure_ingest(self):
+        for name in q.builds.EXECUTABLES:
             self.assertIn(name, self.plan["assets"])
-        self.assertEqual(len({self.plan["assets"][name]["sha256"] for name in q.ARM_EXECUTABLES.values()}), 3)
+        self.assertEqual(len({self.plan["assets"][name]["sha256"] for name in q.builds.EXECUTABLES}), 4)
         subset = q.fake_plan(self.root / "without-pure-ingest", arms=("go_native", "rust_native"))
         q.validate_plan(subset)
         self.assertIn("go_pure", subset["sources"])
         self.assertIn("control_pure_binary", subset["assets"])
         self.assertEqual(q.control_identity(subset)["binary_sha256"], subset["assets"]["control_pure_binary"]["sha256"])
-        for field, key in (("assets", "control_pure_binary"), ("sources", "go_pure")):
+        self.assertEqual(q.verifier_identity(subset)["binary_sha256"], subset["assets"]["verifier_binary"]["sha256"])
+        for field, key in (("assets", "control_pure_binary"), ("assets", "verifier_binary"), ("sources", "go_pure")):
             bad = copy.deepcopy(subset); del bad[field][key]
             with self.assertRaises(ValueError):
                 q.validate_plan(bad)
@@ -200,7 +201,7 @@ class PlanTests(Fixture):
             if arm != "go_pure":
                 ingest["native_mapping_rule"] = "btrfs_superblock"
             for name, data in (("ingest_job", job), ("ingest_report", ingest),
-                               ("verification", r.fake_verify(job, control_identity=q.control_identity(value)))):
+                               ("verification", r.fake_verify(job, control_identity=q.verifier_identity(value)))):
                 path = self.root / (arm + "-" + name + ".json"); d.write(path, data)
                 files[name] = {"path": str(path), "sha256": q.p.sha(path)}
             proofs[arm] = files
@@ -422,16 +423,17 @@ class ProducerTests(Fixture):
         path = self.root / "job.json"; d.write(path, self.job())
         self.assertEqual(q.job_seal(self.job()), q.p.sha(path))
 
-    def test_wrong_binary_per_arm_is_rejected_and_every_control_mode_uses_pure(self):
+    def test_wrong_binary_per_arm_is_rejected_and_only_verify_uses_dedicated_verifier(self):
         for arm in self.plan["arms"]:
             job = self.job(arm)
-            for other in self.plan["arms"]:
-                if other != arm:
-                    bad = copy.deepcopy(job); bad["binary_sha256"] = self.plan["assets"][q.ARM_EXECUTABLES[other]]["sha256"]
+            for other in q.builds.EXECUTABLES:
+                if other != q.ARM_EXECUTABLES[arm]:
+                    bad = copy.deepcopy(job); bad["binary_sha256"] = self.plan["assets"][other]["sha256"]
                     with self.subTest(arm=arm, wrong=other), self.assertRaisesRegex(ValueError, "wrong executable"):
                         q.invocation(self.plan, bad, "/srv/job.json", self.assets)
             for mode in ("corpus", "setup", "verify"):
-                control = copy.deepcopy(job); control.update(q.control_identity(self.plan), mode=mode)
+                control = copy.deepcopy(job)
+                control.update(q.verifier_identity(self.plan) if mode == "verify" else q.control_identity(self.plan), mode=mode)
                 if mode == "corpus":
                     fields = {"schema", "mode", "arm", "binary_sha256", "source_revision", "source_manifest_sha256",
                               "timeout_seconds", "output", "corpus_config", "expected_frames", "row_budget", "corpus_file"}
@@ -440,10 +442,12 @@ class ProducerTests(Fixture):
                     del control["layout_sha256"]
                 else:
                     control = r.verification_job(control)
-                self.assertEqual(q.invocation(self.plan, control, "/srv/control-job.json", self.assets)[0], self.assets["control_pure_binary"])
-                control["binary_sha256"] = self.plan["assets"]["control_native_binary"]["sha256"]
-                with self.assertRaisesRegex(ValueError, "wrong executable"):
-                    q.invocation(self.plan, control, "/srv/control-job.json", self.assets)
+                executable = "verifier_binary" if mode == "verify" else "control_pure_binary"
+                self.assertEqual(q.invocation(self.plan, control, "/srv/control-job.json", self.assets)[0], self.assets[executable])
+                for wrong in set(q.builds.EXECUTABLES) - {executable}:
+                    control["binary_sha256"] = self.plan["assets"][wrong]["sha256"]
+                    with self.subTest(arm=arm, mode=mode, wrong=wrong), self.assertRaisesRegex(ValueError, "wrong executable"):
+                        q.invocation(self.plan, control, "/srv/control-job.json", self.assets)
 
     def test_mapping_evidence_distinguishes_local_preflight_from_paid_hosts(self):
         for arm in self.plan["arms"]:
@@ -460,7 +464,7 @@ class ProducerTests(Fixture):
                 self.assertTrue(q.envelope(job, raw)["accepted"])
                 self.assertEqual(q.envelope(job, raw)["raw_report"]["native_mapping_rule"], "btrfs_superblock")
                 self.assertFalse(q.envelope(job, raw, paid_host=True)["accepted"])
-                proof = r.fake_verify(job, control_identity=q.control_identity(self.plan))
+                proof = r.fake_verify(job, control_identity=q.verifier_identity(self.plan))
                 joined = q.joined_envelope(job, raw, proof, "fixture", self.plan)
                 self.assertFalse(joined["paid_host"])
                 joined["paid_host"] = True
@@ -473,7 +477,7 @@ class ProducerTests(Fixture):
                 for bad in (None, "exact_stat", "btrfs_superblock"):
                     wrong = copy.deepcopy(raw); wrong["native_mapping_rule"] = bad
                     self.assertFalse(q.envelope(job, wrong)["accepted"])
-            proof = r.fake_verify(job, control_identity=q.control_identity(self.plan))
+            proof = r.fake_verify(job, control_identity=q.verifier_identity(self.plan))
             self.assertIs(proof["report"]["native_library_mapped"], False)
             proof["report"]["native_library_mapped"] = True
             with self.assertRaises(ValueError):
@@ -548,7 +552,7 @@ class ProducerTests(Fixture):
             self.assertEqual(value["accepted"], arm != "rust_native")
             if arm != "rust_native":
                 self.assertEqual(value["acked_span_operations"], missing)
-                proof = r.fake_verify(job, control_identity=q.control_identity(self.plan))
+                proof = r.fake_verify(job, control_identity=q.verifier_identity(self.plan))
                 joined = q.joined_envelope(job, raw, proof, "fixture", self.plan)
                 self.assertIs(type(joined["distinct_spans"]), int)
                 self.assertEqual(joined["distinct_spans"], job["expected_frames"])
@@ -606,7 +610,7 @@ class ProducerTests(Fixture):
             raw["ingest_resources"] = {"scope": "first_read_through_flush", "user_cpu_seconds": 1.5,
                                        "system_cpu_seconds": 0.5, "cpu_seconds": 2.0,
                                        "peak_rss_bytes": 4096, "measurement_source": "fake phase snapshot"}
-            value = q.joined_envelope(job, raw, r.fake_verify(job, control_identity=q.control_identity(self.plan)), ns, self.plan)
+            value = q.joined_envelope(job, raw, r.fake_verify(job, control_identity=q.verifier_identity(self.plan)), ns, self.plan)
             self.assertEqual(value["spans_per_second"], 100000)
             self.assertEqual(value["cpu_ms_per_distinct_span"], {"availability": "available", "value": 0.02})
             self.assertEqual(value["acked_span_operations"]["value"], 200000)
@@ -635,7 +639,7 @@ class ProducerTests(Fixture):
     def test_unknown_go_operations_remain_unknown_but_matching_cpu_is_required(self):
         job = self.job("go_native"); raw = r.fake_ingest(job)
         raw["process_resources"] = {"scope": "argv_to_exit", "cpu_seconds": 100}
-        proof = r.fake_verify(job, control_identity=q.control_identity(self.plan))
+        proof = r.fake_verify(job, control_identity=q.verifier_identity(self.plan))
         joined = q.joined_envelope(job, raw, proof, "fixture", self.plan)
         self.assertEqual(joined["distinct_spans"], 100000)
         self.assertEqual(joined["acked_span_operations"]["availability"], "unavailable")

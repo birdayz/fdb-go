@@ -1706,10 +1706,10 @@ def stop_owned_arm(plan, out, nodes, layout, *, scopes=(), runner=None, clock=ti
                 root = REMOTE_BASE+'/'+plan['campaign']
                 binaries = [root+'/bin/fdbserver', root+'/bin/otel-demo']
                 if plan['schema'] == 'otel_native_paired_v1':
-                    binaries += [root+'/bin/'+name for name in ('control_pure_binary', 'control_native_binary', 'rust_binary') if name in plan['assets']]
+                    binaries += [root+'/bin/'+name for name in ('control_pure_binary', 'control_native_binary', 'rust_binary', 'verifier_binary') if name in plan['assets']]
                 request = dict(units=specs[role], historical=list(historical[role]), binaries=binaries)
                 if plan['schema'] == 'otel_native_paired_v1':
-                    request['binary_roots'] = [root+'/bin/'+name+'.bundle/' for name in ('control_pure_binary', 'control_native_binary', 'rust_binary') if name in plan['assets']]
+                    request['binary_roots'] = [root+'/bin/'+name+'.bundle/' for name in ('control_pure_binary', 'control_native_binary', 'rust_binary', 'verifier_binary') if name in plan['assets']]
                 timed_out = False
                 try:
                     rc, stdout, stderr = run_on_node(plan, out, nodes[role],

@@ -128,7 +128,8 @@ def load_grant(path, *, active=True, check_inputs=True):
     inputs = g["inputs"]
     require(type(inputs) is dict and inputs and inputs.get(g["argv"][0]) == job.get("binary_sha256"), "sealed executable required")
     base = "/srv/otel-horizontal/" + g["namespace"].split("/")[0] + "/bin/"
-    executable = {"go_pure": "control_pure_binary", "go_native": "control_native_binary", "rust_native": "rust_binary"}[job["arm"]] if mode == "ingest" else "control_pure_binary"
+    executable = ({"go_pure": "control_pure_binary", "go_native": "control_native_binary", "rust_native": "rust_binary"}[job["arm"]]
+                  if mode == "ingest" else "verifier_binary" if mode == "verify" else "control_pure_binary")
     deployment = g["deployment"]
     require(type(deployment) is dict and set(deployment) == {"asset", "root", "executable_relative_path", "client_library_relative_path"}
             and deployment["asset"] == executable and deployment["root"] == base + executable + ".bundle", "exact arm executable or pure Go control required")
@@ -639,7 +640,7 @@ class NativeBackend:
 
     def _control_job(self, job, mode):
         value = copy.deepcopy(job)
-        value.update(self.q.control_identity(self.plan))
+        value.update(self.q.verifier_identity(self.plan) if mode == "verify" else self.q.control_identity(self.plan))
         value["mode"] = mode
         return value
 
@@ -651,7 +652,7 @@ class NativeBackend:
             self.command(node, ["mkdir", "-m", "0700", root])
         mode = job["mode"]
         path = root + "/" + mode + "-grant.json"
-        binary = self.q.ARM_EXECUTABLES[job["arm"]] if mode == "ingest" else "control_pure_binary"
+        binary = self.q.executable_for_mode(job["arm"], mode)
         deployment = self.q.deployment(self.plan, binary, "/srv/otel-horizontal/" + self.plan["campaign"] + "/bin")
         inputs = {remote: self.plan["assets"][name]["sha256"] for name, remote in self.remote_assets(self.plan).items()}
         for key in ("cluster", "corpus") + (("layout",) if mode != "setup" else ()):
@@ -840,7 +841,7 @@ class NativeBackend:
         verify = self._control_job(verification_job(job), "verify")
         node = next((x["node"] for x in self.completed if x["namespace"] == namespace and x["job"] == job), None)
         require(node is not None, "verification has no completed ingest job")
-        argv = [self.remote_assets(plan)["control_pure_binary"], str(Path(job["output"]).with_name("verify-job.json"))]
+        argv = [self.remote_assets(plan)["verifier_binary"], str(Path(job["output"]).with_name("verify-job.json"))]
         staged = self._stage(node, namespace, verify, argv)
         report = self._execute({1: staged})[1]
         path = verify["verification"]["query_results_file"]

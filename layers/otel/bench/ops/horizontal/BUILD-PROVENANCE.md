@@ -2,8 +2,8 @@
 
 This is an artifact-creation recipe, **not permission to run an ingest job**.
 Stage 0 and paid evidence require these receipts; correctness-test executables
-built with the developer home rc are not measured artifacts. ALL THREE arms use
-**each toolchain's default optimized build under Bazel `-c opt`** (`--compilation_mode=opt`):
+built with the developer home rc are not measured artifacts. ALL THREE ingest arms
+and the separate pure-Go verifier use **each toolchain's default optimized build under Bazel `-c opt`** (`--compilation_mode=opt`):
 no LTO, PGO, target-cpu or codegen-units overrides on either side. A common
 `fastbuild` label does not imply common optimization across Go and Rust.
 Fastbuild/dbg or missing-mode receipts are refused, not normalized to opt. The ordinary
@@ -13,10 +13,12 @@ No command below runs an ingest executable or issues campaign rows.
 ## Versioned formats and literal examples
 
 - Receipt schema: [`paired-build-receipt-v1.schema.json`](paired-build-receipt-v1.schema.json).
+  Four-role candidate SHA256: `772e664896c4b81ca3dc2c3770452c887253c6337a282ab324b80425a4af6f80`.
 - Bundle manifest: receipt `files`, using that schema's `$defs.deployment_file`.
 - Literal control-pure example: [`build-receipt-examples/control_pure_binary.json`](build-receipt-examples/control_pure_binary.json).
 - Literal control-native example: [`build-receipt-examples/control_native_binary.json`](build-receipt-examples/control_native_binary.json).
 - Literal Rust example: [`build-receipt-examples/rust_binary.json`](build-receipt-examples/rust_binary.json).
+- Literal verifier example: [`build-receipt-examples/verifier_binary.json`](build-receipt-examples/verifier_binary.json).
 
 Examples demonstrate exact field placement/types, **not real build attestations**.
 Their repeated digests, byte counts and illustrative runfile paths must NOT be
@@ -30,6 +32,19 @@ Each also requires a normal `{path,sha256}` deployment asset:
 | `control_pure_binary` | `//layers/otel/cmd/otelrust-control:control-pure` | `control_pure_binary_deployment` | `sources.go_pure` |
 | `control_native_binary` | `//layers/otel/cmd/otelrust-control:control-native` | `control_native_binary_deployment` | `sources.go_native` |
 | `rust_binary` | `//layers/otel/rust:otel-rust` | `rust_binary_deployment` | `sources.rust_native` |
+| `verifier_binary` | `//layers/otel/cmd/otelrust-control:verifier` | `verifier_binary_deployment` | `sources.go_pure` |
+
+Root1234 decision B makes `verifier_binary` a fourth separately sealed pure-Go,
+verify-only executable with the full source-derived oracle. It uses the same
+integrated PR1048 source revision/manifest as `sources.go_pure`, but has its own
+binary hash, build receipt and deployment archive. Control-pure retains corpus,
+setup and pure ingest; control-native and Rust retain only their own ingest.
+None of the three ingest binaries links the oracle merely because the verifier
+exists. Keep verifier dependencies out of their build graphs; receipt creation
+alone does not implement or authorize mode dispatch. The producer must enforce
+the verifier's verify-only capability and prove the complete oracle population.
+All four artifacts obey the opt/home-rc/readelf/bundle rules below, and the
+verifier's `client_library_relative_path` is null with no native DT_NEEDED linkage.
 
 Job/report field names and the frozen shared-job schema are unchanged.
 `build_receipt` binds source revision/manifest, executable SHA256, exact successful
@@ -151,7 +166,7 @@ for indirect settings. Rebuild all three arms under the same policy and never
 join superseded fastbuild results with replacement opt results.
 
 Every RUNPATH/RPATH line must contain NO `/home` path. Native Go must have
-DT_NEEDED `libfdb_c.so`; pure and Rust must not prelink it. Do not edit ELF rpaths
+DT_NEEDED `libfdb_c.so`; control-pure, Rust and the verifier must not prelink it. Do not edit ELF rpaths
 or weaken runtime mapping validation to make a failed build acceptable; rebuild
 with the required startup configuration and a new exclusive receipt instead.
 
@@ -197,7 +212,7 @@ be exactly `libfdb_c.so`; a directory containing `:` is refused. The launcher
 never creates an alias or substitutes another same-bytes file. Runtime
 same-file/device/inode/hash proof remains authoritative before native API/network
 or timing. `$ORIGIN` runfiles entries still resolve in the preserved tree.
-Control-pure and Rust have NO LD_LIBRARY_PATH in their explicit minimal
+Control-pure, Rust and the verifier have NO LD_LIBRARY_PATH in their explicit minimal
 environments, nor inherited FDB_NETWORK_OPTION_* variables. Rust opens its
 sealed `client_library` explicitly; its separately transferred pinned artifact
 is installed under the canonical name `libfdb_c.so`.

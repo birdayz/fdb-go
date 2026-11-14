@@ -8,6 +8,7 @@ _HORIZONTAL_TEST_DATA = [
     "paired_builds.py",
     "paired_build_receipt.py",
     "paired_cost.py",
+    "paired_pricing.py",
     "paired_native.py",
     "paired_reports.py",
     "paired_rows.py",
@@ -16,9 +17,11 @@ _HORIZONTAL_TEST_DATA = [
     "build-receipt-examples/control_pure_binary.json",
     "build-receipt-examples/control_native_binary.json",
     "build-receipt-examples/rust_binary.json",
+    "build-receipt-examples/verifier_binary.json",
     "test_paired.py",
     "test_paired_builds.py",
     "test_paired_cost.py",
+    "test_paired_pricing.py",
     "test_paired_native.py",
     "test_paired_rows.py",
     "test_paired_supervisor.py",
@@ -66,6 +69,13 @@ sh_test(
     name = "native_paired_cost_test",
     srcs = ["test.sh"],
     args = ["test_paired_cost"],
+    data = _HORIZONTAL_TEST_DATA,
+)
+
+sh_test(
+    name = "native_paired_pricing_test",
+    srcs = ["test.sh"],
+    args = ["test_paired_pricing"],
     data = _HORIZONTAL_TEST_DATA,
 )
 

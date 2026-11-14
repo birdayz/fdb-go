@@ -604,6 +604,13 @@ operator authorization; this correction does not authorize a benchmark restart.
 ## Versioned Go/Rust paired campaign (offline contract)
 
 `paired.py` introduces **otel_native_paired_v1**, not another scaling-v1 sweep.
+`paired_pricing.py` provides an offline strict normalizer for retained read-only
+EUR/ccx43/HEL1 and IPv4/HEL1 pricing responses. It verifies 19-percent VAT and
+exact net/gross money strings, seals the raw response hash, and compares fresh
+captures without allowing changed bounds. This is not traffic enforcement or
+operational pricing-refresh admission: live recapture and durable same-lease
+ledger synchronization are still owed before a two-hour paid campaign.
+
 The sealed arm subset contains two or three of `go_pure`, `go_native`,
 `rust_native`. Every stage has an explicit arm order. `pilot` holds exactly
 node1/client1 for one hour, with active cutoff +2700s and cleanup +3000s;
@@ -640,16 +647,22 @@ ceiling overflow fails closed. Outcome does not reduce issued population.
 
 `paired-job-v1.schema.json` defines the one-JSON-argument producer contract. Go
 and Rust have separate typed builders; Rust never receives otelbench flags.
-Source/binary seals remain per arm. Three executable assets have distinct paths
-and hashes: `assets.control_pure_binary` for `go_pure` ingest AND every corpus,
-setup and verify invocation; `assets.control_native_binary` for `go_native` ingest
-only; `assets.rust_binary` for `rust_native` ingest only. Each asset carries its
+Source/binary seals remain per arm. Four executable assets have distinct paths
+and hashes: `assets.control_pure_binary` for `go_pure` ingest AND corpus/setup;
+`assets.control_native_binary` for `go_native` ingest only; `assets.rust_binary`
+for `rust_native` ingest only; `assets.verifier_binary` for every arm's verify
+invocation only (`//layers/otel/cmd/otelrust-control:verifier`). The pure-Go verifier
+refuses corpus/setup/ingest and owns full read/census plus source_1600 oracle.
+The three measured ingest binaries must not link oracle code and must remain
+byte-identical whether the verifier exists. All four require fresh integrated
+PR1048 source builds and current receipt schema; old local-only Stage0 receipts
+do not admit paid runs. Each asset carries its
 own `path` and `sha256`, plus a sealed `build_receipt:{path,sha256}` and its
 `<executable_asset>_deployment` binary/runfiles archive; jobs/reports retain the
 existing `binary_sha256` field. [BUILD-PROVENANCE.md](BUILD-PROVENANCE.md) specifies
 the versioned receipt/manifest schema, literal examples and exact build/package
 commands. Measured artifacts require no-home-rc build provenance, explicit
-`--compilation_mode=opt` for all three arms, recorded `compilation_mode:"opt"`
+`--compilation_mode=opt` for all four executables, recorded `compilation_mode:"opt"`
 and `configured_output_path` under a Bazel `-opt` configuration, plus live
 readelf checks. Use each toolchain's default optimized build; no LTO, PGO,
 target-cpu or codegen-units overrides on either side. Fastbuild/dbg and omitted
@@ -657,7 +670,8 @@ opt options are refused even with otherwise passing Stage 0 proofs. The ordinary
 correctness-test lane's rc configuration is unchanged.
 Native Go runs from its verified deployment with an explicit minimal loader
 search path to the receipt-bound `libfdb_c.so`; pure and Rust inherit no loader path.
-The pure executable and `sources.go_pure` verifier identity are required even
+The pure control AND dedicated verifier executable, sharing `sources.go_pure`
+source identity but distinct executable/build/deployment seals, are required even
 when pure ingest is not selected. Go executable variants share collector source
 seals, not executable seals. Per-arm builders, invocation/grant checks, preflight,
 all-host asset transfer and residual-process checks bind the correct executable.
@@ -665,7 +679,8 @@ all-host asset transfer and residual-process checks bind the correct executable.
 separate workload kinds; producer request size, internal writer concurrency and
 queue batching are distinct explicit controls. Every collector/retry parameter
 is required without defaults. Only writer_workers=1 is currently matched. Go
-control alone owns corpus/setup/verify, with an independent pure-Go verifier.
+control-pure alone owns corpus/setup; the fourth independent pure-Go executable
+alone owns verify. Verification seals never replace original ingest writer seals.
 All inputs include hashes, and pure Go explicitly names no C library. Native
 arms require the pinned7.3.77 libfdb_c. Every asset (executables, FDB tools,
 library, corpus, descriptor and layout template) requires per-held-host transfer

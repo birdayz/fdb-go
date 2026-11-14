@@ -137,11 +137,18 @@ class ReceiptToolTests(BuildFixture):
             creator.main(args)
         self.assertFalse(output.exists())
 
-    def test_schema_and_all_three_literal_examples_match_closed_receipt_fields(self):
+    def test_schema_and_all_four_literal_examples_match_closed_receipt_fields(self):
         root = Path(__file__).parent
         schema = json.loads((root / "paired-build-receipt-v1.schema.json").read_text())
         self.assertEqual(set(schema["required"]), set(b.RECEIPT_FIELDS))
         self.assertFalse(schema["additionalProperties"])
+        self.assertEqual(set(schema["properties"]["executable_asset"]["enum"]), set(b.EXECUTABLES))
+        self.assertEqual(set(schema["properties"]["deployment_asset"]["enum"]),
+                         {b.deployment_asset(name) for name in b.EXECUTABLES})
+        verifier = next(branch["then"]["properties"] for branch in schema["allOf"]
+                        if branch["if"]["properties"]["executable_asset"]["const"] == "verifier_binary")
+        self.assertEqual(verifier["deployment_asset"], {"const": "verifier_binary_deployment"})
+        self.assertEqual(verifier["client_library_relative_path"], {"type": "null"})
         self.assertEqual(set(schema["$defs"]["deployment_file"]["required"]), {"path", "sha256", "bytes", "mode"})
         for name in b.EXECUTABLES:
             example = json.loads((root / "build-receipt-examples" / (name + ".json")).read_text())
@@ -152,6 +159,9 @@ class ReceiptToolTests(BuildFixture):
             self.assertIn("--nohome_rc", example["build_command"])
             self.assertEqual(example["compilation_mode"], "opt")
             self.assertTrue(b.optimized_build(example))
+            if name == "verifier_binary":
+                self.assertIn("//layers/otel/cmd/otelrust-control:verifier", example["build_command"])
+                self.assertIsNone(example["client_library_relative_path"])
 
 
 class ProvenanceTests(BuildFixture):
@@ -162,6 +172,30 @@ class ProvenanceTests(BuildFixture):
                 self.assertEqual(value, self.receipt(name))
                 readelf.assert_called_once_with(Path(self.plan["assets"][name]["path"]))
                 self.assertEqual(b.read_receipt(self.plan, name), value)
+
+    def test_verifier_source_is_go_pure_without_native_library_dependency(self):
+        self.assertEqual(b.EXECUTABLE_SOURCES, {"control_pure_binary": "go_pure", "control_native_binary": "go_native",
+                                               "rust_binary": "rust_native", "verifier_binary": "go_pure"})
+        self.assertEqual(set(b.EXECUTABLE_SOURCES), set(b.EXECUTABLES))
+        self.plan["sources"] = {"go_pure": self.plan["sources"]["go_pure"]}
+        del self.plan["assets"]["libfdb_c"]
+        receipt = self.receipt("verifier_binary")
+        self.assertEqual(self.validate("verifier_binary"), receipt)
+        self.assertEqual(b.read_receipt(self.plan, "verifier_binary"), receipt)
+        self.assertEqual(b.fake_readelf("verifier_binary"), "There is no dynamic section in this file.\n")
+        receipt["source_revision"] = "b" * 40; self.save(receipt, "verifier_binary")
+        with self.assertRaisesRegex(ValueError, "source/binary identity"):
+            self.validate("verifier_binary")
+
+    def test_verifier_requires_own_deployment_and_no_native_client_runfile(self):
+        original = self.receipt("verifier_binary")
+        for field, value, error in (("deployment_asset", "control_pure_binary_deployment", "deployment identity"),
+                                    ("client_library_relative_path", "lib/libfdb_c.so", "only native Go")):
+            receipt = copy.deepcopy(original); receipt[field] = value; self.save(receipt, "verifier_binary")
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, error):
+                self.validate("verifier_binary")
+            with self.assertRaises(ValueError):
+                b.read_receipt(self.plan, "verifier_binary")
 
     def test_paid_validation_cannot_disable_live_inspection(self):
         self.plan["fake_provider"] = False

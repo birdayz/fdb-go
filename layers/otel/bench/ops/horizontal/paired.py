@@ -24,7 +24,7 @@ ARM_EXECUTABLES = {"go_pure": "control_pure_binary", "go_native": "control_nativ
 NATIVE_SHA256 = "617572467897d0360f76ffc33f24b58090ee691e3273750d2ff334cc71aae3fa"
 QUEUE_FIELDS = {"kind", "producers", "producer_batch_spans", "consumers", "queue_capacity_spans", "batch_min_spans", "batch_max_spans", "flush_ms",
                 "block_on_overflow", "export_timeout_ms", "retry_enabled", "retry_initial_ms", "retry_max_ms", "retry_elapsed_ms"}
-BASE_ASSETS = {"control_pure_binary", "fdbserver", "fdbcli", "corpus_100000", "corpus_375000", "layout_template", "descriptor_set"}
+BASE_ASSETS = {"control_pure_binary", "verifier_binary", "fdbserver", "fdbcli", "corpus_100000", "corpus_375000", "layout_template", "descriptor_set"}
 MAX_RAW_RECEIPT = 256 * 1024 ** 2
 
 
@@ -192,7 +192,7 @@ def validate_plan(plan, *, check_assets=True):
               and end - first == (3600 if plan["stage_profile"] == "pilot" else 7200), "one original fixed lease")
     p.require(plan.get("cleanup_mode") == "independent_watch", "paired campaigns require independent cleanup admission")
     assets = plan.get("assets")
-    required_executables = {"control_pure_binary"} | {ARM_EXECUTABLES[x] for x in plan["arms"]}
+    required_executables = {"control_pure_binary", "verifier_binary"} | {ARM_EXECUTABLES[x] for x in plan["arms"]}
     required = BASE_ASSETS | required_executables | {builds.deployment_asset(name) for name in required_executables}
     if any(x.endswith("native") for x in plan["arms"]):
         required.add("libfdb_c")
@@ -204,9 +204,9 @@ def validate_plan(plan, *, check_assets=True):
             asset({key: item[key] for key in ("path", "sha256")}, check_assets=check_assets)
         else:
             asset(item, check_assets=check_assets)
-    executables = {"control_pure_binary"} | {ARM_EXECUTABLES[x] for x in plan["arms"]}
+    executables = {"control_pure_binary", "verifier_binary"} | {ARM_EXECUTABLES[x] for x in plan["arms"]}
     p.require(len({assets[key]["sha256"] for key in executables}) == len(executables)
-              and len({assets[key]["path"] for key in executables}) == len(executables), "distinct executable identity per arm and pure control required")
+              and len({assets[key]["path"] for key in executables}) == len(executables), "distinct executable identity per arm, pure control and verifier required")
     if "libfdb_c" in assets:
         p.require(assets["libfdb_c"]["sha256"] == NATIVE_SHA256 or plan.get("fake_provider") is True,
                   "pinned FDB 7.3.77 native client required")
@@ -268,7 +268,7 @@ def validate_plan(plan, *, check_assets=True):
                           and job["workload"] == plan["workload"],
                           "Stage0 proof must exercise current source/binary/corpus/client and matched pipeline parameters")
                 p.require(reports.envelope(job, d.read(proof["ingest_report"]["path"]))["accepted"], "Stage0 ingest failed")
-                reports.verify_audit(d.read(proof["verification"]["path"]), job, "local", control_identity=control_identity(plan))
+                reports.verify_audit(d.read(proof["verification"]["path"]), job, "local", control_identity=verifier_identity(plan))
     return plan
 
 
@@ -423,7 +423,7 @@ def invocation(plan, job, job_path, remote_assets):
               "implementation/workload job binding")
     p.require(type(job_path) is str and Path(job_path).is_absolute() and ".." not in Path(job_path).parts,
               "absolute producer job path required")
-    binary = ARM_EXECUTABLES[arm] if job["mode"] == "ingest" else "control_pure_binary"
+    binary = executable_for_mode(arm, job["mode"])
     identity = {"binary_sha256": plan["assets"][binary]["sha256"],
                 "source_revision": plan["sources"][arm if job["mode"] == "ingest" else "go_pure"]["revision"],
                 "source_manifest_sha256": plan["sources"][arm if job["mode"] == "ingest" else "go_pure"]["manifest_sha256"]}
@@ -435,6 +435,16 @@ def envelope(job, report, *, paid_host=False):
     return reports.envelope(job, report, paid_host=paid_host)
 
 
+def executable_for_mode(arm, mode):
+    return ARM_EXECUTABLES[arm] if mode == "ingest" else "verifier_binary" if mode == "verify" else "control_pure_binary"
+
+
+def verifier_identity(plan):
+    source = plan["sources"]["go_pure"]
+    return {"binary_sha256": plan["assets"]["verifier_binary"]["sha256"], "source_revision": source["revision"],
+            "source_manifest_sha256": source["manifest_sha256"]}
+
+
 def control_identity(plan):
     source = plan["sources"]["go_pure"]
     return {"binary_sha256": plan["assets"]["control_pure_binary"]["sha256"], "source_revision": source["revision"],
@@ -442,11 +452,11 @@ def control_identity(plan):
 
 
 def verify_audit(value, job, ns, *, plan=None):
-    return reports.verify_audit(value, job, ns, control_identity=control_identity(plan) if plan is not None else None)
+    return reports.verify_audit(value, job, ns, control_identity=verifier_identity(plan) if plan is not None else None)
 
 
 def joined_envelope(job, report, verification, ns, plan):
-    value = reports.joined_envelope(job, report, verification, ns, control_identity=control_identity(plan), paid_host=not plan["fake_provider"])
+    value = reports.joined_envelope(job, report, verification, ns, control_identity=verifier_identity(plan), paid_host=not plan["fake_provider"])
     value["fake_provider"] = plan["fake_provider"]
     return value
 
@@ -743,7 +753,7 @@ class FakeBackend:
         return [{"healthy": True, "queue_bytes": 0, "lag_seconds": 0} for _ in range(3)]
 
     def verify(self, plan, ns, job):
-        return reports.fake_verify(job, control_identity=control_identity(plan))
+        return reports.fake_verify(job, control_identity=verifier_identity(plan))
 
     def quiesce(self, plan, cluster):
         self.active = None

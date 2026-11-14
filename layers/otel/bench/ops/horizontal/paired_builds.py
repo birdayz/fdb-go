@@ -19,7 +19,9 @@ import subprocess
 import tarfile
 import tempfile
 
-EXECUTABLES = ("control_pure_binary", "control_native_binary", "rust_binary")
+EXECUTABLES = ("control_pure_binary", "control_native_binary", "rust_binary", "verifier_binary")
+EXECUTABLE_SOURCES = {"control_pure_binary": "go_pure", "control_native_binary": "go_native",
+                      "rust_binary": "rust_native", "verifier_binary": "go_pure"}
 MAX_BYTES = 512 * 1024 ** 2
 MAX_FILES = 10000
 RECEIPT_FIELDS = frozenset((
@@ -332,7 +334,7 @@ def validate(plan, name, check_assets=True, inspect_elf=True):
     except (OSError, ValueError) as exc:
         raise ValueError("invalid build receipt") from exc
     _require(type(receipt) is dict and set(receipt) == RECEIPT_FIELDS, "exact build receipt fields required")
-    arm = dict(zip(EXECUTABLES, ("go_pure", "go_native", "rust_native")))[name]
+    arm = EXECUTABLE_SOURCES[name]
     source = plan["sources"][arm]
     _require(receipt["schema"] == "otel_paired_build_receipt_v1" and receipt["executable_asset"] == name
              and receipt["binary_sha256"] == executable["sha256"]
