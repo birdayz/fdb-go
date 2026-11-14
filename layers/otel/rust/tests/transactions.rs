@@ -1015,7 +1015,7 @@ struct WireMalformed {
 fn go_unknown_field_rows_and_keys_reach_the_physical_map() {
     let fixture: WireFixture =
         serde_json::from_slice(include_bytes!("../testdata/wire_vectors.json")).unwrap();
-    assert_eq!(fixture.cases.len(), 8, "empty or changed wire fixture");
+    assert_eq!(fixture.cases.len(), 15, "empty or changed wire fixture");
     let layout = layout();
     let otlp_bytes = |outputs: &[&Vector]| {
         outputs
@@ -1051,7 +1051,7 @@ fn go_unknown_field_rows_and_keys_reach_the_physical_map() {
     let writer = Writer::new(db.clone(), &layout, 64, RecordCompression::None).unwrap();
     let (stats, result) = writer.write(&Context::default(), &inputs);
     result.unwrap();
-    assert_eq!(stats.committed_spans, 12);
+    assert_eq!(stats.committed_spans, 22);
     assert_eq!(stats.logical_otlp_bytes, otlp_bytes(&outputs));
     assert_eq!(
         db.0.lock().unwrap().data,
