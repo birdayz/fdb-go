@@ -1,0 +1,166 @@
+{
+ "hcloud": "hcloud",
+ "location": "hel1",
+ "image": "ubuntu-24.04",
+ "controller_cidr": "<this machine public IP>/32",
+ "source_revision": "<git revision the executables were built from>",
+ "source_manifest_sha256": "<sha256 of the source manifest of that build>",
+ "match_every": 3,
+ "builds": {
+  "control_pure_binary": {
+   "sha256": "<sha256 of the executable>",
+   "deployment_tar": "<path>/control_pure_binary.tar",
+   "deployment_sha256": "<sha256 of the deployment tar>",
+   "executable_relative_path": "control-pure",
+   "client_library_relative_path": null,
+   "local_executable": "<path>/control-pure"
+  },
+  "control_native_binary": {
+   "sha256": "<sha256 of the executable>",
+   "deployment_tar": "<path>/control_native_binary.tar",
+   "deployment_sha256": "<sha256 of the deployment tar>",
+   "executable_relative_path": "control-native",
+   "client_library_relative_path": "control-native.runfiles/_main/_solib_k8/_U_S_Spkg_Sfdbgo_Slibfdbc_Cfdb_Uc_Ushared___Ufile/libfdb_c.so"
+  },
+  "rust_binary": {
+   "sha256": "<sha256 of the executable>",
+   "deployment_tar": "<path>/rust_binary.tar",
+   "deployment_sha256": "<sha256 of the deployment tar>",
+   "executable_relative_path": "otel-rust",
+   "client_library_relative_path": null
+  }
+ },
+ "assets": {
+  "libfdb_c": {
+   "path": "<path>/libfdb_c",
+   "sha256": "<sha256>"
+  },
+  "fdbcli": {
+   "path": "<path>/fdbcli",
+   "sha256": "<sha256>"
+  },
+  "corpus_375000": {
+   "path": "<path>/corpus_375000",
+   "sha256": "<sha256>"
+  }
+ },
+ "cleanup_margin_minutes": 10,
+ "verification_job": {
+  "query_oracle": "none",
+  "query_results_file": null,
+  "k": 100,
+  "max_candidates": 20000,
+  "max_bytes": 4194304
+ },
+ "campaign": "lean-tune-1",
+ "mode": "measured",
+ "node_type": "ccx43",
+ "client_type": "ccx43",
+ "k8s_profile": "full",
+ "warm_count": 0,
+ "measured_count": 375000,
+ "deadline_minutes": 110,
+ "soft_cutoff_minutes": 95,
+ "cap_eur": 5.6,
+ "estimated_run_seconds": 780,
+ "measured_timeout_s": 180,
+ "stage_order": [
+  1,
+  3,
+  2
+ ],
+ "condition": true,
+ "roles": [
+  "node1",
+  "node2",
+  "node3",
+  "client1",
+  "client2",
+  "client3"
+ ],
+ "plan": [
+  {
+   "stage": 3,
+   "arm": "go_pure",
+   "label": "B_32",
+   "layout": "B",
+   "workload_params": {
+    "consumers": 32,
+    "producers": 16
+   }
+  },
+  {
+   "stage": 3,
+   "arm": "go_pure",
+   "label": "B_128_workers4",
+   "layout": "B",
+   "workload_params": {
+    "consumers": 32,
+    "producers": 16
+   },
+   "writer_workers": 4
+  },
+  {
+   "stage": 3,
+   "arm": "go_pure",
+   "label": "C_128_workers4",
+   "layout": "C",
+   "workload_params": {
+    "consumers": 32,
+    "producers": 16
+   },
+   "writer_workers": 4
+  }
+ ],
+ "climb_stage": 3,
+ "presplit_round": 4,
+ "climb_cap": 500000,
+ "climb_count": {
+  "rust_native": 500000,
+  "go_pure": 700000
+ },
+ "climb_steps": {
+  "rust_native": [
+   {
+    "procs": 1,
+    "consumers": 32,
+    "workers": 1
+   },
+   {
+    "procs": 2,
+    "consumers": 16,
+    "workers": 1
+   },
+   {
+    "procs": 2,
+    "consumers": 32,
+    "workers": 1
+   },
+   {
+    "procs": 4,
+    "consumers": 16,
+    "workers": 1
+   }
+  ],
+  "go_pure": [
+   {
+    "procs": 1,
+    "consumers": 32,
+    "workers": 1
+   },
+   {
+    "procs": 1,
+    "consumers": 32,
+    "workers": 2
+   },
+   {
+    "procs": 2,
+    "consumers": 32,
+    "workers": 1
+   }
+  ]
+ },
+ "climb_variant_min_s": 1080,
+ "live_pricing": true,
+ "_comment": "3 database nodes + 3 client hosts. `climb.py run` uses climb_*/presplit_round; `leanrun.py sweep` uses plan (layout A/B/C). Template. Fill every <...>; `make_builds_block.py` writes the builds block. Copy to a file outside the repository; keep keys, IPs and account values out of git."
+}
