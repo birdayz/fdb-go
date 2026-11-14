@@ -14,7 +14,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -189,13 +191,37 @@ func jobPath(j map[string]any) string {
 	return strings.TrimSuffix(j["output"].(string), ".report.json") + ".job.json"
 }
 
-// exec runs the executable a job names on it with exactly env, never the test's.
+// exec runs the executable a job names on it with exactly env, never the test's. A
+// control-native launch also gets LD_LIBRARY_PATH naming the sealed client's directory,
+// which the dynamic loader searches before the binary's RUNPATH.
 func (l *live) exec(j map[string]any, env ...string) (map[string]any, string, error) {
 	l.t.Helper()
 	binary, ok := map[any]string{l.pureSHA: l.pure, l.nativeSHA: l.native, l.rustSHA: l.rust}[j["binary_sha256"]]
 	if !ok {
 		l.t.Fatalf("job %v names no executable", j["binary_sha256"])
 	}
+	env = append([]string{}, env...)
+	if binary == l.native {
+		env = append(env, "LD_LIBRARY_PATH="+l.loaderDir(j["client_library"].(string)))
+	}
+	return l.launch(binary, j, env)
+}
+
+// loaderDir is the directory of a client the loader must find as libfdb_c.so, the name
+// control-native needs. A path LD_LIBRARY_PATH cannot express fails rather than letting
+// the loader search elsewhere.
+func (l *live) loaderDir(client string) string {
+	l.t.Helper()
+	dir := filepath.Dir(client)
+	if filepath.Base(client) != "libfdb_c.so" || !filepath.IsAbs(dir) || strings.ContainsAny(dir, ":;") {
+		l.t.Fatalf("the client %s cannot be named by LD_LIBRARY_PATH as libfdb_c.so", client)
+	}
+	return dir
+}
+
+// launch runs binary on j with exactly env: nothing is added or corrected.
+func (l *live) launch(binary string, j map[string]any, env []string) (map[string]any, string, error) {
+	l.t.Helper()
 	writeFile(l.t, jobPath(j), encode(l.t, j))
 	ctx, cancel := context.WithTimeout(l.ctx, 3*time.Minute)
 	defer cancel()
@@ -211,6 +237,38 @@ func (l *live) exec(j map[string]any, env ...string) (map[string]any, string, er
 	return readReport(l.t, j["output"].(string)), stderr.String(), err
 }
 
+// mappedNamed finds the mapped path a refusal of another libfdb_c names.
+var mappedNamed = regexp.MustCompile(`the mapped native client ("(?:[^"\\]|\\.)*") is not the sealed job artifact`)
+
+// foreignClient requires control-native's refusal of mapped, a libfdb_c other than the
+// sealed artifact: named, with the launch instruction, before ingest and without any
+// mapping proof.
+func (l *live) foreignClient(r map[string]any, stderr string, err error, mapped string) {
+	l.t.Helper()
+	named := fmt.Sprintf("the mapped native client %q is not the sealed job artifact", mapped)
+	instruction := "launch control-native with LD_LIBRARY_PATH set to the directory of the job's client_library"
+	if err == nil || r == nil || r["status"] != "error" || !strings.Contains(fmt.Sprint(r["error"]), named) ||
+		!strings.Contains(fmt.Sprint(r["error"]), instruction) || !strings.Contains(stderr, named) || !strings.Contains(stderr, instruction) {
+		l.t.Fatalf("a foreign mapped client %s: %v %q %v", mapped, err, stderr, r)
+	}
+	checkIngestShape(l.t, r)
+	if r["frames"] != float64(0) || r["ingest_wall_ns"] != float64(0) || r["ingest_resources"] != nil {
+		l.t.Fatalf("a refused native ingest measured something: %v", r)
+	}
+	for _, field := range []string{"native_library_mapped", "native_mapping_rule"} {
+		if _, ok := r[field]; ok {
+			l.t.Fatalf("a refused native ingest claims %s: %v", field, r)
+		}
+	}
+	sealed, err := os.Stat(l.library)
+	if err != nil {
+		l.t.Fatal(err)
+	}
+	if got, err := os.Stat(mapped); err == nil && os.SameFile(got, sealed) {
+		l.t.Fatalf("the refusal named the sealed artifact %s", mapped)
+	}
+}
+
 // ok runs j, requires success, and requires the report to name exactly what ran: the
 // executing binary, the sealed job file and the sealed job itself.
 func (l *live) ok(j map[string]any, env ...string) map[string]any {
@@ -219,6 +277,13 @@ func (l *live) ok(j map[string]any, env ...string) map[string]any {
 	if err != nil || r == nil || r["status"] != "ok" || r["error"] != nil {
 		l.t.Fatalf("%s %s %s: %v stderr=%q report=%v", j["mode"], j["arm"], j["run"], err, stderr, r)
 	}
+	l.checkReceipt(j, r)
+	return r
+}
+
+// checkReceipt requires the response to name the executable and exact sealed job that ran.
+func (l *live) checkReceipt(j, r map[string]any) {
+	l.t.Helper()
 	jobSHA, err := hashFile(jobPath(j))
 	if err != nil {
 		l.t.Fatal(err)
@@ -242,7 +307,6 @@ func (l *live) ok(j map[string]any, env ...string) map[string]any {
 	if p := receiptProblem(r); p != "" {
 		l.t.Fatalf("%s %s receipt: %s: %v", j["mode"], j["arm"], p, r)
 	}
-	return r
 }
 
 // arm is one arm's correctness chain: Go setup, the arm's own ingest, Go verify.
@@ -539,7 +603,8 @@ func (l *live) refusals(t *testing.T) {
 	l.ok(l.job(run+".pure", "ingest", "go_pure", run, point2, "zlib-1"))
 	l.verified(l.ok(l.job(run+".verify", "verify", "go_native", run, point2, "zlib-1"), env), "go_native")
 
-	// A client copy with the pinned bytes but another inode is not the mapped client.
+	// A copy with the pinned bytes, found first by the loader, is not the sealed client:
+	// refused and named before any ingest or repair, and the correct launch proceeds.
 	copied := filepath.Join(l.dir, "copy", "libfdb_c.so")
 	if err := os.MkdirAll(filepath.Dir(copied), 0o700); err != nil {
 		t.Fatal(err)
@@ -548,14 +613,57 @@ func (l *live) refusals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, copied, b)
+	if writeFile(t, copied, b) != clientSHA256 {
+		t.Fatal("the copy does not have the pinned bytes")
+	}
+	sealedInfo, err := os.Stat(l.library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyInfo, err := os.Stat(copied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(sealedInfo, copyInfo) || sealedInfo.Sys().(*syscall.Stat_t).Ino == copyInfo.Sys().(*syscall.Stat_t).Ino {
+		t.Fatal("the copy is the sealed artifact itself")
+	}
+	mapped, err := filepath.EvalSymlinks(copied)
+	if err != nil {
+		t.Fatal(err)
+	}
 	run = "control_smoke_mapped"
 	l.ok(l.job(run+".setup", "setup", "go_native", run, point2, "zlib-1"))
-	j := l.job(run+".native", "ingest", "go_native", run, point2, "zlib-1")
-	j["client_library"] = copied
-	if r, _, err := l.exec(j); err == nil || r == nil || r["status"] != "error" || !strings.Contains(fmt.Sprint(r["error"]), "not the sealed job artifact") {
-		t.Fatalf("an unmapped client copy: %v %v", err, r)
+	j := l.job(run+".foreign", "ingest", "go_native", run, point2, "zlib-1")
+	r, stderr, err = l.launch(l.native, j, []string{"LD_LIBRARY_PATH=" + l.loaderDir(copied)})
+	l.foreignClient(r, stderr, err, mapped)
+	l.ok(l.job(run+".ingest", "ingest", "go_native", run, point2, "zlib-1"))
+	l.verified(l.ok(l.job(run+".verify", "verify", "go_native", run, point2, "zlib-1")), "go_native")
+
+	// Without the loader path, the binary's RUNPATH decides. Where it finds the sealed
+	// client first (no host directory precedes Bazel's), the run must fully succeed and
+	// verify; where a host copy precedes it, the run must refuse naming that copy.
+	run = "control_smoke_loader"
+	l.ok(l.job(run+".setup", "setup", "go_native", run, point2, "zlib-1"))
+	j = l.job(run+".unset", "ingest", "go_native", run, point2, "zlib-1")
+	r, stderr, err = l.launch(l.native, j, nil)
+	if err == nil && r != nil && r["status"] == "ok" && r["error"] == nil {
+		l.checkReceipt(j, r)
+		checkIngestShape(t, r)
+		t.Logf("control-native without LD_LIBRARY_PATH mapped the sealed client by %v", r["native_mapping_rule"])
+	} else {
+		m := mappedNamed.FindStringSubmatch(stderr)
+		if m == nil {
+			t.Fatalf("control-native without LD_LIBRARY_PATH: %v %q %v", err, stderr, r)
+		}
+		foreign, uerr := strconv.Unquote(m[1])
+		if uerr != nil {
+			t.Fatalf("the named mapped client %s: %v", m[1], uerr)
+		}
+		l.foreignClient(r, stderr, err, foreign)
+		t.Logf("control-native without LD_LIBRARY_PATH refused the host copy %s", foreign)
+		l.ok(l.job(run+".ingest", "ingest", "go_native", run, point2, "zlib-1"))
 	}
+	l.verified(l.ok(l.job(run+".verify", "verify", "go_native", run, point2, "zlib-1")), "go_native")
 
 	// Each executable refuses the other's jobs before reserving a report: control-native
 	// a setup of its own arm, control-pure a go_native ingest sealed for it.

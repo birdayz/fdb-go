@@ -88,6 +88,13 @@ func TestMappedClientMustBeTheSealedArtifact(t *testing.T) {
 	badRoot := root + fmt.Sprintf("36 1 %d:%d @home %s rw,relatime shared:2 - btrfs /dev/nvme0n1p2 rw,subvol=/@home\n", superblock.major, superblock.minor, dir)
 	libc := mapping("08:01", "77", "/usr/lib/libc.so.6")
 	sbMapping := mapping(sbText, inoText, client)
+	// The mapped pathname each refusal of another file must name.
+	foreignCases := map[string]string{
+		"another inode":             other,
+		"another inode, superblock": other,
+		"a second client":           other,
+		"a renamed second client":   filepath.Join(dir, "libfdb_c_7.1.so"),
+	}
 	for name, c := range map[string]struct {
 		maps, mounts, library, pin string
 		// rule is the accepting rule, empty for a refusal.
@@ -132,14 +139,39 @@ func TestMappedClientMustBeTheSealedArtifact(t *testing.T) {
 		"job library absent":                {mapsLine(t, client), btrfs, filepath.Join(dir, "absent.so"), pin, ""},
 	} {
 		rule, err := checkMappedClient(c.maps, c.mounts, c.library, c.pin)
+		foreign, named := foreignCases[name]
 		switch {
 		case c.rule != "" && (err != nil || rule != c.rule):
 			t.Errorf("%s: rule %q, %v; want %q", name, rule, err, c.rule)
 		case c.rule == "" && (err == nil || rule != ""):
 			t.Errorf("%s: accepted by %q", name, rule)
-		case err != nil && strings.Contains(err.Error(), dir):
+		case named && !strings.Contains(err.Error(), fmt.Sprintf("the mapped native client %q is not the sealed job artifact", foreign)):
+			t.Errorf("%s: another mapped file is not named: %v", name, err)
+		case named && !strings.Contains(err.Error(), launchWithLoaderPath):
+			t.Errorf("%s: no launch instruction: %v", name, err)
+		case !named && err != nil && strings.Contains(err.Error(), dir):
 			t.Errorf("%s: the error names a path", name)
 		}
+	}
+	// A same-bytes copy the loader found first is another file: refused, named, with the
+	// launch instruction, though its bytes and pinned hash match.
+	if h, err := hashFile(other); err != nil || h != pin {
+		t.Fatalf("the copy's hash %s, %v; want the pin", h, err)
+	}
+	clientInfo, err := os.Stat(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherInfo, err := os.Stat(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(clientInfo, otherInfo) || identityInode(t, other) == ino {
+		t.Fatal("the copy is the artifact itself")
+	}
+	if _, err := checkMappedClient(mapsLine(t, other), root, client, pin); err == nil ||
+		!strings.Contains(err.Error(), fmt.Sprintf("%q", other)) || !strings.Contains(err.Error(), launchWithLoaderPath) {
+		t.Fatalf("a same-bytes copy: %v", err)
 	}
 	// A path replaced by a new file with the same pinned bytes no longer names the
 	// mapped inode, though the path, the bytes and the hash all still match, under
@@ -163,6 +195,9 @@ func TestMappedClientMustBeTheSealedArtifact(t *testing.T) {
 		t.Fatalf("the new file's own mapping: %q, %v", rule, err)
 	}
 }
+
+// launchWithLoaderPath is the instruction a refusal of another mapped file carries.
+const launchWithLoaderPath = "launch control-native with LD_LIBRARY_PATH set to the directory of the job's client_library"
 
 func identityInode(t *testing.T, path string) uint64 {
 	t.Helper()

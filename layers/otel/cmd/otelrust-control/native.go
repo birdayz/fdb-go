@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -252,14 +253,22 @@ func btrfsDevice(mountinfo, path string) (device, bool) {
 	return best[0].device, true
 }
 
+// foreignClient refuses a mapped libfdb_c that is another file than the sealed artifact,
+// naming it: the dynamic loader found it first, so the process must be launched with the
+// loader path naming the sealed client's directory. The path comes from the mappings.
+func foreignClient(mapped string) error {
+	return fault("client", fmt.Sprintf("the mapped native client %q is not the sealed job artifact; "+
+		"launch control-native with LD_LIBRARY_PATH set to the directory of the job's client_library", mapped))
+}
+
 // checkMappedClient requires library to be the pinned artifact and every mapped
 // libfdb_c to be that same file, and returns the one rule that proved all of them.
 // Each mapping's inode must be the artifact's and its path must still name it; its
 // device must be the artifact's st_dev, or, only when mountinfo proves the mapped
 // file's mount is btrfs, that mount's superblock device. A wrong, second, replaced,
 // deleted, malformed or ambiguous mapping, or mappings proved by different rules,
-// fail. The loader ran before main, so this detects a substituted client; it cannot
-// undo one.
+// fail; a mapping of another file is named, with how to launch correctly. The loader
+// ran before main, so this detects a substituted client; it cannot undo one.
 func checkMappedClient(maps, mountinfo, library, pin string) (string, error) {
 	want, err := os.Stat(library)
 	if err != nil {
@@ -287,7 +296,10 @@ func checkMappedClient(maps, mountinfo, library, pin string) (string, error) {
 			return "", fault("client", "a native client mapping is malformed")
 		}
 		got, err := os.Stat(fields[5])
-		if err != nil || !os.SameFile(want, got) || ino != st.Ino {
+		if err != nil || !os.SameFile(want, got) {
+			return "", foreignClient(fields[5])
+		}
+		if ino != st.Ino {
 			return "", fault("client", "a mapped native client is not the sealed job artifact")
 		}
 		proved := ""
