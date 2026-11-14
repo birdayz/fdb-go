@@ -19,12 +19,16 @@ Use that report, not this directory, to learn how the benchmark is run.
 
 An earlier generation ran FoundationDB as native systemd processes on the
 cloud hosts (`otel_native_*` plans: horizontal, diagnostic, session, scaling,
-managed watch). Do not plan new work on it. In the report's own words, that
-method failed on database log memory: its 2x measured wave ended when the
-transaction/log process on `node1` hit its 1 GiB resident-memory monitor
-(`OutOfMemory`, exit 20; not a kernel OOM), and the follow-up with a 2 GiB log
-budget then failed the strict storage-queue health gate (report section 3,
-"Bottleneck 1" and "Bottleneck 2"). The runbooks for that method were removed
+managed watch). Do not plan new work on it. The report records that no native campaign
+completed a 2x measured wave: the first ended when the transaction/log process on
+`node1` hit its 1 GiB resident-memory monitor (`OutOfMemory`, exit 20; not a
+kernel OOM; "Bottleneck 1"), and the follow-up with a 2 GiB log budget then
+failed the strict storage-queue health gate. The report discusses a cold key-range
+shard hotspot there, addressed in the Kubernetes runner by pre-split range
+conditioning, and notes the cold prefix was not proven to be the sole cause
+("Bottleneck 2"); it does not say this failure was inherent to native processes. The last
+good run, with all three stages passing, was on Kubernetes, and the owner's
+decision is that Kubernetes is the method. The runbooks for that method were removed
 from this file; they remain in git history, and the measured outcomes remain in
 the report and in `TODO.md`.
 

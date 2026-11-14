@@ -3293,7 +3293,7 @@ key prefixes and guards; nothing below transfers to it unmeasured.
   It had been prepared but unapproved. Its 297 pure
   policy cases and 27 C predicates passed; distinct listen ports, formal review,
   real empty-Btrfs/minimum-capability validation, bootstrap and actual storage/
-  log inode gates remain open. No existing-volume flag change is authorized;
+  log inode gates were still open when this work was retired. No existing-volume flag change is authorized;
   filesystem checksum/compression changes are not durability-equivalent evidence.
 - [ ] Load and verify the final 10M population and ClickHouse comparison, then
   retain repeated needle-query latency/work receipts and bounded ingest-plus-
