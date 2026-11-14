@@ -78,7 +78,6 @@ go_library(
         "//pkg/fdbgo/wire",
         "//pkg/fdbgo/wire/types",
         "@io_opentelemetry_go_otel_trace//:trace",
-        "@io_opentelemetry_go_otel_trace//noop",
     ] + select({
         "@rules_go//go/platform:windows": [
             "@org_golang_x_sys//windows",
@@ -592,6 +591,19 @@ go_test(
     deps = ["//pkg/fdbgo/wire"],
 )
 
+# gazelle:exclude span_lifecycle_unit_test.go
+go_test(
+    name = "span_lifecycle_unit_test",
+    srcs = ["span_lifecycle_unit_test.go"],
+    embed = [":client"],
+    deps = [
+        "//pkg/fdbgo/wire",
+        "@io_opentelemetry_go_otel_sdk//trace",
+        "@io_opentelemetry_go_otel_sdk//trace/tracetest",
+        "@io_opentelemetry_go_otel_trace//:trace",
+    ],
+)
+
 go_test(
     name = "client_test",
     timeout = "eternal",
@@ -786,5 +798,6 @@ go_test(
         "@com_github_zeebo_xxh3//:xxh3",
         "@io_opentelemetry_go_otel_sdk//trace",
         "@io_opentelemetry_go_otel_sdk//trace/tracetest",
+        "@io_opentelemetry_go_otel_trace//:trace",
     ],
 )

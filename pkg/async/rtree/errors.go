@@ -26,11 +26,18 @@ func (e *IndexOutOfBoundsError) Error() string {
 	return fmt.Sprintf("Index %d out of bounds for length %d", e.Index, e.Length)
 }
 
-// NullPointerError is Java's NullPointerException, from Objects.requireNonNull
-// with no message.
+// NullPointerError is Java's NullPointerException.
 type NullPointerError struct{}
 
 func (*NullPointerError) Error() string { return "null pointer" }
+
+// ClassCastError is Java's ClassCastException when a persisted Hilbert value
+// is not a number.
+type ClassCastError struct{ ValueType string }
+
+func (e *ClassCastError) Error() string {
+	return fmt.Sprintf("Hilbert value must be a number, got %s", e.ValueType)
+}
 
 // NegativeArraySizeError is Java's NegativeArraySizeException.
 type NegativeArraySizeError struct{ Size int }
