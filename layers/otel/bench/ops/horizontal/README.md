@@ -680,7 +680,14 @@ rejected/failed/queued counts), wall/admission/drain timings, samples and explic
 `error` are required. Accepted comparisons also require `ingest_resources` scoped
 to `first_read_through_flush`: measured `user_cpu_seconds`, `system_cpu_seconds`,
 their `cpu_seconds` sum, positive `peak_rss_bytes` and `measurement_source`.
-Missing CPU/RSS is refused; argv-to-exit resources cannot substitute for that window.
+Missing CPU/RSS is refused for `status:ok`; argv-to-exit resources cannot substitute
+for that window. An early `status:error` receipt may instead report
+`"ingest_resources":null` with a required nonblank
+`"ingest_resources_unavailable_reason":"ingest window not started: native client open failed"`
+and nonblank `error`. The reason field is forbidden when resources are measured.
+This is retained failed-arm evidence, not invented zero CPU/RSS: the released
+population stays charged, the campaign stops, and neither a successful joined
+result nor a comparison is allowed. Normal seals/counters remain required.
 A paid gate requires complete
 standard-serializer row/OTLP readback, data-derived physical/index census including
 all eight indexes and STORE_META_NAME, and the complete sealed source oracle

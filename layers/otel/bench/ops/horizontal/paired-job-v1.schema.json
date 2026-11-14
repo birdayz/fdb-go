@@ -746,7 +746,15 @@
           "minimum": 0
         },
         "ingest_resources": {
-          "$ref": "#/$defs/ingest_resources"
+          "oneOf": [
+            {"$ref": "#/$defs/ingest_resources"},
+            {"type": "null"}
+          ]
+        },
+        "ingest_resources_unavailable_reason": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
         },
         "committed_batches": {
           "$ref": "#/$defs/counter"
@@ -769,6 +777,9 @@
       "allOf": [
         {
           "$ref": "#/$defs/counter_policy"
+        },
+        {
+          "$ref": "#/$defs/ingest_resource_policy"
         },
         {
           "if": {
@@ -950,7 +961,10 @@
           }
         },
         "raw_report": {
-          "$ref": "#/$defs/ingest_ack_and_samples"
+          "allOf": [
+            {"$ref": "#/$defs/ingest_ack_and_samples"},
+            {"properties": {"status": {"const": "ok"}}}
+          ]
         },
         "raw_verification_report": {
           "type": "object"
@@ -1119,6 +1133,27 @@
                 "$ref": "#/$defs/go_unexposed_counter"
               }
             }
+          }
+        }
+      ]
+    },
+    "ingest_resource_policy": {
+      "$comment": "Real measured resources are required for success. An early failed receipt may explicitly lack an ingest-window measurement; it remains failed, charged and never comparison-eligible.",
+      "oneOf": [
+        {
+          "required": ["ingest_resources"],
+          "properties": {
+            "ingest_resources": {"$ref": "#/$defs/ingest_resources"}
+          },
+          "not": {"required": ["ingest_resources_unavailable_reason"]}
+        },
+        {
+          "required": ["status", "error", "ingest_resources", "ingest_resources_unavailable_reason"],
+          "properties": {
+            "status": {"const": "error"},
+            "error": {"type": "string", "minLength": 1, "pattern": "\\S"},
+            "ingest_resources": {"type": "null"},
+            "ingest_resources_unavailable_reason": {"type": "string", "minLength": 1, "pattern": "\\S"}
           }
         }
       ]

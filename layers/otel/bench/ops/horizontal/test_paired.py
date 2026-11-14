@@ -14,6 +14,19 @@ import paired as q
 import paired_reports as r
 
 
+def early_error(job, failure="corpus reopen failed"):
+    value = r.fake_ingest(job)
+    value.update(status="error", error=failure, ingest_resources=None,
+                 ingest_resources_unavailable_reason="ingest window not started: " + failure, samples=[])
+    for key in ("frames", "received_spans", "accepted_spans", "rejected_spans", "failed_spans", "queued_spans_at_exit",
+                "ingest_wall_ns", "admission_phase_ns", "drain_ns"):
+        value[key] = 0
+    for key in r.COUNTERS:
+        if value[key]["availability"] == "available":
+            value[key]["value"] = 0
+    return value
+
+
 class Fixture(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -552,6 +565,44 @@ class ProducerTests(Fixture):
         raw["native_retries"] = r.unavailable("not exposed by the Go collector")
         self.assertFalse(q.envelope(self.job("go_pure"), raw)["accepted"])
 
+    def test_early_error_may_explain_absent_resources_but_never_qualifies_for_comparison(self):
+        definitions = d.read(Path(q.__file__).with_name("paired-job-v1.schema.json"))["$defs"]
+        policy = definitions["ingest_resource_policy"]["oneOf"]
+        self.assertEqual(policy[0]["properties"]["ingest_resources"], {"$ref": "#/$defs/ingest_resources"})
+        self.assertEqual(policy[0]["not"], {"required": ["ingest_resources_unavailable_reason"]})
+        self.assertEqual(policy[1]["properties"]["status"], {"const": "error"})
+        self.assertEqual(policy[1]["properties"]["ingest_resources"], {"type": "null"})
+        self.assertEqual(set(policy[1]["required"]), {"status", "error", "ingest_resources", "ingest_resources_unavailable_reason"})
+        self.assertIn({"$ref": "#/$defs/ingest_resource_policy"}, definitions["ingest_ack_and_samples"]["allOf"])
+        self.assertEqual(definitions["verified_result"]["properties"]["raw_report"]["allOf"][1]["properties"]["status"], {"const": "ok"})
+        for arm in self.plan["arms"]:
+            job = self.job(arm); raw = early_error(job)
+            self.assertIsNone(r.ingest_resource_evidence(raw))
+            value = q.envelope(job, raw)
+            self.assertFalse(value["accepted"])
+            self.assertFalse(value["rate_eligible"])
+            self.assertEqual(value["raw_report"], raw)
+            with self.assertRaises(ValueError):
+                q.joined_envelope(job, raw, r.fake_verify(job), "fixture", self.plan)
+            with self.assertRaises(ValueError):
+                r.ingest_cpu_seconds(raw)
+            for key in ("status", "error", "ingest_resources", "ingest_resources_unavailable_reason"):
+                wrong = copy.deepcopy(raw); del wrong[key]
+                with self.subTest(arm=arm, missing=key), self.assertRaises(ValueError):
+                    r.ingest_resource_evidence(wrong)
+            for key, bad in (("status", "ok"), ("error", None), ("error", " "),
+                             ("ingest_resources_unavailable_reason", ""), ("ingest_resources_unavailable_reason", " "),
+                             ("ingest_resources_unavailable_reason", 0)):
+                wrong = copy.deepcopy(raw); wrong[key] = bad
+                with self.subTest(arm=arm, key=key, bad=bad), self.assertRaises(ValueError):
+                    r.ingest_resource_evidence(wrong)
+        job = self.job(); raw = r.fake_ingest(job)
+        raw["ingest_resources_unavailable_reason"] = "contradictory absence claim"
+        self.assertFalse(q.envelope(job, raw)["accepted"])
+        for bad in (float("inf"), float("nan"), -1):
+            raw = r.fake_ingest(job); raw["ingest_resources"]["user_cpu_seconds"] = bad
+            self.assertFalse(q.envelope(job, raw)["accepted"])
+
     def test_required_plain_source_timing_and_process_resources_cannot_be_omitted(self):
         job = self.job(); baseline = r.fake_ingest(job)
         for key in ("frames", "received_spans", "accepted_spans", "rejected_spans", "failed_spans", "queued_spans_at_exit",
@@ -702,6 +753,30 @@ class CampaignTests(Fixture):
         raw = list((self.root / "output").rglob("client1-result.json"))
         self.assertEqual(len(raw), 1)
         self.assertEqual(d.read(raw[0])["raw_report"]["failed_spans"], 1)
+
+    def test_early_error_is_preserved_charged_and_stops_without_comparison(self):
+        old = self.backend.release_and_wait
+        def failed(plan, ready, jobs):
+            value = old(plan, ready, jobs)
+            value[1] = early_error(jobs[1])
+            return value
+        self.backend.release_and_wait = failed
+        with self.assertRaises(ValueError):
+            self.run_campaign()
+        result = d.read(self.root / "output/paired-result.json")
+        self.assertEqual(result["charged_rows"], 100000)
+        self.assertEqual(result["released_waves"], 1)
+        self.assertFalse(result["accepted_comparison"])
+        self.assertTrue(result["cleanup_passed"])
+        self.assertEqual(self.backend.events.count("release"), 1)
+        self.assertNotIn("verify", self.backend.events)
+        receipt = d.read(next((self.root / "output").rglob("client1-result.json")))
+        self.assertFalse(receipt["accepted"])
+        self.assertFalse(receipt["rate_eligible"])
+        self.assertIsNone(receipt["raw_report"]["ingest_resources"])
+        self.assertEqual(receipt["raw_report"]["ingest_resources_unavailable_reason"], "ingest window not started: corpus reopen failed")
+        ledger = q.rows.inspect(self.plan["row_ledger"])
+        self.assertEqual(ledger["issued_rows"], 100000)
 
     def test_wrong_ready_host_never_releases_and_cleanup_still_runs(self):
         old = self.backend.ready

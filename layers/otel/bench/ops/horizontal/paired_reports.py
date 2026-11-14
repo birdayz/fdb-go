@@ -47,12 +47,23 @@ def ack_operations(value, arm):
 
 def ingest_cpu_seconds(report):
     value = report.get("ingest_resources")
-    p.require(type(value) is dict and value.get("scope") == "first_read_through_flush"
+    p.require("ingest_resources_unavailable_reason" not in report and type(value) is dict and value.get("scope") == "first_read_through_flush"
               and all(p.number(value.get(k)) for k in ("user_cpu_seconds", "system_cpu_seconds", "cpu_seconds"))
               and math.isclose(value["cpu_seconds"], value["user_cpu_seconds"] + value["system_cpu_seconds"], rel_tol=1e-12, abs_tol=1e-12)
               and p.integer(value.get("peak_rss_bytes"), 1) and type(value.get("measurement_source")) is str
               and value["measurement_source"].strip(), "matching ingest-window process CPU required")
     return value["cpu_seconds"]
+
+
+def ingest_resource_evidence(report):
+    """Validate measured resources or an explicit early-failure absence, never a fallback."""
+    p.require("ingest_resources" in report, "explicit ingest-window measurement or early-failure absence required")
+    if report["ingest_resources"] is None:
+        p.require(report.get("status") == "error" and type(report.get("error")) is str and report["error"].strip()
+                  and type(report.get("ingest_resources_unavailable_reason")) is str
+                  and report["ingest_resources_unavailable_reason"].strip(), "only a failed receipt may explain an absent ingest-window measurement")
+        return None
+    return ingest_cpu_seconds(report)
 
 
 def cpu_per_distinct(seconds, distinct):
@@ -78,6 +89,7 @@ def envelope(job, report):
              "job_sha256": job_seal(job), "raw_report": copy.deepcopy(report), "accepted": False,
              "rate_eligible": False, "telemetry": {key: {"availability": "unavailable"} for key in TELEMETRY}}
     try:
+        ingest_resource_evidence(report)
         common(report, job, "ingest")
         p.require(all(report.get(key) is None for key in ("spans_per_second", "rate_numerator", "cpu_ms_per_distinct_span", "cpu_denominator")),
                   "ingest alone cannot assert census-verified rates or CPU/span")
