@@ -27,7 +27,10 @@ replacement. There are no measured performance or economics results yet.
   records and 100,000-byte split chunks (unsplit suffix 0, split suffixes 1+).
   Deflate implementations need not produce identical compressed bytes: compare
   decoded unions and separately report stored/physical bytes. Compression never
-  removes index work.
+  removes index work. Like Go's pooled compressors, each worker thread reuses one
+  zlib compressor per level (reset before every record, so nothing carries over);
+  a record of 5 bytes or fewer is stored clear without a compression attempt, and
+  compression is kept only when it saves more than 5 bytes.
 - `native::NativeDatabase` dynamically loads **only an explicit SHA256-matched
   libfdb_c 7.3.77 file**, pinned in `MODULE.bazel`. It uses API 730, a one-shot
   owned network thread, native serializable reads/OnError, retry limit -1 and a

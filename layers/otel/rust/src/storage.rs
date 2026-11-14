@@ -2,7 +2,32 @@
 //! implementations may produce different deflate bytes; decoded unions must match.
 use crate::{Error, ErrorKind, Result};
 use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
-use std::io::{Read, Write};
+use std::{
+    cell::RefCell,
+    io::{Read, Write},
+};
+
+thread_local! {
+    /// One reusable zlib encoder per worker thread and level (1 and 6). It is reset by
+    /// every record's `finish`, so no state crosses records. Created on first use.
+    static ENCODERS: RefCell<[Option<ZlibEncoder<Vec<u8>>>; 2]> = const { RefCell::new([None, None]) };
+}
+
+/// Zlib-format deflate of `input` at `level` (1 or 6) with this thread's reused encoder.
+fn deflate(input: &[u8], level: u32) -> Result<Vec<u8>> {
+    let fail = |_| Error::new(ErrorKind::Operation, "zlib encode");
+    ENCODERS.with(|slots| {
+        let mut slots = slots.borrow_mut();
+        let encoder = slots[usize::from(level != 1)]
+            .get_or_insert_with(|| ZlibEncoder::new(Vec::new(), Compression::new(level)));
+        let result = encoder.write_all(input);
+        // `reset` completes the stream, returns it and readies the encoder for the next
+        // record, even after a failed write.
+        let finished = encoder.reset(Vec::with_capacity(input.len() / 2 + 64));
+        result.map_err(fail)?;
+        finished.map_err(fail)
+    })
+}
 
 #[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -20,21 +45,21 @@ pub fn encode(row: &[u8], compression: RecordCompression) -> Result<Vec<u8>> {
     if matches!(compression, RecordCompression::None) {
         return Ok(union);
     }
-    let mut encoder = ZlibEncoder::new(
-        Vec::new(),
-        Compression::new(if matches!(compression, RecordCompression::Zlib1) {
+    // Go attempts compression only above 5 bytes and keeps it only if it saves more than 5.
+    if union.len() <= 5 {
+        let mut out = vec![2];
+        out.extend_from_slice(&union);
+        return Ok(out);
+    }
+    let deflate = deflate(
+        &union,
+        if matches!(compression, RecordCompression::Zlib1) {
             1
         } else {
             6
-        }),
-    );
-    encoder
-        .write_all(&union)
-        .map_err(|_| Error::new(ErrorKind::Operation, "zlib encode"))?;
-    let deflate = encoder
-        .finish()
-        .map_err(|_| Error::new(ErrorKind::Operation, "zlib finish"))?;
-    if union.len() > 5 && deflate.len() < union.len() - 5 {
+        },
+    )?;
+    if deflate.len() < union.len() - 5 {
         let mut out = vec![4, 1];
         out.extend_from_slice(&(union.len() as u32).to_be_bytes());
         out.extend_from_slice(&deflate);
@@ -108,6 +133,84 @@ pub fn split(stored: &[u8]) -> Vec<(i64, Vec<u8>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::write::ZlibEncoder;
+    use std::io::Write;
+
+    /// A new compressor per record, as before the reuse change.
+    fn fresh(union: &[u8], level: u32) -> Vec<u8> {
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::new(level));
+        encoder.write_all(union).unwrap();
+        encoder.finish().unwrap()
+    }
+    fn body(seed: u64, len: usize) -> Vec<u8> {
+        let mut x = seed | 1;
+        (0..len)
+            .map(|i| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                // Half compressible text, half noise.
+                if i % 2 == 0 {
+                    b'a' + (x % 5) as u8
+                } else {
+                    (x >> 24) as u8
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn reused_compressor_matches_a_fresh_one_and_leaks_nothing_between_records() {
+        // Large, tiny, empty-ish and incompressible records in alternating order and levels,
+        // all on this one thread's reused compressors.
+        let sizes = [
+            200_000, 7, 6, 1, 50_000, 0, 130_000, 7, 100_000, 33, 200_001,
+        ];
+        for round in 0..3u64 {
+            for (i, &n) in sizes.iter().enumerate() {
+                for level in [1, 6] {
+                    let input = body(round * 100 + i as u64, n);
+                    assert_eq!(deflate(&input, level).unwrap(), fresh(&input, level));
+                }
+            }
+        }
+        // End to end through `encode`: the stored bytes decode to the row, in any order.
+        for &n in &sizes {
+            let row = body(n as u64, n);
+            for mode in [RecordCompression::Zlib1, RecordCompression::ZlibDefault] {
+                let stored = encode(&row, mode).unwrap();
+                assert_eq!(decode(&stored).unwrap(), row);
+            }
+        }
+    }
+
+    #[test]
+    fn compressors_are_created_once_per_thread_and_level_and_kept_only_if_smaller() {
+        let slots = || ENCODERS.with(|s| s.borrow().iter().filter(|c| c.is_some()).count());
+        std::thread::spawn(move || {
+            assert_eq!(slots(), 0);
+            // Under 6 bytes the union is stored clear without compressing (nothing created).
+            assert_eq!(encode(&[], RecordCompression::Zlib1).unwrap(), [2, 0x0a, 0]);
+            assert_eq!(slots(), 0);
+            let row = vec![7; 1000];
+            for _ in 0..3 {
+                assert_eq!(encode(&row, RecordCompression::Zlib1).unwrap()[..2], [4, 1]);
+            }
+            assert_eq!(slots(), 1);
+            encode(&row, RecordCompression::ZlibDefault).unwrap();
+            assert_eq!(slots(), 2);
+            // Incompressible input is stored clear (type 2) even though a compressor ran.
+            let noise = body(9, 64)
+                .into_iter()
+                .map(|b| b | 0x80)
+                .collect::<Vec<_>>();
+            let stored = encode(&noise, RecordCompression::Zlib1).unwrap();
+            assert_eq!(stored[0], 2);
+            assert_eq!(decode(&stored).unwrap(), noise);
+        })
+        .join()
+        .unwrap();
+    }
     #[test]
     fn roundtrip_and_boundaries() {
         for size in [0, 1, 127, 128, 99_996, 100_000, 200_001] {
