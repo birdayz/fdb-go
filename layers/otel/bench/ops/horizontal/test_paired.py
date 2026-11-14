@@ -406,6 +406,168 @@ class ProducerTests(Fixture):
         raw = r.fake_ingest(job); raw["samples"][0]["error"] = "uncertain"
         self.assertFalse(q.envelope(job, raw)["accepted"])
 
+    def test_ack_availability_is_explicit_go_unavailable_and_rust_required(self):
+        missing = {"availability": "unavailable", "reason": "Go collector does not expose write operations including replays"}
+        for arm in self.plan["arms"]:
+            job = self.job(arm); raw = r.fake_ingest(job)
+            self.assertTrue(q.envelope(job, raw)["accepted"])
+            raw["acked_span_operations"] = missing
+            value = q.envelope(job, raw)
+            self.assertEqual(value["accepted"], arm != "rust_native")
+            if arm != "rust_native":
+                self.assertEqual(value["acked_span_operations"], missing)
+                proof = r.fake_verify(job, control_identity=q.control_identity(self.plan))
+                joined = q.joined_envelope(job, raw, proof, "fixture", self.plan)
+                self.assertIs(type(joined["distinct_spans"]), int)
+                self.assertEqual(joined["distinct_spans"], job["expected_frames"])
+                self.assertEqual(joined["acked_span_operations"], missing)
+        job = self.job("go_pure")
+        raw = r.fake_ingest(job); raw["spans_per_second"] = None
+        self.assertTrue(q.envelope(job, raw)["accepted"])
+        for key, rate in (("spans_per_second", 100000), ("rate_numerator", "acked_span_operations"),
+                          ("cpu_ms_per_distinct_span", 0.01), ("cpu_denominator", "acked_span_operations")):
+            raw = r.fake_ingest(job); raw[key] = rate
+            self.assertFalse(q.envelope(job, raw)["accepted"])
+        for bad in (None, 100000, {"availability": "available"}, {"availability": "available", "value": True},
+                    {"availability": "available", "value": -1}, {"availability": "available", "value": 100000.0},
+                    {"availability": "unavailable"}, {"availability": "unavailable", "reason": " "},
+                    {"availability": "unavailable", "reason": "unknown", "value": 0}):
+            raw = r.fake_ingest(job); raw["acked_span_operations"] = bad
+            with self.subTest(bad=bad):
+                self.assertFalse(q.envelope(job, raw)["accepted"])
+
+    def test_direct_ack_samples_and_collector_admission_samples_have_distinct_names(self):
+        direct = self.job(); raw = r.fake_ingest(direct)
+        self.assertIn("direct_write_acked_operations", raw["samples"][0])
+        self.assertNotIn("acked_span_operations", raw["samples"][0])
+        self.assertTrue(q.envelope(direct, raw)["accepted"])
+        for sample in raw["samples"]:
+            del sample["direct_write_acked_operations"]
+        self.assertTrue(q.envelope(direct, raw)["accepted"])
+        for bad in (None, True, 1.0):
+            raw["samples"][0]["direct_write_acked_operations"] = bad
+            self.assertFalse(q.envelope(direct, raw)["accepted"])
+        queued = copy.deepcopy(direct)
+        queued["workload"] = q.fake_plan(self.root / "sample-queue", kind="collector_queue")["workload"]
+        raw = r.fake_ingest(queued)
+        self.assertTrue(q.envelope(queued, raw)["accepted"])
+        self.assertEqual(set(raw["samples"][0]), {"ns", "received_spans", "accepted_spans", "error"})
+        for name in ("acked_span_operations", "direct_write_acked_operations"):
+            wrong = copy.deepcopy(raw); wrong["samples"][0][name] = 0
+            self.assertFalse(q.envelope(queued, wrong)["accepted"])
+        definitions = d.read(Path(q.__file__).with_name("paired-job-v1.schema.json"))["$defs"]
+        self.assertNotIn("acked_span_operations", definitions["writer_direct_sample"]["properties"])
+        self.assertNotIn("direct_write_acked_operations", definitions["collector_admission_sample"]["properties"])
+        self.assertNotIn("direct_write_acked_operations", definitions["writer_direct_sample"]["required"])
+        self.assertEqual(definitions["verified_result"]["properties"]["distinct_spans"], {"type": "integer", "minimum": 1})
+
+    def test_joined_and_wave_rates_and_cpu_use_distinct_rows_not_replayed_operations(self):
+        self.plan = q.fake_plan(self.root / "rates-queue", kind="collector_queue")
+        self.assets = self.backend.remote_assets(self.plan)
+        joined = []
+        for client in (1, 2):
+            ns = q.namespace(self.plan, 2, "rust_native", "prerequisite", client)
+            job = q.rust_job(self.plan, "rust_native", 2, "prerequisite", client, self.layout, self.cluster, self.assets,
+                             "/srv/otel-paired/" + ns + "/ingest.json")
+            raw = r.fake_ingest(job)
+            raw["acked_span_operations"]["value"] = 2 * job["expected_frames"]
+            raw["ingest_resources"] = {"scope": "first_read_through_flush", "user_cpu_seconds": 1.5,
+                                       "system_cpu_seconds": 0.5, "cpu_seconds": 2.0,
+                                       "peak_rss_bytes": 4096, "measurement_source": "fake phase snapshot"}
+            value = q.joined_envelope(job, raw, r.fake_verify(job, control_identity=q.control_identity(self.plan)), ns, self.plan)
+            self.assertEqual(value["spans_per_second"], 100000)
+            self.assertEqual(value["cpu_ms_per_distinct_span"], {"availability": "available", "value": 0.02})
+            self.assertEqual(value["acked_span_operations"]["value"], 200000)
+            joined.append(value)
+        for key, bad in (("rate_numerator", "acked_span_operations"), ("spans_per_second", 200000),
+                         ("cpu_denominator", "acked_span_operations"), ("distinct_spans", 200000),
+                         ("cpu_ms_per_distinct_span", {"availability": "available", "value": 0.01})):
+            wrong = copy.deepcopy(joined[0]); wrong[key] = bad
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                r.validate_distinct_result(wrong)
+        metrics = r.wave_metrics(joined, 1000000000, 2000000000, 3000000000)
+        self.assertEqual(metrics["distinct_spans"], 200000)
+        self.assertEqual(metrics["acked_span_operations"]["value"], 400000)
+        self.assertEqual(metrics["ack_rows_per_second"], 200000)
+        self.assertEqual(metrics["drained_rows_per_second"], 100000)
+        self.assertEqual(metrics["cpu_ms_per_distinct_span"]["value"], 0.02)
+        for key, bad in (("rate_numerator", "acked_span_operations"), ("rows", 400000),
+                         ("ack_rows_per_second", 400000), ("drained_rows_per_second", 200000),
+                         ("cpu_ms_per_distinct_span", {"availability": "available", "value": 0.01})):
+            wrong = copy.deepcopy(metrics); wrong[key] = bad
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                r.validate_wave_metrics(wrong, joined)
+        with self.assertRaisesRegex(ValueError, "distinct producer"):
+            r.wave_metrics([joined[0], joined[0]], 1, 2, 3)
+
+    def test_unknown_go_operations_remain_unknown_but_matching_cpu_is_required(self):
+        job = self.job("go_native"); raw = r.fake_ingest(job)
+        raw["process_resources"] = {"scope": "argv_to_exit", "cpu_seconds": 100}
+        proof = r.fake_verify(job, control_identity=q.control_identity(self.plan))
+        joined = q.joined_envelope(job, raw, proof, "fixture", self.plan)
+        self.assertEqual(joined["distinct_spans"], 100000)
+        self.assertEqual(joined["acked_span_operations"]["availability"], "unavailable")
+        self.assertEqual(joined["cpu_ms_per_distinct_span"], {"availability": "available", "value": 0.02})
+        metrics = r.wave_metrics([joined], 1, 1000000001, 2000000001)
+        self.assertEqual(metrics["acked_span_operations"]["availability"], "unavailable")
+        self.assertNotIn("value", metrics["acked_span_operations"])
+        self.assertEqual(metrics["cpu_ms_per_distinct_span"]["value"], 0.02)
+        for bad in (None, {"scope": "argv_to_exit", "cpu_seconds": 100},
+                    {"availability": "unavailable", "reason": "not measured"}):
+            wrong = copy.deepcopy(raw); wrong["ingest_resources"] = bad
+            self.assertFalse(q.envelope(job, wrong)["accepted"])
+            with self.assertRaises(ValueError):
+                q.joined_envelope(job, wrong, proof, "fixture", self.plan)
+        del raw["ingest_resources"]
+        self.assertFalse(q.envelope(job, raw)["accepted"])
+
+    def test_counter_capability_matrix_refuses_invented_go_values(self):
+        self.plan = q.fake_plan(self.root / "counter-queue", kind="collector_queue")
+        self.assets = self.backend.remote_assets(self.plan)
+        for arm in self.plan["arms"]:
+            job = self.job(arm); baseline = r.fake_ingest(job)
+            self.assertTrue(q.envelope(job, baseline)["accepted"])
+            for key in r.COUNTERS:
+                raw = copy.deepcopy(baseline); del raw[key]
+                with self.subTest(arm=arm, missing=key):
+                    self.assertFalse(q.envelope(job, raw)["accepted"])
+                for bad in (0, None, {"availability": "unavailable", "reason": " "}):
+                    raw = copy.deepcopy(baseline); raw[key] = bad
+                    self.assertFalse(q.envelope(job, raw)["accepted"])
+                if arm != "rust_native" and key in r.GO_UNOBSERVABLE:
+                    self.assertEqual(baseline[key]["availability"], "unavailable")
+                    for count in (0, 100000):
+                        raw = copy.deepcopy(baseline); raw[key] = {"availability": "available", "value": count}
+                        with self.subTest(arm=arm, forbidden=key, count=count):
+                            self.assertFalse(q.envelope(job, raw)["accepted"])
+                elif arm == "rust_native" and key != "acked_span_operations":
+                    raw = copy.deepcopy(baseline); raw[key] = r.unavailable("not exposed by this Rust instrumentation")
+                    self.assertTrue(q.envelope(job, raw)["accepted"])
+            if arm != "rust_native":
+                for key in ("export_attempts", "queue_retries"):
+                    raw = copy.deepcopy(baseline); raw[key] = r.unavailable("not measured")
+                    self.assertFalse(q.envelope(job, raw)["accepted"])
+        raw = r.fake_ingest(self.job("go_pure"))
+        self.assertIn("not applicable", raw["native_retries"]["reason"])
+        raw["native_retries"] = r.unavailable("not exposed by the Go collector")
+        self.assertFalse(q.envelope(self.job("go_pure"), raw)["accepted"])
+
+    def test_required_plain_source_timing_and_process_resources_cannot_be_omitted(self):
+        job = self.job(); baseline = r.fake_ingest(job)
+        for key in ("frames", "received_spans", "accepted_spans", "rejected_spans", "failed_spans", "queued_spans_at_exit",
+                    "ingest_wall_ns", "admission_phase_ns", "drain_ns", "samples", "error", "ingest_resources"):
+            raw = copy.deepcopy(baseline); del raw[key]
+            with self.subTest(missing=key):
+                self.assertFalse(q.envelope(job, raw)["accepted"])
+        for key in baseline["ingest_resources"]:
+            raw = copy.deepcopy(baseline); del raw["ingest_resources"][key]
+            with self.subTest(missing_resource=key):
+                self.assertFalse(q.envelope(job, raw)["accepted"])
+        for key, bad in (("received_spans", 99999), ("cpu_seconds", 3), ("peak_rss_bytes", 0)):
+            raw = copy.deepcopy(baseline)
+            (raw if key == "received_spans" else raw["ingest_resources"])[key] = bad
+            self.assertFalse(q.envelope(job, raw)["accepted"])
+
     def test_independent_full_cross_read_all_indexes_and_oracle_are_mandatory(self):
         job = self.job(); q.verify_audit(r.fake_verify(job), job, "fixture")
         for field, bad in (("source_records_exact_match", 32), ("full_rows_equal", False),

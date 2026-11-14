@@ -653,8 +653,35 @@ asset set without changing legacy asset bytes.
 
 `otel_paired_result_v1` preserves each original `otel_control_report_v1` and its
 arm/job identity. Admission, ACK operations (including replay), distinct audited
-rows and storage drain are not interchangeable. Unavailable telemetry remains
-`availability:unavailable`, never an invented zero. A paid gate requires complete
+rows and storage drain are not interchangeable. Top-level `acked_span_operations`
+is exactly `{"availability":"available","value":100000}` for Rust, or for Go
+`{"availability":"unavailable","reason":"Go collector does not expose acknowledged write operations including replays"}`.
+Rust must supply the available numeric value. All six counters
+`acked_span_operations`, `committed_batches`, `native_retries`, `outer_retries`,
+`export_attempts` and `queue_retries` require the same explicit availability-marker
+shape. Go must mark the first four unavailable, never a fabricated or inferred zero;
+its pure-Go `native_retries` reason is "not applicable to this arm", while other
+unobservable Go counters identify what is not exposed by the Go collector. Public
+Go collector `Exports` and `Retries` map to available `export_attempts` (queue sink
+calls) and `queue_retries` (queue decisions), not native transaction or RecordLayer
+attempts. Rust may mark truly unobservable non-ACK counters unavailable with a reason. Direct-write call samples may carry
+a separate optional integer `direct_write_acked_operations`; collector admission
+samples carry neither ACK field (admission is not ACK, not even ACK zero).
+`paired-job-v1.schema.json` defines these report/sample shapes under `$defs`.
+Unavailable telemetry remains `availability:unavailable`, never an invented zero.
+The pre-census `otel_paired_ingest_envelope_v1` cannot assert a rate. Successful
+`otel_paired_result_v1` is written only after full verification and requires plain
+integer `distinct_spans`. Every accepted span-rate numerator and CPU/span denominator
+is recomputed and validated against that independent distinct population, never
+ACK operations, accepted input, or replay counts. Aggregates sum CPU counters
+and verified distinct spans before division; unknown ACK remains unavailable.
+Plain source counts (`frames`, `received_spans`, `accepted_spans`, plus public
+rejected/failed/queued counts), wall/admission/drain timings, samples and explicit
+`error` are required. Accepted comparisons also require `ingest_resources` scoped
+to `first_read_through_flush`: measured `user_cpu_seconds`, `system_cpu_seconds`,
+their `cpu_seconds` sum, positive `peak_rss_bytes` and `measurement_source`.
+Missing CPU/RSS is refused; argv-to-exit resources cannot substitute for that window.
+A paid gate requires complete
 standard-serializer row/OTLP readback, data-derived physical/index census including
 all eight indexes and STORE_META_NAME, and the complete sealed source oracle
 NDJSON (16 classes x100, full ordered expected/actual results). Ingest alone is

@@ -406,6 +406,16 @@ def verify_audit(value, job, ns, *, plan=None):
     return reports.verify_audit(value, job, ns, control_identity=control_identity(plan) if plan is not None else None)
 
 
+def joined_envelope(job, report, verification, ns, plan):
+    value = reports.joined_envelope(job, report, verification, ns, control_identity=control_identity(plan))
+    value["fake_provider"] = plan["fake_provider"]
+    return value
+
+
+def wave_metrics(values, started, ack_end, drained_end):
+    return reports.wave_metrics(values, started, ack_end, drained_end)
+
+
 class PairedCampaign:
     """Backend contract: no methods may renew leases or retry a released wave.
 
@@ -535,7 +545,9 @@ class PairedCampaign:
                         p.require(type(reports) is dict and set(reports) == set(jobs), "every released producer report required")
                         for client, job in jobs.items():
                             value = envelope(job, reports[client])
-                            self.write(wave + "/client%d-result.json" % client, value)
+                            self.write(wave + "/client%d-ingest-envelope.json" % client, value)
+                            if not value["accepted"]:
+                                self.write(wave + "/client%d-result.json" % client, value)
                             p.require(value["accepted"], value.get("error", "producer refused"))
                         samples = self.call("drain", self.plan, cluster)
                         drained_end = self.backend.monotonic_ns()
@@ -543,15 +555,16 @@ class PairedCampaign:
                                   and p.integer(x.get("queue_bytes")) and x["queue_bytes"] < 16777216
                                   and p.number(x.get("lag_seconds")) and x["lag_seconds"] < 10 for x in samples[-3:]),
                                   "three strict healthy stable drain observations")
+                        verified = []
                         for client, job in jobs.items():
                             ns = namespace(self.plan, hosts, arm, phase, client, repeat)
                             verification = self.call("verify", self.plan, ns, job)
                             self.write(wave + "/client%d-verification.json" % client, verification)
-                            verify_audit(verification, job, ns, plan=self.plan)
-                        metrics = {"phase": phase, "rows": count * hosts, "release_ns": started, "ack_end_ns": ack_end,
-                                   "drained_end_ns": drained_end, "drain_samples": samples,
-                                   "ack_rows_per_second": p.common_throughput(count * hosts, started, ack_end),
-                                   "drained_rows_per_second": p.common_throughput(count * hosts, started, drained_end)}
+                            value = joined_envelope(job, reports[client], verification, ns, self.plan)
+                            self.write(wave + "/client%d-result.json" % client, value)
+                            verified.append(value)
+                        metrics = {**wave_metrics(verified, started, ack_end, drained_end), "phase": phase, "drain_samples": samples,
+                                   "fake_provider": self.backend.fake}
                         record["waves"].append(metrics)
                         self.write(wave + "/wave-result.json", metrics)
                         rows.outcome(self.plan["row_ledger"], issue_id=self.active_issue["issue_id"], status="passed")
