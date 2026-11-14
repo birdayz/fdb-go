@@ -8,7 +8,7 @@ use libloading::Library;
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
-    ffi::{CString, c_char, c_void},
+    ffi::{CString, OsString, c_char, c_void},
     fs,
     path::Path,
     ptr,
@@ -24,6 +24,14 @@ use std::{
 type Handle = *mut c_void;
 type Code = i32;
 type Callback = unsafe extern "C" fn(Handle, *mut c_void);
+type Select = unsafe extern "C" fn(i32, i32) -> Code;
+type NetworkOption = unsafe extern "C" fn(i32, *const u8, i32) -> Code;
+type Setup = unsafe extern "C" fn() -> Code;
+/// fdb.options `disable_multi_version_client_api`; it must precede network setup.
+const DISABLE_MULTI_VERSION_CLIENT_API: i32 = 60;
+const ENV_OPTION_PREFIX: &[u8] = b"FDB_NETWORK_OPTION_";
+const ENV_OPTION_REFUSED: &str =
+    "inherited FDB_NETWORK_OPTION_* environment variables are not allowed";
 const CLIENT_SHA256: &str = "617572467897d0360f76ffc33f24b58090ee691e3273750d2ff334cc71aae3fa";
 static NETWORK_STARTED: AtomicBool = AtomicBool::new(false);
 const NETWORK_RUNNING: i32 = i32::MIN;
@@ -42,8 +50,9 @@ struct KeyValue {
 
 struct Api {
     _library: Library,
-    select: unsafe extern "C" fn(i32, i32) -> Code,
-    setup: unsafe extern "C" fn() -> Code,
+    select: Select,
+    network_option: NetworkOption,
+    setup: Setup,
     run: unsafe extern "C" fn() -> Code,
     stop: unsafe extern "C" fn() -> Code,
     open: unsafe extern "C" fn(*const c_char, *mut Handle) -> Code,
@@ -81,6 +90,28 @@ struct Api {
     future_value: unsafe extern "C" fn(Handle, *mut i32, *mut *const u8, *mut i32) -> Code,
     future_kvs: unsafe extern "C" fn(Handle, *mut *const KeyValue, *mut i32, *mut i32) -> Code,
     future_int64: unsafe extern "C" fn(Handle, *mut i64) -> Code,
+}
+
+/// libfdb_c applies FDB_NETWORK_OPTION_* variables at setup even with option 60, so any
+/// such key (raw bytes on Unix) is refused without reporting its name or value.
+fn refuse_network_option_env(vars: impl IntoIterator<Item = (OsString, OsString)>) -> Result<()> {
+    if vars
+        .into_iter()
+        .any(|(key, _)| key.as_encoded_bytes().starts_with(ENV_OPTION_PREFIX))
+    {
+        return Err(Error::new(ErrorKind::Config, ENV_OPTION_REFUSED));
+    }
+    Ok(())
+}
+
+/// Selects API 730 and disables the multi-version client API before network setup.
+/// Safety: the pointers are the loaded libfdb_c's symbols, called once per process.
+unsafe fn start_network(select: Select, option: NetworkOption, setup: Setup) -> Result<()> {
+    unsafe {
+        checked(select(730, 730))?;
+        checked(option(DISABLE_MULTI_VERSION_CLIENT_API, ptr::null(), 0))?;
+        checked(setup())
+    }
 }
 
 fn checked(code: Code) -> Result<()> {
@@ -127,6 +158,7 @@ impl Api {
         }
         Ok(Self {
             select: symbol!("fdb_select_api_version_impl"),
+            network_option: symbol!("fdb_network_set_option"),
             setup: symbol!("fdb_setup_network"),
             run: symbol!("fdb_run_network"),
             stop: symbol!("fdb_stop_network"),
@@ -183,6 +215,7 @@ impl NativeDatabase {
     /// Opening starts the native client's one-shot network thread, but never
     /// starts an FDB server. Call only against an explicitly admitted cluster.
     pub fn open(client: &Path, cluster_file: &Path) -> Result<Self> {
+        refuse_network_option_env(std::env::vars_os())?;
         if !client.is_absolute() || !cluster_file.is_absolute() {
             return Err(Error::new(
                 ErrorKind::Config,
@@ -200,8 +233,7 @@ impl NativeDatabase {
         }
         let _ = LOADED_API.set(api.clone());
         unsafe {
-            checked((api.select)(730, 730))?;
-            checked((api.setup)())?;
+            start_network(api.select, api.network_option, api.setup)?;
         }
         let run_api = api.clone();
         let exit = Arc::new(AtomicI32::new(NETWORK_RUNNING));
@@ -568,6 +600,204 @@ impl Transaction for NativeTransaction<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{os::unix::ffi::OsStringExt, process::Command};
+
+    const SENTINEL: &[u8] = b"sentinel-7f3a";
+
+    fn os(bytes: &[u8]) -> OsString {
+        OsString::from_vec(bytes.to_vec())
+    }
+
+    fn with_sentinel(prefix: &[u8], suffix: &[u8]) -> OsString {
+        os(&[prefix, SENTINEL, suffix].concat())
+    }
+
+    /// (name, key, value, refused): one entry per variable class and unrelated control.
+    fn classes() -> Vec<(&'static str, OsString, OsString, bool)> {
+        vec![
+            (
+                "normal",
+                os(b"FDB_NETWORK_OPTION_TRACE_ENABLE"),
+                with_sentinel(b"/", b""),
+                true,
+            ),
+            (
+                "empty value",
+                os(b"FDB_NETWORK_OPTION_TRACE_LOG_GROUP"),
+                os(b""),
+                true,
+            ),
+            (
+                "non-UTF-8 value",
+                os(b"FDB_NETWORK_OPTION_KNOB"),
+                with_sentinel(b"\xff", b"\xfe"),
+                true,
+            ),
+            (
+                "non-UTF-8 key",
+                os(b"FDB_NETWORK_OPTION_\xffKNOB"),
+                with_sentinel(b"", b""),
+                true,
+            ),
+            (
+                "bare prefix",
+                os(b"FDB_NETWORK_OPTION_"),
+                with_sentinel(b"", b""),
+                true,
+            ),
+            (
+                "near-miss key",
+                os(b"FDB_NETWORK_OPTIONS_TRACE_ENABLE"),
+                with_sentinel(b"", b""),
+                false,
+            ),
+            (
+                "lowercase key",
+                os(b"fdb_network_option_trace_enable"),
+                with_sentinel(b"", b""),
+                false,
+            ),
+            (
+                "embedded prefix",
+                os(b"XFDB_NETWORK_OPTION_TRACE_ENABLE"),
+                with_sentinel(b"", b""),
+                false,
+            ),
+            (
+                "prefix in value",
+                os(b"UNRELATED"),
+                os(b"FDB_NETWORK_OPTION_TRACE_ENABLE"),
+                false,
+            ),
+            (
+                "non-UTF-8 unrelated key",
+                os(b"\xffFDB_NETWORK_OPTION_KNOB"),
+                with_sentinel(b"", b""),
+                false,
+            ),
+        ]
+    }
+
+    #[test]
+    fn network_option_variables_are_refused_by_raw_key_prefix() {
+        let other = || (os(b"PATH"), os(b"/usr/bin"));
+        assert!(refuse_network_option_env(Vec::<(OsString, OsString)>::new()).is_ok());
+        for (name, key, value, refused) in classes() {
+            let result = refuse_network_option_env([other(), (key, value), other()]);
+            if refused {
+                let err = result.unwrap_err();
+                assert_eq!(err.kind, ErrorKind::Config, "{name}");
+                assert_eq!(err.message, ENV_OPTION_REFUSED, "{name}");
+            } else {
+                assert!(result.is_ok(), "{name}");
+            }
+        }
+    }
+
+    static CALLS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    extern "C" fn fake_select(runtime: i32, header: i32) -> Code {
+        CALLS
+            .lock()
+            .unwrap()
+            .push(format!("select {runtime} {header}"));
+        0
+    }
+    extern "C" fn fake_option(option: i32, value: *const u8, length: i32) -> Code {
+        let null = value.is_null();
+        CALLS
+            .lock()
+            .unwrap()
+            .push(format!("option {option} null={null} {length}"));
+        0
+    }
+    extern "C" fn failing_option(option: i32, value: *const u8, length: i32) -> Code {
+        fake_option(option, value, length);
+        2006
+    }
+    extern "C" fn fake_setup() -> Code {
+        CALLS.lock().unwrap().push("setup".into());
+        0
+    }
+
+    #[test]
+    fn start_network_disables_multi_version_client_after_select_before_setup() {
+        unsafe { start_network(fake_select, fake_option, fake_setup) }.unwrap();
+        assert_eq!(
+            std::mem::take(&mut *CALLS.lock().unwrap()),
+            ["select 730 730", "option 60 null=true 0", "setup"]
+        );
+        let err = unsafe { start_network(fake_select, failing_option, fake_setup) }.unwrap_err();
+        assert_eq!(err.fdb_code, Some(2006));
+        assert_eq!(
+            std::mem::take(&mut *CALLS.lock().unwrap()),
+            ["select 730 730", "option 60 null=true 0"],
+            "a failed option must not set up the network"
+        );
+    }
+
+    const CHILD_EXPECT: &str = "OTEL_RUST_NATIVE_ENV_EXPECT";
+
+    /// Runs only as `open_checks_environment_before_loading_the_client`'s subprocess.
+    #[test]
+    #[ignore = "subprocess child; needs its parent's environment"]
+    fn open_environment_child() {
+        let expect = std::env::var(CHILD_EXPECT).expect("run by the parent test");
+        let err = match NativeDatabase::open(
+            Path::new("/nonexistent-otel-rust/libfdb_c.so"),
+            Path::new("/nonexistent-otel-rust/fdb.cluster"),
+        ) {
+            Ok(_) => panic!("open must fail"),
+            Err(err) => err,
+        };
+        let message = match expect.as_str() {
+            "refuse" => ENV_OPTION_REFUSED,
+            "load" => "cannot read explicit libfdb_c file",
+            other => panic!("unknown expectation {other}"),
+        };
+        assert_eq!(err.kind, ErrorKind::Config);
+        assert_eq!(err.message, message);
+        assert!(!NETWORK_STARTED.load(Ordering::Acquire));
+        assert!(LOADED_API.get().is_none());
+    }
+
+    #[test]
+    fn open_checks_environment_before_loading_the_client() {
+        let exe = std::env::current_exe().unwrap();
+        let mut runs = vec![("no variables", None, false)];
+        runs.extend(
+            classes()
+                .into_iter()
+                .map(|(name, key, value, refused)| (name, Some((key, value)), refused)),
+        );
+        for (name, var, refused) in runs {
+            let mut child = Command::new(&exe);
+            child
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "native::tests::open_environment_child",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env_clear()
+                .env(CHILD_EXPECT, if refused { "refuse" } else { "load" });
+            if let Some((key, value)) = var {
+                child.env(key, value);
+            }
+            let out = child.output().unwrap();
+            let printed = [out.stdout.as_slice(), out.stderr.as_slice()].concat();
+            assert!(out.status.success(), "{name}: child failed");
+            assert!(
+                String::from_utf8_lossy(&out.stdout).contains("1 passed"),
+                "{name}: child test did not run"
+            );
+            assert!(
+                !printed.windows(SENTINEL.len()).any(|w| w == SENTINEL),
+                "{name}: environment value printed"
+            );
+        }
+    }
+
     #[test]
     fn dead_network_does_not_wait_for_an_unreachable_callback() {
         let (_sender, receiver) = mpsc::sync_channel(1);
