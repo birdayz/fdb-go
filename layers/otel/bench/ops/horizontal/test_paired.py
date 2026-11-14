@@ -778,6 +778,42 @@ class CampaignTests(Fixture):
         ledger = q.rows.inspect(self.plan["row_ledger"])
         self.assertEqual(ledger["issued_rows"], 100000)
 
+    def test_no_report_or_schema_invalid_report_fails_charged_without_comparison(self):
+        for missing in (True, False):
+            with self.subTest(no_report=missing):
+                label = "no-report" if missing else "invalid-report"
+                plan = q.fake_plan(self.root / label)
+                backend = q.FakeBackend(plan["first_epoch"])
+                old = backend.release_and_wait
+                def failed(*args):
+                    value = old(*args)
+                    if missing:
+                        raise ValueError("producer/control process failed; collector unsettled; no schema report")
+                    del value[1]["ingest_resources"]
+                    return value
+                backend.release_and_wait = failed
+                output = self.root / (label + "-output")
+                with self.assertRaises(ValueError):
+                    q.PairedCampaign(plan, output, backend).run()
+                result = d.read(output / "paired-result.json")
+                self.assertEqual(result["charged_rows"], 100000)
+                self.assertEqual(result["released_waves"], 1)
+                self.assertFalse(result["accepted_comparison"])
+                self.assertTrue(result["cleanup_passed"])
+                self.assertEqual(backend.events.count("release"), 1)
+                self.assertEqual(backend.events[-1], "cleanup")
+                self.assertNotIn("verify", backend.events)
+                self.assertFalse(list(output.rglob("wave-result.json")))
+                ledger = q.rows.inspect(plan["row_ledger"])
+                self.assertEqual(ledger["issued_rows"], 100000)
+                self.assertEqual([row["status"] for row in ledger["outcomes"]], ["failed"])
+                self.assertEqual(ledger["pending_issue_ids"], [])
+                if not missing:
+                    receipt = d.read(next(output.rglob("client1-result.json")))
+                    self.assertFalse(receipt["accepted"])
+                    self.assertFalse(receipt["rate_eligible"])
+                    self.assertNotIn("ingest_resources", receipt["raw_report"])
+
     def test_wrong_ready_host_never_releases_and_cleanup_still_runs(self):
         old = self.backend.ready
         def wrong(*args):

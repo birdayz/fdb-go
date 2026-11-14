@@ -6,6 +6,7 @@ exclusive grant, exact metadata identity and a single JSON-argument executable.
 No producer capability is emulated: absent/failed control reports refuse admission.
 """
 import argparse
+import base64
 from concurrent.futures import ThreadPoolExecutor
 import copy
 from decimal import Decimal
@@ -287,6 +288,29 @@ def run_job(path):
     return value
 
 
+def collect_artifacts(g, work):
+    """Retain byte-exact adjacent diagnostics/partials without parsing a schema report."""
+    artifacts, manifest, total = {}, {}, 0
+    inputs = set(g.get("inputs", {}))
+    for item in sorted(work.iterdir()):
+        if str(item) in inputs:
+            continue
+        fd = os.open(item, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_size <= MAX_ARTIFACT - total,
+                    "partial artifact type/size")
+            data = stream.read(MAX_ARTIFACT - total + 1)
+        require(len(data) <= MAX_ARTIFACT - total, "aggregate partial artifact cap")
+        total += len(data)
+        try:
+            artifacts[item.name], encoding = data.decode("utf-8"), "utf-8"
+        except UnicodeDecodeError:
+            artifacts[item.name], encoding = base64.b64encode(data).decode("ascii"), "base64"
+        manifest[item.name] = {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data), "encoding": encoding}
+    return {"node_id": g["node_id"], "job_sha256": g["job_sha256"], "artifacts": artifacts, "artifact_manifest": manifest}
+
+
 def bound_ssh_logs():
     # Kernel cap applies independently to each of the two exclusive SSH logs.
     resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_LOG // 2, MAX_LOG // 2))
@@ -329,19 +353,7 @@ def remote_main(argv=None):
     elif a.mode == "stopped":
         value = stop_scope(g)
     else:
-        artifacts = {}
-        sidecars = {g["job"].get("verification", {}).get("query_results_file")}
-        if mode == "setup":
-            sidecars.add(g["job"].get("layout_file"))
-        for item in sorted(work.iterdir()):
-            if item.name.startswith(mode) or item.name == "job.json" or str(item) in sidecars:
-                info = item.lstat()
-                require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_size <= MAX_ARTIFACT,
-                        "partial artifact type/size")
-                require(sum(len(x.encode()) for x in artifacts.values()) + info.st_size <= MAX_ARTIFACT,
-                        "aggregate partial artifact cap")
-                artifacts[item.name] = item.read_text()
-        value = {"node_id": a.node_id, "job_sha256": g["job_sha256"], "artifacts": artifacts}
+        value = collect_artifacts(g, work)
     print(json.dumps(value, sort_keys=True, allow_nan=False))
 
 

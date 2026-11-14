@@ -651,6 +651,15 @@ library, corpus, descriptor and layout template) requires per-held-host transfer
 receipts. The existing zstd roundtrip/private-fanout transfer accepts the paired
 asset set without changing legacy asset bytes.
 
+Nonzero exits, absent reports and schema-invalid reports fail the released arm;
+the issued row population remains charged with a failed outcome, with no retry
+or comparison. Cleanup first aborts/reaps and proves exact scope quiescence, then
+attempts bounded collection even on failure. All adjacent non-input job files,
+including separately named diagnostics and malformed/partial reports, are retained
+in `raw.json` with original-byte SHA256, byte count and encoding per artifact.
+UTF-8 preserves exact line endings; binary partials use lossless base64. Unsafe or
+oversize artifacts fail collection explicitly rather than being silently sampled.
+
 `otel_paired_result_v1` preserves each original `otel_control_report_v1` and its
 arm/job identity. Admission, ACK operations (including replay), distinct audited
 rows and storage drain are not interchangeable. Top-level `acked_span_operations`

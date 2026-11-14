@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Offline native-adapter regressions: fake provider/transport/processes only."""
+import base64
 import copy
 import hashlib
 import json
@@ -310,6 +311,62 @@ class ProcessTests(NativeFixture):
             self.backend._execute({1: self.current})
         self.assertEqual(launch.call_count, 1)
         self.assertTrue((self.current["directory"] / "raw.json").exists())
+
+    def test_no_report_or_invalid_report_retains_named_diagnostic_and_binary_partials(self):
+        for index, (code, report) in enumerate(((2, None), (0, '{"schema":"invalid"}'), (0, '{"schema":'))):
+            with self.subTest(exit=code, report=report):
+                self.output = self.root / ("failure-" + str(index))
+                self.current = self.staged()
+                remote = self.root / ("remote-" + str(index)); remote.mkdir()
+                diagnostic = b'{"error":"collector workers did not join"}\r\n'
+                partial = b"\x00\xffpartial"
+                (remote / "worker-diagnostic.json").write_bytes(diagnostic)
+                (remote / "partial.tmp").write_bytes(partial)
+                if report is not None:
+                    (remote / "ingest.json").write_text(report)
+                grant = dict(self.current["grant"], node_id=self.current["node"]["id"], inputs={})
+                calls = []
+                def transport(node, mode, path, extra=(), **kw):
+                    calls.append(mode)
+                    if mode == "read":
+                        self.assertIsNotNone(report)
+                        return n.loads(report)
+                    if mode == "collect":
+                        return n.collect_artifacts(grant, remote)
+                    return self.transport(node, mode, path, extra, **kw)
+                process = Process(code=code)
+                with mock.patch.object(self.backend, "_launch", side_effect=lambda x: x.update(process=process)) as launch, \
+                        mock.patch.object(self.backend, "_remote", side_effect=transport), mock.patch.object(self.backend, "_healthy"), \
+                        self.assertRaises(ValueError):
+                    self.backend._execute({1: self.current})
+                self.assertEqual(launch.call_count, 1)
+                self.assertTrue(process.waited)
+                self.assertIn("stopped", calls)
+                self.assertIn("collect", calls)
+                self.assertEqual("read" in calls, code == 0)
+                saved = d.read(self.current["directory"] / "raw.json")
+                self.assertEqual(saved["artifacts"]["worker-diagnostic.json"].encode(), diagnostic)
+                self.assertEqual(base64.b64decode(saved["artifacts"]["partial.tmp"]), partial)
+                for name, data in (("worker-diagnostic.json", diagnostic), ("partial.tmp", partial)):
+                    self.assertEqual(saved["artifact_manifest"][name]["sha256"], hashlib.sha256(data).hexdigest())
+                    self.assertEqual(saved["artifact_manifest"][name]["bytes"], len(data))
+                self.assertEqual(saved["artifact_manifest"]["partial.tmp"]["encoding"], "base64")
+                if report is not None:
+                    self.assertEqual(saved["artifacts"]["ingest.json"], report)
+                    self.assertEqual(saved["artifact_manifest"]["ingest.json"]["sha256"], hashlib.sha256(report.encode()).hexdigest())
+
+    def test_adjacent_artifact_capture_excludes_inputs_and_refuses_unsafe_or_oversize_files(self):
+        work = self.root / "artifacts"; work.mkdir()
+        sealed = work / "layout.json"; sealed.write_text("sealed input")
+        diagnostic = work / "diagnostic.json"; diagnostic.write_text("failure")
+        grant = {"node_id": 2, "job_sha256": "a" * 64, "inputs": {str(sealed): "b" * 64}}
+        saved = n.collect_artifacts(grant, work)
+        self.assertEqual(set(saved["artifacts"]), {"diagnostic.json"})
+        with mock.patch.object(n, "MAX_ARTIFACT", 1), self.assertRaisesRegex(ValueError, "type/size"):
+            n.collect_artifacts(grant, work)
+        link = work / "bad-link"; link.symlink_to(diagnostic)
+        with self.assertRaises(OSError):
+            n.collect_artifacts(grant, work)
 
     def test_missing_genuine_report_refuses_even_exit_zero(self):
         self.current = self.staged()
