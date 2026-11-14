@@ -121,6 +121,14 @@ fn run(job: Job) -> Result<()> {
     run_with(job, NativeDatabase::open)
 }
 fn run_with<D: Database>(job: Job, open: impl FnOnce(&Path, &Path) -> Result<D>) -> Result<()> {
+    run_spawning(job, open, |_| Ok(()))
+}
+/// `before_spawn(i)` precedes worker `i`'s spawn; its error takes the spawn-failure path.
+fn run_spawning<D: Database>(
+    job: Job,
+    open: impl FnOnce(&Path, &Path) -> Result<D>,
+    mut before_spawn: impl FnMut(usize) -> std::io::Result<()>,
+) -> Result<()> {
     if job.expected_frames == 0
         || job.expected_frames > job.row_budget
         || job.row_budget > 10_000_000
@@ -204,8 +212,10 @@ fn run_with<D: Database>(job: Job, open: impl FnOnce(&Path, &Path) -> Result<D>)
     let error = Arc::new(Mutex::new(None::<String>));
     let started = Instant::now();
     let ctx = Context::default().with_deadline(started + Duration::from_secs(job.timeout_seconds));
+    // The scope joins every started worker, including after a spawn failure.
     thread::scope(|scope| {
-        for _ in 0..job.workers {
+        for i in 0..job.workers {
+            let (first_error, run_ctx) = (error.clone(), ctx.clone());
             let writer = writer.clone();
             let schema = schema.clone();
             let input = input.clone();
@@ -214,7 +224,7 @@ fn run_with<D: Database>(job: Job, open: impl FnOnce(&Path, &Path) -> Result<D>)
             let error = error.clone();
             let ctx = ctx.clone();
             let job = &job;
-            scope.spawn(move || {
+            let worker = move || {
                 loop {
                     if ctx.check().is_err() {
                         break;
@@ -264,7 +274,22 @@ fn run_with<D: Database>(job: Job, open: impl FnOnce(&Path, &Path) -> Result<D>)
                         break;
                     }
                 }
+            };
+            let spawned = before_spawn(i).and_then(|()| {
+                thread::Builder::new()
+                    .name(format!("otel-writer-{i}"))
+                    .spawn_scoped(scope, worker)
             });
+            if spawned.is_err() {
+                let mut first = first_error.lock().unwrap();
+                if first.is_none() {
+                    *first = Some(
+                        failure(ErrorKind::Operation, "cannot spawn writer worker").to_string(),
+                    );
+                }
+                run_ctx.cancel();
+                break;
+            }
         }
     });
     let frames = input.lock().unwrap().frames;

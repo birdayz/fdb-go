@@ -8,7 +8,10 @@ use std::{
     collections::BTreeMap,
     fs,
     os::unix::fs::PermissionsExt,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
 };
 
 static TEMP_ID: AtomicUsize = AtomicUsize::new(0);
@@ -96,13 +99,18 @@ enum Mode {
     Success,
     FailSecond,
     Deadline,
+    /// The first commit applies, signals `committed_signal`, then returns only once canceled.
+    AwaitCancelAfterFirst,
 }
 #[derive(Default)]
 struct State {
     data: BTreeMap<Vec<u8>, Vec<u8>>,
+    transactions: usize,
     attempts: usize,
     committed: usize,
     mode: Mode,
+    committed_signal: Option<mpsc::Sender<()>>,
+    saw_cancel: bool,
 }
 #[derive(Clone)]
 struct Fake(Arc<Mutex<State>>);
@@ -121,6 +129,7 @@ struct Tx {
 }
 impl Database for Fake {
     fn transaction(&self) -> Result<Box<dyn Transaction + '_>> {
+        self.0.lock().unwrap().transactions += 1;
         Ok(Box::new(Tx {
             db: self.clone(),
             changes: BTreeMap::new(),
@@ -190,6 +199,17 @@ impl Transaction for Tx {
                     state.data.remove(&key);
                 }
             }
+        }
+        if matches!(state.mode, Mode::AwaitCancelAfterFirst) && state.committed == 1 {
+            let signal = state.committed_signal.take().expect("one gated commit");
+            drop(state);
+            signal.send(()).unwrap();
+            // Waits on the cancellation predicate itself; no timing assumption.
+            while ctx.check().is_ok() {
+                thread::yield_now();
+            }
+            // Cancellation, not the job deadline, released it.
+            self.db.0.lock().unwrap().saw_cancel = ctx.deadline.is_some_and(|d| Instant::now() < d);
         }
         Ok(())
     }
@@ -580,4 +600,132 @@ fn driver_deadline_records_canceled_commit_without_ack_or_followup() {
         db.0.lock().unwrap().data,
         BTreeMap::from([(vec![0], vec![1, 2])])
     );
+}
+
+const SPAWN_ERROR: &str = "Operation: cannot spawn writer worker";
+
+#[test]
+fn first_spawn_failure_writes_empty_synced_receipt_without_transactions() {
+    let files = Files::new();
+    let mut job = files.job(&frames());
+    job.workers = 2;
+    let output = job.output.clone();
+    let db = Fake::new(Mode::Success);
+    let mut calls = Vec::new();
+    let err = run_spawning(
+        job,
+        |_, _| Ok(db.clone()),
+        |i| {
+            calls.push(i);
+            Err(std::io::Error::other("injected spawn failure"))
+        },
+    )
+    .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Operation);
+    assert_eq!(calls, [0], "no worker launch after the failed spawn");
+    let result = receipt(&output);
+    assert_eq!(result["frames"], 0);
+    assert_eq!(result["committed_spans"], 0);
+    assert_eq!(result["committed_batches"], 0);
+    assert_eq!(result["retries"], 0);
+    assert!(result["samples"].as_array().unwrap().is_empty());
+    assert_eq!(result["error"], SPAWN_ERROR);
+    assert_eq!(
+        fs::metadata(&output).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let state = db.0.lock().unwrap();
+    assert_eq!((state.transactions, state.attempts), (0, 0));
+    assert_eq!(state.data, BTreeMap::from([(vec![0], vec![1, 2])]));
+}
+
+#[test]
+fn later_spawn_failure_cancels_joins_and_keeps_exact_acknowledged_progress() {
+    let files = Files::new();
+    let mut job = files.job(&frames());
+    job.workers = 3;
+    let output = job.output.clone();
+    let db = Fake::new(Mode::AwaitCancelAfterFirst);
+    let (signal, committed) = mpsc::channel();
+    db.0.lock().unwrap().committed_signal = Some(signal);
+    let mut calls = Vec::new();
+    let err = run_spawning(
+        job,
+        |_, _| Ok(db.clone()),
+        |i| {
+            calls.push(i);
+            if i == 0 {
+                return Ok(());
+            }
+            // Fail only after worker 0's first commit has been applied.
+            // Watchdog only, not a timing verdict: a missing commit fails instead of hanging.
+            committed
+                .recv_timeout(Duration::from_secs(5))
+                .expect("worker 0 committed before the later spawn");
+            Err(std::io::Error::other("injected spawn failure"))
+        },
+    )
+    .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Operation);
+    assert_eq!(calls, [0, 1], "no worker launch after the failed spawn");
+    let result = receipt(&output);
+    assert_eq!(result["frames"], 1);
+    assert_eq!(result["committed_spans"], 1);
+    assert_eq!(result["committed_batches"], 1);
+    assert_eq!(result["retries"], 0);
+    let samples = result["samples"].as_array().unwrap();
+    assert_eq!(samples.len(), 1);
+    assert_eq!(samples[0]["received_spans"], 1);
+    assert_eq!(samples[0]["committed_spans"], 1);
+    assert!(samples[0]["error"].is_null());
+    assert_eq!(
+        result["error"], SPAWN_ERROR,
+        "never the reconciliation error"
+    );
+    // run_spawning returned, so worker 0 was joined; nothing ran after its canceled loop check.
+    let state = db.0.lock().unwrap();
+    assert!(
+        state.saw_cancel,
+        "worker 0 observed the spawn-failure cancellation"
+    );
+    assert_eq!(
+        (state.transactions, state.attempts, state.committed),
+        (1, 1, 1)
+    );
+    assert_eq!(state.data.keys().filter(|key| key[0] == 1).count(), 1);
+}
+
+#[test]
+fn multiple_workers_spawn_and_commit_the_exact_population() {
+    let files = Files::new();
+    let source = [frames(), frames(), frames()].concat();
+    let mut job = files.job(&source);
+    job.workers = 3;
+    let output = job.output.clone();
+    let db = Fake::new(Mode::Success);
+    let mut calls = Vec::new();
+    run_spawning(
+        job,
+        |_, _| Ok(db.clone()),
+        |i| {
+            calls.push(i);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(calls, [0, 1, 2]);
+    let result = receipt(&output);
+    assert_eq!(result["frames"], 6);
+    assert_eq!(result["committed_spans"], 6);
+    assert_eq!(result["committed_batches"], 6);
+    assert!(result["error"].is_null());
+    let samples = result["samples"].as_array().unwrap();
+    assert_eq!(samples.len(), 6);
+    assert!(
+        samples
+            .iter()
+            .all(|s| s["received_spans"] == 1 && s["committed_spans"] == 1 && s["error"].is_null())
+    );
+    let state = db.0.lock().unwrap();
+    assert_eq!((state.transactions, state.committed), (6, 6));
 }
