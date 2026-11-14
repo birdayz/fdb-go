@@ -78,6 +78,43 @@ class PlanTests(Fixture):
         with self.assertRaises(ValueError):
             q.validate_plan(bad)
 
+    def test_queue_retry_and_request_bounds_match_portable_schema_at_every_request_size(self):
+        value = q.fake_plan(self.root / "queue-constraints", kind="collector_queue")
+        schema = d.read(Path(q.__file__).with_name("paired-job-v1.schema.json"))["properties"]["workload"]["oneOf"][1]
+        rules = schema["allOf"]
+        self.assertEqual(len(rules), 64)
+        self.assertEqual([rule["if"]["properties"]["producer_batch_spans"]["const"] for rule in rules[1:]], list(range(2, 65)))
+        self.assertEqual(schema["properties"]["producer_batch_spans"]["maximum"], 64)
+        self.assertEqual(schema["properties"]["queue_capacity_spans"]["minimum"], 1)
+        # Evaluate the standard if/properties/const -> then/minimum subset used
+        # by these constraints, without an undeclared JSON Schema dependency.
+        def schema_allows(block):
+            for rule in rules:
+                self.assertEqual(set(rule), {"if", "then"})
+                matches = all(block[key] == predicate["const"] for key, predicate in rule["if"]["properties"].items())
+                if matches and any(block[key] < predicate["minimum"] for key, predicate in rule["then"]["properties"].items()):
+                    return False
+            return True
+        for request in range(1, 65):
+            for capacity in {1, max(1, request - 1), request, request + 1, 10000000}:
+                for enabled, initial in ((False, 0), (True, 0), (True, 1), (True, 500)):
+                    block = {**value["workload"], "producer_batch_spans": request, "queue_capacity_spans": capacity,
+                             "batch_min_spans": 1, "retry_enabled": enabled, "retry_initial_ms": initial}
+                    expected = request <= capacity and (not enabled or initial > 0)
+                    with self.subTest(request=request, capacity=capacity, enabled=enabled, initial=initial):
+                        self.assertEqual(schema_allows(block), expected)
+                        if expected:
+                            self.assertIs(q.workload(block), block)
+                        else:
+                            with self.assertRaises(ValueError):
+                                q.workload(block)
+        for block in ({**value["workload"], "producer_batch_spans": 1},
+                      {**value["workload"], "producer_batch_spans": 1, "producers": 1, "consumers": 1, "batch_max_spans": 64}):
+            self.assertIs(q.validate_plan({**value, "workload": block})["workload"], block)
+        for changes in ({"retry_initial_ms": 0}, {"producer_batch_spans": 64, "queue_capacity_spans": 63, "batch_min_spans": 1}):
+            with self.assertRaises(ValueError):
+                q.validate_plan({**value, "workload": {**value["workload"], **changes}})
+
     def test_sources_assets_and_additional_artifacts_have_real_nonempty_seals(self):
         for name in self.plan["assets"]:
             path = Path(self.plan["assets"][name]["path"])

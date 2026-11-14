@@ -74,6 +74,8 @@ def workload(value):
             p.require(p.integer(value[key], 0 if key in ("retry_initial_ms", "retry_elapsed_ms") else 1),
                       "typed queue/retry parameter: " + key)
         p.require(type(value["block_on_overflow"]) is bool and type(value["retry_enabled"]) is bool, "typed overflow/retry policy")
+        p.require(not value["retry_enabled"] or value["retry_initial_ms"] > 0, "enabled retry requires positive initial interval")
+        p.require(value["producer_batch_spans"] <= value["queue_capacity_spans"], "producer request exceeds queue capacity")
         p.require(value["producers"] <= 32 and value["consumers"] <= 32 and value["queue_capacity_spans"] <= 10000000
                   and value["batch_min_spans"] <= value["batch_max_spans"] <= 10000000
                   and value["batch_min_spans"] <= value["queue_capacity_spans"]
