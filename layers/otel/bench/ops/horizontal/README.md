@@ -668,7 +668,11 @@ traffic/other bounds. EUR2 pilot/EUR8 sweep allocations and the cumulative EUR10
 ceiling are checked before active transitions. Missing/stale/non-EUR prices,
 unknown extras, changed IDs, renewal and cleanup uncertainty refuse continuation.
 Price integrity seals are not provider signatures: live response provenance and
-enforced traffic bounds remain admission requirements. Cleanup is never blocked
+enforced traffic bounds remain admission requirements. The ledger accounts
+reserved traffic/other bounds but does not impose a provider traffic quota;
+unknown/unproved billing bounds keep the paid CLI disabled. Its current one-hour
+price-freshness limit also stops a longer campaign early unless fresh same-bound
+recapture is implemented; the two-hour lease never overrides that refusal. Cleanup is never blocked
 by an admission failure. Paired managed watches use the same sealed USER-manager
 root-slice isolation and exact-owned/baseline cleanup checks; fake procfs/provider
 tests simulate controller loss, not actual OS survival.
@@ -686,6 +690,9 @@ quiescence and cleanup. It must print `FAKE_PASSED`, 8,550,000 charged rows,
 18 released waves and `accepted_comparison:false`. Synthetic fixtures are not
 benchmarks or real authorizations. Add `--profile pilot` for the two-host/repeated
 sequence. A new output path is mandatory; nothing overwrites or resumes a run.
+With `--dry-run --plan FAKE_PLAN`, the CLI creates a new adjacent fake ledger
+instead of ever debiting the supplied plan's authorization ledger; live plans
+are rejected before rehearsal output/ledger creation.
 `paired_native.py` implements the real pinned-host backend against this versioned
 control contract: fresh price re-capture, managed-watch registration, per-provider
 command cost gates, sealed remote inputs, Go-only setup/verify, typed Go/Rust
@@ -694,8 +701,10 @@ five-second stable drain, exact process quiescence and protected ten-kind teardo
 It has fake transport/process/provider regressions, not live acceptance evidence.
 Before any paid mutation, `preflight_verifications` must replay a sealed local
 100k ingest plus full cross-reader/census/1600-oracle proof for EACH selected arm,
-using the very same executable/source/corpus seals. A local `oracle:none` result
-cannot unlock the pilot. The paid CLI still refuses `--execute-approved` while
+using the very same executable/source/corpus/client/writer/compression seals AND
+identical complete workload object. Local point2 must use the paid pilot's exact
+queue/retry/concurrency configuration; a minimal point1 or `oracle:none` result
+cannot unlock it. The paid CLI still refuses `--execute-approved` while
 actual producer/control capability and independent-watch runtime proof are missing.
 
 `native_geometry` is one shared, sealed data object, never per-arm overrides:

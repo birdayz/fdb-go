@@ -250,8 +250,7 @@ def validate_plan(plan, *, check_assets=True):
                           and job["client_library_sha256"] == (None if arm == "go_pure" else plan["assets"]["libfdb_c"]["sha256"])
                           and job["record_compression"] == plan["storage_options"]["record_compression"]
                           and job["writer_batch_size"] == plan["writer_batch_size"] and job["writer_workers"] == plan["writer_workers"]
-                          and job["workload"]["kind"] == plan["workload"]["kind"]
-                          and job["workload"]["producer_batch_spans"] == plan["workload"]["producer_batch_spans"],
+                          and job["workload"] == plan["workload"],
                           "Stage0 proof must exercise current source/binary/corpus/client and matched pipeline parameters")
                 p.require(reports.envelope(job, d.read(proof["ingest_report"]["path"]))["accepted"], "Stage0 ingest failed")
                 reports.verify_audit(d.read(proof["verification"]["path"]), job, "local", control_identity=control_identity(plan))
@@ -342,8 +341,12 @@ def validate_job(job):
         else:
             paths.append(job.get("client_library"))
             p.require(job.get("client_backend") == "native_c" and p.hexstr(job.get("client_library_sha256")), "native client seal required")
+    if mode == "corpus":
+        paths.append(job["corpus_file"])
+    if mode == "setup":
+        paths.append(job["layout_file"])
     for path in paths:
-        p.require(type(path) is str and Path(path).is_absolute() and ".." not in Path(path).parts
+        p.require(type(path) is str and Path(path).is_absolute() and str(Path(path)) == path and ".." not in Path(path).parts
                   and "\x00" not in path, "clean absolute producer paths")
     p.require(len(paths) == len(set(paths)), "producer input/output paths must be distinct")
     p.require(type(job.get("expected_frames")) is int and 1 <= job["expected_frames"] <= 1000000
@@ -352,15 +355,10 @@ def validate_job(job):
     config = job.get("corpus_config")
     p.require(type(config) is dict and set(config) == {"generator", "seed", "count", "tenants", "attributes", "match_every"}
               and config.get("generator") == "otel_fixture_v2" and type(config.get("count")) is int
-              and config["count"] == job["expected_frames"] and p.integer(config.get("seed"))
+              and 2 <= config["count"] == job["expected_frames"] <= 1000000 and type(config.get("seed")) is int and 0 <= config["seed"] <= 2 ** 64 - 1
               and type(config.get("tenants")) is int and config["tenants"] == 1
               and type(config.get("attributes")) is int and config["attributes"] == 8
               and p.integer(config.get("match_every"), 1), "complete source-oracle corpus configuration")
-    if mode == "corpus":
-        paths.append(job["corpus_file"])
-    if mode == "setup":
-        paths.append(job["layout_file"])
-    p.require(len(paths) == len(set(paths)), "new corpus/layout outputs cannot alias other paths")
     if mode == "verify":
         check = job["verification"]
         p.require(type(check) is dict and set(check) == {"query_oracle", "query_results_file", "k", "max_candidates", "max_bytes"}
@@ -768,6 +766,13 @@ def main(argv=None):
         p.require(args.output and Path(args.output).is_absolute(), "new absolute dry-run output required")
         plan = d.read(args.plan) if args.plan else fake_plan(Path(args.output + "-fixtures"), profile=args.profile, kind=args.workload)
         p.require(plan.get("fake_provider") is True, "dry-run refuses live plans")
+        if args.plan:
+            # A fake rehearsal must never debit the supplied family's real ledger.
+            directory = Path(args.output + "-fake-ledger")
+            directory.mkdir(mode=0o700, parents=True, exist_ok=False)
+            ledger = directory / "rows.jsonl"
+            rows.init(str(ledger))
+            plan = {**plan, "row_ledger": str(ledger)}
         result = PairedCampaign(plan, args.output, FakeBackend(plan["first_epoch"])).run()
         print(json.dumps({key: result[key] for key in ("status", "fake_provider", "accepted_comparison", "authorized_rows", "charged_rows",
                                                      "held_host_count", "released_waves", "cleanup_passed")}, sort_keys=True))

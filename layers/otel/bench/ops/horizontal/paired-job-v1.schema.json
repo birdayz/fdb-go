@@ -282,7 +282,7 @@
         "seed": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 9007199254740991
+          "maximum": 18446744073709551615
         },
         "count": {
           "type": "integer",
@@ -438,164 +438,231 @@
   "oneOf": [
     {
       "properties": {
+        "schema": true,
         "mode": {
           "const": "corpus"
-        }
+        },
+        "arm": true,
+        "binary_sha256": true,
+        "source_revision": true,
+        "source_manifest_sha256": true,
+        "timeout_seconds": true,
+        "output": true,
+        "corpus_config": true,
+        "expected_frames": true,
+        "row_budget": true,
+        "corpus_file": true
       },
-      "not": {
-        "anyOf": [
-          {
-            "required": [
-              "run"
-            ]
-          },
-          {
-            "required": [
-              "cluster_file"
-            ]
-          },
-          {
-            "required": [
-              "cluster_sha256"
-            ]
-          },
-          {
-            "required": [
-              "client_backend"
-            ]
-          },
-          {
-            "required": [
-              "client_library"
-            ]
-          },
-          {
-            "required": [
-              "client_library_sha256"
-            ]
-          },
-          {
-            "required": [
-              "record_compression"
-            ]
-          },
-          {
-            "required": [
-              "writer_batch_size"
-            ]
-          },
-          {
-            "required": [
-              "writer_workers"
-            ]
-          },
-          {
-            "required": [
-              "enable_message_deltas"
-            ]
-          },
-          {
-            "required": [
-              "enable_message_full_text"
-            ]
-          },
-          {
-            "required": [
-              "bulk_index_conflicts"
-            ]
-          },
-          {
-            "required": [
-              "workload"
-            ]
-          }
-        ]
-      }
+      "required": [
+        "schema",
+        "mode",
+        "arm",
+        "binary_sha256",
+        "source_revision",
+        "source_manifest_sha256",
+        "timeout_seconds",
+        "output",
+        "corpus_config",
+        "expected_frames",
+        "row_budget",
+        "corpus_file"
+      ],
+      "additionalProperties": false
     },
     {
       "properties": {
+        "schema": true,
         "mode": {
           "const": "setup"
-        }
+        },
+        "arm": true,
+        "binary_sha256": true,
+        "source_revision": true,
+        "source_manifest_sha256": true,
+        "timeout_seconds": true,
+        "output": true,
+        "corpus_config": true,
+        "expected_frames": true,
+        "row_budget": true,
+        "corpus_file": true,
+        "run": true,
+        "cluster_file": true,
+        "cluster_sha256": true,
+        "client_backend": true,
+        "client_library": true,
+        "client_library_sha256": true,
+        "corpus_sha256": true,
+        "workload": true,
+        "writer_batch_size": true,
+        "writer_workers": true,
+        "record_compression": true,
+        "enable_message_deltas": true,
+        "enable_message_full_text": true,
+        "bulk_index_conflicts": true,
+        "layout_file": true
       },
       "required": [
+        "schema",
+        "mode",
+        "arm",
+        "binary_sha256",
+        "source_revision",
+        "source_manifest_sha256",
+        "timeout_seconds",
+        "output",
+        "corpus_config",
+        "expected_frames",
+        "row_budget",
+        "corpus_file",
         "run",
         "cluster_file",
         "cluster_sha256",
         "client_backend",
         "client_library",
         "client_library_sha256",
-        "record_compression",
+        "corpus_sha256",
+        "workload",
         "writer_batch_size",
         "writer_workers",
+        "record_compression",
         "enable_message_deltas",
         "enable_message_full_text",
         "bulk_index_conflicts",
-        "workload",
-        "layout_file",
-        "corpus_sha256"
+        "layout_file"
       ],
-      "not": {
-        "required": [
-          "layout_sha256"
-        ]
-      }
+      "additionalProperties": false
     },
     {
       "properties": {
+        "schema": true,
         "mode": {
           "const": "ingest"
-        }
+        },
+        "arm": true,
+        "binary_sha256": true,
+        "source_revision": true,
+        "source_manifest_sha256": true,
+        "timeout_seconds": true,
+        "output": true,
+        "corpus_config": true,
+        "expected_frames": true,
+        "row_budget": true,
+        "corpus_file": true,
+        "run": true,
+        "cluster_file": true,
+        "cluster_sha256": true,
+        "client_backend": true,
+        "client_library": true,
+        "client_library_sha256": true,
+        "corpus_sha256": true,
+        "workload": true,
+        "writer_batch_size": true,
+        "writer_workers": true,
+        "record_compression": true,
+        "enable_message_deltas": true,
+        "enable_message_full_text": true,
+        "bulk_index_conflicts": true,
+        "layout_file": true,
+        "layout_sha256": true
       },
       "required": [
+        "schema",
+        "mode",
+        "arm",
+        "binary_sha256",
+        "source_revision",
+        "source_manifest_sha256",
+        "timeout_seconds",
+        "output",
+        "corpus_config",
+        "expected_frames",
+        "row_budget",
+        "corpus_file",
         "run",
         "cluster_file",
         "cluster_sha256",
         "client_backend",
         "client_library",
         "client_library_sha256",
-        "record_compression",
+        "corpus_sha256",
+        "workload",
         "writer_batch_size",
         "writer_workers",
+        "record_compression",
         "enable_message_deltas",
         "enable_message_full_text",
         "bulk_index_conflicts",
-        "workload",
         "layout_file",
-        "layout_sha256",
-        "corpus_sha256"
+        "layout_sha256"
       ],
-      "not": {
-        "required": [
-          "verification"
-        ]
-      }
+      "additionalProperties": false
     },
     {
       "properties": {
+        "schema": true,
         "mode": {
           "const": "verify"
-        }
+        },
+        "arm": true,
+        "binary_sha256": true,
+        "source_revision": true,
+        "source_manifest_sha256": true,
+        "timeout_seconds": true,
+        "output": true,
+        "corpus_config": true,
+        "expected_frames": true,
+        "row_budget": true,
+        "corpus_file": true,
+        "run": true,
+        "cluster_file": true,
+        "cluster_sha256": true,
+        "client_backend": true,
+        "client_library": true,
+        "client_library_sha256": true,
+        "corpus_sha256": true,
+        "workload": true,
+        "writer_batch_size": true,
+        "writer_workers": true,
+        "record_compression": true,
+        "enable_message_deltas": true,
+        "enable_message_full_text": true,
+        "bulk_index_conflicts": true,
+        "layout_file": true,
+        "layout_sha256": true,
+        "verification": true
       },
       "required": [
+        "schema",
+        "mode",
+        "arm",
+        "binary_sha256",
+        "source_revision",
+        "source_manifest_sha256",
+        "timeout_seconds",
+        "output",
+        "corpus_config",
+        "expected_frames",
+        "row_budget",
+        "corpus_file",
         "run",
         "cluster_file",
         "cluster_sha256",
         "client_backend",
         "client_library",
         "client_library_sha256",
-        "record_compression",
+        "corpus_sha256",
+        "workload",
         "writer_batch_size",
         "writer_workers",
+        "record_compression",
         "enable_message_deltas",
         "enable_message_full_text",
         "bulk_index_conflicts",
-        "workload",
         "layout_file",
         "layout_sha256",
-        "corpus_sha256",
         "verification"
-      ]
+      ],
+      "additionalProperties": false
     }
   ]
 }

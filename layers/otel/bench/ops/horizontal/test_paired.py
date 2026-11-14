@@ -3,6 +3,7 @@
 import builtins
 import copy
 import json
+import io
 from pathlib import Path
 import tempfile
 import unittest
@@ -117,8 +118,6 @@ class PlanTests(Fixture):
         proofs = {}
         for arm in value["arms"]:
             job = self.job(arm)
-            # Stage0's sealed64/64 queue and concurrency1 differ from the pilot.
-            job["workload"].update(producers=1, consumers=1, batch_max_spans=64)
             files = {}
             for name, data in (("ingest_job", job), ("ingest_report", r.fake_ingest(job)),
                                ("verification", r.fake_verify(job, control_identity=q.control_identity(value)))):
@@ -140,6 +139,13 @@ class PlanTests(Fixture):
                 q.validate_plan(bad)
             bad = copy.deepcopy(value); bad["binary_sha256"] = "d" * 64
             with self.assertRaisesRegex(ValueError, "aliases"):
+                q.validate_plan(bad)
+            minimal = self.job("rust_native")
+            minimal["workload"].update(producers=1, consumers=1, batch_max_spans=64)
+            path = self.root / "minimal-point1-job.json"; d.write(path, minimal)
+            bad = copy.deepcopy(value)
+            bad["preflight_verifications"]["rust_native"]["ingest_job"] = {"path": str(path), "sha256": q.p.sha(path)}
+            with self.assertRaisesRegex(ValueError, "matched pipeline"):
                 q.validate_plan(bad)
 
     def test_arm_order_repetition_namespace_and_immutable_output(self):
@@ -304,6 +310,38 @@ class ProducerTests(Fixture):
         path = self.root / "job.json"; d.write(path, self.job())
         self.assertEqual(q.job_seal(self.job()), q.p.sha(path))
 
+    def test_mode_specific_jobs_reject_unknown_inputs_aliases_and_seed_overflow(self):
+        job = self.job("go_pure")
+        setup = {**copy.deepcopy(job), "mode": "setup"}; del setup["layout_sha256"]
+        verify = r.verification_job(job)
+        common = {"schema", "mode", "arm", "binary_sha256", "source_revision", "source_manifest_sha256", "timeout_seconds", "output",
+                  "corpus_config", "expected_frames", "row_budget", "corpus_file"}
+        corpus = {key: copy.deepcopy(value) for key, value in job.items() if key in common}; corpus["mode"] = "corpus"
+        for mode in (job, setup, verify, corpus):
+            q.validate_job(mode)
+            bad = copy.deepcopy(mode); bad["unknown"] = True
+            with self.assertRaisesRegex(ValueError, "exact mode"):
+                q.validate_job(bad)
+            bad = copy.deepcopy(mode); bad["corpus_config"]["seed"] = 2 ** 64 - 1
+            q.validate_job(bad)
+            for seed in (-1, True, 2 ** 64, 1.5):
+                bad = copy.deepcopy(mode); bad["corpus_config"]["seed"] = seed
+                with self.assertRaisesRegex(ValueError, "corpus configuration"):
+                    q.validate_job(bad)
+        for mode, field in ((setup, "layout_file"), (corpus, "corpus_file")):
+            for path in ("relative", "/srv/../foreign", "/srv//not-clean", mode["output"]):
+                bad = copy.deepcopy(mode); bad[field] = path
+                with self.assertRaises(ValueError):
+                    q.validate_job(bad)
+        with self.assertRaisesRegex(ValueError, "exact mode"):
+            q.validate_job(dict(corpus, cluster_file="/srv/cluster"))
+        wrong = self.job("go_pure"); wrong["client_library"] = "/srv/libfdb_c.so"
+        with self.assertRaisesRegex(ValueError, "pure Go"):
+            q.validate_job(wrong)
+        wrong = self.job("rust_native"); wrong["client_library"] = None
+        with self.assertRaises(ValueError):
+            q.validate_job(wrong)
+
     def test_report_envelope_preserves_raw_rust_identity_and_unknown_telemetry(self):
         job = self.job(); raw = r.fake_ingest(job); before = copy.deepcopy(raw)
         value = q.envelope(job, raw)
@@ -427,6 +465,28 @@ class CampaignTests(Fixture):
             self.assertEqual(path.stat().st_mode & 0o077, 0)
         with self.assertRaises(FileExistsError):
             self.run_campaign()
+
+    def test_dry_run_plan_never_debits_the_supplied_authoritative_ledger(self):
+        original = self.plan["row_ledger"]
+        path = self.root / "input-plan.json"; d.write(path, self.plan)
+        output = self.root / "rehearsal"
+        captured = []
+        def fake_run(campaign):
+            captured.append(campaign.plan)
+            return {"status": "FAKE_PASSED", "fake_provider": True, "accepted_comparison": False,
+                    "authorized_rows": 8550000, "charged_rows": 0, "held_host_count": 6,
+                    "released_waves": 0, "cleanup_passed": True}
+        with mock.patch.object(q.PairedCampaign, "run", autospec=True, side_effect=fake_run), mock.patch("sys.stdout", new=io.StringIO()):
+            q.main(["--dry-run", "--plan", str(path), "--output", str(output)])
+        self.assertEqual(len(captured), 1)
+        self.assertNotEqual(captured[0]["row_ledger"], original)
+        self.assertTrue(Path(captured[0]["row_ledger"]).is_file())
+        self.assertEqual(q.rows.inspect(original)["issued_rows"], 0)
+        self.assertEqual(d.read(path)["row_ledger"], original)
+        live = self.root / "live-plan.json"; d.write(live, dict(self.plan, fake_provider=False))
+        with self.assertRaisesRegex(ValueError, "refuses live"):
+            q.main(["--dry-run", "--plan", str(live), "--output", str(self.root / "rejected")])
+        self.assertFalse((self.root / "rejected-fake-ledger").exists())
 
     def test_failed_gate_stops_whole_campaign_and_preserves_issued_rows(self):
         old = self.backend.release_and_wait

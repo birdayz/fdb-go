@@ -3899,6 +3899,15 @@ boundary in `docs/benchmarks/otel-relational-local-20261107.md`.
   independent pure-Go full-row/census/1600-query verification for every arm.
   `paired.py` refuses paid execution until those binaries and per-arm local
   oracle proofs exist; fake lifecycle/backend checks are not live admission.
+- [ ] Supply and enforce the paid campaign's conservative billable-traffic and
+  other-charge bounds (including provider rounding/proration evidence) before
+  enabling the paid CLI. The cost ledger accounts supplied bounds; it does not
+  itself impose a provider traffic quota. Missing/unknown bounds cannot be
+  promoted into admission by setting a boolean.
+- [ ] Integrate fresh same-bound price recapture if a campaign needs to continue
+  beyond the pricing receipt's one-hour freshness limit. Current continuation
+  fails closed on stale evidence even inside the original two-hour hard lease;
+  a recapture must never renew that lease or lower reserved cost.
 - [ ] Add the separately sealed offered-load600/60/10 schedule and window
   telemetry to both queued producers and the paired runner before permitting
   that profile. Finite queued waves cannot stand in for sustained capacity.
