@@ -5,8 +5,9 @@ All money is decimal text in the JSON interface. The controller must capture the
 provider response, pin its receipt seal independently, and supply complete owned
 inventory on every continuation. A SHA256 seal detects changed evidence; it is
 not a provider signature or permission to trust a fabricated quote. Traffic and
-other bounds must cover the *whole campaign*, including preparation and cleanup;
-the caller must enforce those quotas. This module performs no I/O or cloud calls.
+other bounds cover the *whole campaign*, including preparation and cleanup.
+Root scope1240 uses included-traffic evidence and counters, not an OS byte quota.
+This module performs no I/O or cloud calls.
 """
 from copy import deepcopy
 from decimal import Decimal, InvalidOperation, localcontext
@@ -19,6 +20,8 @@ BUDGET_EUR = Decimal("10")
 HOSTS = 6
 LIFETIME_SECONDS = 7200
 PROFILES = {2: 3600, 6: 7200}
+ALLOCATIONS_EUR = {2: Decimal("2"), 6: Decimal("8")}
+CLEANUP_MARGIN_SECONDS = 3600
 MAX_PRICE_AGE_SECONDS = 3600
 PRICE_SOURCE = "https://api.hetzner.cloud/v1/pricing"
 SEAL = "seal_sha256"
@@ -143,7 +146,9 @@ def admit(receipt, *, expected_seal, first_epoch, deadline_epoch, now_epoch, hel
              or (held_host_count == 6 and lifetime == PROFILES[6]), "original bounded profile deadline required")
     _epoch(now_epoch, "current epoch")
     _require(first_epoch <= now_epoch < deadline_epoch - 1200, "original active cutoff exhausted before admission")
-    pricing = validate_pricing(receipt, now_epoch=now_epoch, expected_seal=expected_seal)
+    # The single capture must already be valid at the original admission bound;
+    # a later capture cannot rewrite that bound or refresh an existing ledger.
+    pricing = validate_pricing(receipt, now_epoch=first_epoch, expected_seal=expected_seal)
     ledger = _sealed({"schema": "paired_cost_v1", "first_epoch": first_epoch,
                       "deadline_epoch": deadline_epoch, "budget_eur": "10", "held_hosts": held_host_count,
                       "pricing": pricing, "pricing_seal": expected_seal,
@@ -164,11 +169,9 @@ def _validate_ledger(ledger):
     _require((ledger["held_hosts"] == 2 and 0 < lifetime <= PROFILES[2])
              or (ledger["held_hosts"] == 6 and lifetime == PROFILES[6]), "deadline renewal forbidden")
     _require(_epoch(ledger["last_epoch"], "last observation epoch") >= first, "invalid last observation epoch")
-    # Cleanup evidence remains recordable even when pricing has become stale.
-    captured = _epoch(ledger["pricing"].get("captured_epoch") if type(ledger["pricing"]) is dict else None,
-                      "pricing capture epoch")
-    _require(captured <= ledger["last_epoch"], "future pricing capture")
-    validate_pricing(ledger["pricing"], now_epoch=captured, expected_seal=ledger["pricing_seal"])
+    # Admission pins one capture for the whole original lifetime plus cleanup.
+    # Validate against that original bound, never a moving continuation epoch.
+    validate_pricing(ledger["pricing"], now_epoch=first, expected_seal=ledger["pricing_seal"])
     hosts = ledger["hosts"]
     _require(type(hosts) is list and len(hosts) <= ledger["held_hosts"], "unexpected host count")
     seen = set()
@@ -210,7 +213,7 @@ def _totals(ledger, now_epoch):
         deleted = host["deletion"]["observed_epoch"] if host and host["deletion"] else None
         end = deleted if deleted is not None else now_epoch
         elapsed_hours += _hours(first, end)
-        reserved_hours += _hours(first, deleted if deleted is not None else max(now_epoch, deadline))
+        reserved_hours += _hours(first, deleted if deleted is not None else max(now_epoch, deadline + CLEANUP_MARGIN_SECONDS))
     pricing = ledger["pricing"]
     with localcontext() as ctx:
         ctx.prec = 100
@@ -247,9 +250,10 @@ def assess(ledger, *, now_epoch, owned_ids, deadline_epoch=None):
     _require(set(ids) == set(report["live_ids"]), "missing or unexpected owned host ID; verified deletion required")
     if Decimal(report["total_upper_eur"]) > BUDGET_EUR:
         raise CostError("EUR10 all-in budget exceeded", report)
+    if Decimal(report["total_upper_eur"]) > ALLOCATIONS_EUR[ledger["held_hosts"]]:
+        raise CostError("stage allocation exceeded including cleanup margin", report)
     if now_epoch >= ledger["deadline_epoch"]:
         raise CostError("original hard deadline reached; cleanup only", report)
-    validate_pricing(ledger["pricing"], now_epoch=now_epoch, expected_seal=ledger["pricing_seal"])
     return report
 
 
@@ -265,22 +269,8 @@ def checkpoint(ledger, *, now_epoch, owned_ids, deadline_epoch=None):
 
 
 def refresh_pricing(ledger, receipt, *, expected_seal, now_epoch, owned_ids):
-    """Pin a fresh capture without lowering earlier conservative reservations.
-
-    Stale old evidence must not prevent a new capture or cleanup. A lower new
-    quote cannot retroactively reduce already accrued charges or extras bounds.
-    """
-    _validate_ledger(ledger)
-    _epoch(now_epoch, "current epoch")
-    _require(now_epoch >= ledger["last_epoch"], "clock rollback")
-    pricing = validate_pricing(receipt, now_epoch=now_epoch, expected_seal=expected_seal)
-    for field in ("server_hourly_gross_eur", "ipv4_hourly_gross_eur", "traffic_upper_eur", "other_upper_eur"):
-        _require(_decimal(pricing[field], field) >= _decimal(ledger["pricing"][field], field),
-                 "refresh cannot lower accrued/reserved cost bounds")
-    result = deepcopy(ledger)
-    result["pricing"], result["pricing_seal"], result["last_epoch"] = pricing, expected_seal, now_epoch
-    _sealed(result)
-    return checkpoint(result, now_epoch=now_epoch, owned_ids=owned_ids)
+    """Refuse the superseded refresh protocol; the admission capture is fixed."""
+    raise CostError("single admission capture; pricing refresh forbidden")
 
 
 def record_creation(ledger, *, host_id, created_epoch, now_epoch):

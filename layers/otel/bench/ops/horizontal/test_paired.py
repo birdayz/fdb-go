@@ -344,11 +344,11 @@ class GeometryTests(Fixture):
         provision._paired_cost_step(self.plan, state, lambda: self.plan["first_epoch"])
         with self.assertRaisesRegex(provision.ProvisionError, "EUR10"):
             provision._paired_cost_step(dict(self.plan, prior_cost_upper_eur="9"), state, lambda: self.plan["first_epoch"])
-        with self.assertRaisesRegex(paired_cost.CostError, "stale"):
-            provision._paired_cost_step(self.plan, state, lambda: self.plan["first_epoch"] + 3601)
+        # The original admission capture stays valid after one hour; no refresh.
+        provision._paired_cost_step(self.plan, state, lambda: self.plan["first_epoch"] + 3601)
         provision._json(state / "resources.json", {"ids": {"server": [999]}}, replace=True)
         with self.assertRaisesRegex(paired_cost.CostError, "unexpected"):
-            provision._paired_cost_step(self.plan, state, lambda: self.plan["first_epoch"])
+            provision._paired_cost_step(self.plan, state, lambda: self.plan["first_epoch"] + 3602)
 
     def test_paired_zstd_pack_covers_every_extra_asset_and_rejects_corruption(self):
         import provision

@@ -607,9 +607,11 @@ operator authorization; this correction does not authorize a benchmark restart.
 `paired_pricing.py` provides an offline strict normalizer for retained read-only
 EUR/ccx43/HEL1 and IPv4/HEL1 pricing responses. It verifies 19-percent VAT and
 exact net/gross money strings, seals the raw response hash, and compares fresh
-captures without allowing changed bounds. This is not traffic enforcement or
-operational pricing-refresh admission: live recapture and durable same-lease
-ledger synchronization are still owed before a two-hour paid campaign.
+captures without allowing changed bounds. Root scope1240 uses one read-only
+capture immediately before admission for the entire original admitted lifetime
+plus cleanup; no mid-run recapture or refresh protocol is required or wired.
+Traffic uses retained included-traffic/overage evidence and public-interface byte
+counters, not an OS-level quota or stop threshold.
 
 The sealed arm subset contains two or three of `go_pure`, `go_native`,
 `rust_native`. Every stage has an explicit arm order. `pilot` holds exactly
@@ -749,18 +751,26 @@ never rate eligible. The offered-load600s profile is explicitly refused until
 all selected producer binaries supply a sealed schedule/window implementation; a short finite
 run is never relabelled sustained.
 
-`paired_cost.py` reserves all held server AND IPv4 hourly quanta from the original
-lease start until verified provider absence, plus conservative whole-campaign
-traffic/other bounds. EUR2 pilot/EUR8 sweep allocations and the cumulative EUR10
-ceiling are checked before active transitions. Missing/stale/non-EUR prices,
-unknown extras, changed IDs, renewal and cleanup uncertainty refuse continuation.
-Price integrity seals are not provider signatures: live response provenance and
-enforced traffic bounds remain admission requirements. The ledger accounts
-reserved traffic/other bounds but does not impose a provider traffic quota;
-unknown/unproved billing bounds keep the paid CLI disabled. Its current one-hour
-price-freshness limit also stops a longer campaign early unless fresh same-bound
-recapture is implemented; the two-hour lease never overrides that refusal. Cleanup is never blocked
-by an admission failure. Paired managed watches use the same sealed USER-manager
+`paired_cost.py` reserves every held server AND IPv4 from the original lease
+start through the admitted lifetime plus one financial cleanup hour, using
+conservative hourly quanta until verified provider absence. The cleanup reserve
+never extends the operational deadline. EUR2 pilot/EUR8 sweep allocations and
+the cumulative EUR10 ceiling are checked before active transitions. One capture
+must be fresh (at most3600s old, not future-dated) at original admission; it stays
+valid throughout that original lifetime plus cleanup, with no moving TTL or
+refresh. The same original capture/lease/host history stays sealed. Missing or
+non-EUR evidence, stale-at-admission captures, unknown extras, changed IDs and
+renewal refuse active work; cleanup is never blocked by admission failure.
+Price integrity seals are not provider signatures. Under root scope1240, retain
+ccx43/HEL1 included-traffic and overage fields: at least1TB per server permits
+EUR0 traffic reserve; absent included traffic reserves50GB per host at the listed
+overage price. Record public-interface byte counters at start and before deletion;
+egress above50GB per host is reported, not stopped. Benchmark inter-host traffic
+uses the private network. No nftables/packet filter/OS-level traffic quota is
+required or installed. At retained prices the two-host pilot reservesEUR1.792616
+server+IPv4 including cleanup, plusEUR0.10 other margin =EUR1.892616 withinEUR2.
+A full two-hour/six-host sweep at those prices exceedsEUR8 after cleanup reserve
+and is refused; future sweep geometry is decided at its separate admission. Paired managed watches use the same sealed USER-manager
 root-slice isolation and exact-owned/baseline cleanup checks; fake procfs/provider
 tests simulate controller loss, not actual OS survival.
 

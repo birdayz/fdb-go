@@ -19,9 +19,9 @@ def seal(value):
 def pricing(**changes):
     receipt = {"schema": "paired_pricing_v1", "provider": "hetzner", "source": cost.PRICE_SOURCE,
                "captured_epoch": FIRST, "currency": "EUR", "server_type": "ccx43", "location": "hel1",
-               "server_hourly_net_eur": "0.442300", "server_hourly_gross_eur": "0.52633700",
-               "ipv4_hourly_net_eur": "0.01", "ipv4_hourly_gross_eur": "0.0119",
-               "traffic_upper_eur": "1", "other_upper_eur": "0.5", "bounds_conservative": True,
+               "server_hourly_net_eur": "0.35", "server_hourly_gross_eur": "0.4165",
+               "ipv4_hourly_net_eur": "0.0008", "ipv4_hourly_gross_eur": "0.000952",
+               "traffic_upper_eur": "0", "other_upper_eur": "0.1", "bounds_conservative": True,
                "provenance": {"response_sha256": "a" * 64,
                               "pricing_path": "pricing.server_types[ccx43].prices[hel1]", "vat_rate": "0.19"}}
     receipt.update(changes)
@@ -48,15 +48,15 @@ def deletion(identity, epoch):
 
 
 class PairedCostTests(unittest.TestCase):
-    def test_admission_reserves_all_six_and_extras_to_hard_deadline(self):
+    def test_admission_reserves_all_six_and_extras_through_cleanup_margin(self):
         ledger = admit()
         report = cost.assess(ledger, now_epoch=FIRST, owned_ids=[])
         self.assertEqual(report["held_hosts"], 6)
-        self.assertEqual(report["rounded_reserved_host_hours"], 12)
-        self.assertEqual(Decimal(report["server_reserved_eur"]), Decimal("6.316044"))
-        self.assertEqual(Decimal(report["ipv4_reserved_eur"]), Decimal("0.1428"))
-        self.assertEqual(Decimal(report["extras_reserved_eur"]), Decimal("1.5"))
-        self.assertEqual(Decimal(report["total_upper_eur"]), Decimal("7.958844"))
+        self.assertEqual(report["rounded_reserved_host_hours"], 18)
+        self.assertEqual(Decimal(report["server_reserved_eur"]), Decimal("7.497"))
+        self.assertEqual(Decimal(report["ipv4_reserved_eur"]), Decimal("0.017136"))
+        self.assertEqual(Decimal(report["extras_reserved_eur"]), Decimal("0.1"))
+        self.assertEqual(Decimal(report["total_upper_eur"]), Decimal("7.614136"))
         self.assertFalse(report["all_deleted"])
         self.assertEqual(json.loads(json.dumps(ledger)), ledger)
 
@@ -70,7 +70,7 @@ class PairedCostTests(unittest.TestCase):
         report = cost.assess(ledger, now_epoch=FIRST + 30, owned_ids=[1, 2])
         self.assertEqual(report["first_epoch"], FIRST)
         self.assertEqual(report["deadline_epoch"], FIRST + 3600)
-        self.assertEqual(report["rounded_reserved_host_hours"], 2)
+        self.assertEqual(report["rounded_reserved_host_hours"], 4)
         for identity in (1, 2):
             ledger = cost.record_deletion(ledger, verification=deletion(identity, FIRST + 40 + identity),
                                           now_epoch=FIRST + 50)
@@ -85,9 +85,18 @@ class PairedCostTests(unittest.TestCase):
                 ledger = admit(hosts=2, lifetime=seconds)
                 report = cost.assess(ledger, now_epoch=FIRST, owned_ids=[])
                 self.assertEqual(report["held_hosts"], 2)
-                self.assertEqual(report["rounded_reserved_host_hours"], 2)
-                self.assertEqual(Decimal(report["total_upper_eur"]), Decimal("2.576474"))
+                self.assertEqual(report["rounded_reserved_host_hours"], 4)
+                self.assertEqual(Decimal(report["total_upper_eur"]), Decimal("1.769808"))
                 self.assertEqual(report["deadline_epoch"], FIRST + seconds)
+
+    def test_root_approved_pilot_reserves_cleanup_with_zero_traffic_and_ten_cent_margin(self):
+        quote = pricing(server_hourly_net_eur="0.375800", server_hourly_gross_eur="0.447202",
+                        ipv4_hourly_net_eur="0.000800", ipv4_hourly_gross_eur="0.000952",
+                        traffic_upper_eur="0", other_upper_eur="0.10")
+        report = cost.assess(admit(quote, hosts=2), now_epoch=FIRST, owned_ids=[])
+        self.assertEqual(report["rounded_reserved_host_hours"], 4)
+        self.assertEqual(Decimal(report["server_reserved_eur"]) + Decimal(report["ipv4_reserved_eur"]), Decimal("1.792616"))
+        self.assertEqual(Decimal(report["total_upper_eur"]), Decimal("1.892616"))
 
     def test_unknown_count_and_cross_profile_deadlines_rejected(self):
         for hosts, seconds in ((True, 3600), (2.0, 3600), (1, 3600), (3, 7200), (5, 7200),
@@ -96,18 +105,41 @@ class PairedCostTests(unittest.TestCase):
             with self.subTest(hosts=hosts, seconds=seconds), self.assertRaises(cost.CostError):
                 admit(hosts=hosts, lifetime=seconds)
 
-    def test_exact_budget_accepts_tiny_overflow_refuses(self):
-        exact = pricing(traffic_upper_eur="3.541156", other_upper_eur="0")
-        self.assertEqual(Decimal(cost.assess(admit(exact), now_epoch=FIRST, owned_ids=[])["total_upper_eur"]), Decimal("10"))
+    def test_exact_stage_budget_accepts_tiny_overflow_refuses(self):
+        for hosts, traffic, limit in ((2, "0.330192", "2"), (6, "0.485864", "8")):
+            with self.subTest(hosts=hosts):
+                exact = pricing(traffic_upper_eur=traffic, other_upper_eur="0")
+                report = cost.assess(admit(exact, hosts=hosts), now_epoch=FIRST, owned_ids=[])
+                self.assertEqual(Decimal(report["total_upper_eur"]), Decimal(limit))
+                overflow = traffic + "000000000001"
+                with self.assertRaisesRegex(cost.CostError, "allocation") as rejected:
+                    admit(pricing(traffic_upper_eur=overflow, other_upper_eur="0"), hosts=hosts)
+                self.assertGreater(Decimal(rejected.exception.report["total_upper_eur"]), Decimal(limit))
+
+    def test_global_budget_still_rejects_totals_over_ten(self):
         with self.assertRaisesRegex(cost.CostError, "budget") as rejected:
-            admit(pricing(traffic_upper_eur="3.541156000000000001", other_upper_eur="0"))
+            admit(pricing(traffic_upper_eur="10", other_upper_eur="0"))
         self.assertGreater(Decimal(rejected.exception.report["total_upper_eur"]), Decimal("10"))
+
+    def test_stage_budget_includes_cleanup_margin_not_just_active_lease(self):
+        cases = ((2, "0.4423", "0.526337", "0.01", "0.0119", "2", 4),
+                 (6, "0.3758", "0.447202", "0.0008", "0.000952", "8", 18))
+        for hosts, server_net, server_gross, ipv4_net, ipv4_gross, limit, hours in cases:
+            quote = pricing(server_hourly_net_eur=server_net, server_hourly_gross_eur=server_gross,
+                            ipv4_hourly_net_eur=ipv4_net, ipv4_hourly_gross_eur=ipv4_gross,
+                            traffic_upper_eur="0", other_upper_eur="0")
+            lease_hours = 2 if hosts == 2 else 12
+            self.assertLess(Decimal(lease_hours) * (Decimal(server_gross) + Decimal(ipv4_gross)), Decimal(limit))
+            with self.subTest(hosts=hosts), self.assertRaisesRegex(cost.CostError, "allocation") as rejected:
+                admit(quote, hosts=hosts)
+            self.assertEqual(rejected.exception.report["rounded_reserved_host_hours"], hours)
+            self.assertGreater(Decimal(rejected.exception.report["total_upper_eur"]), Decimal(limit))
 
     def test_decimal_context_does_not_hide_overflow(self):
         with localcontext() as ctx:
             ctx.prec = 2
-            with self.assertRaisesRegex(cost.CostError, "budget"):
-                admit(pricing(traffic_upper_eur="3.541156000000000001", other_upper_eur="0"))
+            with self.assertRaisesRegex(cost.CostError, "allocation"):
+                admit(pricing(traffic_upper_eur="0.485864000000000001", other_upper_eur="0"))
 
     def test_invalid_money_and_unknown_extras_rejected(self):
         for field in ("server_hourly_net_eur", "server_hourly_gross_eur", "ipv4_hourly_net_eur",
@@ -160,6 +192,31 @@ class PairedCostTests(unittest.TestCase):
         cost.validate_pricing(pricing(captured_epoch=FIRST - 3600), now_epoch=FIRST,
                               expected_seal=pricing(captured_epoch=FIRST - 3600)[cost.SEAL])
 
+    def test_capture_freshness_is_bound_to_first_epoch_not_delayed_admission(self):
+        for hosts, lifetime in ((2, 3600), (6, 7200)):
+            quote = pricing(captured_epoch=FIRST - 3600)
+            ledger = cost.admit(quote, expected_seal=quote[cost.SEAL], first_epoch=FIRST,
+                                deadline_epoch=FIRST + lifetime, now_epoch=FIRST + 30, held_host_count=hosts)
+            self.assertEqual(ledger["pricing"], quote)
+            self.assertEqual(ledger["first_epoch"], FIRST)
+            self.assertEqual(ledger["deadline_epoch"], FIRST + lifetime)
+            cost.assess(ledger, now_epoch=FIRST + 31, owned_ids=[])
+            for captured in (FIRST - 3601, FIRST + 1, FIRST + 30):
+                invalid = pricing(captured_epoch=captured)
+                with self.subTest(hosts=hosts, captured=captured), self.assertRaises(cost.CostError):
+                    cost.admit(invalid, expected_seal=invalid[cost.SEAL], first_epoch=FIRST,
+                               deadline_epoch=FIRST + lifetime, now_epoch=FIRST + 30, held_host_count=hosts)
+
+    def test_resealed_ledger_keeps_original_admission_capture_requirement(self):
+        original = populated()
+        for captured in (FIRST - 3601, FIRST + 1):
+            changed = deepcopy(original)
+            changed["pricing"] = pricing(captured_epoch=captured)
+            changed["pricing_seal"] = changed["pricing"][cost.SEAL]
+            changed["last_epoch"] = FIRST + 30
+            with self.subTest(captured=captured), self.assertRaises(cost.CostError):
+                cost.assess(seal(changed), now_epoch=FIRST + 31, owned_ids=list(range(1, 7)))
+
     def test_seal_and_external_pin_are_required(self):
         receipt = pricing()
         receipt["other_upper_eur"] = "0"
@@ -194,7 +251,7 @@ class PairedCostTests(unittest.TestCase):
         self.assertEqual(ledger, original)
         self.assertEqual(updated["hosts"][0]["host_id"], 1)
         report = cost.assess(updated, now_epoch=FIRST + 1, owned_ids=[1])
-        self.assertEqual(report["rounded_reserved_host_hours"], 12)
+        self.assertEqual(report["rounded_reserved_host_hours"], 18)
         self.assertEqual(report["owned_ids"], [1])
 
     def test_unexpected_duplicate_and_replacement_hosts_rejected(self):
@@ -212,7 +269,7 @@ class PairedCostTests(unittest.TestCase):
         later = cost.record_creation(admit(), host_id=1, created_epoch=FIRST + 1, now_epoch=FIRST + 1)
         self.assertEqual(later["first_epoch"], FIRST)
         self.assertEqual(later["deadline_epoch"], FIRST + 7200)
-        self.assertEqual(cost.assess(later, now_epoch=FIRST + 1, owned_ids=[1])["rounded_reserved_host_hours"], 12)
+        self.assertEqual(cost.assess(later, now_epoch=FIRST + 1, owned_ids=[1])["rounded_reserved_host_hours"], 18)
 
     def test_complete_owned_inventory_and_verified_absence_required(self):
         ledger = populated()
@@ -228,7 +285,7 @@ class PairedCostTests(unittest.TestCase):
         report = cost.assess(ledger, now_epoch=FIRST + 61, owned_ids=[])
         self.assertTrue(report["all_deleted"])
         self.assertEqual(report["rounded_reserved_host_hours"], 6)
-        self.assertEqual(Decimal(report["total_upper_eur"]), Decimal("4.729422"))
+        self.assertEqual(Decimal(report["total_upper_eur"]), Decimal("2.604712"))
         with self.assertRaises(cost.CostError):
             cost.assess(ledger, now_epoch=FIRST + 61, owned_ids=[1])
 
@@ -239,10 +296,9 @@ class PairedCostTests(unittest.TestCase):
             ledger = cost.record_creation(ledger, host_id=identity, created_epoch=epoch, now_epoch=epoch)
         for identity in range(1, 7):
             ledger = cost.record_deletion(ledger, verification=deletion(identity, FIRST + 3601), now_epoch=FIRST + 3601)
-        ledger = cost.refresh_pricing(ledger, pricing(captured_epoch=FIRST + 3601),
-                                      expected_seal=pricing(captured_epoch=FIRST + 3601)[cost.SEAL],
-                                      now_epoch=FIRST + 3601, owned_ids=[])
-        self.assertEqual(cost.assess(ledger, now_epoch=FIRST + 3601, owned_ids=[])["rounded_reserved_host_hours"], 12)
+        report = cost.assess(ledger, now_epoch=FIRST + 3601, owned_ids=[])
+        self.assertEqual(report["rounded_reserved_host_hours"], 12)
+        self.assertEqual(Decimal(report["total_upper_eur"]), Decimal("5.109424"))
 
     def test_delete_ack_unknown_id_backdate_bad_status_or_seal_refused(self):
         ledger = populated()
@@ -278,7 +334,7 @@ class PairedCostTests(unittest.TestCase):
         ledger = populated()
         with self.assertRaisesRegex(cost.CostError, "hard deadline") as rejected:
             cost.assess(ledger, now_epoch=FIRST + 7200, owned_ids=list(range(1, 7)))
-        self.assertEqual(rejected.exception.report["rounded_reserved_host_hours"], 12)
+        self.assertEqual(rejected.exception.report["rounded_reserved_host_hours"], 18)
         with self.assertRaises(cost.CostError):
             cost.record_creation(admit(), host_id=1, created_epoch=FIRST + 7200, now_epoch=FIRST + 7200)
 
@@ -298,29 +354,43 @@ class PairedCostTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(cost.CostError):
                 cost.assess(seal(changed), now_epoch=FIRST, owned_ids=[1, 2])
 
-    def test_stale_continuation_refused_but_fresh_pinned_receipt_can_continue(self):
-        ledger = populated()
-        with self.assertRaisesRegex(cost.CostError, "stale"):
-            cost.assess(ledger, now_epoch=FIRST + 3601, owned_ids=list(range(1, 7)))
-        fresh = pricing(captured_epoch=FIRST + 3601)
-        original = deepcopy(ledger)
-        updated = cost.refresh_pricing(ledger, fresh, expected_seal=fresh[cost.SEAL],
-                                      now_epoch=FIRST + 3601, owned_ids=list(range(1, 7)))
-        self.assertEqual(ledger, original)
-        self.assertEqual(updated["first_epoch"], FIRST)
-        self.assertEqual(updated["deadline_epoch"], FIRST + 7200)
-        self.assertEqual(cost.assess(updated, now_epoch=FIRST + 3602, owned_ids=list(range(1, 7)))["rounded_reserved_host_hours"], 12)
+    def test_single_admission_quote_survives_last_active_minute_and_cleanup(self):
+        for hosts, lifetime, active_cutoff in ((2, 3600, 2700), (6, 7200, 6000)):
+            quote = pricing(captured_epoch=FIRST - 3600)
+            ledger = admit(quote, hosts=hosts)
+            for identity in range(1, hosts + 1):
+                ledger = cost.record_creation(ledger, host_id=identity, created_epoch=FIRST, now_epoch=FIRST)
+            original_quote = deepcopy(ledger["pricing"])
+            ids = list(range(1, hosts + 1))
+            for offset in (active_cutoff - 60, lifetime - 600, lifetime - 1):
+                ledger = cost.checkpoint(ledger, now_epoch=FIRST + offset, owned_ids=ids)
+                self.assertEqual(ledger["pricing"], original_quote)
+                self.assertEqual(ledger["pricing_seal"], quote[cost.SEAL])
+                self.assertEqual(ledger["first_epoch"], FIRST)
+                self.assertEqual(ledger["deadline_epoch"], FIRST + lifetime)
+            for identity in ids:
+                ledger = cost.record_deletion(ledger, verification=deletion(identity, FIRST + lifetime - 1),
+                                              now_epoch=FIRST + lifetime - 1)
+            report = cost.assess(ledger, now_epoch=FIRST + lifetime - 1, owned_ids=[])
+            self.assertTrue(report["all_deleted"])
+            self.assertEqual(report["rounded_reserved_host_hours"], hosts * (lifetime // 3600))
+            self.assertEqual(ledger["pricing"], original_quote)
+            with self.assertRaisesRegex(cost.CostError, "hard deadline"):
+                cost.assess(ledger, now_epoch=FIRST + lifetime, owned_ids=[])
 
-    def test_refresh_cannot_reduce_prior_cost_or_admit_budget_overflow(self):
+    def test_refresh_is_disabled_even_for_identical_or_fresh_quotes(self):
         ledger = populated()
-        for fields in ({"traffic_upper_eur": "0"}, {"other_upper_eur": "0"},
-                       {"server_hourly_net_eur": "0.1", "server_hourly_gross_eur": "0.119"},
-                       {"ipv4_hourly_net_eur": "0.001", "ipv4_hourly_gross_eur": "0.00119"},
-                       {"other_upper_eur": "100"}):
-            receipt = pricing(captured_epoch=FIRST + 1, **fields)
-            with self.subTest(fields=fields), self.assertRaises(cost.CostError):
-                cost.refresh_pricing(ledger, receipt, expected_seal=receipt[cost.SEAL],
-                                     now_epoch=FIRST + 1, owned_ids=list(range(1, 7)))
+        original = deepcopy(ledger)
+        for offset in (0, 1, 3601):
+            for fields in ({}, {"traffic_upper_eur": "0.01"}, {"other_upper_eur": "0"},
+                           {"server_hourly_net_eur": "0.1", "server_hourly_gross_eur": "0.119"},
+                           {"ipv4_hourly_net_eur": "0.0001", "ipv4_hourly_gross_eur": "0.000119"},
+                           {"other_upper_eur": "100"}):
+                receipt = pricing(captured_epoch=FIRST + offset, **fields)
+                with self.subTest(offset=offset, fields=fields), self.assertRaisesRegex(cost.CostError, "single admission capture"):
+                    cost.refresh_pricing(ledger, receipt, expected_seal=receipt[cost.SEAL],
+                                         now_epoch=FIRST + offset, owned_ids=list(range(1, 7)))
+                self.assertEqual(ledger, original)
 
 
 if __name__ == "__main__":

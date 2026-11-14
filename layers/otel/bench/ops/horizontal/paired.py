@@ -796,10 +796,11 @@ def fake_plan(root, *, profile="scaling", arms=ARMS, kind="writer_direct"):
     first = int(time.time())
     quote = {"schema": "paired_pricing_v1", "provider": "hetzner", "source": "https://api.hetzner.cloud/v1/pricing",
              "captured_epoch": first, "currency": "EUR", "server_type": "ccx43", "location": "hel1",
-             "server_hourly_net_eur": "0.3758", "server_hourly_gross_eur": "0.447202",
+             "server_hourly_net_eur": "0.3758" if profile == "pilot" else "0.35",
+             "server_hourly_gross_eur": "0.447202" if profile == "pilot" else "0.4165",
              "ipv4_hourly_net_eur": "0.0008", "ipv4_hourly_gross_eur": "0.000952",
-             "traffic_upper_eur": "0.10" if profile == "pilot" else "1.19",
-             "other_upper_eur": "0.10" if profile == "pilot" else "1.00", "bounds_conservative": True,
+             "traffic_upper_eur": "0",
+             "other_upper_eur": "0.10", "bounds_conservative": True,
              "provenance": {"response_sha256": digest("synthetic-not-a-quote"), "pricing_path": "pricing.server_types[ccx43].prices[hel1]", "vat_rate": "0.19"}}
     quote["seal_sha256"] = cost.seal_receipt(quote)
     order = list(arms)
