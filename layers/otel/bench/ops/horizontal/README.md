@@ -30,13 +30,20 @@ the report and in `TODO.md`.
 
 ## What this directory still is
 
-The Kubernetes runner (`k8s_operator_scaling.py`) imports `driver`, `policy`,
-`provision` and `scaling` from this directory as a library: host provisioning
-and teardown with exact-ownership checks, plan and source validation, producer
-grants, ingest validation and the scaling summary. It also copies `driver.py`,
-`policy.py`, `diagnostic.py`, `session.py`, `scaling.py` and `supervisor.py` to
-the hosts, and `scaling.py` imports `diagnostic`, `session` and `supervisor`, so
-all of them must stay importable.
+The report (section 5) says the Kubernetes runner (`k8s_operator_scaling.py`)
+imports `driver`, `policy`, `provision` and `scaling` from this directory as a
+library: host provisioning and teardown with exact-ownership checks, plan and
+source validation, producer grants, ingest validation and the scaling summary.
+Only that statement is citable here, since the runner is not in the repository.
+What the repository itself shows: `scaling.py` imports `diagnostic`, `driver`,
+`policy`, `session` and `supervisor`, and `supervisor.py` lists `supervisor.py`,
+`provision.py`, `policy.py`, `driver.py`, `diagnostic.py`, `session.py` and
+`scaling.py` here, plus `inventory.py`, `mn_common.py`, `render_cloud_init.py`
+and `teardown_guard.py` from `tools/benchcampaign/multinode`, as its bundle
+(`FILES`). `provision.py` imports those four multinode modules (the dependency
+points this way: `tools/benchcampaign/multinode/BUILD.bazel` only exports them to
+this package). So every module in this directory, and those four, must stay
+importable until the imports are cut.
 
 **The Kubernetes driver script is not in this repository.** The reference run's
 copy lives outside it (`/var/tmp/fdb-perf-scaling.v4O6xf/k8s_operator_scaling.py`

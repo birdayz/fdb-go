@@ -3159,7 +3159,12 @@ key prefixes and guards; nothing below transfers to it unmeasured.
   before increasing batches. Retain the 300KB estimate, 500KB actual-size,
   save/time/retry guards and warning/backlog stops. More workers alone already
   failed the earlier backlog gate. No 20k/s measurement or runtime change yet.
-  The owner authorized a reviewed read-only inode-flags probe and a guarded
+  **RETIRED, do not continue: the inode-flags probe and guarded fresh-volume
+  profiling tooling described from here through "No runtime is admitted until fixes
+  pass validation and formal re-review" (`layers/otel/bench/ops/ingest20k/`) was removed from the
+  repository; Kubernetes is the method ([report](docs/benchmarks/otel-ingest-25k-k8s-cilium-scaling.md)).
+  Its implementation, review and runtime gates are history only.**
+  The owner had authorized a reviewed read-only inode-flags probe and a guarded
   fresh-volume 100k profiling run to replace the pinned image's missing `lsattr`
   check. Implementation, test, formal-review and actual-inode gates remain;
   no filesystem flag changes, retained-data changes or guard relaxation are
@@ -3282,8 +3287,11 @@ key prefixes and guards; nothing below transfers to it unmeasured.
   No 10M physical/maintenance gate has run. Diagnose the observed sync stalls
   and conditional Btrfs direct-I/O fallback before a larger/faster profile;
   do not infer a client bug or change filesystem flags on existing data.
-  A fresh-empty-volume NOCOW prototype is prepared but unapproved. Its 297 pure
-  policy cases and 27 C predicates pass; distinct listen ports, formal review,
+  **RETIRED, do not continue: the fresh-empty-volume NOCOW prototype (the
+  `layers/otel/bench/ops/ingest20k/` tooling) was removed from the repository;
+  Kubernetes is the method ([report](docs/benchmarks/otel-ingest-25k-k8s-cilium-scaling.md)).**
+  It had been prepared but unapproved. Its 297 pure
+  policy cases and 27 C predicates passed; distinct listen ports, formal review,
   real empty-Btrfs/minimum-capability validation, bootstrap and actual storage/
   log inode gates remain open. No existing-volume flag change is authorized;
   filesystem checksum/compression changes are not durability-equivalent evidence.

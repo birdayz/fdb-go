@@ -124,7 +124,7 @@ Collector `IsPermanent` (collector.go:61-80) treats config, admission, ownership
 - **otelbench:** `--backend fdb` calls `otel.OpenFDBContext` (cmd/otelbench/main.go:28-36); `collector-bench` is fdb-only (:112); layout flags at :64-80, 99-100 and 239-262.
 - **sqlbackend:** `otel.Backend`/`Statistics`/`Size` (fdb.go:16-54), `IntrinsicBackend` (intrinsic.go:37-42), `RecordSerializer` (record_compression.go:16), `FixtureOTLP` (record.go:203-205).
 - **ClickHouse:** `Backend`/`Statistics`/`Size` and `Config`/`Manifest`.
-- **Scripts:** `bench/local_campaign.sh` (the `fdb_*` arms); the old `bench/ops/ingest20k` tooling has been removed; `bench/ops/horizontal` is retained only as the provisioning and measurement library for the Kubernetes benchmark (its native-process runbook is retired).
+- **Scripts:** `bench/local_campaign.sh` (the `fdb_*` arms); the old `bench/ops/ingest20k` tooling has been removed; `bench/ops/horizontal` is retained only as the provisioning and measurement library for the Kubernetes benchmark (its native-process runbook is retired). Neither depends on `--backend fdb`: both drivers passed `--backend sql` (`horizontal/driver.py:89` still does), so the earlier note that they hard-code `--backend fdb --order time` was stale.
 
 ## 2. Tests that pin the surface
 
@@ -588,7 +588,7 @@ still drains the ingest, so its numbers are reported but not gated.
 | tests | the §2 LAYOUT tests and helpers |
 | `Config`/`Manifest` | `PostingValueFormat`, `KeyLayout`, `Messages`, the FDB `SaveMode` checks; `HashBytes`/`Order` if ClickHouse no longer needs them |
 | otelbench | `--backend fdb`, `--posting-value-format`, `--hash-bytes`, the Brotli values; `collector-bench` stops being fdb-only |
-| bench | the `local_campaign.sh` arms and their test; the `bench/ops` drivers (D7) |
+| bench | the `local_campaign.sh` arms and their test; the removed `bench/ops/ingest20k` driver (D7); `bench/ops/horizontal` stays as a library and is not part of the G3 removal |
 | docs | <ul><li>README sections</li><li>docs/compatibility.md:386-403 becomes the new writer contract</li><li>the RFC-283 status</li><li>TODO.md: close the delivered "OTel SQL ingest migration" items; keep metrics, two-level fan-out and the Java BYTES comparator</li></ul> |
 
 Then run `just gazelle` and confirm every remaining target has a nonempty population.
@@ -616,7 +616,7 @@ Then run `just gazelle` and confirm every remaining target has a nonempty popula
 | D4 | Message references | Packed `ref_chunks` with a covering index | The R1 fallbacks. This also decides whether per-span references are SQL-visible. Kept after R1: `SPANS_REF_CHUNKS` costs 2–3% more bytes than the old reference values, and MESSAGES_TEXT's 21–23% more bytes than the old TEXT index (the longer schema prefix and the record type key in every entry) were accepted at the cutover. |
 | D5 | Template | Rewrite `OTEL_V1` v1 in place with a Go overlay and a FULLTEXT `OPTIONS` grammar extension | Set the tokenizer option programmatically, losing SQL-DDL creation |
 | D6 | ClickHouse comparison backends | **Keep**; they need only the moved `Backend`/`Statistics`/`Size` and `Config`/`Manifest` | Delete them with their tests and README sections |
-| D7 | `otelbench --backend fdb`, `bench/ops/{ingest20k,horizontal}` | Keep `fdb` as the baseline until G3, then delete. The old benchmark tooling is retired (`ingest20k` removed; `horizontal` kept only as the library the Kubernetes run imports); Kubernetes is the method, so there is no port of `bench/ops` | — |
+| D7 | `otelbench --backend fdb`, `bench/ops/{ingest20k,horizontal}` | Keep `--backend fdb` as the baseline until G3, then delete it. The old benchmark tooling is retired (`ingest20k` removed; `horizontal` kept only as the library the Kubernetes run imports, and not deleted at G3); Kubernetes is the method, so there is no port of `bench/ops` | — |
 | D8 | Tenant provisioning | `NewExporter` auto-creates `/OTEL/R_<RUN>` and `T<tenant>` | Explicit provisioning; `NewExporter` refuses a missing schema |
 | D9 | Metrics tables | A separate follow-up (§4.3) | Fold them into this pre-release rewrite to avoid a first evolution |
 | D10 | Message flags | Keep both booleans, recorded in `STORE_META("layout")`; a change is refused | One key, `messages: none\|deltas\|fulltext` |
