@@ -541,7 +541,7 @@ func queryRows(t *testing.T, ctx context.Context, db *sql.DB, query string) stri
 }
 
 // The exact census and ingest details that the ops benchmark guards
-// (bench/ops/ingest20k/policy.py census and the write_path and
+// (the removed bench/ops/ingest20k/policy.py census and the write_path and
 // committed_batches checks, horizontal/policy.py) require of a one-tenant,
 // match_every=100 corpus written by compiled batch direct ingest: records,
 // SPANS_TIME and SPANS_SPAN_ID N, an int attribute per span plus the int-typed

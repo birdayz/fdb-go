@@ -124,7 +124,7 @@ Collector `IsPermanent` (collector.go:61-80) treats config, admission, ownership
 - **otelbench:** `--backend fdb` calls `otel.OpenFDBContext` (cmd/otelbench/main.go:28-36); `collector-bench` is fdb-only (:112); layout flags at :64-80, 99-100 and 239-262.
 - **sqlbackend:** `otel.Backend`/`Statistics`/`Size` (fdb.go:16-54), `IntrinsicBackend` (intrinsic.go:37-42), `RecordSerializer` (record_compression.go:16), `FixtureOTLP` (record.go:203-205).
 - **ClickHouse:** `Backend`/`Statistics`/`Size` and `Config`/`Manifest`.
-- **Scripts:** `bench/local_campaign.sh` (the `fdb_*` arms); `bench/ops/ingest20k/driver.py:747` and `bench/ops/horizontal/driver.py:89` (both hard-code `--backend fdb --order time`).
+- **Scripts:** `bench/local_campaign.sh` (the `fdb_*` arms); the old `bench/ops/ingest20k` tooling has been removed; `bench/ops/horizontal` is retained only as the provisioning and measurement library for the Kubernetes benchmark (its native-process runbook is retired).
 
 ## 2. Tests that pin the surface
 
@@ -616,7 +616,7 @@ Then run `just gazelle` and confirm every remaining target has a nonempty popula
 | D4 | Message references | Packed `ref_chunks` with a covering index | The R1 fallbacks. This also decides whether per-span references are SQL-visible. Kept after R1: `SPANS_REF_CHUNKS` costs 2–3% more bytes than the old reference values, and MESSAGES_TEXT's 21–23% more bytes than the old TEXT index (the longer schema prefix and the record type key in every entry) were accepted at the cutover. |
 | D5 | Template | Rewrite `OTEL_V1` v1 in place with a Go overlay and a FULLTEXT `OPTIONS` grammar extension | Set the tokenizer option programmatically, losing SQL-DDL creation |
 | D6 | ClickHouse comparison backends | **Keep**; they need only the moved `Backend`/`Statistics`/`Size` and `Config`/`Manifest` | Delete them with their tests and README sections |
-| D7 | `otelbench --backend fdb`, `bench/ops/{ingest20k,horizontal}` | Keep `fdb` as the baseline until G3, then delete; port `bench/ops` to `--backend sql` or retire it | — |
+| D7 | `otelbench --backend fdb`, `bench/ops/{ingest20k,horizontal}` | Keep `fdb` as the baseline until G3, then delete. The old benchmark tooling is retired (`ingest20k` removed; `horizontal` kept only as the library the Kubernetes run imports); Kubernetes is the method, so there is no port of `bench/ops` | — |
 | D8 | Tenant provisioning | `NewExporter` auto-creates `/OTEL/R_<RUN>` and `T<tenant>` | Explicit provisioning; `NewExporter` refuses a missing schema |
 | D9 | Metrics tables | A separate follow-up (§4.3) | Fold them into this pre-release rewrite to avoid a first evolution |
 | D10 | Message flags | Keep both booleans, recorded in `STORE_META("layout")`; a change is refused | One key, `messages: none\|deltas\|fulltext` |

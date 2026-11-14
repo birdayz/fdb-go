@@ -236,7 +236,7 @@ def storage_counter(role, name):
 
 
 def strict_status(d, layout):
-    """Same strict health/probe conditions as ingest20k; only process identities differ."""
+    """Same strict health/probe conditions as the former ingest20k profile (removed); only process identities differ."""
     c, client = d["cluster"], d["client"]
     require(client["database_status"]["available"] is True and client["database_status"]["healthy"] is True
             and client["coordinators"]["quorum_reachable"] is True and client["cluster_file"]["up_to_date"] is True,

@@ -3537,25 +3537,6 @@ key prefixes and guards; nothing below transfers to it unmeasured.
   expired; comparison stays INCONCLUSIVE. All six hosts/auxiliaries were deleted,
   fresh exact17-ID/ten-kind equality passed, and source seals stayed unchanged.
   Evidence: `/var/tmp/fdb-perf-scaling.v4O6xf/log2g/native-analysis.json`.
-- [ ] Test exact measured-range conditioning before adding more ingest workers or
-  hosts. OTEL_V1 benchmark stores live at `/OTELBENCH/R_<RUN>` in the relational
-  keyspace, so a rerun re-derives the prefix layout; the append experiment
-  below relied on the deleted store's ready/loading manifests and must be
-  restated against the relational catalog first. The measured, sealed app (the
-  custom store) used physical prefix `("otel_otelbench_v2", Run, "store")`;
-  gate Runs9310/9311 and measured Runs9313/9314 are disjoint. Early observed native
-  input concentrated85.1153% on one of six SS, with a1.499GB raw MVCC queue; these
-  counters include setup/DD activity, so cold-prefix causality is a hypothesis,
-  not proven shard-placement evidence. Count is part of corpus/owner identity;
-  simply reusing a100k Run with375k Count would violate existing guards. A future
-  FDB-only append experiment must transactionally authenticate ready100k, claim
-  loading475k with unchanged layout/corpus parameters, write only ordinals
-  [100000,475000), preserve all ordinary owner/old-image/conflict/transaction
-  checks, and publish ready475k only after375k acknowledged additions. Partial
-  failure must remain fail-closed, not implicit resume. Final census/query truth
-  must cover all475k; measured rates must count only375k additions. Generation is
-  prefix-stable, but this is a changed benchmark boundary requiring a fresh
-  same-protocol baseline. No application/storage change is implemented or implied.
 
 ### OTel log payload storage migration
 
