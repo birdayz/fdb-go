@@ -114,6 +114,49 @@ unsafe fn start_network(select: Select, option: NetworkOption, setup: Setup) -> 
     }
 }
 
+const RANGE_BYTES: usize = 16 * 1024 * 1024;
+const RANGE_ENTRIES: usize = 100_000;
+
+/// One range's pages; `next(begin)` reads the continuation. Every page, first and terminal
+/// included, must keep cumulative key+value bytes and entries in budget before it is kept.
+fn read_pages(
+    (mut page, mut more): (KeyValues, bool),
+    mut next: impl FnMut(&[u8]) -> Result<(KeyValues, bool)>,
+) -> Result<KeyValues> {
+    let mut out = KeyValues::new();
+    let mut bytes = 0usize;
+    loop {
+        let total = page.iter().try_fold(bytes, |sum, (k, v)| {
+            sum.checked_add(k.len())?.checked_add(v.len())
+        });
+        let entries = out.len().checked_add(page.len());
+        match (total, entries) {
+            (Some(total), Some(entries)) if total <= RANGE_BYTES && entries <= RANGE_ENTRIES => {
+                bytes = total;
+            }
+            _ => {
+                return Err(Error::new(
+                    ErrorKind::Operation,
+                    "stored prior image exceeds read bound",
+                ));
+            }
+        }
+        out.extend(page);
+        if !more {
+            return Ok(out);
+        }
+        let Some((last, _)) = out.last() else {
+            return Err(Error::new(
+                ErrorKind::Operation,
+                "empty nonterminal FDB range",
+            ));
+        };
+        let mut begin = last.clone();
+        begin.push(0);
+        (page, more) = next(&begin)?;
+    }
+}
+
 fn checked(code: Code) -> Result<()> {
     if code == 0 {
         Ok(())
@@ -529,29 +572,10 @@ impl Transaction for NativeTransaction<'_> {
             .collect::<Vec<_>>();
         let mut result = Vec::with_capacity(ranges.len());
         for ((_, end), future) in ranges.iter().zip(futures) {
-            let (mut out, mut more) = self.collect_range(future, ctx)?;
-            let mut total = out.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>();
-            while more {
-                let Some((last, _)) = out.last() else {
-                    return Err(Error::new(
-                        ErrorKind::Operation,
-                        "empty nonterminal FDB range",
-                    ));
-                };
-                let mut next = last.clone();
-                next.push(0);
-                let (page, has_more) = self.collect_range(self.range_future(&next, end), ctx)?;
-                total += page.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>();
-                if total > 16 * 1024 * 1024 || out.len() + page.len() > 100_000 {
-                    return Err(Error::new(
-                        ErrorKind::Operation,
-                        "stored prior image exceeds read bound",
-                    ));
-                }
-                out.extend(page);
-                more = has_more;
-            }
-            result.push(out);
+            let first = self.collect_range(future, ctx)?;
+            result.push(read_pages(first, |begin| {
+                self.collect_range(self.range_future(begin, end), ctx)
+            })?);
         }
         Ok(result)
     }
@@ -733,6 +757,166 @@ mod tests {
             ["select 730 730", "option 60 null=true 0"],
             "a failed option must not set up the network"
         );
+    }
+
+    /// Hands out ascending 4-byte keys across a scenario's pages.
+    struct Keys(u32);
+    impl Keys {
+        /// `entries` rows totalling exactly `bytes` key+value bytes, values at most 100000.
+        fn page(&mut self, entries: usize, bytes: usize, more: bool) -> (KeyValues, bool) {
+            let mut values = bytes - 4 * entries;
+            let page: KeyValues = (0..entries)
+                .map(|_| {
+                    self.0 += 1;
+                    let len = values.min(100_000);
+                    values -= len;
+                    (self.0.to_be_bytes().to_vec(), vec![0xab; len])
+                })
+                .collect();
+            assert_eq!(values, 0, "too few entries for {bytes} bytes");
+            let counted: usize = page.iter().map(|(k, v)| k.len() + v.len()).sum();
+            assert_eq!((page.len(), counted), (entries, bytes));
+            (page, more)
+        }
+    }
+    fn byte_page(keys: &mut Keys, bytes: usize, more: bool) -> (KeyValues, bool) {
+        keys.page((bytes / 100_000 + 1).min(bytes / 4), bytes, more)
+    }
+    fn entry_page(keys: &mut Keys, entries: usize, more: bool) -> (KeyValues, bool) {
+        keys.page(entries, 4 * entries, more)
+    }
+
+    /// Runs `read_pages` over scripted pages; returns its result and the continuation count.
+    fn drive(pages: Vec<(KeyValues, bool)>) -> (Result<KeyValues>, usize) {
+        let mut pages = std::collections::VecDeque::from(pages);
+        let first = pages.pop_front().unwrap();
+        let mut last = first.0.last().map(|(k, _)| k.clone());
+        let mut fetched = 0;
+        let result = read_pages(first, |begin| {
+            fetched += 1;
+            let mut want = last.clone().expect("continuation after a nonempty page");
+            want.push(0);
+            assert_eq!(
+                begin,
+                want.as_slice(),
+                "continuation begins after the last key"
+            );
+            let page = pages.pop_front().expect("fetch after the terminal page");
+            if let Some((k, _)) = page.0.last() {
+                last = Some(k.clone());
+            }
+            Ok(page)
+        });
+        (result, fetched)
+    }
+
+    /// Exact/+1 at each page position plus cumulative controls; `small` is a minimal page.
+    fn check_range_bound(
+        name: &str,
+        limit: usize,
+        small: usize,
+        page: fn(&mut Keys, usize, bool) -> (KeyValues, bool),
+    ) {
+        let (half, third) = (limit / 2, limit / 3);
+        let scenarios: [(&str, Vec<(usize, bool)>, Option<usize>); 12] = [
+            ("first terminal exact", vec![(limit, false)], None),
+            ("first terminal +1", vec![(limit + 1, false)], Some(0)),
+            (
+                "first nonterminal exact",
+                vec![(limit, true), (0, false)],
+                None,
+            ),
+            (
+                "first nonterminal +1",
+                vec![(limit + 1, true), (small, false)],
+                Some(0),
+            ),
+            (
+                "intermediate exact",
+                vec![(small, true), (limit - small, true), (0, false)],
+                None,
+            ),
+            (
+                "intermediate +1",
+                vec![(small, true), (limit - small + 1, true), (small, false)],
+                Some(1),
+            ),
+            (
+                "terminal continuation exact",
+                vec![(small, true), (limit - small, false)],
+                None,
+            ),
+            (
+                "terminal continuation +1",
+                vec![(small, true), (limit - small + 1, false)],
+                Some(1),
+            ),
+            (
+                "pages within, combined exact",
+                vec![(half, true), (limit - half, false)],
+                None,
+            ),
+            (
+                "pages within, combined +1",
+                vec![(half, true), (limit - half + 1, false)],
+                Some(1),
+            ),
+            (
+                "three pages, combined exact",
+                vec![(third, true), (third, true), (limit - 2 * third, false)],
+                None,
+            ),
+            (
+                "three pages, combined +1 nonterminal",
+                vec![
+                    (third, true),
+                    (third, true),
+                    (limit - 2 * third + 1, true),
+                    (small, false),
+                ],
+                Some(2),
+            ),
+        ];
+        for (label, sizes, reject) in scenarios {
+            let mut keys = Keys(0);
+            let pages: Vec<_> = sizes
+                .iter()
+                .map(|&(n, more)| page(&mut keys, n, more))
+                .collect();
+            let expected: KeyValues = pages.iter().flat_map(|(p, _)| p.clone()).collect();
+            let (result, fetched) = drive(pages);
+            match reject {
+                None => {
+                    assert_eq!(fetched, sizes.len() - 1, "{name} {label}");
+                    assert!(result.unwrap() == expected, "{name} {label}: rows or order");
+                }
+                Some(at) => {
+                    assert_eq!(fetched, at, "{name} {label}: fetched after rejection");
+                    let err = result.unwrap_err();
+                    assert_eq!(err.kind, ErrorKind::Operation, "{name} {label}");
+                    assert_eq!(err.message, "stored prior image exceeds read bound");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn range_byte_budget_applies_to_every_page() {
+        // Independent literal: 16 MiB of key+value bytes per range.
+        check_range_bound("bytes", 16 * 1024 * 1024, 4, byte_page);
+    }
+
+    #[test]
+    fn range_entry_budget_applies_to_every_page() {
+        // Independent literal: 100000 entries per range, under 1 MiB of bytes.
+        check_range_bound("entries", 100_000, 1, entry_page);
+    }
+
+    #[test]
+    fn empty_nonterminal_first_page_is_rejected_without_fetching() {
+        let (result, fetched) = drive(vec![(Vec::new(), true)]);
+        assert_eq!(result.unwrap_err().message, "empty nonterminal FDB range");
+        assert_eq!(fetched, 0);
     }
 
     const CHILD_EXPECT: &str = "OTEL_RUST_NATIVE_ENV_EXPECT";
