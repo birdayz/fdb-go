@@ -86,6 +86,12 @@ func (tx *Transaction) cachedOrFetchReadVersion(ctx context.Context, extraFlags 
 func (state *readVersionState) cachedOrFetchReadVersion(ctx context.Context, request *readVersionRequest, extraFlags uint32, owner *Transaction) (int64, bool, error) {
 	for {
 		state.readVersionMu.Lock()
+		if owner != nil {
+			if poison := owner.deferredErr.Load(); poison != nil {
+				state.readVersionMu.Unlock()
+				return 0, false, poison
+			}
+		}
 		if err := readVersionEntryError(ctx, owner); err != nil {
 			state.readVersionMu.Unlock()
 			return 0, false, err

@@ -194,11 +194,13 @@ go_test(
 # gazelle:exclude timeout_queue_regression_unit_test.go
 # gazelle:exclude timeout_queue_unit_test.go
 # gazelle:exclude readversion_contract_unit_test.go
+# gazelle:exclude readversion_admission_unit_test.go
 go_test(
     name = "lease_alloc_unit_test",
     srcs = [
         "lazy_successor_unit_test.go",
         "lease_alloc_unit_test.go",
+        "readversion_admission_unit_test.go",
         "readversion_contract_unit_test.go",
         "timeout_alloc_unit_test.go",
         "timeout_design_unit_test.go",

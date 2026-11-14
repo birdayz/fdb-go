@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -70,6 +71,53 @@ time.sleep(60)
 			t.Fatalf("child %s survived cancellation: %s (%v)", childPID, stat, err)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestRealRunSeedKillsResidualChildOnSuccess(t *testing.T) {
+	t.Parallel()
+	harness, seedDir := t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(harness, "bindingtester"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fixture := `import os, subprocess, sys
+child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+with open(os.path.join(os.path.dirname(__file__), '..', 'child.pid'), 'w') as output:
+    output.write(str(child.pid))
+print('Test had 0 incorrect result(s) and 0 error(s)', flush=True)
+`
+	if err := os.WriteFile(filepath.Join(harness, "bindingtester", "bindingtester.py"), []byte(fixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	r := realRunSeed(ctx, 146, workload{"api", 20, 1, false, 730}, harness, seedDir)
+	if !r.Pass || !r.FDBAlive || r.Error != "" || ctx.Err() != nil {
+		t.Fatalf("successful tester=%+v context=%v", r, ctx.Err())
+	}
+	data, err := os.ReadFile(filepath.Join(harness, "child.pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(string(data))
+	if err != nil || pid <= 0 {
+		t.Fatalf("invalid child PID %q: %v", data, err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+		if os.IsNotExist(err) || (err == nil && strings.Contains(string(stat), ") Z ")) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("successful tester left child alive: %s %v", stat, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("context ended rather than normal-exit group cleanup: %v", ctx.Err())
 	}
 }
 

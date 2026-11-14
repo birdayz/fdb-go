@@ -182,6 +182,151 @@ func TestRunCancelsBlockedChildrenOnCallerOrParentFailure(t *testing.T) {
 	}
 }
 
+func TestDescendantJoinTimeoutInterruptsBlockedRoot(t *testing.T) {
+	t.Parallel()
+	gate := &directoryReplyGate{}
+	db, ctx := stacktesterDatabase(t, client.WithDialFunc(gate.dial))
+	t.Cleanup(gate.release)
+	root, child, leaf := "inherited/root", "inherited/child", "inherited/leaf"
+	rootBarrier := []byte("inherited/root-barrier")
+	childBarrier := []byte("inherited/child-barrier")
+	rootReady := []byte("inherited/root-ready")
+	scope := "inherited-directory-scope"
+	sm := NewStackMachine(db, []byte(root))
+	if _, err := sm.dirList[0].dir.CreateOrOpen(sm.fdbDB(ctx), []string{scope}, nil); err != nil {
+		t.Fatal(err)
+	}
+	writeThreadInstructions(t, ctx, db, map[string][]tuple.Tuple{
+		root: {
+			{"PUSH", []byte(child)},
+			{"START_THREAD"},
+			{"PUSH", rootReady},
+			{"CLEAR_DATABASE"},
+			{"PUSH", rootBarrier},
+			{"WAIT_EMPTY"},
+		},
+		child: {
+			{"PUSH", []byte(leaf)},
+			{"START_THREAD"},
+			{"PUSH", childBarrier},
+			{"WAIT_EMPTY"},
+		},
+		leaf: {
+			{"PUSH", scope},
+			{"PUSH", int64(1)},
+			{"PUSH", int64(1)},
+			{"DIRECTORY_EXISTS_DATABASE"},
+		},
+	}, rootBarrier)
+	if _, err := db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+		tx.Set(childBarrier, []byte("held"))
+		tx.Set(rootReady, []byte("held"))
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// While armed, inspect coordination keys with ranges: a point Get would
+	// itself be caught by the directory reply gate and invalidate readiness.
+	readCoordination := func(key []byte) []byte {
+		t.Helper()
+		readCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		tr := db.CreateTransaction()
+		defer tr.Cancel()
+		rows, more, err := tr.GetRange(readCtx, key, append(bytes.Clone(key), 0), 2)
+		if err != nil || more || len(rows) > 1 {
+			t.Fatalf("coordination range%q rows=%v more=%v err=%v", key, rows, more, err)
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		if !bytes.Equal(rows[0].Key, key) {
+			t.Fatalf("coordination key=%q want%q", rows[0].Key, key)
+		}
+		return rows[0].Value
+	}
+	heldReply := func() {
+		t.Helper()
+		gate.mu.Lock()
+		armed, held := gate.armed, len(gate.held)
+		gate.mu.Unlock()
+		if !armed || held == 0 {
+			t.Fatalf("directory reply released before join proof: armed=%v held=%d", armed, held)
+		}
+	}
+
+	sm.childJoinTimeout = 2 * time.Second
+	runCtx, cancel := context.WithCancel(ctx)
+	gate.arm()
+	errs := make(chan error, 1)
+	finished := make(chan struct{})
+	go func() {
+		errs <- sm.Run(runCtx)
+		close(finished)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		gate.release()
+		select {
+		case <-finished:
+		case <-time.After(10 * time.Second):
+			t.Error("root worker did not stop during test cleanup")
+		}
+	})
+	select {
+	case <-gate.reached:
+	case err := <-errs:
+		t.Fatalf("Run ended before grandchild directory read: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("grandchild never reached real held directory read")
+	}
+	readyCtx, readyCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer readyCancel()
+	if err := sm.waitEmpty(readyCtx, rootReady); err != nil {
+		t.Fatalf("root did not reach barrier setup: %v", err)
+	}
+	heldReply()
+	if !bytes.Equal(readCoordination(rootBarrier), []byte("held")) || !bytes.Equal(readCoordination(childBarrier), []byte("held")) {
+		t.Fatal("root/child barriers not both held before starting descendant join")
+	}
+	select {
+	case err := <-errs:
+		t.Fatalf("Run finished while child barrier still held: %v", err)
+	default:
+	}
+	// Release ONLY the child barrier. The root cannot finish instructions or
+	// start its own timer; the leaf cannot finish its held directory read.
+	if _, err := db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+		tx.Clear(childBarrier)
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-errs:
+		if err == nil || !strings.Contains(err.Error(), child) || !strings.Contains(err.Error(), "timed out waiting for child threads after 2s") || strings.Contains(err.Error(), "unjoined child threads") {
+			t.Fatalf("descendant timeout=%v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("child did not use inherited join timeout while root barrier/directory reply remained held")
+	}
+	assertThreadWorkersJoined(t, sm)
+	sm.childMu.Lock()
+	activeChildren := len(sm.children)
+	sm.childMu.Unlock()
+	if activeChildren != 0 {
+		t.Fatalf("root retained%d children after join", activeChildren)
+	}
+	heldReply()
+	if !bytes.Equal(readCoordination(rootBarrier), []byte("held")) || len(readCoordination(childBarrier)) != 0 {
+		t.Fatal("wrong barrier released: root must remain held and child must be clear")
+	}
+	if runCtx.Err() != nil || ctx.Err() != nil {
+		t.Fatalf("descendant timeout canceled caller context: run=%v db=%v", runCtx.Err(), ctx.Err())
+	}
+}
+
 func TestSuccessfulChildDoesNotCancelParentOrSibling(t *testing.T) {
 	t.Parallel()
 	db, ctx := stacktesterDatabase(t)

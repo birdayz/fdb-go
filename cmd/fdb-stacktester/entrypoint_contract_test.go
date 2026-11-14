@@ -54,6 +54,10 @@ func TestRunCancellationStopsBetweenPersistedInstructions(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("persisted read did not reach barrier")
 	}
+	sizeBefore, err := sm.currentTr().GetApproximateSize()
+	if err != nil || sizeBefore <= 0 {
+		t.Fatalf("GET did not establish read-conflict control: size=%d err=%v", sizeBefore, err)
+	}
 	cancel(cause)
 	select {
 	case err := <-done:
@@ -69,8 +73,8 @@ func TestRunCancellationStopsBetweenPersistedInstructions(t *testing.T) {
 		t.Fatalf("instructions after canceled GET ran: completed=%d stack=%+v", sm.opRingIdx, sm.stack)
 	}
 	gate.release()
-	if value, err := sm.currentTr().Get(ctx, writeKey); err != nil || value != nil {
-		t.Fatalf("canceled program buffered SET: value=%q err=%v", value, err)
+	if size, err := sm.currentTr().GetApproximateSize(); err != nil || size != sizeBefore {
+		t.Fatalf("canceled program added buffered mutations/conflicts: before=%d after=%d err=%v", sizeBefore, size, err)
 	}
 
 	control := NewStackMachine(db, []byte(root))

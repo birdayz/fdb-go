@@ -349,6 +349,8 @@ type txOptions struct {
 	afterReadVersion func()
 	// beforeReadVersionLock parks acquisition after entry validation.
 	beforeReadVersionLock func()
+	// beforeReadVersionReject parks rejection before publication under readVersionMu.
+	beforeReadVersionReject func()
 	// beforeReadFailureDelivery observes terminal-state publication ordering.
 	beforeReadFailureDelivery func(error)
 	// afterTimeoutRecord runs after a timeout delivery records its cause and
@@ -2778,15 +2780,25 @@ func (tx *Transaction) stateSetReadVersion(version int64) {
 		return
 	}
 	tx.readVersionMu.Lock()
+	defer tx.readVersionMu.Unlock()
+	// readVersionMu orders setter poison with GRV admission; publication uses
+	// atomic deferredErr directly and acquires no further state lock.
+	if tx.deferredErr.Load() != nil {
+		return
+	}
 	// NativeAPI::setVersion rejects an existing (including pending) GRV
 	// before validating the supplied version. The void C API defers that error.
 	if tx.hasReadVersion || tx.pendingReadVersion != nil {
-		tx.readVersionMu.Unlock()
+		if tx.beforeReadVersionReject != nil {
+			tx.beforeReadVersionReject()
+		}
 		tx.deferredErr.CompareAndSwap(nil, &wire.FDBError{Code: 2010})
 		return
 	}
 	if version <= 0 {
-		tx.readVersionMu.Unlock()
+		if tx.beforeReadVersionReject != nil {
+			tx.beforeReadVersionReject()
+		}
 		tx.deferredErr.CompareAndSwap(nil, &wire.FDBError{Code: 2011})
 		return
 	}
@@ -2794,20 +2806,13 @@ func (tx *Transaction) stateSetReadVersion(version int64) {
 	tx.hasReadVersion = true
 	tx.userSetReadVersion = true
 	tx.pendingReadVersion = nil
-	// A caller-supplied version's MVCC window opened on the cluster at an instant
-	// this client never observed, so there is no anchor to report. Zeroing (rather
-	// than leaving a prior GRV's stamp) keeps "instant describes the CURRENT read
-	// version" true — a stale anchor would read as a window that is still open.
-	// This is the ONE clear the accessor's hasReadVersion gate cannot stand in for,
-	// because SetReadVersion leaves that flag true.
+	// The first accepted pin has no client-observed MVCC anchor. Existing or
+	// pending versions are rejected above, never overwritten by this setter.
 	tx.readVersionInstant = time.Time{}
-	tx.readVersionMu.Unlock()
 }
 
-// stateReadVersionInstant's hasReadVersion gate retires the instant for every path
-// that drops the read version; only SetReadVersion, which keeps that flag, clears it
-// explicitly. Per-reset-site clears were tried and removed: with two mechanisms
-// covering one rule, neither is detectable by a mutation.
+// stateReadVersionInstant reports only client-observed anchors for live versions.
+// An accepted explicit pin has no anchor; reset retires it through hasReadVersion.
 func (tx *Transaction) stateReadVersionInstant() (time.Time, bool) {
 	tx.readVersionMu.Lock()
 	defer tx.readVersionMu.Unlock()

@@ -58,14 +58,14 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 	// --- Transaction management ---
 	case "NEW_TRANSACTION":
 		sm.trMu.Lock()
-		sm.trMap[sm.trName] = sm.db.CreateTransaction()
+		sm.trMap[sm.trName] = sm.createTransaction()
 		sm.trMu.Unlock()
 	case "USE_TRANSACTION":
 		name := sm.popString()
 		sm.trMu.Lock()
 		sm.trName = name
 		if _, ok := sm.trMap[name]; !ok {
-			sm.trMap[name] = sm.db.CreateTransaction()
+			sm.trMap[name] = sm.createTransaction()
 		}
 		sm.trMu.Unlock()
 	case "COMMIT":
@@ -78,7 +78,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		}
 	case "RESET":
 		sm.trMu.Lock()
-		sm.trMap[sm.trName] = sm.db.CreateTransaction()
+		sm.trMap[sm.trName] = sm.createTransaction()
 		sm.trMu.Unlock()
 	case "CANCEL":
 		sm.currentTr().Cancel()
@@ -89,7 +89,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		var val []byte
 		var err error
 		if isDatabase {
-			result, e := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+			result, e := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 				return tx.Get(ctx, key)
 			})
 			if e == nil && result != nil {
@@ -117,7 +117,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		var result []byte
 		var err error
 		if isDatabase {
-			r, e := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+			r, e := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 				return tx.GetKey(ctx, key, orEqual, offset)
 			})
 			if e == nil && r != nil {
@@ -155,7 +155,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		var kvs []client.KeyValue
 		var err error
 		if isDatabase {
-			result, e := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+			result, e := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 				var kv []client.KeyValue
 				var rangeErr error
 				if reverse {
@@ -207,7 +207,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		var kvs []client.KeyValue
 		var err error
 		if isDatabase {
-			result, e := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+			result, e := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 				var kv []client.KeyValue
 				var rangeErr error
 				if reverse {
@@ -266,7 +266,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 			type rangeResult struct {
 				kvs []client.KeyValue
 			}
-			result, e := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+			result, e := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 				b, bErr := tx.GetKey(ctx, beginKey, beginOrEqual, beginOffset)
 				if bErr != nil {
 					return nil, bErr
@@ -348,7 +348,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		key := sm.popBytes()
 		value := sm.popBytes()
 		if isDatabase {
-			_, err := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+			_, err := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 				tx.Set(key, value)
 				return nil, nil
 			})
@@ -364,7 +364,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 	case "CLEAR":
 		key := sm.popBytes()
 		if isDatabase {
-			_, err := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+			_, err := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 				tx.Clear(key)
 				return nil, nil
 			})
@@ -381,7 +381,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		begin := sm.popBytes()
 		end := sm.popBytes()
 		if isDatabase {
-			_, err := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+			_, err := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 				return nil, tx.ClearRange(begin, end)
 			})
 			if err != nil {
@@ -399,7 +399,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		prefix := sm.popBytes()
 		end := strinc(prefix)
 		if isDatabase {
-			_, err := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+			_, err := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 				return nil, tx.ClearRange(prefix, end)
 			})
 			if err != nil {
@@ -419,7 +419,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		value := sm.popBytes()
 		mutType := atomicOpType(opType)
 		if isDatabase {
-			_, err := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+			_, err := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 				tx.Atomic(mutType, key, value)
 				return nil, nil
 			})
@@ -622,9 +622,24 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		prefix := sm.popBytes()
 		child := newStackMachine(sm.db, prefix, sm.transactionRegistry)
 		child.childJoinTimeout = sm.childJoinTimeout
+		child.threadPath = sm.threadPath + " -> " + string(prefix)
+		sm.childMu.Lock()
+		if sm.children == nil {
+			sm.children = make(map[string]int)
+		}
+		sm.children[string(prefix)]++
+		sm.childMu.Unlock()
 		sm.wg.Add(1)
 		go func() {
 			defer sm.wg.Done()
+			defer func() {
+				sm.childMu.Lock()
+				sm.children[string(prefix)]--
+				if sm.children[string(prefix)] == 0 {
+					delete(sm.children, string(prefix))
+				}
+				sm.childMu.Unlock()
+			}()
 			if err := child.Run(ctx); err != nil {
 				err = fmt.Errorf("child thread %q: %w", prefix, err)
 				sm.childMu.Lock()
@@ -684,7 +699,7 @@ func (sm *StackMachine) logStack(ctx context.Context, idx int, prefix []byte) er
 			end = len(entries)
 		}
 		batch := entries[i:end]
-		_, err := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+		_, err := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 			for j, e := range batch {
 				globalIdx := i + j
 				key := append(append([]byte{}, prefix...), tuple.Tuple{int64(globalIdx), int64(e.idx)}.Pack()...)
@@ -709,7 +724,7 @@ func (sm *StackMachine) waitEmpty(ctx context.Context, prefix []byte) error {
 		if err := context.Cause(ctx); err != nil {
 			return err
 		}
-		result, err := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+		result, err := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 			kvs, _, err := tx.GetRange(ctx, prefix, end, 1)
 			return kvs, err
 		})
@@ -722,7 +737,10 @@ func (sm *StackMachine) waitEmpty(ctx context.Context, prefix []byte) error {
 		}
 		// Not empty yet, retry via OnError with not_committed for backoff sleep.
 		tr := sm.db.CreateTransaction()
-		if err := tr.OnError(ctx, &wire.FDBError{Code: client.ErrNotCommitted}); err != nil {
+		untrack := sm.waits.track(tr.Cancel)
+		err = tr.OnError(ctx, &wire.FDBError{Code: client.ErrNotCommitted})
+		untrack()
+		if err != nil {
 			return err
 		}
 	}

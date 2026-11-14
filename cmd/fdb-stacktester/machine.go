@@ -38,21 +38,24 @@ type stackEntry struct {
 type transactionRegistry struct {
 	trMap map[string]*client.Transaction
 	trMu  sync.RWMutex
+	waits transactionWaits
 }
 
 // StackMachine executes binding tester instructions.
 type StackMachine struct {
-	db      *client.Database
-	prefix  []byte
-	trName  string
-	stack   []stackEntry
-	lastVer int64
+	db         *client.Database
+	prefix     []byte
+	trName     string
+	threadPath string
+	stack      []stackEntry
+	lastVer    int64
 
 	*transactionRegistry
 	wg sync.WaitGroup
 
 	childMu          sync.Mutex
 	childErr         error
+	children         map[string]int
 	cancelRun        context.CancelCauseFunc
 	childJoinTimeout time.Duration
 
@@ -76,28 +79,47 @@ func newStackMachine(db *client.Database, prefix []byte, registry *transactionRe
 		db:                  db,
 		prefix:              prefix,
 		trName:              string(prefix),
+		threadPath:          string(prefix),
 		transactionRegistry: registry,
 		childJoinTimeout:    2 * time.Minute,
 	}
 	sm.trMu.Lock()
-	sm.trMap[sm.trName] = db.CreateTransaction()
+	sm.trMap[sm.trName] = sm.createTransaction()
 	sm.trMu.Unlock()
 	sm.initDirectoryState()
 	return sm
 }
 
 // Run reads instructions from FDB and executes them.
-func (sm *StackMachine) Run(ctx context.Context) error {
+func (sm *StackMachine) Run(ctx context.Context) (result error) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	sm.cancelRun = cancel
-	// Every exit cancels and joins this machine's descendants before returning.
+	stop := context.AfterFunc(ctx, func() { sm.waits.stop(context.Cause(ctx)) })
 	defer func() {
+		stop()
+		if result != nil {
+			sm.waits.stop(fmt.Errorf("thread %q: %w", sm.threadPath, result))
+		}
 		cancel(context.Canceled)
-		sm.wg.Wait()
+		done := make(chan struct{})
+		go func() { sm.wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			sm.childMu.Lock()
+			result = errors.Join(result, fmt.Errorf("unjoined child threads: %v", sm.children))
+			sm.childMu.Unlock()
+		}
 	}()
 	if err := sm.runInstructions(ctx); err != nil {
 		if childErr := sm.childError(); childErr != nil {
 			return childErr
+		}
+		if cause := context.Cause(ctx); cause != nil {
+			return cause
+		}
+		if cause := sm.waits.failure(); cause != nil {
+			return cause
 		}
 		return err
 	}
@@ -117,6 +139,9 @@ func (sm *StackMachine) Run(ctx context.Context) error {
 	}
 	if err := sm.childError(); err != nil {
 		return err
+	}
+	if cause := sm.waits.failure(); cause != nil {
+		return cause
 	}
 	return context.Cause(ctx)
 }
@@ -180,7 +205,7 @@ func (sm *StackMachine) readInstructions(ctx context.Context) ([]client.KeyValue
 	end := strinc(tuple.Tuple{sm.prefix}.Pack())
 
 	for {
-		result, err := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+		result, err := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 			kvs, more, err := tx.GetRange(ctx, begin, end, 10000)
 			return &rangeResult{kvs: kvs, more: more}, err
 		})

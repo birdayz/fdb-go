@@ -24,6 +24,7 @@ import (
 type directoryReplyGate struct {
 	mu      sync.Mutex
 	armed   bool
+	fileID  uint32
 	held    []directoryHeldReply
 	reached chan struct{}
 }
@@ -100,7 +101,11 @@ func (c *directoryGateConn) readLoop() {
 		}
 		if len(body) >= 8 {
 			id := binary.LittleEndian.Uint32(body[4:8])
-			if id == types.GetValueReplyFileID || id == 2<<24|types.GetValueReplyFileID {
+			fileID := c.gate.fileID
+			if fileID == 0 {
+				fileID = types.GetValueReplyFileID
+			}
+			if id == fileID || id == 2<<24|fileID {
 				c.gate.mu.Lock()
 				if c.gate.armed {
 					c.gate.held = append(c.gate.held, directoryHeldReply{c, token, append([]byte{}, body...)})

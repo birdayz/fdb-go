@@ -7,6 +7,7 @@ go_library(
         "machine.go",
         "main.go",
         "operations.go",
+        "transaction_lifetime.go",
     ],
     importpath = "fdb.dev/cmd/fdb-stacktester",
     visibility = ["//visibility:private"],
@@ -32,6 +33,7 @@ go_test(
     name = "fdb-stacktester_test",
     srcs = [
         "arithmetic_test.go",
+        "commit_teardown_test.go",
         "directory_context_test.go",
         "directory_panic_test.go",
         "directory_remove_prefix_test.go",

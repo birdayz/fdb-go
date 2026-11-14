@@ -168,7 +168,7 @@ func (sm *StackMachine) fdbTr(ctx context.Context) gofdb.Transaction {
 // this is a _DATABASE operation or a regular transaction operation.
 func (sm *StackMachine) getTransactor(ctx context.Context, isDatabase bool) gofdb.Transactor {
 	if isDatabase {
-		return sm.fdbDB(ctx)
+		return directoryDatabaseTransactor{sm.fdbDB(ctx), ctx, &sm.waits}
 	}
 	return sm.fdbTr(ctx)
 }
@@ -177,7 +177,7 @@ func (sm *StackMachine) getTransactor(ctx context.Context, isDatabase bool) gofd
 // operation suffix.
 func (sm *StackMachine) getReadTransactor(ctx context.Context, isDatabase, isSnapshot bool) gofdb.ReadTransactor {
 	if isDatabase {
-		return sm.fdbDB(ctx)
+		return directoryDatabaseTransactor{sm.fdbDB(ctx), ctx, &sm.waits}
 	}
 	if isSnapshot {
 		return sm.fdbTr(ctx).Snapshot()
