@@ -135,15 +135,17 @@ recent pinned versions and Go's `validateVersion` spuriously rejected reads with
 one version across both clients) all flipped to 1007 under load.
 
 Fix: `updateMinAcceptable` now tracks the SMALLEST seen version (`std::min`, 0 = unset), matching
-C++ and the existing Go comment. The floor stays low (the first version seen), so `validateVersion`
-rejects only a genuinely-ancient pinned version (below anything the client has observed) — never a
-recent pin that merely predates a later GRV. This keeps the ancient-version fail-fast
-(`TestDifferential_PinnedRangeRetriesStaleVersion` pins version 1, which both clients still surface
-as a retryable 1007 — Go client-side, cgo server-side, same outcome) while removing the spurious
-rejections. No new wire bytes. (C++ additionally gates the throw on `switchable`; the Go client is
-non-switchable and keeps the check as an outcome-equivalent client-side fail-fast for ancient
-versions — the storage server rejects exactly those. Two narrower attempts — removing the check, and
-skipping it at commit — were reverted once the max-vs-min root cause was found.)
+C++ and the existing Go comment. The floor stays low (the first version seen), so later GRVs do
+not advance this storage-read and retained commit guard past earlier pins. It is an observational
+floor, not a rolling MVCC retention boundary, and does not establish which snapshots a storage
+server currently serves. The historical `TestDifferential_PinnedRangeRetriesStaleVersion` example
+pins version 1 and observes retryable 1007 in both clients (Go client-side, cgo server-side); that
+example is not a general equivalence claim for every explicit pin. No new wire bytes.
+Transaction and snapshot `GetReadVersion` return accepted positive `SetReadVersion` pins unchanged,
+without bootstrapping a validation GRV, subject to deferred errors and lifetime checks. They do not
+apply this storage/commit validation. C++ additionally gates its floor throw on `switchable`;
+Go retains its existing non-switchable storage/commit guard. Earlier attempts to remove that guard
+or skip it at commit were reverted once the max-vs-min root cause was found.
 
 ## Wire-compat impact
 

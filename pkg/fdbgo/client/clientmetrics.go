@@ -24,8 +24,8 @@ import (
 // transactionRetries is a Go-only aggregate (total OnError-sanctioned retries);
 // C++ tracks retries per-transaction only (trState->numErrors). It also counts
 // codes C++ retries WITHOUT a counter (database_locked 1038,
-// blob_granule_request_failed 1079 — :7743-7747, plus the
-// future-proof 1235/1242).
+// blob_granule_request_failed 1079 — :7743-7747). The pinned 7.3.77 retry
+// contract excludes the later 1235/1242 codes.
 //
 // Counters are monotonic; consumers poll Database.Metrics() and diff. There is
 // no periodic trace emission (C++ logs TransactionMetrics on a timer; the Go

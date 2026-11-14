@@ -31,9 +31,10 @@ deterministic regression: `bazelisk test //pkg/...:foo_test
   external data/toolchain dependencies declared by those targets.
 - Full means all targets at their default budgets, not every execution mode. PR CI
   adds a `-race` lane (relational, client, cascades) and replays the wire-oracle
-  fuzz seed corpora; no scheduled workflow runs, so active fuzzing and extended
-  seed runs happen only when invoked. `just verify` adds the existing race and
-  fuzz-smoke checks to the full lane.
+  fuzz seed corpora. The [hourly Go-client BindingTester lane](docs/client-correctness.md)
+  replays regressions and explores fresh seeds on hosted runners; active fuzzing
+  and other extended seed modes remain invocation-only. `just verify` adds the
+  existing race and fuzz-smoke checks to the full lane.
 - Complete a coherent workstream before running the suite. Do not rerun it after
   every small edit. If a touched regression target is outside the fast lane
   (tagged `test-full`/`conformance_java`/`stress`/`manual`), run `just test-full`,

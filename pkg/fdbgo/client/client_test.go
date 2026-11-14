@@ -178,8 +178,6 @@ func TestOnError_AllRetryableCodes(t *testing.T) {
 		{"batch_transaction_throttled", ErrBatchTransactionThrottled},
 		{"tag_throttled", ErrTagThrottled},
 		{"proxy_tag_throttled", ErrProxyTagThrottled},
-		{"throttled_hot_shard", ErrThrottledHotShard},
-		{"range_locked", ErrRangeLocked},
 		// all_alternatives_failed (1006) is NOT retryable at OnError level.
 		// It's retried at Layer 2 (read path wrong-shard loop). If it
 		// escapes to OnError, it means the read path exhausted retries

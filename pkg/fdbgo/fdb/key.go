@@ -26,15 +26,14 @@
 //     operation behind it continues, except a watch, which is cancelled.
 //   - As in the Apple binding, methods like Get/GetRange take no context.
 //     TransactCtx and ReadTransactCtx bound the retry loop, backoff and reads
-//     with a context; Transact and ReadTransact run on context.Background().
-//     Use SetTimeout for deadlines, or Cancel() from another goroutine.
+//     with an explicit context. Transact, ReadTransact and CreateTransaction reads inherit context.Background()
+//     or the WrapDatabaseContext context. SetTimeout and Cancel() also bound transactions.
 //
 // Retries and timeouts are UNBOUNDED by default here — exactly as in libfdb_c,
 // whose per-transaction defaults are timeoutInSeconds=0.0 and maxRetries=-1
 // (ReadYourWrites.actor.cpp:2078-2082; fdb.options on the timeout option: "If set
-// to 0, will disable all timeouts"). A bare Transact against a down cluster
-// retries until the cluster returns, and the no-context Transact runs on
-// context.Background(), so nothing internal stops it. This is a matched default,
+// to 0, will disable all timeouts"). Bare Transact retries on context.Background() until recovery;
+// WrapDatabaseContext instead supplies the inherited context. This is a matched default,
 // NOT a divergence — but it does mean every caller must choose a bound:
 // SetTimeout (the analog of C++ `timebomb`, and like it, it cancels in-flight RPC
 // waits — RFC-112), SetRetryLimit, or a deadline ctx via TransactCtx (Go's extra

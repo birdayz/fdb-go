@@ -205,6 +205,9 @@ func reduceSelectorKnown(sel fdb.KeySelector, segments []selectorWriteSegment) (
 // selectorFetch is one getRange over selectors: one batch, its rows and more, and its read
 // conflict when the read is not a snapshot.
 func (tx *simTxn) selectorFetch(begin, end fdb.KeySelector, limit, byteTarget int, reverse, snapshot bool) ([]fdb.KeyValue, bool, error) {
+	if tx.deferredErr != nil {
+		return nil, false, tx.deferredErr
+	}
 	if tx.cancelled.Load() {
 		return nil, false, fdb.Error{Code: 1025}
 	}

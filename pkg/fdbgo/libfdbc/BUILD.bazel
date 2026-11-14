@@ -103,7 +103,10 @@ go_test(
 
 go_test(
     name = "mapped_skip_regression_test",
-    srcs = ["mapped_skip_regression_test.go"],
+    srcs = [
+        "mapped_skip_regression_test.go",
+        "readversion_getter_storage_conformance_test.go",
+    ],
     gotags = ["libfdbc"],
     pure = "off",
     target_compatible_with = [
@@ -115,6 +118,7 @@ go_test(
         "//pkg/fdbgo/client",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/tuple",
+        "//pkg/fdbgo/wire",
         "//pkg/testcontainers/foundationdb",
     ],
 )

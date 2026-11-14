@@ -13,11 +13,9 @@ func TestReset_DoesNotDeadlockWithWatchSetupGRV(t *testing.T) {
 	defer cancel()
 	db, gate, _ := newGRVReplyGateDB(t, ctx)
 	unrelated := db.CreateTransaction()
-	version, err := unrelated.GetReadVersion(ctx)
-	if err != nil {
+	if _, err := unrelated.GetReadVersion(ctx); err != nil {
 		t.Fatal(err)
 	}
-	unrelated.SetReadVersion(version)
 	gate.arm(1, false)
 	tx := db.CreateTransaction()
 	entry := make(chan struct{})

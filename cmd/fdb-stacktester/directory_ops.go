@@ -106,6 +106,24 @@ func convertTupleElement(v any) any {
 	}
 }
 
+// stackTupleElement preserves raw unpacked values in the stack's tuple dialect.
+func stackTupleElement(v any) any {
+	switch val := v.(type) {
+	case ourtuple.Tuple:
+		out := make(appletuple.Tuple, len(val))
+		for i, e := range val {
+			out[i] = stackTupleElement(e)
+		}
+		return out
+	case ourtuple.UUID:
+		return appletuple.UUID(val)
+	case ourtuple.Versionstamp:
+		return appletuple.Versionstamp{TransactionVersion: val.TransactionVersion, UserVersion: val.UserVersion}
+	default:
+		return v
+	}
+}
+
 // popBytesOrNil pops a value that may be nil (Python NONE) or bytes.
 func (sm *StackMachine) popBytesOrNil() []byte {
 	e := sm.pop()
@@ -114,6 +132,10 @@ func (sm *StackMachine) popBytesOrNil() []byte {
 	}
 	switch v := e.value.(type) {
 	case []byte:
+		// The tuple decoder represents b'' as a typed nil slice, not Python None.
+		if v == nil {
+			return []byte{}
+		}
 		return v
 	case string:
 		return []byte(v)
@@ -122,35 +144,45 @@ func (sm *StackMachine) popBytesOrNil() []byte {
 	}
 }
 
+// Python treats an omitted or empty layer as a wildcard when opening a
+// directory; the Go directory facade represents that wildcard as nil.
+func (sm *StackMachine) popLayer() []byte {
+	layer := sm.popBytesOrNil()
+	if len(layer) == 0 {
+		return nil
+	}
+	return layer
+}
+
 // fdbDB returns an fdb.Database wrapping the stack machine's client.Database.
-func (sm *StackMachine) fdbDB() gofdb.Database {
-	return gofdb.WrapDatabase(sm.db)
+func (sm *StackMachine) fdbDB(ctx context.Context) gofdb.Database {
+	return gofdb.WrapDatabaseContext(ctx, sm.db)
 }
 
 // fdbTr returns an fdb.Transaction wrapping the current client.Transaction.
-func (sm *StackMachine) fdbTr() gofdb.Transaction {
-	return gofdb.WrapTransaction(sm.currentTr(), sm.fdbDB())
+func (sm *StackMachine) fdbTr(ctx context.Context) gofdb.Transaction {
+	return gofdb.WrapTransaction(sm.currentTr(), sm.fdbDB(ctx))
 }
 
 // getTransactor returns the appropriate fdb.Transactor based on whether
 // this is a _DATABASE operation or a regular transaction operation.
-func (sm *StackMachine) getTransactor(isDatabase bool) gofdb.Transactor {
+func (sm *StackMachine) getTransactor(ctx context.Context, isDatabase bool) gofdb.Transactor {
 	if isDatabase {
-		return sm.fdbDB()
+		return directoryDatabaseTransactor{sm.fdbDB(ctx), ctx, &sm.waits}
 	}
-	return sm.fdbTr()
+	return sm.fdbTr(ctx)
 }
 
 // getReadTransactor returns the appropriate fdb.ReadTransactor based on
 // operation suffix.
-func (sm *StackMachine) getReadTransactor(isDatabase, isSnapshot bool) gofdb.ReadTransactor {
+func (sm *StackMachine) getReadTransactor(ctx context.Context, isDatabase, isSnapshot bool) gofdb.ReadTransactor {
 	if isDatabase {
-		return sm.fdbDB()
+		return directoryDatabaseTransactor{sm.fdbDB(ctx), ctx, &sm.waits}
 	}
 	if isSnapshot {
-		return sm.fdbTr().Snapshot()
+		return sm.fdbTr(ctx).Snapshot()
 	}
-	return sm.fdbTr()
+	return sm.fdbTr(ctx)
 }
 
 // executeDirectoryOp handles DIRECTORY_* operations. Returns true if
@@ -166,6 +198,11 @@ func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op stri
 	// The binding tester expects DIRECTORY_ERROR, not a crash.
 	defer func() {
 		if r := recover(); r != nil {
+			// Python reserves a directory-list slot even when a creator raises.
+			switch strings.TrimPrefix(op, "DIRECTORY_") {
+			case "CREATE_SUBSPACE", "CREATE_LAYER", "CREATE_OR_OPEN", "CREATE", "OPEN", "MOVE", "MOVE_TO", "OPEN_SUBSPACE":
+				sm.appendNull()
+			}
 			sm.push(idx, []byte("DIRECTORY_ERROR"))
 			handled = true
 			err = nil
@@ -203,8 +240,8 @@ func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op stri
 
 	case "CREATE_OR_OPEN":
 		path := sm.popTupleAsPath()
-		layer := sm.popBytesOrNil()
-		tr := sm.getTransactor(isDatabase)
+		layer := sm.popLayer()
+		tr := sm.getTransactor(ctx, isDatabase)
 		d := sm.currentDir()
 		if d.dir == nil {
 			sm.pushError(idx, fmt.Errorf("directory error"))
@@ -221,9 +258,9 @@ func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op stri
 
 	case "CREATE":
 		path := sm.popTupleAsPath()
-		layer := sm.popBytesOrNil()
+		layer := sm.popLayer()
 		prefix := sm.popBytesOrNil()
-		tr := sm.getTransactor(isDatabase)
+		tr := sm.getTransactor(ctx, isDatabase)
 		d := sm.currentDir()
 		if d.dir == nil {
 			sm.push(idx, []byte("DIRECTORY_ERROR"))
@@ -246,8 +283,8 @@ func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op stri
 
 	case "OPEN":
 		path := sm.popTupleAsPath()
-		layer := sm.popBytesOrNil()
-		rt := sm.getReadTransactor(isDatabase, isSnapshot)
+		layer := sm.popLayer()
+		rt := sm.getReadTransactor(ctx, isDatabase, isSnapshot)
 		d := sm.currentDir()
 		if d.dir == nil {
 			sm.push(idx, []byte("DIRECTORY_ERROR"))
@@ -276,7 +313,7 @@ func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op stri
 	case "MOVE":
 		oldPath := sm.popTupleAsPath()
 		newPath := sm.popTupleAsPath()
-		tr := sm.getTransactor(isDatabase)
+		tr := sm.getTransactor(ctx, isDatabase)
 		d := sm.currentDir()
 		if d.dir == nil {
 			sm.push(idx, []byte("DIRECTORY_ERROR"))
@@ -293,7 +330,7 @@ func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op stri
 
 	case "MOVE_TO":
 		newAbsPath := sm.popTupleAsPath()
-		tr := sm.getTransactor(isDatabase)
+		tr := sm.getTransactor(ctx, isDatabase)
 		d := sm.currentDir()
 		if d.dir == nil {
 			sm.push(idx, []byte("DIRECTORY_ERROR"))
@@ -314,14 +351,14 @@ func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op stri
 		if count == 1 {
 			path = sm.popTupleAsPath()
 		}
-		tr := sm.getTransactor(isDatabase)
+		tr := sm.getTransactor(ctx, isDatabase)
 		d := sm.currentDir()
 		if d.dir == nil {
 			sm.push(idx, []byte("DIRECTORY_ERROR"))
 			return true, nil
 		}
-		_, err := d.dir.Remove(tr, path)
-		if err != nil {
+		removed, err := d.dir.Remove(tr, path)
+		if err != nil || !removed {
 			sm.push(idx, []byte("DIRECTORY_ERROR"))
 		}
 
@@ -331,13 +368,15 @@ func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op stri
 		if count == 1 {
 			path = sm.popTupleAsPath()
 		}
-		tr := sm.getTransactor(isDatabase)
+		tr := sm.getTransactor(ctx, isDatabase)
 		d := sm.currentDir()
 		if d.dir == nil {
-			// If null, just no-op for if_exists variant.
+			sm.push(idx, []byte("DIRECTORY_ERROR"))
 			return true, nil
 		}
-		d.dir.Remove(tr, path) // ignore error for if_exists
+		if _, err := d.dir.Remove(tr, path); err != nil {
+			sm.push(idx, []byte("DIRECTORY_ERROR"))
+		}
 
 	case "LIST":
 		count := int(sm.popInt64())
@@ -345,7 +384,7 @@ func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op stri
 		if count == 1 {
 			path = sm.popTupleAsPath()
 		}
-		rt := sm.getReadTransactor(isDatabase, isSnapshot)
+		rt := sm.getReadTransactor(ctx, isDatabase, isSnapshot)
 		d := sm.currentDir()
 		if d.dir == nil {
 			sm.push(idx, []byte("DIRECTORY_ERROR"))
@@ -368,7 +407,7 @@ func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op stri
 		if count == 1 {
 			path = sm.popTupleAsPath()
 		}
-		rt := sm.getReadTransactor(isDatabase, isSnapshot)
+		rt := sm.getReadTransactor(ctx, isDatabase, isSnapshot)
 		d := sm.currentDir()
 		if d.dir == nil {
 			sm.push(idx, int64(0))
@@ -404,7 +443,7 @@ func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op stri
 			sm.push(idx, []byte("DIRECTORY_ERROR"))
 		} else {
 			for _, elem := range t {
-				sm.push(idx, ourtuple.Tuple{elem}.Pack())
+				sm.push(idx, stackTupleElement(elem))
 			}
 		}
 
@@ -459,46 +498,39 @@ func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op stri
 		logSS := subspace.FromBytes(append(append([]byte{}, prefix...), ourtuple.Tuple{int64(sm.dirIndex)}.Pack()...))
 		d := sm.currentDir()
 
-		// Log path
-		var pathTuple ourtuple.Tuple
-		if d.dir != nil {
-			for _, p := range d.dir.GetPath() {
-				pathTuple = append(pathTuple, p)
+		if d.dir == nil {
+			sm.push(idx, []byte("DIRECTORY_ERROR"))
+			return true, nil
+		}
+		// Evaluate reads before writing any log fields, as the Python tester does.
+		rt := sm.getReadTransactor(ctx, isDatabase, isSnapshot)
+		exists, err := d.dir.Exists(rt, nil)
+		if err != nil {
+			sm.push(idx, []byte("DIRECTORY_ERROR"))
+			return true, nil
+		}
+		var existsVal int64
+		var childTuple ourtuple.Tuple
+		if exists {
+			existsVal = 1
+			children, err := d.dir.List(rt, nil)
+			if err != nil {
+				sm.push(idx, []byte("DIRECTORY_ERROR"))
+				return true, nil
+			}
+			for _, c := range children {
+				childTuple = append(childTuple, c)
 			}
 		}
+		var pathTuple ourtuple.Tuple
+		for _, p := range d.dir.GetPath() {
+			pathTuple = append(pathTuple, p)
+		}
+		layerTuple := ourtuple.Tuple{d.dir.GetLayer()}
 		tr := sm.currentTr()
 		tr.Set(logSS.Pack(ourtuple.Tuple{"path"}), pathTuple.Pack())
-
-		// Log layer
-		var layerTuple ourtuple.Tuple
-		if d.dir != nil {
-			layerTuple = ourtuple.Tuple{d.dir.GetLayer()}
-		} else {
-			layerTuple = ourtuple.Tuple{[]byte{}}
-		}
 		tr.Set(logSS.Pack(ourtuple.Tuple{"layer"}), layerTuple.Pack())
-
-		// Log exists
-		rt := sm.getReadTransactor(isDatabase, isSnapshot)
-		var existsVal int64
-		if d.dir != nil {
-			exists, err := d.dir.Exists(rt, nil)
-			if err == nil && exists {
-				existsVal = 1
-			}
-		}
 		tr.Set(logSS.Pack(ourtuple.Tuple{"exists"}), ourtuple.Tuple{existsVal}.Pack())
-
-		// Log children
-		var childTuple ourtuple.Tuple
-		if d.dir != nil {
-			children, err := d.dir.List(rt, nil)
-			if err == nil {
-				for _, c := range children {
-					childTuple = append(childTuple, c)
-				}
-			}
-		}
 		tr.Set(logSS.Pack(ourtuple.Tuple{"children"}), childTuple.Pack())
 
 	case "STRIP_PREFIX":

@@ -8,6 +8,11 @@ exhaustive C++-pinned drift tests.
 predicates"). Gate: `fdb-client-engineer` (FDB C++ dev + Torvalds + codex). C++ (libfdb_c 7.3.75)
 is the spec.
 
+**Current reference update:** FoundationDB 7.3.77 is now pinned. Its `OnError` set plus
+MVC-equivalent 1039 contains 13 codes; 1200, 1235 and 1242 are terminal at this boundary.
+The problem statement and proposed-change narrative below retain the historical investigation
+context; Q2 and the regression contract reflect the corrected current classification.
+
 ## Problem
 
 The Go client has **four** hand-maintained retry-decision sites, each with its own duplicated
@@ -32,7 +37,7 @@ found **no current divergence** — the lists happen to be correct today — but
 - **`fdb.IsRetryable` ≠ `OnError`'s set, correctly** (they are different C++ predicates), so a naive
   "unify them into one" — P3.3's literal suggestion — would be **wrong**. `fdb_error_predicate`
   (12 codes) excludes `blob_granule_request_failed` (1079) and the Go extensions; `onError`
-  (16 codes) includes them. This RFC does NOT unify the two semantics.
+  (historically 16 codes) includes them. This RFC does NOT unify the two semantics.
 - The three lists are **hand-duplicated** → the real risk is future drift, and **none is pinned to
   the C++ source with a regression test**, so drift would land silently.
 - Two consistency questions the duplication hides (below) need an explicit, tested answer.
@@ -69,15 +74,14 @@ found **no current divergence** — the lists happen to be correct today — but
   idempotency barrier (1039 is MAYBE_COMMITTED).** Removing it would make Go *less* faithful. The
   test must annotate 1039 with the `MultiVersionTransaction.actor.cpp:1740` citation so no one
   "fixes" it to the literal NativeAPI behavior.
-- **Q2 — the Go-only / forward-compat codes.** `OnError`/`client.isRetryable` retry
-  `all_proxies_unreachable` (1200, Go-internal Layer-2 error — NOT C++ 1200),
-  `transaction_throttled_hot_shard` (1235) and `transaction_rejected_range_locked` (1242)
-  (both FDB 7.4+, absent in 7.3.75). These are documented Go extensions. Should `fdb.IsRetryable`
-  also report them? **Decision: NO.** `fdb.IsRetryable` is the `fdb_error_predicate` analog and must
-  match its FIXED C++ list exactly for cross-client parity (a Go app expecting libfdb_c's predicate
-  must get libfdb_c's answer). The retry *loop* (`OnError`) legitimately retries more (C++ `onError`
-  also retries more than the predicate, e.g. 1079); the *predicate* does not. This split is the
-  point and must be pinned by tests so it isn't "fixed" into a divergence later.
+- **Q2 — the Go-only / post-reference codes.** The pinned FoundationDB **7.3.77** client
+  returns `transaction_throttled_hot_shard` (1235) and `transaction_rejected_range_locked`
+  (1242) unchanged from `OnError`; they are not forward-compatible retry extensions.
+  `all_proxies_unreachable` (1200) is handled by the local proxy-selection retry, not `OnError`.
+  None belongs in `fdb.IsRetryable`, the fixed `fdb_error_predicate` analog. The retry *loop*
+  still legitimately retries more than that predicate (e.g. native `onError` retries 1079),
+  and the MVC-equivalent 1039 handling in Q1 remains the documented Go extension. Tests pin
+  both sets against the declared reference instead of assuming newer error codes are retryable.
 
 ## Proposed change (NO refactor — delete dead code + pin with tests)
 
@@ -96,16 +100,16 @@ table "dispatching on backoff class" would force restructuring that subtle, work
 2. **Keep the three real switches AS-IS** (`fdb.IsRetryable`, `OnError`, `client.isRetryable`) —
    they are correct today and already carry inline C++ citations. No restructuring.
 3. **Single-source the onError retryable set — DERIVE, don't mirror (Torvalds' binding fix).** Today
-   `OnError`'s 4 `case` arms implicitly define the 16-code retryable set, AND `client.isRetryable`
+   `OnError`'s 4 `case` arms implicitly define the 13-code retryable set, AND `client.isRetryable`
    (`commitpath.go:216`) is a *second* hand-copy of those labels — already the drift this RFC kills.
-   Make ONE function the source: `onErrorRetryable(code) bool` (the 16-code list, with the C++/MVC
+   Make ONE function the source: `onErrorRetryable(code) bool` (the 13-code list, with the C++/MVC
    citations). Then **`OnError` calls it** as a guard so a code can't be retryable-here-but-not-there
    by construction:
    ```
    if !onErrorRetryable(code) { state = errored; return err }   // single source of WHETHER to retry
    switch code {                                                 // refine only the BACKOFF CLASS:
    case too_old, future_version:                version delay
-   case proxy_mem, grv_proxy_mem, hot_shard, range_locked: resource (30s) backoff
+   case proxy_mem, grv_proxy_mem:                 resource (30s) backoff
    case commit_unknown_result, cluster_version_changed:    maybe-committed self-conflict (the
                                                            conflictMu deep-copy, UNCHANGED)
    default:                                     exp backoff   // the RETRYABLE_NOT_COMMITTED rest
@@ -122,14 +126,14 @@ table "dispatching on backoff class" would force restructuring that subtle, work
    comparison catches an extra OR a missing code.
    - `fdb.IsRetryable`: `expectedSet` = the 12 `fdb_error_predicate(RETRYABLE)` codes
      (`bindings/c/fdb_c.cpp:78-94`). Asserted exhaustively.
-   - `onErrorRetryable`: `expectedSet` = the documented 16-code Go-onError set
+   - `onErrorRetryable`: `expectedSet` = the documented 13-code Go-onError set
      (`NativeAPI.actor.cpp:7743-7768` + the Go-extension rows). Asserted exhaustively.
    - Because `OnError` CALLS `onErrorRetryable` (§3) and `client.isRetryable == onErrorRetryable`,
      pinning `onErrorRetryable` pins all three retry-loop sites at once — no separate switch can
      drift (codex P2: the sentinel asserts the function the real loop uses, not a parallel copy).
-   - The Go-extension rows (1039, 1079, 1200, 1235, 1242) are asserted retryable-in-onError with
-     their documented reason + citation, so a future reader can't "fix" them to a literal NativeAPI
-     port and silently break (esp. 1039 — cite `MultiVersionTransaction.actor.cpp:1740`, see Q1).
+   - The MVC-equivalent Go-extension row (1039) is asserted retryable-in-onError with its
+     documented reason and `MultiVersionTransaction.actor.cpp:1740` citation (Q1). Native
+     1079 remains retryable; 1200, 1235 and 1242 are explicitly asserted non-retryable.
 
 ## Wire-compat impact
 
@@ -141,7 +145,7 @@ called `wire.FDBError.Retryable()` (dead code; no caller's behavior changes). Q1
 ## Test plan
 
 - The two pinning tables (§4): `fdb.IsRetryable` == the 12 `fdb_error_predicate` codes; and
-  `onErrorRetryable` == the 16-code Go-onError set — each with non-retryable negatives. Fail if any
+  `onErrorRetryable` == the 13-code Go-onError set — each with non-retryable negatives. Fail if any
   predicate drifts from its C++ analog.
 - `client.isRetryable == onErrorRetryable` is now guaranteed by construction (`client.isRetryable`
   *is* `onErrorRetryable`), so no cross-check test is needed — but a behavior test exercises a real

@@ -231,7 +231,12 @@ func TestKnownReadKnowledgeLifecycle(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "SetReadVersion":
-				tx.SetReadVersion(tx.readVersion + 1)
+				version := tx.readVersion + 1
+				tx.Reset()
+				tx.SetReadVersion(version)
+				if got, err := tx.GetReadVersion().Get(); err != nil || got != version {
+					t.Fatalf("fresh pin = %d, %v; want %d, nil", got, err, version)
+				}
 			}
 			if len(tx.knownReads) != 0 {
 				t.Fatalf("retained prior-read knowledge: %v", tx.knownReads)

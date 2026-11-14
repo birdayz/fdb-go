@@ -36,6 +36,16 @@ a whole-implementation comparison, not causal evidence about language or GC.
 See `docs/compatibility.md` and `layers/otel/rust/README.md` for the writer and
 measurement boundaries.
 
+## FoundationDB explicit read-version getter
+
+Transaction and snapshot `GetReadVersion` return an accepted positive
+`SetReadVersion` pin unchanged, without a validation GRV, matching native
+FoundationDB 7.3.77. Deferred errors and transaction lifetime checks still apply.
+This getter contract does not promise storage availability: actual storage reads
+and retained commit validation keep the existing `1007`/`1009` guards. The
+client's observed minimum version is not an MVCC retention boundary; client-side
+rejection and a storage server's current snapshot availability are distinct.
+
 ## Full-text SQL and query execution
 
 Go exposes `CREATE FULLTEXT INDEX ... ON table(text_column) [PARTITION BY (...)]`

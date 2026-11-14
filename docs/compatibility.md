@@ -21,6 +21,16 @@ FDB 8.0 compatibility is **not established by this repository's 7.3 target**.
 This is a support boundary, not a statement about whether upstream has released
 8.0. Updating the API version number alone cannot add another wire protocol.
 
+## Explicit FoundationDB read versions
+
+An accepted positive `SetReadVersion` pin is returned unchanged by transaction
+and snapshot `GetReadVersion`, without bootstrapping a GRV to validate the pin.
+Deferred transaction errors and transaction lifetime checks still apply. This
+matches the pinned native client getter; it does not establish that storage can
+serve the snapshot. Actual storage-facing reads and retained commit validation
+keep the existing `1007` (too old) and `1009` (future version) checks. The observed
+minimum read-version floor is not a rolling MVCC retention boundary.
+
 ## Full-text queries
 
 The Go query executor accepts typed `plans.TextScan` predicates for ALL, ANY,

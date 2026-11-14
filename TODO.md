@@ -27,6 +27,57 @@ git show 13d5a3d1e:rfcs/257-java-upgrade-audit/ws-e-design.md
 Verify remaining audit claims against current Go and Java before changing code.
 Never mark a whole workstream complete because one of its subitems passed.
 
+## Go client scheduled correctness — hosted acceptance recorded
+
+- [x] Merged-master hosted acceptance: manual workflow run [43569938200](https://github.com/birdayz/fdb-go/actions/runs/43569938200)
+  on `7ce10d143a229001a0b6cd8149b9d31e42ef1602` passed 142/142 cases,
+  zero failures/FDB deaths: 14 borrowed regressions + 128 exploration cases,
+  including 25 complete five-mode cycles. Totals: API Python differential 28,
+  API concurrency-5 27, directory Python differential 35, directory HCA
+  concurrency-5 25 at API 730 + 1 at API 610, scripted 26; every case FDB-alive.
+  FDB 7.3.77, seed-start 1673315343, elapsed 14m34s. `workflow.txt` records
+  matching GitHub/workflow/checkout SHAs; `workflow-exit.txt` records runner exit 0
+  and inputs_changed=0. All 9,307 `inputs.before`/`inputs.after` entries match;
+  `head.diff`/`status.diff` are empty. `results/report.json` and all 142 case
+  directories contain evidence (`tester.log` with zero incorrect results/errors,
+  `fdb.cluster`, `docker.log`). Artifact `client-correctness-43569938200-1`
+  expires 2026-11-28 (14-day retention). This is Go client coverage only, not
+  Record Layer or SQL. See `docs/client-correctness.md`.
+
+- [ ] First cron-triggered run observed green (same checks). No `schedule` event
+  run on master was listed during acceptance recording; manual dispatch does not
+  establish hourly trigger delivery.
+
+- [ ] Harden the remaining preexisting Go client correctness regression paths:
+  - RW040: MkdirTemp failure is fatal.
+  - RW096: Persist Finished timestamp and elapsed duration every checkpoint.
+  - RW099: Record nonzero per-case duration.
+  - RW101: Persist report after each case rather than only final.
+
+  The runner, stacktester, and workflow regression paths removed from this list
+  have executed regressions: PR CI [43562773132](https://github.com/birdayz/fdb-go/actions/runs/43562773132)
+  passed `runner_integration_test` (369.3s), including real-executable CLI
+  propagation and engine-independent container-removal observers, plus
+  `client_test` and `bench_test`. Full CI [43562849141](https://github.com/birdayz/fdb-go/actions/runs/43562849141)
+  passed 268 targets (5 executed, 263 cached) on the merged content; master push
+  CI [43569922551](https://github.com/birdayz/fdb-go/actions/runs/43569922551) also passed.
+  These results do not close RW040/RW096/RW099/RW101 above.
+
+- [ ] Align failed read-version getter reuse with native 7.3.77: Go clears the
+  completed producer even on failure (`pkg/fdbgo/client/read_version_state.go:174-177`)
+  and retries/refetches a GRV on a later read when entry guards permit
+  (`pkg/fdbgo/client/read_version_state.go:122-145`), whereas native retains the
+  failed future until Reset/successful OnError replaces the incarnation. The
+  SetReadVersion admission side is fixed; getter/read-side reuse is not.
+
+- [ ] Register the three existing `cgo && libfdbc` differential test files in
+  Bazel and execute their intended populations: `pkg/fdbgo/libfdbc/mappedrange_differential_test.go:162`,
+  `pkg/fdbgo/libfdbc/mappedrange_multishard_differential_test.go:116`, and
+  `pkg/fdbgo/libfdbc/range_shard_pair_differential_test.go:162`. These files contain
+  28 SetReadVersion calls but belong to no Bazel target: the hand-maintained
+  `pkg/fdbgo/libfdbc/BUILD.bazel:5-6` ignores Gazelle and omits them; no repository
+  BUILD/bzl declaration names them. Neither fast nor full CI executes these files.
+
 ## Pending acceptance: ingest-20k conformance gate corrections
 
 - [ ] Run the supported full stacked-tree acceptance lane and fresh native review

@@ -3977,11 +3977,9 @@ func TestGetKeyBoundaryShortCircuit_CPort(t *testing.T) {
 	db := openTestDB(t, ctx)
 
 	tx := db.CreateTransaction()
-	rv, err := tx.GetReadVersion(ctx)
-	if err != nil {
+	if _, err := tx.GetReadVersion(ctx); err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
-	tx.SetReadVersion(rv)
 
 	// C++ short-circuit: empty key with offset <= 0 returns empty key.
 	key, err := tx.GetKey(ctx, []byte{}, false, 0)

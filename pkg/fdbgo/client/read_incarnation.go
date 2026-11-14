@@ -504,9 +504,8 @@ func (tx *Transaction) readIncarnationCause(inc *readIncarnation) error {
 	return inc.cause
 }
 
-// readEntryError preserves the deferred verdict captured at admission. C++ checks
-// deferredError before dispatching to RYW and its resetPromise; nested work does
-// not re-enter that wrapper or sample a later void-operation error.
+// Nested work keeps its captured deferred verdict instead of sampling late poison;
+// setter rejection alone is rechecked at GRV admission under readVersionMu.
 func (tx *Transaction) readEntryError(ctx context.Context) error {
 	if op := tx.readOperation(ctx); op != nil && op.entryErr != nil {
 		return op.entryErr

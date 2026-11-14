@@ -57,6 +57,7 @@ type simTxn struct {
 	// Read only by tests.
 	wholeViewBuilds int
 
+	deferredErr error // First void-operation error; cleared by Reset or a successful OnError retry.
 	readVersion int64
 	rvSet       bool
 	// rvInstant is when the read version was pinned, on the ENV clock — the sim's
@@ -113,7 +114,7 @@ type simTxn struct {
 
 	// retryLimit / hasRetryLimit / retryCount are the retry_limit option (FDB_TR_OPTION_RETRY_LIMIT)
 	// and the count of retries OnError has granted: OnError returns the input error once
-	// retryCount >= retryLimit, as the client does (client/transaction.go:2504, C++
+	// retryCount >= retryLimit (except code 0 becomes 4100), as the client does (C++
 	// Transaction::onError). The limit is a PERSISTENT option: it survives an OnError retry and
 	// reverts to the database default (unlimited) on a user Reset, which also zeroes the count.
 	retryLimit    int
@@ -471,6 +472,9 @@ func (tx *simTxn) Get(key fdb.KeyConvertible) fdb.FutureByteSlice {
 }
 
 func (tx *simTxn) get(key fdb.KeyConvertible, snapshot bool) fdb.FutureByteSlice {
+	if tx.deferredErr != nil {
+		return newReadyByteSlice(nil, tx.deferredErr)
+	}
 	if tx.cancelled.Load() {
 		return newReadyByteSlice(nil, fdb.Error{Code: 1025}) // transaction_cancelled
 	}
@@ -671,6 +675,9 @@ func (tx *simTxn) rangeRows(begin, end []byte, limit int, reverse bool) ([]fdb.K
 func (tx *simTxn) fetchRange(begin, end []byte, limit int, byteTarget int, reverse bool) (
 	kvs []fdb.KeyValue, more bool, cBegin, cEnd []byte, err error,
 ) {
+	if tx.deferredErr != nil {
+		return nil, false, nil, nil, tx.deferredErr
+	}
 	// Every fetch is a read call of its own and fails once the transaction is cancelled.
 	if tx.cancelled.Load() {
 		return nil, false, nil, nil, fdb.Error{Code: 1025}
@@ -792,6 +799,9 @@ func (tx *simTxn) GetKey(sel fdb.Selectable) fdb.FutureKey {
 }
 
 func (tx *simTxn) getKey(sel fdb.Selectable, snapshot bool) fdb.FutureKey {
+	if tx.deferredErr != nil {
+		return newReadyKey(nil, tx.deferredErr)
+	}
 	if tx.cancelled.Load() {
 		return newReadyKey(nil, fdb.Error{Code: 1025})
 	}
@@ -890,8 +900,10 @@ func (tx *simTxn) getRange(r fdb.Range, options fdb.RangeOptions, snapshot bool)
 // keyAfter(k), with no read. A range with any other selector is a selector read
 // (selectorFetch). It runs once per GetRange() call.
 func (tx *simTxn) resolveRangeForRead(r fdb.Range) (begin, end []byte, err error) {
-	// transaction_cancelled(1025) before anything else, as on every other read entry point
-	// (C++ RYW getRange checks resetPromise first, ReadYourWrites.actor.cpp:1736-1737).
+	if tx.deferredErr != nil {
+		return nil, nil, tx.deferredErr
+	}
+	// After deferred admission, cancellation precedes range resolution (C++ RYW getRange).
 	if tx.cancelled.Load() {
 		return nil, nil, fdb.Error{Code: 1025}
 	}
@@ -965,9 +977,10 @@ func reverseKVs(kvs []fdb.KeyValue) {
 }
 
 func (tx *simTxn) GetReadVersion() fdb.FutureInt64 {
-	// The client's GetReadVersion is ensureReadVersion + a field read
-	// (client/transaction.go:2435-2447), and ensureReadVersion opens with checkCancelled
-	// (client/transaction.go:662-665).
+	if tx.deferredErr != nil {
+		return newReadyInt64(0, tx.deferredErr)
+	}
+	// Explicit pins are returned unchanged; SimFDB validates age at commit.
 	if tx.cancelled.Load() {
 		return newReadyInt64(0, fdb.Error{Code: 1025})
 	}
@@ -1052,6 +1065,9 @@ func (tx *simTxn) GetEstimatedRangeSizeBytes(r fdb.ExactRange) fdb.FutureInt64 {
 	if bytes.Compare(b, e) > 0 {
 		return newReadyInt64(0, fdb.Error{Code: 2005}) // inverted_range
 	}
+	if tx.deferredErr != nil {
+		return newReadyInt64(0, tx.deferredErr)
+	}
 	if tx.cancelled.Load() {
 		return newReadyInt64(0, fdb.Error{Code: 1025})
 	}
@@ -1073,6 +1089,9 @@ func (tx *simTxn) GetRangeSplitPoints(r fdb.ExactRange, chunkSize int64) fdb.Fut
 	begin, end := r.FDBRangeKeys()
 	if bytes.Compare([]byte(begin.FDBKey()), []byte(end.FDBKey())) > 0 {
 		return newReadyKeyArray(nil, fdb.Error{Code: 2005}) // inverted_range
+	}
+	if tx.deferredErr != nil {
+		return newReadyKeyArray(nil, tx.deferredErr)
 	}
 	if tx.cancelled.Load() {
 		return newReadyKeyArray(nil, fdb.Error{Code: 1025})
@@ -1313,6 +1332,9 @@ func (tx *simTxn) AddWriteConflictKey(key fdb.KeyConvertible) error {
 // ---- lifecycle ------------------------------------------------------------------------
 
 func (tx *simTxn) Commit() fdb.FutureNil {
+	if tx.deferredErr != nil {
+		return newReadyNil(tx.deferredErr)
+	}
 	if tx.cancelled.Load() {
 		return newReadyNil(fdb.Error{Code: 1025})
 	}
@@ -1372,6 +1394,7 @@ func (tx *simTxn) Reset() {
 
 // resetState clears everything an OnError retry clears, keeping the persistent options.
 func (tx *simTxn) resetState() {
+	tx.deferredErr = nil
 	tx.readVersion = 0
 	tx.rvSet = false
 	tx.rvInstant = time.Time{}
@@ -1415,11 +1438,29 @@ func maybeCommitted(code int) bool {
 // writer landing after the retry's read version aborts it. Without the promotion that retry
 // has an empty read-conflict set and overwrites the concurrent write — a lost update SimFDB
 // would certify and a real client would not.
+// A failed OnError retires the handle until Reset, matching FDB API >=610.
 func (tx *simTxn) OnError(e fdb.Error) fdb.FutureNil {
-	if tx.hasRetryLimit && tx.retryCount >= tx.retryLimit {
+	// SimFDB models cancellation, not delivered transaction timeouts.
+	if tx.cancelled.Load() {
+		return newReadyNil(fdb.Error{Code: 1025})
+	}
+	if e.Code == 1031 {
+		tx.Cancel()
 		return newReadyNil(e)
 	}
+	if tx.hasRetryLimit && tx.retryCount >= tx.retryLimit {
+		tx.Cancel()
+		if e.Code == 0 {
+			return newReadyNil(fdb.Error{Code: 4100})
+		}
+		return newReadyNil(e)
+	}
+	if e.Code == 0 {
+		tx.Cancel()
+		return newReadyNil(fdb.Error{Code: 2000})
+	}
 	if !fdb.IsOnErrorRetryable(e.Code) {
+		tx.Cancel()
 		return newReadyNil(e)
 	}
 	tx.retryCount++
@@ -1440,20 +1481,21 @@ func (tx *simTxn) OnError(e fdb.Error) fdb.FutureNil {
 }
 
 func (tx *simTxn) SetReadVersion(version int64) {
-	if !tx.rvSet || tx.readVersion != version {
-		tx.knownReads = nil
+	if tx.deferredErr != nil {
+		return
+	}
+	// GRV is synchronous here: there is no separate pending-GRV state.
+	if tx.rvSet {
+		tx.deferredErr = fdb.Error{Code: 2010}
+		return
+	}
+	if version <= 0 {
+		tx.deferredErr = fdb.Error{Code: 2011}
+		return
 	}
 	tx.readVersion = version
 	tx.rvSet = true
-	// A caller-supplied version's MVCC window opened on the cluster at an
-	// instant this process never observed, so there is no anchor to report.
-	// Clearing (rather than leaving a prior GRV's stamp) keeps "the instant
-	// describes the CURRENT read version" true — a stale stamp reads as a
-	// window that is still open, and a budget anchored on it under-counts the
-	// transaction's age. rvSet stays true, so the accessor's rvSet gate cannot
-	// stand in for this clear; the zero instant is what makes it report
-	// ok=false. Same contract as the pure client (client/transaction.go
-	// SetReadVersion), which a backend of the same interface owes.
+	// An accepted explicit pin has no locally observed MVCC anchor.
 	tx.rvInstant = time.Time{}
 }
 
@@ -1466,11 +1508,12 @@ func (tx *simTxn) GetCommittedVersion() (int64, error) {
 	return tx.committedVersion, nil
 }
 
-// GetVersionstamp returns a LAZY future: the record layer obtains it BEFORE commit
-// (database.go:372) and resolves it AFTER commit, so it must read the versionstamp at Get()
-// time, not at construction. A ready future capturing the (nil) pre-commit stamp would surface
-// as used_during_commit(2017) on the metadata-version-stamp path.
+// GetVersionstamp captures deferred errors at issue; otherwise it reads the stamp at Get.
+// The record layer obtains a clean future before commit and consumes it afterward.
 func (tx *simTxn) GetVersionstamp() fdb.FutureKey {
+	if tx.deferredErr != nil {
+		return newReadyKey(nil, tx.deferredErr)
+	}
 	return &lazyVersionstamp{tx: tx}
 }
 
@@ -1513,6 +1556,9 @@ func (f *lazyVersionstamp) Cancel()          {}
 // nothing else (ThreadSafeTransaction.cpp:715-721 — no resetPromise race), so a cancelled txn
 // still reports its size. See TestCancelledTransactionApproximateSizeStillAnswers.
 func (tx *simTxn) GetApproximateSize() fdb.FutureInt64 {
+	if tx.deferredErr != nil {
+		return newReadyInt64(0, tx.deferredErr)
+	}
 	var singleKeyClears int64
 	for _, m := range tx.buffer {
 		if m.kind == mutClear {

@@ -50,8 +50,8 @@ const (
 	ErrBlobGranuleRequestFailed  = 1079 // blob_granule_request_failed (retryable, C++ NativeAPI.actor.cpp)
 	ErrTagThrottled              = 1213 // tag_throttled
 	ErrProxyTagThrottled         = 1223 // proxy_tag_throttled
-	ErrThrottledHotShard         = 1235 // transaction_throttled_hot_shard (FDB 7.4+, future-proof)
-	ErrRangeLocked               = 1242 // transaction_rejected_range_locked (FDB 7.4+, future-proof)
+	ErrThrottledHotShard         = 1235 // transaction_throttled_hot_shard (FDB 7.4+; not retried by pinned 7.3.77)
+	ErrRangeLocked               = 1242 // transaction_rejected_range_locked (FDB 7.4+; not retried by pinned 7.3.77)
 	ErrOperationFailed           = 4    // operation_failed (endpoint not supported)
 	ErrAllAlternativesFailed     = 1006 // all_alternatives_failed (Layer 2 only)
 	ErrRequestMaybeDelivered     = 1030 // request_maybe_delivered — an in-flight RPC's connection died (transport teardown); reads retry another alternative, commit maps it to 1021
@@ -349,6 +349,8 @@ type txOptions struct {
 	afterReadVersion func()
 	// beforeReadVersionLock parks acquisition after entry validation.
 	beforeReadVersionLock func()
+	// beforeReadVersionReject parks rejection before publication under readVersionMu.
+	beforeReadVersionReject func()
 	// beforeTraceWait observes a captured pending start without transaction locks.
 	beforeTraceWait func(context.Context)
 	// beforeReadFailureDelivery observes terminal-state publication ordering.
@@ -775,7 +777,7 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 func (tx *Transaction) ensureReadVersionFlags(ctx context.Context, extraFlags uint32) error {
 	ctx, release := tx.opContext(ctx)
 	defer release()
-	if _, err := tx.readVersionForOperation(ctx, extraFlags); err != nil {
+	if _, err := tx.readVersionForOperation(ctx, extraFlags, true); err != nil {
 		return err
 	}
 	return tx.readEntryError(ctx)
@@ -787,7 +789,7 @@ func (tx *Transaction) ensureReadVersionFlags(ctx context.Context, extraFlags ui
 func (tx *Transaction) operationReadVersion(ctx context.Context) (int64, error) {
 	ctx, release := tx.opContext(ctx)
 	defer release()
-	readVersion, err := tx.readVersionForOperation(ctx, 0)
+	readVersion, err := tx.readVersionForOperation(ctx, 0, true)
 	if err != nil {
 		return 0, err
 	}
@@ -797,7 +799,7 @@ func (tx *Transaction) operationReadVersion(ctx context.Context) (int64, error) 
 // readVersionForOperation returns the GRV captured by this operation, not a
 // later read of the mutable handle. C++ RYWImpl::getReadVersion returns the
 // value from its completed future even if the handle is subsequently reset.
-func (tx *Transaction) readVersionForOperation(parentCtx context.Context, extraFlags uint32) (int64, error) {
+func (tx *Transaction) readVersionForOperation(parentCtx context.Context, extraFlags uint32, validateExplicit bool) (int64, error) {
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
 	if err := tx.checkReadState(ctx); err != nil {
@@ -810,7 +812,7 @@ func (tx *Transaction) readVersionForOperation(parentCtx context.Context, extraF
 	if err != nil {
 		return 0, err
 	}
-	if userSet {
+	if validateExplicit && userSet {
 		if err := validateExplicitVersion(ctx, tx.db, rv, tx.readVersionRequest); err != nil {
 			return 0, err
 		}
@@ -2581,7 +2583,19 @@ func (tx *Transaction) borrowedOnErrorVerdict(caller context.Context, op *readOp
 		}
 		return cause
 	}
-	if fdbErr.Code == ErrTransactionTimedOut || tx.hasRetryLimit && tx.retryCount >= tx.retryLimit || !onErrorRetryable(fdbErr.Code) {
+	if fdbErr.Code == ErrTransactionTimedOut {
+		return err
+	}
+	if tx.hasRetryLimit && tx.retryCount >= tx.retryLimit {
+		if fdbErr.Code == 0 {
+			return &wire.FDBError{Code: ErrInternalError}
+		}
+		return err
+	}
+	if fdbErr.Code == 0 {
+		return &wire.FDBError{Code: ErrClientInvalidOperation}
+	}
+	if !onErrorRetryable(fdbErr.Code) {
 		return err
 	}
 	if callerErr := caller.Err(); callerErr != nil {
@@ -2714,7 +2728,18 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 	// Check retry limit before allowing any retry.
 	if tx.hasRetryLimit && tx.retryCount >= tx.retryLimit {
 		tx.state.Store(int32(txStateErrored))
+		if fdbErr.Code == 0 {
+			// RYW throws success before NativeAPI can classify it; delivering
+			// that invalid error trips Flow's assertion and surfaces internal_error.
+			return &wire.FDBError{Code: ErrInternalError}
+		}
 		return err
+	}
+
+	// RYW checks the retry limit before NativeAPI rejects success as client_invalid_operation.
+	if fdbErr.Code == 0 {
+		tx.state.Store(int32(txStateErrored))
+		return &wire.FDBError{Code: ErrClientInvalidOperation}
 	}
 
 	// Single source of WHETHER to retry (RFC-105 — derive, don't mirror):
@@ -2746,12 +2771,8 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 		}
 		return retryReset(nil)
 
-	case ErrProxyMemoryLimitExceeded, ErrGrvProxyMemoryLimit,
-		ErrThrottledHotShard, ErrRangeLocked:
-		// Resource-constrained: higher backoff cap (30s vs 1s).
-		// C++ RESOURCE_CONSTRAINED_MAX_BACKOFF for all four codes.
-		// hot_shard and range_locked use the same 30s cap to avoid
-		// hammering the hot shard with aggressive retries.
+	case ErrProxyMemoryLimitExceeded, ErrGrvProxyMemoryLimit:
+		// Resource-constrained: C++ RESOURCE_CONSTRAINED_MAX_BACKOFF (30s vs 1s).
 		tx.retryCount++
 		if cerr := logRetry(fdbErr.Code); cerr != nil {
 			return cerr
@@ -2814,7 +2835,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 func (tx *Transaction) GetReadVersion(ctx context.Context) (int64, error) {
 	ctx, cancel := tx.opContext(ctx)
 	defer cancel()
-	rv, err := tx.readVersionForOperation(ctx, 0)
+	rv, err := tx.readVersionForOperation(ctx, 0, false)
 	if err != nil {
 		return 0, err
 	}
@@ -2822,25 +2843,49 @@ func (tx *Transaction) GetReadVersion(ctx context.Context) (int64, error) {
 }
 
 func (tx *Transaction) stateSetReadVersion(version int64) {
+	if tx.deferredErr.Load() != nil {
+		return
+	}
 	tx.readVersionMu.Lock()
+	defer tx.readVersionMu.Unlock()
+	// Only setter rejection also gates GRV admission under readVersionMu;
+	// unrelated deferred poison preserves the operation's captured admission.
+	if tx.deferredErr.Load() != nil {
+		return
+	}
+	// NativeAPI::setVersion rejects any admitted GRV future, even after failure,
+	// before validating the supplied version. The void C API defers that error.
+	if tx.hasReadVersion || tx.readVersionAdmitted || tx.pendingReadVersion != nil {
+		if tx.beforeReadVersionReject != nil {
+			tx.beforeReadVersionReject()
+		}
+		err := &wire.FDBError{Code: 2010}
+		if tx.deferredErr.CompareAndSwap(nil, err) {
+			tx.setterRejection = err
+		}
+		return
+	}
+	if version <= 0 {
+		if tx.beforeReadVersionReject != nil {
+			tx.beforeReadVersionReject()
+		}
+		err := &wire.FDBError{Code: 2011}
+		if tx.deferredErr.CompareAndSwap(nil, err) {
+			tx.setterRejection = err
+		}
+		return
+	}
 	tx.readVersion = version
 	tx.hasReadVersion = true
 	tx.userSetReadVersion = true
-	tx.pendingReadVersion = nil // an older GRV may finish, but cannot replace this explicit version
-	// A caller-supplied version's MVCC window opened on the cluster at an instant
-	// this client never observed, so there is no anchor to report. Zeroing (rather
-	// than leaving a prior GRV's stamp) keeps "instant describes the CURRENT read
-	// version" true — a stale anchor would read as a window that is still open.
-	// This is the ONE clear the accessor's hasReadVersion gate cannot stand in for,
-	// because SetReadVersion leaves that flag true.
+	tx.pendingReadVersion = nil
+	// The first accepted pin has no client-observed MVCC anchor. Existing or
+	// pending versions are rejected above, never overwritten by this setter.
 	tx.readVersionInstant = time.Time{}
-	tx.readVersionMu.Unlock()
 }
 
-// stateReadVersionInstant's hasReadVersion gate retires the instant for every path
-// that drops the read version; only SetReadVersion, which keeps that flag, clears it
-// explicitly. Per-reset-site clears were tried and removed: with two mechanisms
-// covering one rule, neither is detectable by a mutation.
+// stateReadVersionInstant reports only client-observed anchors for live versions.
+// An accepted explicit pin has no anchor; reset retires it through hasReadVersion.
 func (tx *Transaction) stateReadVersionInstant() (time.Time, bool) {
 	tx.readVersionMu.Lock()
 	defer tx.readVersionMu.Unlock()
@@ -3872,8 +3917,8 @@ func (tx *Transaction) applyOptionDefaults(userReset bool) {
 // nextBackoff returns the current backoff duration with jitter, then grows
 // the backoff for the next call. Matches C++ getBackoff in NativeAPI.actor.cpp.
 // errCode determines the backoff cap: the resource-constrained bucket —
-// commit_proxy_memory_limit_exceeded (1042), grv_proxy_memory_limit_exceeded
-// (1078), throttled_hot_shard (1235), and range_locked (1242) — uses
+// commit_proxy_memory_limit_exceeded (1042) and grv_proxy_memory_limit_exceeded
+// (1078) — uses
 // RESOURCE_CONSTRAINED_MAX_BACKOFF (30s) and IGNORES the user's maxRetryDelay;
 // all other errors use the user's maxRetryDelay or DEFAULT_MAX_BACKOFF (1s). The
 // two branches are mutually exclusive (see the cap selection below).
@@ -3909,14 +3954,13 @@ func (tx *Transaction) nextBackoff(errCode int) time.Duration {
 		tx.proxyTagThrottledDuration += proxyMaxTagThrottleDuration.Seconds()
 	}
 
-	// C++ getBackoff(): the resource-constrained bucket (the four codes below) uses
+	// C++ getBackoff(): the resource-constrained bucket (the two codes below) uses
 	// RESOURCE_CONSTRAINED_MAX_BACKOFF exclusively (user's maxRetryDelay is IGNORED);
 	// all other errors use the user's maxRetryDelay (or DEFAULT_MAX_BACKOFF). The two
 	// branches are mutually exclusive — no min/max combining. (Code list + values are
 	// in the function doc-comment, the single authoritative description.)
 	var cap time.Duration
-	if errCode == ErrProxyMemoryLimitExceeded || errCode == ErrGrvProxyMemoryLimit ||
-		errCode == ErrThrottledHotShard || errCode == ErrRangeLocked {
+	if errCode == ErrProxyMemoryLimitExceeded || errCode == ErrGrvProxyMemoryLimit {
 		cap = resourceConstrainedMaxBackoff
 	} else {
 		cap = maxBackoff

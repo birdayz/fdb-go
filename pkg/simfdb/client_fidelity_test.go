@@ -460,7 +460,7 @@ func TestSizeCheckPrecedesTooOld(t *testing.T) {
 	db.lastVersion = mvccWindow + 100
 
 	tooOldOnly := db.newTxn()
-	tooOldOnly.SetReadVersion(0)
+	tooOldOnly.SetReadVersion(1)
 	tooOldOnly.Get(k("x")).MustGet() // takes a read conflict range: 1007 gates on having one
 	tooOldOnly.Set(k("x"), []byte("v"))
 	if code := errCode(t, tooOldOnly.Commit().Get()); code != 1007 {
@@ -469,7 +469,7 @@ func TestSizeCheckPrecedesTooOld(t *testing.T) {
 
 	// Same ancient read version, but now also oversized. The size verdict must win.
 	both := db.newTxn()
-	both.SetReadVersion(0)
+	both.SetReadVersion(1)
 	both.Get(k("x")).MustGet()
 	huge := bytes.Repeat([]byte("v"), valueSizeLimit)
 	for i := 0; i < 120; i++ {
@@ -717,10 +717,10 @@ func TestNilEnvKeepsPurelyLogicalVersions(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		// The counter, and nothing else: commit i produces version i+1.
-		if db.lastVersion != int64(i+1) {
+		// The counter starts at 1: commit i produces version i+2.
+		if db.lastVersion != int64(i+2) {
 			t.Fatalf("after %d commits lastVersion = %d, want %d (pure logical counter)",
-				i+1, db.lastVersion, i+1)
+				i+1, db.lastVersion, i+2)
 		}
 		if lv := db.latestVersion(); lv != db.lastVersion {
 			t.Fatalf("latestVersion() = %d but lastVersion = %d: a clock leaked into a nil-Env db",

@@ -179,6 +179,50 @@ func TestDifferential_CancelLifecycle(t *testing.T) {
 	}
 }
 
+func TestDifferential_OnErrorSuccessRetryLimitPrecedence(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		limit  int64
+		cancel bool
+		want   int
+	}{
+		{"unlimited", -1, false, 2000},
+		{"exhausted", 0, false, 4100},
+		{"available", 1, false, 2000},
+		{"cancelled_exhausted", 0, true, 1025},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			gt, err := goClient.CreateTransaction()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer gt.Cancel()
+			ct, err := cgoClient.CreateTransaction()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ct.Cancel()
+			for _, err := range []error{gt.Options().SetRetryLimit(tc.limit), ct.Options().SetRetryLimit(tc.limit)} {
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.cancel {
+				gt.Cancel()
+				ct.Cancel()
+			}
+			g := fdbErrorCode(gt.OnError(gofdb.Error{Code: 0}).Get())
+			c := fdbErrorCode(ct.OnError(cgofdb.Error{Code: 0}).Get())
+			if g != tc.want || c != tc.want {
+				t.Fatalf("OnError(success): go=%d cgo=%d, independently want %d", g, c, tc.want)
+			}
+			t.Logf("OnError(success): go=%d cgo=%d", g, c)
+		})
+	}
+}
+
 // TestDifferential_RetryLimitDoesNotReviveTerminalTransaction pins the failed
 // OnError boundary, distinct from changing a limit on an active transaction.
 // C++ API >=610 fails resetPromise on that boundary; only Reset revives it.
