@@ -5,6 +5,7 @@ pub mod native;
 pub mod row;
 pub mod storage;
 pub mod tuple;
+mod wire;
 pub mod writer;
 
 use std::fmt;

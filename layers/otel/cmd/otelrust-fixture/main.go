@@ -23,11 +23,15 @@ func main() {
 }
 
 func run(out string) error {
-	vectors, descriptors, err := fixture()
+	vectors, wf, descriptors, err := fixture()
 	if err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(vectors, "", "  ")
+	if err != nil {
+		return err
+	}
+	wireData, err := json.MarshalIndent(wf, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -38,7 +42,7 @@ func run(out string) error {
 	if err := os.Mkdir(out, 0o700); err != nil {
 		return err
 	}
-	for name, content := range map[string][]byte{"vectors.json": append(data, '\n'), "descriptors.pb": wire} {
+	for name, content := range map[string][]byte{"vectors.json": append(data, '\n'), "wire_vectors.json": append(wireData, '\n'), "descriptors.pb": wire} {
 		if err := os.WriteFile(filepath.Join(out, name), content, 0o600); err != nil {
 			return err
 		}

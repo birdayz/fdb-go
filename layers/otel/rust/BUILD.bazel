@@ -13,6 +13,7 @@ filegroup(
     srcs = [
         "testdata/descriptors.pb",
         "testdata/vectors.json",
+        "testdata/wire_vectors.json",
     ],
     visibility = ["//layers/otel/cmd/otelrust-fixture:__pkg__"],
 )

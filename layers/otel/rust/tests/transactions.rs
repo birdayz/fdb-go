@@ -982,3 +982,88 @@ fn identity_and_start_boundaries_through_validate_and_writer_write() {
         }
     }
 }
+
+#[derive(Deserialize)]
+struct WireCase {
+    name: String,
+    input_otlp: String,
+    outputs: Vec<Vector>,
+}
+
+#[derive(Deserialize)]
+struct WireFixture {
+    cases: Vec<WireCase>,
+    malformed: Vec<WireMalformed>,
+}
+
+#[derive(Deserialize)]
+struct WireMalformed {
+    name: String,
+    input_otlp: String,
+}
+
+#[test]
+fn go_unknown_field_rows_and_keys_reach_the_physical_map() {
+    let fixture: WireFixture =
+        serde_json::from_slice(include_bytes!("../testdata/wire_vectors.json")).unwrap();
+    assert_eq!(fixture.cases.len(), 8, "empty or changed wire fixture");
+    let layout = layout();
+    let otlp_bytes = |outputs: &[&Vector]| {
+        outputs
+            .iter()
+            .map(|v| STANDARD.decode(&v.otlp).unwrap().len() as u64)
+            .sum::<u64>()
+    };
+    let mut inputs = Vec::new();
+    for case in &fixture.cases {
+        let input = STANDARD.decode(&case.input_otlp).unwrap();
+        let db = database();
+        let writer = Writer::new(db.clone(), &layout, 64, RecordCompression::None).unwrap();
+        let (stats, result) = writer.write(&Context::default(), std::slice::from_ref(&input));
+        result.unwrap();
+        let outputs: Vec<&Vector> = case.outputs.iter().collect();
+        assert_eq!(stats.committed_spans, outputs.len() as u64, "{}", case.name);
+        assert_eq!(
+            stats.logical_otlp_bytes,
+            otlp_bytes(&outputs),
+            "{}",
+            case.name
+        );
+        assert_eq!(
+            db.0.lock().unwrap().data,
+            expected_physical(&layout, &outputs),
+            "{}",
+            case.name
+        );
+        inputs.push(input);
+    }
+    let outputs: Vec<&Vector> = fixture.cases.iter().flat_map(|c| &c.outputs).collect();
+    let db = database();
+    let writer = Writer::new(db.clone(), &layout, 64, RecordCompression::None).unwrap();
+    let (stats, result) = writer.write(&Context::default(), &inputs);
+    result.unwrap();
+    assert_eq!(stats.committed_spans, 12);
+    assert_eq!(stats.logical_otlp_bytes, otlp_bytes(&outputs));
+    assert_eq!(
+        db.0.lock().unwrap().data,
+        expected_physical(&layout, &outputs)
+    );
+    // A later Go-rejected wrapper fails the whole call before any transaction.
+    for m in &fixture.malformed {
+        let mut call = inputs.clone();
+        call.push(STANDARD.decode(&m.input_otlp).unwrap());
+        let db = database();
+        let writer = Writer::new(db.clone(), &layout, 64, RecordCompression::None).unwrap();
+        let (stats, result) = writer.write(&Context::default(), &call);
+        assert_eq!(result.unwrap_err().kind, ErrorKind::Admission, "{}", m.name);
+        assert_eq!(stats.committed_spans, 0, "{}", m.name);
+        let state = db.0.lock().unwrap();
+        assert_eq!(state.transactions, 0, "{}", m.name);
+        assert_eq!(
+            state.data,
+            BTreeMap::from([(vec![0], vec![1, 2])]),
+            "{}",
+            m.name
+        );
+    }
+}

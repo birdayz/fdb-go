@@ -32,36 +32,29 @@ type vector struct {
 
 var spanIndexes = []string{"SPANS_TIME", "SPANS_SPAN_ID", "SPANS_STR_ATTR", "SPANS_LONG_STR_ATTR", "SPANS_INT_ATTR", "SPANS_DOUBLE_ATTR", "SPANS_BOOL_ATTR", "SPANS_REF_CHUNKS"}
 
-func fixture() ([]vector, *descriptorpb.FileDescriptorSet, error) {
+func fixture() ([]vector, wireFixture, *descriptorpb.FileDescriptorSet, error) {
 	tmpl, err := embedded.BuildSchemaTemplateFromDDL(otelsql.TemplateDDL())
 	if err != nil {
-		return nil, nil, err
+		return nil, wireFixture{}, nil, err
 	}
 	md := tmpl.Underlying()
 	rt := md.GetRecordType("SPANS")
 	if rt == nil {
-		return nil, nil, fmt.Errorf("SPANS absent")
+		return nil, wireFixture{}, nil, fmt.Errorf("SPANS absent")
 	}
-	var out []vector
-	for name, rs := range fixtureInputs() {
-		ss := rs.ScopeSpans[0]
-		sp := ss.Spans[0]
-		wire, err := proto.MarshalOptions{Deterministic: true}.Marshal(rs)
-		if err != nil {
-			return nil, nil, err
-		}
+	compute := func(name string, rs *tracepb.ResourceSpans, ss *tracepb.ScopeSpans, sp *tracepb.Span, wire []byte) (vector, error) {
 		row, err := otelsql.BuildCompiled(otelsql.Span{Resource: rs.Resource, ResourceSchemaURL: rs.SchemaUrl, Scope: ss.Scope, ScopeSchemaURL: ss.SchemaUrl, Span: sp, OTLP: wire})
 		if err != nil {
-			return nil, nil, err
+			return vector{}, err
 		}
 		data, err := proto.MarshalOptions{Deterministic: true}.Marshal(row)
 		if err != nil {
-			return nil, nil, err
+			return vector{}, err
 		}
 		rec := &recordlayer.FDBStoredRecord[proto.Message]{Record: row, RecordType: rt}
 		pkEval, err := rt.PrimaryKey.Evaluate(rec, row)
 		if err != nil || len(pkEval) != 1 {
-			return nil, nil, fmt.Errorf("primary key: %v, %v", pkEval, err)
+			return vector{}, fmt.Errorf("primary key: %v, %v", pkEval, err)
 		}
 		pk := asTuple(pkEval[0])
 		v := vector{Name: name, OTLP: wire, Row: data, PK: hex.EncodeToString(pk.Pack()), Keys: map[string][]string{}}
@@ -69,11 +62,11 @@ func fixture() ([]vector, *descriptorpb.FileDescriptorSet, error) {
 			idx := md.GetIndex(name)
 			entries, err := idx.RootExpression.Evaluate(rec, row)
 			if err != nil {
-				return nil, nil, err
+				return vector{}, err
 			}
 			rest, err := idx.TrimPrimaryKey(pk)
 			if err != nil {
-				return nil, nil, err
+				return vector{}, err
 			}
 			v.Keys[name] = []string{}
 			for _, entry := range entries {
@@ -82,9 +75,27 @@ func fixture() ([]vector, *descriptorpb.FileDescriptorSet, error) {
 			}
 			sort.Strings(v.Keys[name])
 		}
+		return v, nil
+	}
+	var out []vector
+	for name, rs := range fixtureInputs() {
+		ss := rs.ScopeSpans[0]
+		sp := ss.Spans[0]
+		wire, err := proto.MarshalOptions{Deterministic: true}.Marshal(rs)
+		if err != nil {
+			return nil, wireFixture{}, nil, err
+		}
+		v, err := compute(name, rs, ss, sp, wire)
+		if err != nil {
+			return nil, wireFixture{}, nil, err
+		}
 		out = append(out, v)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	wf, err := wireFixtures(compute)
+	if err != nil {
+		return nil, wireFixture{}, nil, err
+	}
 	files := &descriptorpb.FileDescriptorSet{}
 	seen := map[string]bool{}
 	var walk func(protoreflect.FileDescriptor)
@@ -100,7 +111,7 @@ func fixture() ([]vector, *descriptorpb.FileDescriptorSet, error) {
 	}
 	walk(tracepb.File_opentelemetry_proto_trace_v1_trace_proto)
 	walk(otelv1pb.File_OTEL_V1)
-	return out, files, nil
+	return out, wf, files, nil
 }
 
 func fixtureInputs() map[string]*tracepb.ResourceSpans {

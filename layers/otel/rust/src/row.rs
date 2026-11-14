@@ -1,10 +1,13 @@
 use crate::{
     Error, ErrorKind, Result,
     tuple::{self, Element},
+    wire,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use prost::Message;
-use prost_reflect::{DescriptorPool, DynamicMessage, Kind, ReflectMessage, Value};
+use prost_reflect::{
+    DescriptorPool, DynamicMessage, Kind, MessageDescriptor, ReflectMessage, Value,
+};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 
@@ -26,6 +29,14 @@ pub struct Schema {
     pool: DescriptorPool,
 }
 
+/// A span's position: input wrapper, scope within it and span within that scope.
+#[derive(Clone, Copy)]
+struct At {
+    input: usize,
+    scope: usize,
+    span: usize,
+}
+
 #[derive(Clone, Debug)]
 pub struct PreparedSpan {
     pub primary_key: Vec<u8>,
@@ -39,7 +50,9 @@ impl Schema {
     pub fn pinned() -> Result<Self> {
         let pool = DescriptorPool::decode(include_bytes!("../testdata/descriptors.pb").as_slice())
             .map_err(|_| Error::new(ErrorKind::Config, "invalid pinned descriptor set"))?;
-        Ok(Self { pool })
+        let schema = Self { pool };
+        wire::check_graph(&schema.resource_spans())?;
+        Ok(schema)
     }
 
     /// All spans are prepared before the caller starts any transactions. A later
@@ -47,15 +60,8 @@ impl Schema {
     pub fn prepare(&self, inputs: &[Vec<u8>]) -> Result<Vec<PreparedSpan>> {
         let mut out = Vec::new();
         let mut positions = HashMap::new();
-        self.each_span(inputs, |rs, ss, sp| {
-            let mut single_scope = ss.clone();
-            single_scope.set_field_by_name("spans", Value::List(vec![Value::Message(sp.clone())]));
-            let mut single = rs.clone();
-            single.set_field_by_name(
-                "scope_spans",
-                Value::List(vec![Value::Message(single_scope)]),
-            );
-            let item = self.build(&single, ss, sp)?;
+        self.each_single(inputs, |single, ss, sp, otlp| {
+            let item = self.build(single, ss, sp, otlp)?;
             if let Some(&i) = positions.get(&item.primary_key) {
                 out[i] = item;
             } else {
@@ -71,7 +77,7 @@ impl Schema {
     /// returns the span count. Row-size admission happens only in `prepare`.
     pub fn validate(&self, inputs: &[Vec<u8>]) -> Result<usize> {
         let mut spans = 0;
-        self.each_span(inputs, |_, _, _| {
+        self.each_span(inputs, |_, _, _, _| {
             spans += 1;
             Ok(())
         })?;
@@ -82,39 +88,92 @@ impl Schema {
     /// `prepare`'s decode and identity/start checks; row-size admission is the sink's.
     pub fn admit(&self, inputs: &[Vec<u8>]) -> Result<Vec<Vec<u8>>> {
         let mut out = Vec::new();
-        self.each_span(inputs, |rs, ss, sp| {
-            let mut scope = ss.clone();
-            scope.set_field_by_name("spans", Value::List(vec![Value::Message(sp.clone())]));
-            let mut single = rs.clone();
-            single.set_field_by_name("scope_spans", Value::List(vec![Value::Message(scope)]));
-            out.push(single.encode_to_vec());
+        self.each_single(inputs, |_, _, _, otlp| {
+            out.push(otlp);
             Ok(())
         })?;
         Ok(out)
     }
 
+    fn resource_spans(&self) -> MessageDescriptor {
+        self.pool
+            .get_message_by_name("opentelemetry.proto.trace.v1.ResourceSpans")
+            .expect("pinned OTLP descriptor")
+    }
+
     /// The one decode and identity/start-time admission path that `prepare`, `validate`
-    /// and `admit` share; `visit` sees each checked span with its wrappers.
+    /// and `admit` share; `visit` sees each checked span, its wrappers and their positions.
     fn each_span(
         &self,
         inputs: &[Vec<u8>],
-        mut visit: impl FnMut(&DynamicMessage, &DynamicMessage, &DynamicMessage) -> Result<()>,
+        mut visit: impl FnMut(At, &DynamicMessage, &DynamicMessage, &DynamicMessage) -> Result<()>,
     ) -> Result<()> {
-        let descriptor = self
-            .pool
-            .get_message_by_name("opentelemetry.proto.trace.v1.ResourceSpans")
-            .expect("pinned OTLP descriptor");
-        for wire in inputs {
+        let descriptor = self.resource_spans();
+        for (input, wire) in inputs.iter().enumerate() {
             let rs = DynamicMessage::decode(descriptor.clone(), wire.as_slice())
                 .map_err(|_| Error::new(ErrorKind::Admission, "invalid ResourceSpans protobuf"))?;
-            for ss in messages(&rs, "scope_spans") {
-                for sp in messages(&ss, "spans") {
-                    check_span(&sp)?;
-                    visit(&rs, &ss, &sp)?;
+            for (scope, ss) in messages(&rs, "scope_spans").iter().enumerate() {
+                for (span, sp) in messages(ss, "spans").iter().enumerate() {
+                    check_span(sp)?;
+                    visit(At { input, scope, span }, &rs, ss, sp)?;
                 }
             }
         }
         Ok(())
+    }
+
+    /// `each_span` with each span's unknown-free single-span wrapper, scope and span, and
+    /// the OTLP Go stores for it: canonical known fields plus each node's raw unknown bytes.
+    fn each_single(
+        &self,
+        inputs: &[Vec<u8>],
+        mut visit: impl FnMut(&DynamicMessage, &DynamicMessage, &DynamicMessage, Vec<u8>) -> Result<()>,
+    ) -> Result<()> {
+        let descriptor = self.resource_spans();
+        let scopes_field = descriptor
+            .get_field_by_name("scope_spans")
+            .expect("scope_spans");
+        let Kind::Message(scope_desc) = scopes_field.kind() else {
+            unreachable!()
+        };
+        let spans_field = scope_desc
+            .get_field_by_name("spans")
+            .expect("spans")
+            .number();
+        let mut current: Option<(
+            usize,
+            wire::Node,
+            DynamicMessage,
+            Vec<(DynamicMessage, Vec<DynamicMessage>)>,
+        )> = None;
+        self.each_span(inputs, |at, rs, _, _| {
+            if current.as_ref().is_none_or(|c| c.0 != at.input) {
+                let tree = wire::scan(&descriptor, &inputs[at.input])?;
+                let mut clean = rs.clone();
+                wire::strip(&mut clean);
+                let scopes = messages(&clean, "scope_spans")
+                    .into_iter()
+                    .map(|ss| {
+                        let spans = messages(&ss, "spans");
+                        (ss, spans)
+                    })
+                    .collect();
+                current = Some((at.input, tree, clean, scopes));
+            }
+            let (_, tree, clean, scopes) = current.as_ref().expect("set above");
+            let (ss, spans) = &scopes[at.scope];
+            let sp = &spans[at.span];
+            let mut single_scope = ss.clone();
+            single_scope.set_field_by_name("spans", Value::List(vec![Value::Message(sp.clone())]));
+            let mut single = clean.clone();
+            single.set_field_by_name(
+                "scope_spans",
+                Value::List(vec![Value::Message(single_scope)]),
+            );
+            let node = wire::select(tree, scopes_field.number(), at.scope, spans_field, at.span)?;
+            let otlp = wire::patch(&descriptor, &single.encode_to_vec(), &node)?;
+            visit(&single, ss, sp, otlp)
+        })
     }
 
     fn build(
@@ -122,6 +181,7 @@ impl Schema {
         single: &DynamicMessage,
         ss: &DynamicMessage,
         sp: &DynamicMessage,
+        otlp: Vec<u8>,
     ) -> Result<PreparedSpan> {
         let trace = bytes(sp, "trace_id");
         let span = bytes(sp, "span_id");
@@ -211,7 +271,6 @@ impl Schema {
             add_attributes(&mut l, "link", canonical(link), false);
             push_array(&mut row, "LINKS", l);
         }
-        let otlp = single.encode_to_vec();
         set_bytes(&mut row, "OTLP", otlp.clone());
         let estimate = span_cost(&row);
         if estimate > ADMISSION_BYTES {

@@ -3,7 +3,7 @@ use fdb_otel_rust::{ErrorKind, row::Schema};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct Vector {
     name: String,
     otlp: String,
@@ -107,4 +107,144 @@ fn malformed_identity_start_and_call_deduplication() {
         schema.validate(&[rs.encode_to_vec()]).unwrap_err().kind,
         ErrorKind::Admission
     );
+}
+
+#[derive(Deserialize)]
+struct WireCase {
+    name: String,
+    input_otlp: String,
+    outputs: Vec<Vector>,
+}
+
+#[derive(Deserialize)]
+struct Malformed {
+    name: String,
+    input_otlp: String,
+}
+
+#[derive(Deserialize)]
+struct WireFixture {
+    cases: Vec<WireCase>,
+    malformed: Vec<Malformed>,
+}
+
+fn wire_fixture() -> WireFixture {
+    serde_json::from_slice(include_bytes!("../testdata/wire_vectors.json")).unwrap()
+}
+
+fn assert_outputs(name: &str, prepared: &[fdb_otel_rust::row::PreparedSpan], outputs: &[Vector]) {
+    assert_eq!(prepared.len(), outputs.len(), "{name} output count");
+    for (item, v) in prepared.iter().zip(outputs) {
+        assert_eq!(
+            item.otlp,
+            STANDARD.decode(&v.otlp).unwrap(),
+            "{} OTLP",
+            v.name
+        );
+        assert_eq!(item.row, STANDARD.decode(&v.row).unwrap(), "{} row", v.name);
+        assert_eq!(
+            hex::encode(&item.primary_key),
+            v.pk,
+            "{} primary key",
+            v.name
+        );
+        let keys: BTreeMap<_, _> = item
+            .indexes
+            .iter()
+            .map(|(n, e)| (n.clone(), e.iter().map(hex::encode).collect::<Vec<_>>()))
+            .collect();
+        assert_eq!(keys, v.keys, "{} index keys", v.name);
+    }
+}
+
+#[test]
+fn go_unknown_fields_survive_prepare_admit_and_reprepare() {
+    use prost::Message;
+    use prost_reflect::{DescriptorPool, DynamicMessage};
+    let fixture = wire_fixture();
+    assert_eq!(fixture.cases.len(), 8, "empty or changed wire fixture");
+    let schema = Schema::pinned().unwrap();
+    let pool =
+        DescriptorPool::decode(include_bytes!("../testdata/descriptors.pb").as_slice()).unwrap();
+    let rs_desc = pool
+        .get_message_by_name("opentelemetry.proto.trace.v1.ResourceSpans")
+        .unwrap();
+    let (mut all_inputs, mut all_outputs) = (Vec::new(), Vec::new());
+    for case in &fixture.cases {
+        let input = STANDARD.decode(&case.input_otlp).unwrap();
+        let expected: Vec<Vec<u8>> = case
+            .outputs
+            .iter()
+            .map(|v| STANDARD.decode(&v.otlp).unwrap())
+            .collect();
+        for otlp in &expected {
+            // Plain decode/encode sorts unknowns and minimizes varints, so it must not match Go.
+            let reencoded = DynamicMessage::decode(rs_desc.clone(), otlp.as_slice())
+                .unwrap()
+                .encode_to_vec();
+            assert_ne!(&reencoded, otlp, "{} needs raw unknown bytes", case.name);
+        }
+        let input = std::slice::from_ref(&input);
+        assert_outputs(&case.name, &schema.prepare(input).unwrap(), &case.outputs);
+        let admitted = schema.admit(input).unwrap();
+        assert_eq!(admitted, expected, "{} queue admit", case.name);
+        assert_eq!(
+            schema.validate(input).unwrap(),
+            expected.len(),
+            "{}",
+            case.name
+        );
+        assert_outputs(
+            &case.name,
+            &schema.prepare(&admitted).unwrap(),
+            &case.outputs,
+        );
+        assert_eq!(
+            schema.admit(&admitted).unwrap(),
+            expected,
+            "{} re-admit",
+            case.name
+        );
+        all_inputs.push(input[0].clone());
+        all_outputs.extend(case.outputs.iter().cloned());
+    }
+    assert_eq!(all_outputs.len(), 12);
+    assert_outputs(
+        "all cases in one call",
+        &schema.prepare(&all_inputs).unwrap(),
+        &all_outputs,
+    );
+}
+
+#[test]
+fn go_rejected_wire_is_admission_for_prepare_admit_and_validate() {
+    let fixture = wire_fixture();
+    assert_eq!(
+        fixture.malformed.len(),
+        10,
+        "empty or changed malformed fixture"
+    );
+    let schema = Schema::pinned().unwrap();
+    let valid = STANDARD.decode(&fixture.cases[0].input_otlp).unwrap();
+    for m in fixture.malformed {
+        let bad = STANDARD.decode(&m.input_otlp).unwrap();
+        for inputs in [vec![bad.clone()], vec![valid.clone(), bad]] {
+            let name = &m.name;
+            assert_eq!(
+                schema.prepare(&inputs).unwrap_err().kind,
+                ErrorKind::Admission,
+                "{name}"
+            );
+            assert_eq!(
+                schema.admit(&inputs).unwrap_err().kind,
+                ErrorKind::Admission,
+                "{name}"
+            );
+            assert_eq!(
+                schema.validate(&inputs).unwrap_err().kind,
+                ErrorKind::Admission,
+                "{name}"
+            );
+        }
+    }
 }
