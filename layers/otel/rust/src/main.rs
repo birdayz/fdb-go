@@ -229,12 +229,12 @@ fn run_with<D: Database>(job: Job, open: impl FnOnce(&Path, &Path) -> Result<D>)
                                 break;
                             }
                         };
-                    // The corpus contract is one single-span ResourceSpans per
-                    // frame. A many-span frame cannot bypass the row budget.
+                    // One single-span ResourceSpans per frame, checked by prepare's own rules
+                    // before `begin`: Writer::write's decode stays inside the measured latency.
                     if !bytes.iter().all(|wire| {
                         schema
-                            .admit(std::slice::from_ref(wire))
-                            .is_ok_and(|spans| spans.len() == 1)
+                            .validate(std::slice::from_ref(wire))
+                            .is_ok_and(|spans| spans == 1)
                     }) {
                         *error.lock().unwrap() =
                             Some("Admission: corpus must have exactly one span per frame".into());

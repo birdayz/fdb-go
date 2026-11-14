@@ -103,4 +103,8 @@ fn malformed_identity_start_and_call_deduplication() {
         schema.admit(&[rs.encode_to_vec()]).unwrap_err().kind,
         ErrorKind::Admission
     );
+    assert_eq!(
+        schema.validate(&[rs.encode_to_vec()]).unwrap_err().kind,
+        ErrorKind::Admission
+    );
 }

@@ -52,7 +52,11 @@ replacement. There are no measured performance or economics results yet.
   cluster, layout, framed corpus and new output paths; corpus/binary SHA256,
   source revision, expected frame count, row budget, batch size, workers,
   record compression and absolute run timeout. Corpus frames have a four-byte
-  big-endian length followed by one single-span ResourceSpans. It records raw
+  big-endian length followed by one single-span ResourceSpans. Before a batch's
+  call is timed, `Schema::validate` checks every frame with the decode and
+  identity/start rules `Writer::write` applies and requires exactly one span, so
+  a bad batch starts no write; the recorded call latency still includes
+  `Writer::write`'s own decode, row preparation and size admission. It records raw
   call latencies, acknowledged progress and failures. Its job/manifest interfaces
   are experimental, not a cloud execution admission mechanism.
 

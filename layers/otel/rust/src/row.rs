@@ -45,75 +45,76 @@ impl Schema {
     /// All spans are prepared before the caller starts any transactions. A later
     /// duplicate identity replaces the earlier item at its original position.
     pub fn prepare(&self, inputs: &[Vec<u8>]) -> Result<Vec<PreparedSpan>> {
-        let descriptor = self
-            .pool
-            .get_message_by_name("opentelemetry.proto.trace.v1.ResourceSpans")
-            .expect("pinned OTLP descriptor");
         let mut out = Vec::new();
         let mut positions = HashMap::new();
-        for wire in inputs {
-            let rs = DynamicMessage::decode(descriptor.clone(), wire.as_slice())
-                .map_err(|_| Error::new(ErrorKind::Admission, "invalid ResourceSpans protobuf"))?;
-            for ss in messages(&rs, "scope_spans") {
-                for sp in messages(&ss, "spans") {
-                    let mut single_scope = ss.clone();
-                    single_scope
-                        .set_field_by_name("spans", Value::List(vec![Value::Message(sp.clone())]));
-                    let mut single = rs.clone();
-                    single.set_field_by_name(
-                        "scope_spans",
-                        Value::List(vec![Value::Message(single_scope)]),
-                    );
-                    let item = self.build(&single, &ss, &sp)?;
-                    if let Some(&i) = positions.get(&item.primary_key) {
-                        out[i] = item;
-                    } else {
-                        positions.insert(item.primary_key.clone(), out.len());
-                        out.push(item);
-                    }
-                }
+        self.each_span(inputs, |rs, ss, sp| {
+            let mut single_scope = ss.clone();
+            single_scope.set_field_by_name("spans", Value::List(vec![Value::Message(sp.clone())]));
+            let mut single = rs.clone();
+            single.set_field_by_name(
+                "scope_spans",
+                Value::List(vec![Value::Message(single_scope)]),
+            );
+            let item = self.build(&single, ss, sp)?;
+            if let Some(&i) = positions.get(&item.primary_key) {
+                out[i] = item;
+            } else {
+                positions.insert(item.primary_key.clone(), out.len());
+                out.push(item);
             }
-        }
+            Ok(())
+        })?;
         Ok(out)
     }
 
-    /// Split at span boundaries without losing wrapper fields or duplicates.
-    /// Admission here matches the model's identifier/time checks; row-size
-    /// admission remains in the sink before any batch writes.
+    /// `prepare`'s decode and identity/start checks without building rows or re-encoding;
+    /// returns the span count. Row-size admission happens only in `prepare`.
+    pub fn validate(&self, inputs: &[Vec<u8>]) -> Result<usize> {
+        let mut spans = 0;
+        self.each_span(inputs, |_, _, _| {
+            spans += 1;
+            Ok(())
+        })?;
+        Ok(spans)
+    }
+
+    /// Split at span boundaries without losing wrapper fields or duplicates, under
+    /// `prepare`'s decode and identity/start checks; row-size admission is the sink's.
     pub fn admit(&self, inputs: &[Vec<u8>]) -> Result<Vec<Vec<u8>>> {
+        let mut out = Vec::new();
+        self.each_span(inputs, |rs, ss, sp| {
+            let mut scope = ss.clone();
+            scope.set_field_by_name("spans", Value::List(vec![Value::Message(sp.clone())]));
+            let mut single = rs.clone();
+            single.set_field_by_name("scope_spans", Value::List(vec![Value::Message(scope)]));
+            out.push(single.encode_to_vec());
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    /// The one decode and identity/start-time admission path that `prepare`, `validate`
+    /// and `admit` share; `visit` sees each checked span with its wrappers.
+    fn each_span(
+        &self,
+        inputs: &[Vec<u8>],
+        mut visit: impl FnMut(&DynamicMessage, &DynamicMessage, &DynamicMessage) -> Result<()>,
+    ) -> Result<()> {
         let descriptor = self
             .pool
             .get_message_by_name("opentelemetry.proto.trace.v1.ResourceSpans")
             .expect("pinned OTLP descriptor");
-        let mut out = Vec::new();
         for wire in inputs {
             let rs = DynamicMessage::decode(descriptor.clone(), wire.as_slice())
                 .map_err(|_| Error::new(ErrorKind::Admission, "invalid ResourceSpans protobuf"))?;
             for ss in messages(&rs, "scope_spans") {
                 for sp in messages(&ss, "spans") {
-                    let trace = bytes(&sp, "trace_id");
-                    let span = bytes(&sp, "span_id");
-                    if trace.len() != 16
-                        || !trace.iter().any(|b| *b != 0)
-                        || span.len() != 8
-                        || !span.iter().any(|b| *b != 0)
-                        || unsigned(&sp, "start_time_unix_nano") > i64::MAX as u64
-                    {
-                        return Err(Error::new(
-                            ErrorKind::Admission,
-                            "invalid span identity or start time",
-                        ));
-                    }
-                    let mut scope = ss.clone();
-                    scope.set_field_by_name("spans", Value::List(vec![Value::Message(sp)]));
-                    let mut single = rs.clone();
-                    single
-                        .set_field_by_name("scope_spans", Value::List(vec![Value::Message(scope)]));
-                    out.push(single.encode_to_vec());
+                    check_span(&sp)?;
+                    visit(&rs, &ss, &sp)?;
                 }
             }
         }
-        Ok(out)
+        Ok(())
     }
 
     fn build(
@@ -124,23 +125,6 @@ impl Schema {
     ) -> Result<PreparedSpan> {
         let trace = bytes(sp, "trace_id");
         let span = bytes(sp, "span_id");
-        if trace.len() != 16
-            || !trace.iter().any(|b| *b != 0)
-            || span.len() != 8
-            || !span.iter().any(|b| *b != 0)
-        {
-            return Err(Error::new(
-                ErrorKind::Admission,
-                "expected nonzero 16-byte trace and 8-byte span identifiers",
-            ));
-        }
-        let start = unsigned(sp, "start_time_unix_nano");
-        if start > i64::MAX as u64 {
-            return Err(Error::new(
-                ErrorKind::Admission,
-                "start_time_unix_nano exceeds int64",
-            ));
-        }
         let mut row = DynamicMessage::new(
             self.pool
                 .get_message_by_name("SPANS")
@@ -581,6 +565,27 @@ fn messages(m: &DynamicMessage, name: &str) -> Vec<DynamicMessage> {
 }
 fn string(m: &DynamicMessage, name: &str) -> String {
     m.get_field_by_name(name).unwrap().as_str().unwrap().into()
+}
+fn check_span(sp: &DynamicMessage) -> Result<()> {
+    let trace = bytes(sp, "trace_id");
+    let span = bytes(sp, "span_id");
+    if trace.len() != 16
+        || !trace.iter().any(|b| *b != 0)
+        || span.len() != 8
+        || !span.iter().any(|b| *b != 0)
+    {
+        return Err(Error::new(
+            ErrorKind::Admission,
+            "expected nonzero 16-byte trace and 8-byte span identifiers",
+        ));
+    }
+    if unsigned(sp, "start_time_unix_nano") > i64::MAX as u64 {
+        return Err(Error::new(
+            ErrorKind::Admission,
+            "start_time_unix_nano exceeds int64",
+        ));
+    }
+    Ok(())
 }
 fn bytes(m: &DynamicMessage, name: &str) -> Vec<u8> {
     m.get_field_by_name(name)

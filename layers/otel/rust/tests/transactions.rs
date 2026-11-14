@@ -786,3 +786,199 @@ fn replanning_retains_first_half_ack_when_second_half_fails() {
         .collect::<Vec<_>>();
     assert_eq!(state.data, expected_physical(&layout(), &expected));
 }
+
+type SpanSpec = (Vec<u8>, Vec<u8>, u64);
+/// One ResourceSpans with schema URL `resource` and the given (scope name, spans).
+fn wrapper(resource: &str, scopes: &[(&str, Vec<SpanSpec>)]) -> Vec<u8> {
+    let pool =
+        DescriptorPool::decode(include_bytes!("../testdata/descriptors.pb").as_slice()).unwrap();
+    let message = |name: &str| DynamicMessage::new(pool.get_message_by_name(name).unwrap());
+    let mut rs = message("opentelemetry.proto.trace.v1.ResourceSpans");
+    rs.set_field_by_name("schema_url", Value::String(resource.into()));
+    let mut list = Vec::new();
+    for (name, spans) in scopes {
+        let mut scope = message("opentelemetry.proto.common.v1.InstrumentationScope");
+        scope.set_field_by_name("name", Value::String((*name).into()));
+        let mut ss = message("opentelemetry.proto.trace.v1.ScopeSpans");
+        ss.set_field_by_name("scope", Value::Message(scope));
+        let spans = spans.iter().map(|(trace, span, start)| {
+            let mut sp = message("opentelemetry.proto.trace.v1.Span");
+            sp.set_field_by_name("trace_id", Value::Bytes(trace.clone().into()));
+            sp.set_field_by_name("span_id", Value::Bytes(span.clone().into()));
+            sp.set_field_by_name("start_time_unix_nano", Value::U64(*start));
+            Value::Message(sp)
+        });
+        ss.set_field_by_name("spans", Value::List(spans.collect()));
+        list.push(Value::Message(ss));
+    }
+    rs.set_field_by_name("scope_spans", Value::List(list));
+    rs.encode_to_vec()
+}
+fn ok_span(id: u8) -> SpanSpec {
+    (vec![0x11; 16], vec![id; 8], u64::from(id))
+}
+
+#[test]
+fn repeated_resources_scopes_and_spans_split_into_their_own_wrappers() {
+    let schema = Schema::pinned().unwrap();
+    let inputs = vec![
+        wrapper(
+            "res-a",
+            &[
+                ("a1", vec![ok_span(1), ok_span(2)]),
+                ("a2", vec![ok_span(3)]),
+            ],
+        ),
+        wrapper("res-b", &[("b1", vec![ok_span(4), ok_span(5)])]),
+    ];
+    assert_eq!(schema.validate(&inputs).unwrap(), 5);
+    let db = database();
+    let writer = Writer::new(db.clone(), &layout(), 64, RecordCompression::None).unwrap();
+    let (stats, result) = writer.write(&Context::default(), &inputs);
+    result.unwrap();
+    assert_eq!(stats.committed_spans, 5);
+    let pool =
+        DescriptorPool::decode(include_bytes!("../testdata/descriptors.pb").as_slice()).unwrap();
+    let state = db.0.lock().unwrap();
+    assert_eq!(state.data.keys().filter(|k| k[0] == 1).count(), 5);
+    for (id, resource, scope) in [
+        (1, "res-a", "a1"),
+        (2, "res-a", "a1"),
+        (3, "res-a", "a2"),
+        (4, "res-b", "b1"),
+        (5, "res-b", "b1"),
+    ] {
+        // Literal FDB tuple (0, trace, span) under record prefix 01, unsplit suffix 0x14.
+        let mut key = vec![0x01, 0x14, 0x01];
+        key.extend([0x11; 16]);
+        key.extend([0x00, 0x01]);
+        key.extend([id; 8]);
+        key.extend([0x00, 0x14]);
+        let value = &state.data[&key];
+        assert_eq!(value[0], 0x0a, "RecordTypeUnion.SPANS_0");
+        let mut row_bytes = &value[1..];
+        let len = prost::encoding::decode_varint(&mut row_bytes).unwrap();
+        assert_eq!(row_bytes.len() as u64, len, "span {id}");
+        let row =
+            DynamicMessage::decode(pool.get_message_by_name("SPANS").unwrap(), row_bytes).unwrap();
+        let otlp = row
+            .get_field_by_name("OTLP")
+            .unwrap()
+            .as_bytes()
+            .unwrap()
+            .clone();
+        let rs = DynamicMessage::decode(
+            pool.get_message_by_name("opentelemetry.proto.trace.v1.ResourceSpans")
+                .unwrap(),
+            otlp,
+        )
+        .unwrap();
+        assert_eq!(
+            rs.get_field_by_name("schema_url").unwrap().as_str(),
+            Some(resource)
+        );
+        let scopes = rs
+            .get_field_by_name("scope_spans")
+            .unwrap()
+            .as_list()
+            .unwrap()
+            .to_vec();
+        assert_eq!(scopes.len(), 1, "span {id}");
+        let ss = scopes[0].as_message().unwrap();
+        let name = ss.get_field_by_name("scope").unwrap();
+        assert_eq!(
+            name.as_message()
+                .unwrap()
+                .get_field_by_name("name")
+                .unwrap()
+                .as_str(),
+            Some(scope)
+        );
+        let spans = ss
+            .get_field_by_name("spans")
+            .unwrap()
+            .as_list()
+            .unwrap()
+            .to_vec();
+        assert_eq!(spans.len(), 1, "span {id}");
+        let span_id = spans[0]
+            .as_message()
+            .unwrap()
+            .get_field_by_name("span_id")
+            .unwrap();
+        assert_eq!(span_id.as_bytes().unwrap().as_ref(), [id; 8]);
+    }
+}
+
+#[test]
+fn identity_and_start_boundaries_through_validate_and_writer_write() {
+    let schema = Schema::pinned().unwrap();
+    let (trace, span) = (vec![0x11; 16], vec![0x22; 8]);
+    let mut low_trace = vec![0; 16];
+    low_trace[15] = 1;
+    let mut low_span = vec![0; 8];
+    low_span[7] = 1;
+    for (name, spec) in [
+        ("start zero", (trace.clone(), span.clone(), 0)),
+        (
+            "start int64 max",
+            (trace.clone(), span.clone(), i64::MAX as u64),
+        ),
+        ("one nonzero byte per id", (low_trace, low_span, 1)),
+    ] {
+        let input = wrapper("r", &[("s", vec![spec])]);
+        assert_eq!(
+            schema.validate(std::slice::from_ref(&input)).unwrap(),
+            1,
+            "{name}"
+        );
+        let db = database();
+        let writer = Writer::new(db.clone(), &layout(), 64, RecordCompression::None).unwrap();
+        let (stats, result) = writer.write(&Context::default(), &[input]);
+        result.unwrap();
+        assert_eq!(stats.committed_spans, 1, "{name}");
+    }
+    let rejected = [
+        ("empty span id", (trace.clone(), vec![], 1)),
+        ("short span id", (trace.clone(), vec![0x22; 7], 1)),
+        ("long span id", (trace.clone(), vec![0x22; 9], 1)),
+        ("zero span id", (trace.clone(), vec![0; 8], 1)),
+        ("empty trace id", (vec![], span.clone(), 1)),
+        ("short trace id", (vec![0x11; 15], span.clone(), 1)),
+        ("long trace id", (vec![0x11; 17], span.clone(), 1)),
+        ("zero trace id", (vec![0; 16], span.clone(), 1)),
+        (
+            "start past int64",
+            (trace.clone(), span.clone(), i64::MAX as u64 + 1),
+        ),
+        ("start at u64 max", (trace.clone(), span.clone(), u64::MAX)),
+    ];
+    for (name, bad) in rejected {
+        // A valid span first, then the bad one later in the same scope and in a later wrapper.
+        for inputs in [
+            vec![wrapper("r", &[("s", vec![ok_span(3), bad.clone()])])],
+            vec![
+                wrapper("r", &[("s", vec![ok_span(3)])]),
+                wrapper("q", &[("t", vec![bad.clone()])]),
+            ],
+        ] {
+            assert_eq!(
+                schema.validate(&inputs).unwrap_err().kind,
+                ErrorKind::Admission,
+                "{name}"
+            );
+            let db = database();
+            let writer = Writer::new(db.clone(), &layout(), 64, RecordCompression::None).unwrap();
+            let (stats, result) = writer.write(&Context::default(), &inputs);
+            assert_eq!(result.unwrap_err().kind, ErrorKind::Admission, "{name}");
+            assert_eq!(stats.committed_spans, 0, "{name}");
+            let state = db.0.lock().unwrap();
+            assert_eq!(state.transactions, 0, "{name}");
+            assert_eq!(
+                state.data,
+                BTreeMap::from([(vec![0], vec![1, 2])]),
+                "{name}"
+            );
+        }
+    }
+}

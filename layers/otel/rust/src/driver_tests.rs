@@ -392,6 +392,124 @@ fn malformed_and_many_span_frames_never_reach_transaction_commit() {
     }
 }
 
+/// One ResourceSpans frame with the given scopes of (trace, span, start) spans.
+fn frame(scopes: &[Vec<(Vec<u8>, Vec<u8>, u64)>]) -> Vec<u8> {
+    let pool =
+        DescriptorPool::decode(include_bytes!("../testdata/descriptors.pb").as_slice()).unwrap();
+    let message = |name: &str| DynamicMessage::new(pool.get_message_by_name(name).unwrap());
+    let mut rs = message("opentelemetry.proto.trace.v1.ResourceSpans");
+    let scopes = scopes.iter().map(|spans| {
+        let mut ss = message("opentelemetry.proto.trace.v1.ScopeSpans");
+        let spans = spans.iter().map(|(trace, span, start)| {
+            let mut sp = message("opentelemetry.proto.trace.v1.Span");
+            sp.set_field_by_name("trace_id", Value::Bytes(trace.clone().into()));
+            sp.set_field_by_name("span_id", Value::Bytes(span.clone().into()));
+            sp.set_field_by_name("start_time_unix_nano", Value::U64(*start));
+            Value::Message(sp)
+        });
+        ss.set_field_by_name("spans", Value::List(spans.collect()));
+        Value::Message(ss)
+    });
+    rs.set_field_by_name("scope_spans", Value::List(scopes.collect()));
+    rs.encode_to_vec()
+}
+
+#[test]
+fn frame_precheck_applies_prepare_identity_start_and_one_span_rules() {
+    let (trace, span) = (vec![0x11; 16], vec![0x22; 8]);
+    let mut low_trace = vec![0; 16];
+    low_trace[15] = 1;
+    let mut low_span = vec![0; 8];
+    low_span[7] = 1;
+    for (name, spec) in [
+        ("start zero", (trace.clone(), span.clone(), 0)),
+        (
+            "start int64 max",
+            (trace.clone(), span.clone(), i64::MAX as u64),
+        ),
+        ("one nonzero byte per id", (low_trace, low_span, 1)),
+    ] {
+        let files = Files::new();
+        let job = files.job(&[frame(&[vec![spec]])]);
+        let output = job.output.clone();
+        let db = Fake::new(Mode::Success);
+        run_with(job, |_, _| Ok(db.clone())).unwrap();
+        assert_eq!(receipt(&output)["committed_spans"], 1, "{name}");
+        assert_eq!(db.0.lock().unwrap().committed, 1, "{name}");
+    }
+    let ok = (trace.clone(), vec![0x33; 8], 1);
+    let rejected = [
+        ("empty span id", frame(&[vec![(trace.clone(), vec![], 1)]])),
+        (
+            "short span id",
+            frame(&[vec![(trace.clone(), vec![0x22; 7], 1)]]),
+        ),
+        (
+            "long span id",
+            frame(&[vec![(trace.clone(), vec![0x22; 9], 1)]]),
+        ),
+        (
+            "zero span id",
+            frame(&[vec![(trace.clone(), vec![0; 8], 1)]]),
+        ),
+        ("empty trace id", frame(&[vec![(vec![], span.clone(), 1)]])),
+        (
+            "short trace id",
+            frame(&[vec![(vec![0x11; 15], span.clone(), 1)]]),
+        ),
+        (
+            "long trace id",
+            frame(&[vec![(vec![0x11; 17], span.clone(), 1)]]),
+        ),
+        (
+            "zero trace id",
+            frame(&[vec![(vec![0; 16], span.clone(), 1)]]),
+        ),
+        (
+            "start past int64",
+            frame(&[vec![(trace.clone(), span.clone(), i64::MAX as u64 + 1)]]),
+        ),
+        (
+            "start at u64 max",
+            frame(&[vec![(trace.clone(), span.clone(), u64::MAX)]]),
+        ),
+        ("no spans", frame(&[vec![]])),
+        (
+            "two spans in one scope",
+            frame(&[vec![ok.clone(), (trace.clone(), span.clone(), 1)]]),
+        ),
+        (
+            "two scopes",
+            frame(&[vec![ok.clone()], vec![(trace.clone(), span.clone(), 1)]]),
+        ),
+    ];
+    for (name, bad) in rejected {
+        // A valid frame then the bad one in the same batch: nothing of either may commit.
+        let files = Files::new();
+        let mut job = files.job(&[frame(&[vec![ok.clone()]]), bad]);
+        job.batch_size = 2;
+        let output = job.output.clone();
+        let db = Fake::new(Mode::Success);
+        run_with(job, |_, _| Ok(db.clone())).unwrap_err();
+        let result = receipt(&output);
+        assert_eq!(result["committed_spans"], 0, "{name}");
+        assert!(result["samples"].as_array().unwrap().is_empty(), "{name}");
+        assert!(
+            result["error"]
+                .as_str()
+                .unwrap()
+                .contains("exactly one span"),
+            "{name}"
+        );
+        assert_eq!(db.0.lock().unwrap().attempts, 0, "{name}");
+        assert_eq!(
+            db.0.lock().unwrap().data,
+            BTreeMap::from([(vec![0], vec![1, 2])]),
+            "{name}"
+        );
+    }
+}
+
 #[test]
 fn failure_cancels_next_work_and_preserves_acknowledged_partial_receipt() {
     let files = Files::new();
