@@ -1799,6 +1799,45 @@ OUTPUT slot by ordinal (SortKey.Pos carried through the union lift;
 translateSort bakes the slot). Both are Go read-side extensions on a surface
 where Java's own behavior is non-standard; wire compat is untouched.
 
+## Record-key continuation upgrade — Unreleased (post-v0.2.0)
+
+`ScanRecordKeys` now follows Java 4.14.2.0's physical-map → adjacent-dedup →
+outer-row-limit structure for suffixed layouts. Old Go leaf-only tokens for
+these scans are not an upgrade format: restart them, including scans of legacy
+split-capable stores. Only `!splitLongRecords && omitUnsplitRecordSuffix`
+retains leaf-only framing. No persisted record layout changes.
+
+Exact row boundaries return a non-end token without lookahead, requiring a
+subsequent resume to observe EOF. Physical resource limits can yield an empty
+but progressing non-end page inside a chunk/version run. Accepted restored
+`lastValue` bytes, including noncanonical tuple encodings, survive such stops until
+a distinct logical key replaces them, matching Java's cached restored tuple bytes.
+Equal physical keys leave that state intact; EOF discards the continuation.
+The new Go/FDB
+regressions and Java-interchange fixture are not a claim of a completed live
+Java run; the new fixture requires heavyweight CI acceptance. See
+[compatibility guidance](docs/compatibility.md#record-key-continuations--unreleased-post-v020).
+The pre-existing missing Go format-below-3 refusal remains deferred in TODO.md;
+this patch does not promise parity for those formats.
+
+Malformed restored tuple state returns `IllegalArgumentError` before reads;
+`errors.As` also reaches the original `tuple.DecodeError` with its containing
+top-level element offset and decoder cause. Physical-key decode failures retain
+their original decoder cause under the same argument classification (additionally
+wrapped in `RecordCoreArgumentError` for bare layouts), without changing messages
+or making physical decoding strict.
+
+Go deliberately rejects incomplete versionstamps earlier than Java on suffixed
+key scans. A supplied Dedup `lastValue` containing one returns a typed
+`IncompleteVersionstampError` before any physical read, even for an empty range;
+Java 4.14.2.0 can exhaust that range without trying to pack the restored value.
+A corrupt physical PK containing one fails Go's `OnNext`, while Java can return
+the tuple and fail later during continuation serialization. This fail-closed,
+no-panic policy concerns malformed supplied state and corrupt keys, not tokens
+emitted by successful ordinary Java tuple packing. Complete versionstamps are
+supported. The committed Java fixture pins the differing error timing; execution
+and acceptance of that fixture remain a heavyweight CI requirement.
+
 ## Cursor/continuation surface — systematic hunt (RFC-180 wave 2)
 
 Four parallel Java-vs-Go sweeps (FlatMapPipelinedCursor; union/intersection

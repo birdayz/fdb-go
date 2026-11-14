@@ -223,7 +223,7 @@ against Java — wire-compat is the hard line, so nothing was changed on unverif
   of each other) + a time-bomb (Java's raw-fallback is slated to throw). Fixed: `wrapContinuation`
   (`key_value_cursor.go:25`) now `MarshalVT`s the proto (nil suffix → nil, never wrap an end
   position; empty-but-present suffix → proto carrying the magic, wire-distinguishable from
-  start/end). Same raw→proto fix applied to the second emitter, `record_key_cursor.go:114`. The
+  start/end). Same raw→proto fix applied to the second emitter, `recordKeyCursor.OnNext`. The
   dual-read `unwrapContinuation` still accepts legacy raw tokens, and index/bitmap/count scans
   already routed through `wrapContinuation`. Pinned by a cross-engine conformance regression
   asserting Go's continuation bytes are **byte-identical** to Java's for the same scan position

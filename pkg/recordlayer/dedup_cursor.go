@@ -7,6 +7,7 @@
 package recordlayer
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
@@ -31,6 +32,7 @@ type dedupCursor[T any] struct {
 	pack         func(T) []byte
 	unpack       func([]byte) (T, bool)
 	lastValue    T
+	lastPacked   []byte
 	hasLast      bool
 	closed       bool
 	// lastNoNext replays the terminal result on a contract-violating re-call
@@ -40,7 +42,7 @@ type dedupCursor[T any] struct {
 
 // Dedup creates a cursor that removes adjacent duplicate elements.
 // equal compares two elements; pack/unpack serialize the last value for continuations.
-// If pack is nil, continuation will not include lastValue.
+// Restored values are serialized by pack too; if pack is nil, lastValue is omitted.
 // Matches Java's DedupCursor.
 func Dedup[T any](
 	innerFactory CursorFactory[T],
@@ -49,6 +51,18 @@ func Dedup[T any](
 	unpack func([]byte) (T, bool),
 	continuation []byte,
 ) RecordCursor[T] {
+	return newDedupCursor(innerFactory, equal, pack, unpack, continuation, false)
+}
+
+// preserveRestoredTupleBytes is only for ScanRecordKeys: Go tuples lack Java Tuple's packed-byte cache.
+func newDedupCursor[T any](
+	innerFactory CursorFactory[T],
+	equal func(a, b T) bool,
+	pack func(T) []byte,
+	unpack func([]byte) (T, bool),
+	continuation []byte,
+	preserveRestoredTupleBytes bool,
+) RecordCursor[T] {
 	c := &dedupCursor[T]{
 		innerFactory: innerFactory,
 		equal:        equal,
@@ -56,7 +70,7 @@ func Dedup[T any](
 		unpack:       unpack,
 	}
 
-	if len(continuation) > 0 {
+	if continuation != nil {
 		var cont gen.DedupContinuation
 		if err := UnmarshalVTAsJava(&cont, continuation); err != nil {
 			// Java: throw new RecordCoreException("Error parsing continuation", ex)
@@ -77,6 +91,9 @@ func Dedup[T any](
 			// value as a duplicate on resume).
 			if unpack == nil {
 				return &errorCursor[T]{err: fmt.Errorf("dedup continuation carries lastValue but no unpack function was provided")}
+			}
+			if preserveRestoredTupleBytes {
+				c.lastPacked = bytes.Clone(lv)
 			}
 			val, ok := unpack(lv)
 			if !ok {
@@ -131,6 +148,7 @@ func (c *dedupCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], err
 
 		// New unique value
 		c.lastValue = val
+		c.lastPacked = nil
 		c.hasLast = true
 
 		innerCont := result.GetContinuation()
@@ -159,6 +177,9 @@ func (c *dedupCursor[T]) wrapContinuation(inner RecordCursorContinuation) (Recor
 func (c *dedupCursor[T]) packLast() []byte {
 	if !c.hasLast || c.pack == nil {
 		return nil
+	}
+	if c.lastPacked != nil {
+		return c.lastPacked
 	}
 	return c.pack(c.lastValue)
 }

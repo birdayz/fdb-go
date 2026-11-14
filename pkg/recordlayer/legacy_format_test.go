@@ -104,6 +104,39 @@ var _ = Describe("Legacy format compatibility", func() {
 	}
 
 	Describe("reading a legacy store without migrating", func() {
+		It("keeps record-key continuations as exact leaf tokens in both directions", func() {
+			ss := specSubspace()
+			md := legacyMetaData(false, false)
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				layDownLegacy(rtx, ss, md, 4, true, []*demopb.Order{order(1, 100), order(2, 200), order(3, 300)})
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			for _, reverse := range []bool{false, true} {
+				props := ForwardScan().WithReverse(reverse)
+				props.ExecuteProperties.ReturnedRowLimit = 1
+				var token []byte
+				ids := []byte{1, 2, 3}
+				if reverse {
+					ids = []byte{3, 2, 1}
+				}
+				for _, id := range ids {
+					page := recordKeyTestRead(ss, md, 4, props, token)
+					Expect(page.keys).To(Equal([]tuple.Tuple{{int64(id)}}))
+					Expect(page.reason).To(Equal(ReturnLimitReached))
+					Expect(page.end).To(BeFalse())
+					Expect(page.token).To(Equal(recordKeyLiteralLeaf([]byte{0x15, id})))
+					Expect(page.rowTokens).To(Equal([][]byte{page.token}))
+					token = page.token
+				}
+				end := recordKeyTestRead(ss, md, 4, ForwardScan().WithReverse(reverse), token)
+				Expect(end.keys).To(BeEmpty())
+				Expect(end.reason).To(Equal(SourceExhausted))
+				Expect(end.end).To(BeTrue())
+				Expect(end.token).To(BeNil())
+			}
+		})
+
 		It("reads bare-key records + subspace-8 versions (format 4, omit=true)", func() {
 			ss := specSubspace()
 			md := legacyMetaData(false, true)

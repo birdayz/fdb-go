@@ -120,6 +120,16 @@ below; neither publication nor readiness is asserted.
   12.0 or later (`allow_loading_unsigned_plugins`).
 
 ### Changed / fixed
+- `ScanRecordKeys` composes a physical key scan, adjacent-primary-key deduplication
+  and an outer row limit for suffixed layouts, matching Java 4.14.2.0's cursor
+  structure. Resource-limited duplicate-only pages retain progress, and an exact
+  row-limit boundary returns a non-end token without reading ahead. Restored
+  `lastValue` bytes, including accepted noncanonical tuple encodings, survive
+  duplicate-only stops until a distinct primary key replaces them. Physical
+  suffix validation follows Java's numeric conversion; corrupt tuples return
+  typed argument errors preserving the original decoder cause through `Unwrap`.
+  Malformed restored state exposes `tuple.DecodeError` (including its byte offset
+  and cause) through `IllegalArgumentError` before any range read.
 - The relational engine caches deserialized schema templates process-wide (up
   to 256, keyed by name, version and the row's exact bytes; each read still
   loads the row). A pooled connection keeps its loaded schema across
@@ -204,6 +214,14 @@ below; neither publication nor readiness is asserted.
 - **Go toolchain:** require **Go 1.27.4** or newer for the GO-2026-6859
   (`net/http` MaxBytesReader header race) security fix. CI, release builds and
   runner provisioning use 1.27.4; no application API, SQL or persisted-format change.
+- **Record-key continuations:** restart scans carrying old Go leaf-only tokens
+  for every suffixed layout, including legacy split-capable stores. These scans
+  now require a dedup envelope containing the physical position and last primary
+  key; there is no heuristic migration. Only the bare-key layout
+  (`!splitLongRecords && omitUnsplitRecordSuffix`) retains leaf-only framing.
+  Persisted record bytes, SQL behavior, FDB client options and dependency pins
+  are unchanged. Live Java token interchange remains a required CI gate; source
+  alignment and Go regressions do not establish that gate.
 - **`read_only` and `NewConnector`:** no persisted or wire change; SQL
   behaviour changes only on a `read_only` connection. The unknown-DSN-parameter
   error lists `read_only`. `RelationalKeyspace.LookupSchemaSubspace` and

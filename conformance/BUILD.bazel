@@ -853,6 +853,7 @@ go_test(
         "rangeset_conformance_test.go",
         "rank_index_conformance_test.go",
         "rebuild_index_conformance_test.go",
+        "record_key_continuation_conformance_test.go",
         "record_load_charge_go_test.go",
         "record_load_charge_probe_test.go",
         "record_scan_limit_conformance_test.go",

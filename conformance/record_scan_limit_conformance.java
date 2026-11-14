@@ -283,6 +283,112 @@ class RecordScanLimitSteps extends ConformanceBase {
         return results;
     }
 
+    // Unlike the older record-scan step, null means start and an empty string
+    // means a present zero-length token. Do not collapse malformed token input.
+    private static Map<String, Object> keyTerminal(RecordCursorResult<?> next, ExecuteProperties properties) {
+        Map<String, Object> result = terminal(next, properties);
+        byte[] continuation = next.getContinuation().toBytes();
+        result.put("continuation", continuation == null ? null : Base64.getEncoder().encodeToString(continuation));
+        return result;
+    }
+
+    private static Map<String, Object> keyPage(FDBRecordContext context, byte[] subspace, Request request) {
+        FDBRecordStore store = open(context, subspace, request.layout, false);
+        ExecuteProperties.Builder builder = ExecuteProperties.newBuilder().setReturnedRowLimit(request.rowLimit)
+                .setSkip(request.skip).setFailOnScanLimitReached(request.failOnScanLimit);
+        if (request.scannedLimit > 0) builder.setScannedRecordsLimit(request.scannedLimit);
+        if (request.byteLimit > 0) builder.setScannedBytesLimit(request.byteLimit);
+        if (request.timeLimit > 0) builder.setTimeLimit(request.timeLimit);
+        ExecuteProperties properties = builder.build();
+        byte[] resume = request.continuation == null ? null : Base64.getDecoder().decode(request.continuation);
+        Map<String, Object> result = new HashMap<>();
+        List<Map<String, Object>> rows = new ArrayList<>();
+        List<Map<String, Object>> repeats = new ArrayList<>();
+        result.put("rows", rows);
+        result.put("repeats", repeats);
+        result.put("reason", "");
+        result.put("continuation", null);
+        result.put("end", false);
+        result.put("exceptionClass", "");
+        try (RecordCursor<Tuple> cursor = store.scanRecordKeys(resume, new ScanProperties(properties, request.reverse))) {
+            while (true) {
+                RecordCursorResult<Tuple> next = cursor.onNext().join();
+                if (next.hasNext()) {
+                    Map<String, Object> row = new HashMap<>();
+                    row.put("primaryKey", bytes(next.get().pack()));
+                    row.put("continuation", Base64.getEncoder().encodeToString(next.getContinuation().toBytes()));
+                    rows.add(row);
+                    continue;
+                }
+                result.putAll(keyTerminal(next, properties));
+                for (int repeat = 0; repeat < 2; repeat++) {
+                    repeats.add(keyTerminal(cursor.onNext().join(), properties));
+                }
+                break;
+            }
+        } catch (RuntimeException error) {
+            result.put("exceptionClass", thrown(error));
+        }
+        result.put("scannedRecords", properties.getState().getRecordsScanned());
+        result.put("scannedBytes", properties.getState().getBytesScanned());
+        return result;
+    }
+
+    @ConformanceStep("scanRecordKeyContinuations")
+    public Map<String, Object> scanKeys(String clusterFile, String tenantName, byte[] subspace, Request request) {
+        FDBDatabase database = createDatabase(clusterFile);
+        try (Tenant tenant = database.database().openTenant(tenantName.getBytes(StandardCharsets.UTF_8))) {
+            Transaction transaction = tenant.createTransaction();
+            try (FDBRecordContext context = createContextFromTransaction(database, transaction)) {
+                return keyPage(context, subspace, request);
+            }
+        }
+    }
+
+    // Separate onNext from continuation packing: Java can expose a corrupt PK
+    // before the lazy Dedup continuation rejects its incomplete versionstamp.
+    @ConformanceStep("recordKeyVersionstampBoundary")
+    public Map<String, Object> keyVersionstampBoundary(String clusterFile, String tenantName, byte[] subspace, Request request) {
+        FDBDatabase database = createDatabase(clusterFile);
+        try (Tenant tenant = database.database().openTenant(tenantName.getBytes(StandardCharsets.UTF_8))) {
+            Transaction transaction = tenant.createTransaction();
+            try (FDBRecordContext context = createContextFromTransaction(database, transaction)) {
+                FDBRecordStore store = open(context, subspace, request.layout, false);
+                ExecuteProperties properties = ExecuteProperties.newBuilder().build();
+                byte[] resume = request.continuation == null ? null : Base64.getDecoder().decode(request.continuation);
+                Map<String, Object> result = new HashMap<>();
+                result.put("hasNext", false);
+                result.put("incompletePK", false);
+                result.put("reason", "");
+                result.put("end", false);
+                result.put("continuation", null);
+                result.put("scanException", "");
+                result.put("serializationException", "");
+                try (RecordCursor<Tuple> cursor = store.scanRecordKeys(resume, new ScanProperties(properties, request.reverse))) {
+                    RecordCursorResult<Tuple> next = cursor.onNext().join();
+                    result.put("hasNext", next.hasNext());
+                    if (next.hasNext()) {
+                        result.put("incompletePK", next.get().hasIncompleteVersionstamp());
+                    } else {
+                        result.put("reason", next.getNoNextReason().name());
+                    }
+                    result.put("end", next.getContinuation().isEnd());
+                    try {
+                        byte[] continuation = next.getContinuation().toBytes();
+                        result.put("continuation", continuation == null ? null : Base64.getEncoder().encodeToString(continuation));
+                    } catch (RuntimeException error) {
+                        result.put("serializationException", thrown(error));
+                    }
+                } catch (RuntimeException error) {
+                    result.put("scanException", thrown(error));
+                }
+                result.put("scannedRecords", properties.getState().getRecordsScanned());
+                result.put("scannedBytes", properties.getState().getBytesScanned());
+                return result;
+            }
+        }
+    }
+
     @ConformanceStep("scanRecordScanLimits")
     public List<List<Map<String, Object>>> scan(String clusterFile, String tenantName, byte[] subspace, Request[] requests) {
         List<List<Map<String, Object>>> results = new ArrayList<>();

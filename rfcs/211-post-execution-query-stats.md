@@ -21,7 +21,8 @@ They really do exist. `ScanLimiterState`
 `recordsScanned` and `bytesScanned` per execution attempt, because the
 scanned-rows / scanned-bytes limits are checked against exactly those
 counters. Seven leaf cursors charge them (`key_value_cursor.go:237,240`,
-`index_scan.go:565-566`, `record_key_cursor.go:136,167`, `text_cursor.go:46,171`,
+`index_scan.go:565-566`, `recordKeyCursor.OnNext` (`tryScanLimits` and
+`AddBytesScanned`), `text_cursor.go:46,171`,
 `count_index_maintainer.go:244,285`, `bitmap_value_index_maintainer.go:609-610`,
 `multidimensional_index_maintainer.go:691-692,1119,1133`). The executor knows
 rows returned (`paginatingRows.emitted`). The retry loop knows attempts. The

@@ -2,10 +2,47 @@ package javanum
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
 )
+
+func TestIllegalArgumentErrorUnwrap(t *testing.T) {
+	t.Parallel()
+	cause := &FormatError{Input: "bad argument"}
+	for _, tc := range []struct {
+		name  string
+		cause error
+	}{
+		{name: "without cause"},
+		{name: "with cause", cause: cause},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := &IllegalArgumentError{Message: "invalid argument", Cause: tc.cause}
+			if err.Error() != "invalid argument" {
+				t.Fatalf("Error() = %q; want unchanged message", err.Error())
+			}
+			if errors.Unwrap(err) != tc.cause {
+				t.Fatalf("Unwrap() = %v; want %v", errors.Unwrap(err), tc.cause)
+			}
+			wrapped := fmt.Errorf("caller: %w", err)
+			var argument *IllegalArgumentError
+			if !errors.As(wrapped, &argument) || argument != err {
+				t.Fatalf("lost IllegalArgumentError classification: %v", wrapped)
+			}
+			var format *FormatError
+			if tc.cause == nil {
+				if errors.As(wrapped, &format) {
+					t.Fatalf("cause-free error has a FormatError: %v", format)
+				}
+			} else if !errors.Is(wrapped, cause) || !errors.As(wrapped, &format) || format != cause {
+				t.Fatalf("lost original typed cause: %v", wrapped)
+			}
+		})
+	}
+}
 
 // The 22 spellings of RFC-257 WS-E round v12, each with the outcome
 // Double.parseDouble gave in the target (ws_e_probe_conformance_test.go,

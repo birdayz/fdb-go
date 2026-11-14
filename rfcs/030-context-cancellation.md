@@ -53,7 +53,7 @@ func (c *filterCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], er
 | `cursor_combinators.go` | `flatMapCursor` | outer+inner loop | spins on outer+inner |
 | `key_value_cursor.go` | `keyValueCursor.readNextRecord` | version-skip loop | foundational FDB leaf cursor |
 | `key_value_cursor.go` | `keyValueCursor.collectSplitRecord` | chunk-collect loop | bounded by split count |
-| `record_key_cursor.go` | `recordKeyCursor` | PK-dedup loop | skips split-record duplicates |
+| `record_key_cursor.go` | `recordKeyCursor.OnNext` | one physical-key read | checks cancellation before FDB I/O; `ScanRecordKeys` delegates duplicate skipping to `dedupCursor` |
 | `dedup_cursor.go` | `dedupCursor` | dedup loop | spins skipping duplicates |
 | `index_scan.go` | `indexRecordCursor` | resolve-entry loop | FDB I/O per iteration |
 | `multidimensional_index_maintainer.go` | `rtreeScanCursor` | R-tree iterator loop | skips filtered points |

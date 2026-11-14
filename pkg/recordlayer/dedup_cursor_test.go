@@ -1,8 +1,11 @@
 package recordlayer
 
 import (
+	"bytes"
 	"context"
 	"testing"
+
+	"fdb.dev/gen"
 )
 
 func TestDedupCursorBasic(t *testing.T) {
@@ -175,6 +178,63 @@ func TestDedupCursorContinuation(t *testing.T) {
 	}
 	if r3.GetValue() != 3 {
 		t.Fatalf("result 3: got %d, want 3", r3.GetValue())
+	}
+}
+
+func TestDedupCursorRestoredBytes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		raw  []byte
+		omit bool
+	}{
+		{name: "noncanonical", raw: []byte{0, 1}},
+		{name: "present empty", raw: []byte{}},
+		{name: "nil pack", raw: []byte{0, 1}, omit: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			raw, err := (&gen.DedupContinuation{InnerContinuation: []byte{}, LastValue: tc.raw}).MarshalVT()
+			if err != nil {
+				t.Fatal(err)
+			}
+			packCalls, unpackCalls := 0, 0
+			pack := func(v int) []byte {
+				packCalls++
+				return []byte{byte(v)}
+			}
+			if tc.omit {
+				pack = nil
+			}
+			inner := newOOBStopCursor([]int{1, 1}, ScanLimitReached, NewBytesContinuation([]byte{8}))
+			cursor := Dedup(func([]byte) RecordCursor[int] { return inner },
+				intEqual, pack, func(b []byte) (int, bool) {
+					unpackCalls++
+					if !bytes.Equal(b, tc.raw) || (b == nil) != (tc.raw == nil) {
+						t.Fatalf("unpack received %x (nil=%t), want %x (nil=%t)", b, b == nil, tc.raw, tc.raw == nil)
+					}
+					return 1, true
+				}, raw)
+			defer cursor.Close()
+			stopped, err := cursor.OnNext(context.Background())
+			if err != nil || stopped.HasNext() || stopped.GetNoNextReason() != ScanLimitReached || stopped.GetContinuation().IsEnd() {
+				t.Fatalf("duplicate-only stop: result=%+v, err=%v", stopped, err)
+			}
+			if inner.pos != 2 || unpackCalls != 1 {
+				t.Fatalf("consumed %d duplicates, unpack calls=%d; want 2 and 1", inner.pos, unpackCalls)
+			}
+			encoded, err := stopped.GetContinuation().ToBytes()
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, wantPackCalls := []byte{0x0a, 1, 8, 0x12, 1, 1}, 1
+			if tc.omit {
+				want, wantPackCalls = []byte{0x0a, 1, 8}, 0
+			}
+			if !bytes.Equal(encoded, want) || packCalls != wantPackCalls {
+				t.Fatalf("continuation=%x, pack calls=%d; want %x and %d", encoded, packCalls, want, wantPackCalls)
+			}
+		})
 	}
 }
 

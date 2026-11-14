@@ -2,6 +2,9 @@ package tuple
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
+	"math/big"
 	"reflect"
 	"testing"
 )
@@ -38,9 +41,97 @@ func TestUnpackMalformedReturnsError(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			tup, err := Unpack(c.in)
-			if err == nil {
-				t.Fatalf("Unpack(%x) = %v, want error", c.in, tup)
+			for name, unpack := range map[string]func([]byte) (Tuple, error){"Unpack": Unpack, "UnpackStrict": UnpackStrict} {
+				tup, err := unpack(c.in)
+				if err == nil {
+					t.Fatalf("%s(%x) = %v, want error", name, c.in, tup)
+				}
+				var decoding *DecodeError
+				if name == "UnpackStrict" {
+					if !errors.As(err, &decoding) || decoding.Cause == nil || errors.Unwrap(err) != decoding.Cause {
+						t.Fatalf("UnpackStrict(%x) error lacks a typed cause: %v", c.in, err)
+					}
+				} else if errors.As(err, &decoding) {
+					t.Fatalf("legacy Unpack(%x) error type changed: %v", c.in, err)
+				}
+			}
+		})
+	}
+}
+
+func TestUnpackStrictMalformed(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		in   []byte
+	}{
+		{"empty unterminated nested", []byte{0x05}},
+		{"unterminated nested integer", []byte{0x05, 0x15, 0x01}},
+		{"unterminated outer nested", []byte{0x05, 0x05, 0x00}},
+		{"unterminated inner and outer", []byte{0x05, 0x05, 0x15, 0x01}},
+		{"escaped null is not nested terminator", []byte{0x05, 0x00, 0xff}},
+		{"invalid UTF-8", []byte{0x02, 0xff, 0x00}},
+		{"nested invalid UTF-8", []byte{0x05, 0x02, 0xff, 0x00, 0x00}},
+		{"overlong UTF-8", []byte{0x02, 0xc0, 0xaf, 0x00}},
+		{"UTF-8 surrogate", []byte{0x02, 0xed, 0xa0, 0x80, 0x00}},
+		{"truncated UTF-8 codepoint", []byte{0x02, 0xe2, 0x82, 0x00}},
+		{"UTF-8 above Unicode maximum", []byte{0x02, 0xf4, 0x90, 0x80, 0x80, 0x00}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := UnpackStrict(tc.in)
+			var decoding *DecodeError
+			if !errors.As(err, &decoding) || decoding.Offset != 0 || decoding.Cause == nil || errors.Unwrap(err) != decoding.Cause {
+				t.Fatalf("UnpackStrict(%x) = %v, %v; want typed error at byte 0 with cause", tc.in, got, err)
+			}
+			// Strict restoration must not change existing Unpack callers.
+			if _, err := Unpack(tc.in); err != nil {
+				t.Fatalf("legacy Unpack(%x) changed: %v", tc.in, err)
+			}
+		})
+	}
+}
+
+func TestUnpackStrictErrorOffset(t *testing.T) {
+	t.Parallel()
+	for _, in := range [][]byte{{0x14, 0x02, 0xff, 0x00}, {0x14, 0x05, 0x05, 0x15, 0x01}} {
+		_, err := UnpackStrict(in)
+		var decoding *DecodeError
+		if !errors.As(fmt.Errorf("caller: %w", err), &decoding) || decoding.Offset != 1 || decoding.Cause == nil {
+			t.Fatalf("UnpackStrict(%x) = %v; want wrapped typed error at byte 1", in, err)
+		}
+	}
+}
+
+func TestUnpackStrictValid(t *testing.T) {
+	t.Parallel()
+	allTypes := Tuple{
+		[]byte{0xff, 0x00, 0xfe},
+		"a\x00é😀", int64(-42), int64(42),
+		new(big.Int).Lsh(big.NewInt(1), 80), float32(1.25), float64(-2.5),
+		true, false,
+		UUID{1, 2, 3},
+		Versionstamp{TransactionVersion: [10]byte{1}, UserVersion: 2},
+		nil,
+		Tuple{nil, Tuple{int64(1)}, "nested\x00é"},
+	}
+	for _, tc := range []struct {
+		name string
+		in   []byte
+		want Tuple
+	}{
+		{"empty", nil, nil},
+		{"empty nested", []byte{0x05, 0x00}, Tuple{Tuple(nil)}},
+		{"nested null", []byte{0x05, 0x00, 0xff, 0x00}, Tuple{Tuple{nil}}},
+		{"nested integer", []byte{0x05, 0x15, 0x01, 0x00}, Tuple{Tuple{int64(1)}}},
+		{"noncanonical integer", []byte{0x16, 0x00, 0x01}, Tuple{int64(1)}},
+		{"all types", allTypes.Pack(), allTypes},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := UnpackStrict(tc.in)
+			if err != nil || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("UnpackStrict(%x) = %v, %v; want %v", tc.in, got, err, tc.want)
 			}
 		})
 	}

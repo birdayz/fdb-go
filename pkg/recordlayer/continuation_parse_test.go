@@ -272,6 +272,22 @@ func TestDedupContinuationInvalid(t *testing.T) {
 		checkErr     func(t *testing.T, err error, raw []byte)
 	}{
 		{
+			name:         "non-nil empty bytes are not a start continuation",
+			continuation: func(_ *testing.T) []byte { return []byte{} },
+			unpack:       unpack,
+			checkErr: func(t *testing.T, err error, raw []byte) {
+				requireContinuationParseError(t, err, "Error parsing continuation", raw)
+			},
+		},
+		{
+			name:         "missing required inner continuation fails",
+			continuation: func(_ *testing.T) []byte { return []byte{0x12, 0x01, 0x01} },
+			unpack:       unpack,
+			checkErr: func(t *testing.T, err error, raw []byte) {
+				requireContinuationParseError(t, err, "Error parsing continuation", raw)
+			},
+		},
+		{
 			name:         "corrupt bytes fail with ContinuationParseError",
 			continuation: func(_ *testing.T) []byte { return []byte{0xff, 0xff, 0xff} },
 			unpack:       unpack,

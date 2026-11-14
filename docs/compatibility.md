@@ -291,6 +291,56 @@ committed between planning and a separate first page fails the statement with
 `TRANSACTION_TIMEOUT` budget for its three steps. See [the
 boundary](../DIVERGENCES.md#auto-commit-select-one-transaction-up-to-the-first-page-not-the-whole-result).
 
+### Record-key continuations — Unreleased (post-v0.2.0)
+
+`ScanRecordKeys` uses a physical KV cursor mapped to primary keys, wrapped in
+adjacent deduplication and then the returned-row limit, for every suffixed
+layout. Its continuation is Java's `DedupContinuation` containing the leaf
+physical position and last primary key. This includes legacy split-capable
+stores, even when their format predates inline versions. Only
+`!splitLongRecords && omitUnsplitRecordSuffix` uses a leaf-only token.
+
+**Restart scans carrying old Go leaf-only tokens for any suffixed layout.**
+There is no heuristic old-token migration. Persisted records do not change.
+An exact returned-row limit produces a non-end token without lookahead; resume
+it to discover EOF, even if the last row was the last record. Scan/byte/time
+limits apply to physical keys, so a page can advance past only duplicate chunks
+or inline versions, return no rows, and still have a non-end continuation. Keep
+resuming until `IsEnd`, not until the first empty page. Skip is physical and is
+reapplied on each resume; it does not skip logical deduplicated primary keys.
+Accepted restored `lastValue` bytes are retained across duplicate-only stops,
+including noncanonical integer encodings and nested tuples, as in Java. An equal
+physical key does not replace them; a distinct key replaces them with that mapped
+primary key's ordinary packed bytes. EOF still has no continuation.
+
+Restored Dedup `lastValue` tuples require terminated nested tuples and valid
+UTF-8 strings, matching Java's restoration checks. Malformed values return
+`IllegalArgumentError` before any physical range read, including on empty stores.
+Its unwrap chain preserves `tuple.DecodeError`, whose `Offset` identifies the
+containing top-level tuple element and whose `Cause` retains the decoder failure.
+This validation is specific to restored state; the pre-existing permissive
+physical-key decoder is not changed by it. Physical-key decode errors also retain
+the original decoder cause under `IllegalArgumentError`; bare layouts additionally
+wrap it in `RecordCoreArgumentError` with the physical key and subspace context.
+Error messages are unchanged.
+
+**Incomplete versionstamps are rejected eagerly in suffixed scans.** Go returns
+`IncompleteVersionstampError` before reading if a supplied Dedup `lastValue`
+contains an incomplete versionstamp, even on an empty range. Java 4.14.2.0
+unpacks that state but can return source exhaustion on an empty range without
+packing it. For a corrupt physical primary key containing an incomplete
+versionstamp, Go rejects `OnNext`; Java can return the tuple and fail only when
+its continuation is serialized. This is a deliberate fail-closed, no-panic
+boundary for malformed supplied state or corrupt keys, not a rejection of
+continuations emitted by successful ordinary Java tuple packing. Complete
+versionstamps retain ordinary continuation interchange.
+
+Go/FDB regressions pin literal continuation bytes and physical progress.
+`conformance/record_key_continuation_conformance_test.go` adds both directions
+of live Java interchange; that heavyweight CI gate must pass before claiming
+runtime interoperability. This change does not establish support for store
+formats below 3 (Java rejects `scanRecordKeys` there).
+
 ### Index scan Skip
 
 Index cursors (VALUE, VERSION, RANK, leaderboard, PERMUTED_MIN/MAX, COUNT/SUM,

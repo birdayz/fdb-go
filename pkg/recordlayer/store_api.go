@@ -638,14 +638,36 @@ func (store *FDBRecordStore) ScanRecordKeys(
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[tuple.Tuple] {
-	return &recordKeyCursor{
-		store:          store,
-		continuation:   continuation,
-		scanProperties: scanProperties,
-		scanState:      resolveScanLimiterState(scanProperties.ExecuteProperties),
-		// Bare-key layout applies ONLY when the store does not split long records
-		// (a split-capable store always suffixes its keys). Matches Java's
-		// scanRecordKeys, which gates the bare-key branch on !isSplitLongRecords().
-		omitUnsplitRecordSuffix: store.omitUnsplitRecordSuffix() && !store.metaData.IsSplitLongRecords(),
+	bare := store.omitUnsplitRecordSuffix() && !store.metaData.IsSplitLongRecords()
+	physical := func(cont []byte, props ScanProperties) RecordCursor[tuple.Tuple] {
+		state := resolveScanLimiterState(props.ExecuteProperties)
+		return &recordKeyCursor{
+			store: store, continuation: cont, scanProperties: props,
+			omitUnsplitRecordSuffix: bare,
+			scanState:               state, clock: transactionClock(store.context, props.ExecuteProperties, state),
+		}
 	}
+	if bare {
+		return physical(continuation, scanProperties)
+	}
+	// Java limits physical scans before dedup, but returned rows after dedup.
+	innerProps := scanProperties
+	innerProps.ExecuteProperties.ReturnedRowLimit = 0
+	var unpackErr error
+	cursor := newDedupCursor(func(cont []byte) RecordCursor[tuple.Tuple] {
+		return physical(cont, innerProps)
+	}, tuplesEqual, func(pk tuple.Tuple) []byte { return pk.Pack() }, func(raw []byte) (tuple.Tuple, bool) {
+		pk, err := tuple.UnpackStrict(raw)
+		if err != nil {
+			unpackErr = &IllegalArgumentError{Message: err.Error(), Cause: err}
+		} else if incomplete, _ := pk.HasIncompleteVersionstamp(); incomplete {
+			unpackErr = &IncompleteVersionstampError{Context: "record-key continuation lastValue"}
+		}
+		return pk, unpackErr == nil
+	}, continuation, true)
+	// Dedup's bool decoder cannot carry the tuple decoder's typed error.
+	if unpackErr != nil {
+		return &errorCursor[tuple.Tuple]{err: unpackErr}
+	}
+	return LimitRowsCursor(cursor, max(0, scanProperties.ExecuteProperties.ReturnedRowLimit))
 }

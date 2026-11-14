@@ -35,6 +35,9 @@ type RecordCoreArgumentError struct {
 	// one: the offending key is often nil, so nil cannot mean "not attached".
 	SubspaceKey    any
 	HasSubspaceKey bool
+	// Key and Subspace are the raw bytes attached by SplitHelper.unpackKey.
+	Key      []byte
+	Subspace []byte
 	// Plan is the refused plan's class name (LogMessageKeys.PLAN).
 	Plan string
 	// ClientKnobName, ClientKnobValue and Expected are a refused client knob's
@@ -61,6 +64,12 @@ func (e *RecordCoreArgumentError) Error() string {
 	}
 	if e.HasSubspaceKey {
 		fields = append(fields, fmt.Sprintf("subspace_key=%v", e.SubspaceKey))
+	}
+	if e.Key != nil {
+		fields = append(fields, fmt.Sprintf("key=%x", e.Key))
+	}
+	if e.Subspace != nil {
+		fields = append(fields, fmt.Sprintf("subspace=%x", e.Subspace))
 	}
 	if e.Plan != "" {
 		fields = append(fields, "plan="+e.Plan)
