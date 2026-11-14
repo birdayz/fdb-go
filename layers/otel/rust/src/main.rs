@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{File, OpenOptions},
-    io::{BufReader, Read, Write},
+    io::{BufReader, BufWriter, Read, Write},
     os::unix::fs::OpenOptionsExt,
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
@@ -778,7 +778,7 @@ fn run_spawning<D: Database + 'static>(
         "corpus SHA256 mismatch",
     )?;
     // Reserve the report before any database side effect; nothing is ever overwritten.
-    let mut output = OpenOptions::new()
+    let output = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
@@ -858,15 +858,25 @@ fn run_spawning<D: Database + 'static>(
     } else {
         report.status = "ok";
     }
-    serde_json::to_writer(&mut output, &report)
+    write_report(&output, &report, || output.sync_all())?;
+    outcome
+}
+
+fn write_report(
+    output: impl Write,
+    report: &impl Serialize,
+    sync: impl FnOnce() -> std::io::Result<()>,
+) -> Result<()> {
+    let mut output = BufWriter::with_capacity(8 * 1024, output);
+    serde_json::to_writer(&mut output, report)
         .map_err(|_| failure(ErrorKind::Operation, "cannot write run receipt"))?;
     output
         .write_all(b"\n")
         .map_err(|_| failure(ErrorKind::Operation, "cannot finish run receipt"))?;
     output
-        .sync_all()
-        .map_err(|_| failure(ErrorKind::Operation, "cannot sync run receipt"))?;
-    outcome
+        .flush()
+        .map_err(|_| failure(ErrorKind::Operation, "cannot flush run receipt"))?;
+    sync().map_err(|_| failure(ErrorKind::Operation, "cannot sync run receipt"))
 }
 
 fn nanos(d: Duration) -> u64 {

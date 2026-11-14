@@ -1280,6 +1280,97 @@ fn stage0_point2_workload_text_runs_verbatim_through_the_collector() {
     );
 }
 
+#[derive(Default)]
+struct ReportWrites {
+    bytes: Vec<u8>,
+    writes: usize,
+    flushes: usize,
+    syncs: usize,
+    fail_write: bool,
+    fail_flush: bool,
+}
+
+#[derive(Clone, Default)]
+struct ReportSink(std::rc::Rc<std::cell::RefCell<ReportWrites>>);
+
+impl Write for ReportSink {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let mut state = self.0.borrow_mut();
+        state.writes += 1;
+        if state.fail_write {
+            return Err(std::io::Error::other("injected report write failure"));
+        }
+        state.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let mut state = self.0.borrow_mut();
+        state.flushes += 1;
+        if state.fail_flush {
+            return Err(std::io::Error::other("injected report flush failure"));
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn report_serialization_buffers_fragments_and_flushes_before_sync() {
+    let report = json!({"samples": (0..4096)
+        .map(|i| json!({"accepted_spans": 1, "admission_ns": i, "seq": i}))
+        .collect::<Vec<_>>()});
+    let mut expected = serde_json::to_vec(&report).unwrap();
+    expected.push(b'\n');
+    assert!(expected.len() > 100_000);
+    let sink = ReportSink::default();
+    let sync = sink.clone();
+    write_report(sink.clone(), &report, || {
+        let mut state = sync.0.borrow_mut();
+        assert_eq!(state.bytes, expected);
+        assert_eq!(state.flushes, 1);
+        state.syncs += 1;
+        Ok(())
+    })
+    .unwrap();
+    let state = sink.0.borrow();
+    assert_eq!(state.bytes, expected);
+    assert_eq!(state.syncs, 1);
+    assert!(state.writes > 0);
+    assert!(state.writes <= expected.len() / 8192 + 2);
+}
+
+#[test]
+fn report_write_flush_and_sync_failures_are_not_success() {
+    for (fail_write, fail_flush, fail_sync, message) in [
+        (true, false, false, "cannot write run receipt"),
+        (false, true, false, "cannot flush run receipt"),
+        (false, false, true, "cannot sync run receipt"),
+    ] {
+        let sink = ReportSink::default();
+        {
+            let mut state = sink.0.borrow_mut();
+            state.fail_write = fail_write;
+            state.fail_flush = fail_flush;
+        }
+        let report = json!({"payload": if fail_write { "x".repeat(100_000) } else { "x".into() }});
+        let sync = sink.clone();
+        let err = write_report(sink.clone(), &report, || {
+            let mut state = sync.0.borrow_mut();
+            assert_eq!(state.flushes, 1);
+            state.syncs += 1;
+            if fail_sync {
+                Err(std::io::Error::other("injected report sync failure"))
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Operation);
+        assert_eq!(err.message, message);
+        assert_eq!(sink.0.borrow().syncs, usize::from(fail_sync));
+    }
+}
+
 #[test]
 fn failures_after_reservation_write_synced_error_receipts_with_exact_progress() {
     let files = Files::new();
