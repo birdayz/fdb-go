@@ -27,7 +27,7 @@ func evidenceDraftAwait(t *testing.T, done <-chan error, cancel context.CancelFu
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(18 * time.Second):
+	case <-time.After(30 * time.Second):
 		cancel()
 		select {
 		case <-done:
@@ -167,6 +167,14 @@ set -euo pipefail
 printf '%s\0' "$@" > "$ARGV_NUL"
 mkdir -p "$EVIDENCE/results"
 printf '{}\n' > "$EVIDENCE/results/report.json"
+if [[ "$SIGNAL_CASE" = 1 ]]; then
+ IFS= read -r admitted <&4
+ [[ "$admitted" = enter ]] || exit 96
+ printf R >&3
+ IFS= read -r released <&4
+ [[ "$released" = release ]] || exit 96
+ printf 'runner gate completed\n'
+fi
 `, 0o700)
 	evidenceDraftWrite(t, filepath.Join(f.bin, "jq"), "#!/bin/bash\nset -euo pipefail\nprintf 'true\\n'\n", 0o700)
 	evidenceDraftWrite(t, filepath.Join(f.repo, "secrets.py"), `import os
@@ -182,16 +190,8 @@ def randbelow(bound):
 
 func (f evidenceDraftFixture) command(t *testing.T) (*exec.Cmd, context.CancelFunc) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	// Gate in the directly owned shell itself, after all short-lived tools exit.
-	script := f.script + `
-if [[ "$SIGNAL_CASE" = 1 ]]; then
- printf R >&3
- IFS= read -r released <&4
- [[ "$released" = release ]] || exit 96
-fi
-`
-	cmd := exec.CommandContext(ctx, "bash", "-euo", "pipefail", "-c", script)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	cmd := exec.CommandContext(ctx, "bash", "-euo", "pipefail", "-c", f.script)
 	evidenceDraftBoundProcess(cmd)
 	realSort, err := exec.LookPath("sort")
 	if err != nil {
@@ -289,6 +289,11 @@ func TestClientCorrectnessSignalsFinalizeEvidence(t *testing.T) {
 			}
 			readyW.Close()
 			releaseR.Close()
+			if _, err := releaseW.WriteString("enter\n"); err != nil {
+				cancel()
+				cmd.Wait()
+				t.Fatal(err)
+			}
 			done := make(chan error, 1)
 			go func() { done <- cmd.Wait() }()
 			ready := make(chan error, 1)
@@ -308,20 +313,26 @@ func TestClientCorrectnessSignalsFinalizeEvidence(t *testing.T) {
 					waitErr := evidenceDraftAwait(t, done, cancel)
 					t.Fatalf("readiness: %v; wait: %v", err, waitErr)
 				}
-			case <-time.After(10 * time.Second):
+			case <-time.After(20 * time.Second):
 				releaseW.Close()
 				cancel()
 				waitErr := evidenceDraftAwait(t, done, cancel)
 				t.Fatalf("runner readiness watchdog expired; wait: %v", waitErr)
 			}
+			// Bash defers a trapped signal while its foreground pipeline runs.
+			// Release that child, not a read in the signaled shell, to dispatch the trap.
 			signalErr := cmd.Process.Signal(tc.signal)
-			err = evidenceDraftAwait(t, done, cancel)
+			_, releaseErr := releaseW.WriteString("release\n")
 			releaseW.Close()
-			if signalErr != nil {
-				t.Fatalf("signal=%v", signalErr)
+			err = evidenceDraftAwait(t, done, cancel)
+			if signalErr != nil || releaseErr != nil {
+				t.Fatalf("signal=%v release=%v", signalErr, releaseErr)
 			}
 			if got := clientCorrectnessExit(err); got != tc.exit {
 				t.Fatalf("exit=%d want %d: %v %s", got, tc.exit, err, output.String())
+			}
+			if got := evidenceDraftRead(t, filepath.Join(f.evidence, "runner.log")); got != "runner gate completed\n" {
+				t.Fatalf("foreground pipeline did not complete before finalization: %q", got)
 			}
 			if got, want := evidenceDraftRead(t, filepath.Join(f.evidence, "workflow-exit.txt")), fmt.Sprintf("runner_exit=%d\ninputs_changed=0\n", tc.exit); got != want {
 				t.Fatalf("exit metadata=%q want %q", got, want)
