@@ -11,6 +11,16 @@ live 4.14.2.0 in `just test-full` and PR CI's `conformance-java` job with a stal
 and the suite is green). Entries below that cite 4.12.11 record the previous pin;
 not every one has been re-measured on 4.14.2.0.
 
+## FoundationDB explicit read-version getter
+
+Transaction and snapshot `GetReadVersion` return an accepted positive
+`SetReadVersion` pin unchanged, without a validation GRV, matching native
+FoundationDB 7.3.77. Deferred errors and transaction lifetime checks still apply.
+This getter contract does not promise storage availability: actual storage reads
+and retained commit validation keep the existing `1007`/`1009` guards. The
+client's observed minimum version is not an MVCC retention boundary; client-side
+rejection and a storage server's current snapshot availability are distinct.
+
 ## Full-text SQL and query execution
 
 Go exposes `CREATE FULLTEXT INDEX ... ON table(text_column) [PARTITION BY (...)]`

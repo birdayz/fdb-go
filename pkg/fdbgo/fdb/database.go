@@ -304,7 +304,13 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *client.ClusterFile, opts ..
 // This is useful when code already has a client.Database handle and needs
 // to use the fdb facade layer (e.g., for the directory layer).
 func WrapDatabase(db *client.Database) Database {
-	return Database{d: &internalDB{inner: db, ctx: context.Background()}}
+	return WrapDatabaseContext(context.Background(), db)
+}
+
+// WrapDatabaseContext supplies the inherited ctx for facade reads, retry loops and snapshots.
+// Explicit *Ctx calls override ctx; cancellation does not end an already-dispatched commit's wait.
+func WrapDatabaseContext(ctx context.Context, db *client.Database) Database {
+	return Database{d: &internalDB{inner: db, ctx: ctx}}
 }
 
 // Open opens a database. The dbName parameter is ignored (legacy API compatibility).
@@ -359,14 +365,8 @@ func (db Database) Close() {
 	}
 }
 
-// CreateTransaction creates a new Transaction. Database-level option defaults set
-// via Options() (SetTransactionTimeout / SetTransactionRetryLimit / …) are applied
-// to it — matching libfdb_c, where the database transaction defaults are copied
-// into every transaction the database creates. The transaction is bound to
-// context.Background() (no Go-context cancellation — Apple-binding parity); drive
-// its retries with OnError and override an inherited default per-transaction via
-// SetTimeout / SetRetryLimit. For Go-context cancellation, prefer TransactCtx /
-// ReadTransactCtx over a manual CreateTransaction loop.
+// CreateTransaction copies database option defaults; reads inherit context.Background() for ordinarily
+// opened databases, or WrapDatabaseContext's ctx. TransactCtx/ReadTransactCtx provide explicit bounds.
 func (db Database) CreateTransaction() (Transaction, error) {
 	tx := db.d.inner.CreateTransaction()
 	t := &transaction{
@@ -394,18 +394,9 @@ func (db Database) CreateWritableTransaction() (WritableTransaction, error) {
 	return db.CreateTransaction()
 }
 
-// Transact runs a transactional function with automatic retry. Like the Apple
-// Go binding's Transact, this no-ctx form has no Go-context
-// cancellation and, by default, retries indefinitely on retryable errors. Bound
-// it with DatabaseOptions.SetTransactionTimeout / SetTransactionRetryLimit (an
-// overall budget honored across retries), or use TransactCtx for Go-context
-// cancellation and deadlines.
+// Transact retries using context.Background() for ordinarily opened databases, or WrapDatabaseContext's ctx.
+// Retries default to unbounded; use timeout/retry-limit options or TransactCtx to supply explicit bounds.
 func (db Database) Transact(f func(WritableTransaction) (any, error)) (any, error) {
-	// No-ctx ⇒ context.Background(): mirrors the Apple Go binding (no
-	// context.Context anywhere) and libfdb_c's per-transaction defaults
-	// (maxRetries=-1, timeoutInSeconds=0; ReadYourWrites.actor.cpp), which retry
-	// until success / a non-retryable error unless a limit/timeout trips.
-	// TransactCtx is the Go-only additive cancellation extension (RFC-090).
 	return db.TransactCtx(db.d.ctx, f)
 }
 
@@ -437,11 +428,8 @@ func (db Database) TransactCtx(ctx context.Context, f func(WritableTransaction) 
 	return result, nil
 }
 
-// ReadTransact runs a read-only transactional function with automatic retry.
-// Like Transact, this no-ctx form matches the Apple binding's: no Go-context
-// cancellation, retries bounded only by SetTransactionTimeout /
-// SetTransactionRetryLimit (default unbounded, matching libfdb_c). Use
-// ReadTransactCtx for Go-context cancellation/deadline (RFC-090).
+// ReadTransact retries read-only work using context.Background() for ordinarily opened databases,
+// or WrapDatabaseContext's inherited ctx. Like Transact, timeout/retry-limit options can bound retries.
 func (db Database) ReadTransact(f func(ReadTransaction) (any, error)) (any, error) {
 	return db.ReadTransactCtx(db.d.ctx, f)
 }

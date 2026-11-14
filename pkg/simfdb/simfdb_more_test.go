@@ -73,12 +73,12 @@ func TestSnapshotReadAddsNoConflict(t *testing.T) {
 func TestTransactionTooOldWindow(t *testing.T) {
 	t.Parallel()
 	db, clk := simClockDB()
-	// Advance past the window so a read version of 0 is genuinely ancient. Nothing internal is
+	// Advance past the window so a read version of 1 is genuinely ancient. Nothing internal is
 	// written: the clock is the driver's, and the database's notion of "latest" follows it.
 	clk.Advance(6 * time.Second)
 
 	tx := db.newTxn()
-	tx.SetReadVersion(0) // ancient
+	tx.SetReadVersion(1) // ancient
 	tx.Get(k("x")).MustGet()
 	tx.Set(k("x"), []byte("v"))
 	if code := errCode(t, tx.Commit().Get()); code != 1007 {
@@ -88,7 +88,7 @@ func TestTransactionTooOldWindow(t *testing.T) {
 	// A write-only transaction (no read conflict ranges) at an ancient read version does NOT
 	// get too_old — 1007 gates on having read conflict ranges.
 	wtx := db.newTxn()
-	wtx.SetReadVersion(0)
+	wtx.SetReadVersion(1)
 	wtx.Set(k("y"), []byte("v"))
 	if err := wtx.Commit().Get(); err != nil {
 		t.Fatalf("write-only ancient txn should commit, got %v", err)
@@ -316,7 +316,7 @@ func TestSizeLimitBeatsTooOld(t *testing.T) {
 			db := New(nil)
 			db.lastVersion = mvccWindow + 100
 			tx := db.newTxn()
-			tx.SetReadVersion(0)     // ancient: qualifies for 1007
+			tx.SetReadVersion(1)     // ancient: qualifies for 1007
 			tx.Get(k("x")).MustGet() // ...but only with a read conflict range
 			tc.mut(tx)               // ...and over-size: qualifies for the terminal code too
 			if code := errCode(t, tx.Commit().Get()); code != tc.want {

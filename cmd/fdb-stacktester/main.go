@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"fdb.dev/pkg/fdbgo/client"
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
 )
 
 func main() {
@@ -28,6 +29,10 @@ func main() {
 	apiVersion, err := strconv.Atoi(os.Args[2])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "invalid api-version: %s\n", os.Args[2])
+		os.Exit(1)
+	}
+	if err := gofdb.APIVersion(apiVersion); err != nil {
+		fmt.Fprintf(os.Stderr, "select api-version: %v\n", err)
 		os.Exit(1)
 	}
 	clusterFile := ""

@@ -27,11 +27,13 @@ func TestOnError_SelfConflicting_CommitUnknown(t *testing.T) {
 	tx := &Transaction{}
 
 	// Add some write conflicts (simulating a transaction that wrote data).
-	tx.writeConflicts = append(tx.writeConflicts,
+	tx.writeConflicts = append(
+		tx.writeConflicts,
 		KeyRange{Begin: []byte("a"), End: []byte("b")},
 		KeyRange{Begin: []byte("x"), End: []byte("z")},
 	)
-	tx.readConflicts = append(tx.readConflicts,
+	tx.readConflicts = append(
+		tx.readConflicts,
 		KeyRange{Begin: []byte("m"), End: []byte("n")},
 	)
 
@@ -67,7 +69,8 @@ func TestOnError_SelfConflicting_ClusterVersionChanged(t *testing.T) {
 	t.Parallel()
 
 	tx := &Transaction{}
-	tx.writeConflicts = append(tx.writeConflicts,
+	tx.writeConflicts = append(
+		tx.writeConflicts,
 		KeyRange{Begin: []byte("k"), End: []byte("l")},
 	)
 
@@ -91,7 +94,8 @@ func TestOnError_NotCommitted_NoSelfConflicting(t *testing.T) {
 	t.Parallel()
 
 	tx := &Transaction{}
-	tx.writeConflicts = append(tx.writeConflicts,
+	tx.writeConflicts = append(
+		tx.writeConflicts,
 		KeyRange{Begin: []byte("a"), End: []byte("b")},
 	)
 
@@ -170,14 +174,12 @@ func TestOnError_RetryCount(t *testing.T) {
 }
 
 // TestOnError_ResourceConstrainedErrors verifies that resource-constrained
-// errors (hot_shard, range_locked, proxy_memory_limit, grv_proxy_memory_limit)
+// errors (proxy_memory_limit and grv_proxy_memory_limit)
 // use the higher backoff cap (30s) instead of the normal 1s.
 func TestOnError_ResourceConstrainedErrors(t *testing.T) {
 	t.Parallel()
 
 	resourceConstrained := []int{
-		ErrThrottledHotShard,
-		ErrRangeLocked,
 		ErrProxyMemoryLimitExceeded,
 		ErrGrvProxyMemoryLimit,
 	}
@@ -209,8 +211,6 @@ func TestOnError_AllRetryableErrors(t *testing.T) {
 		ErrBatchTransactionThrottled, // 1042
 		ErrTagThrottled,              // 1078
 		ErrProxyTagThrottled,
-		ErrThrottledHotShard,
-		ErrRangeLocked,
 		ErrBlobGranuleRequestFailed,
 		ErrProxyMemoryLimitExceeded,
 		ErrGrvProxyMemoryLimit,
@@ -340,7 +340,7 @@ func TestOnError_RespectsContextCancellation(t *testing.T) {
 	// pinning jitter=1.0 (backoffJitter override) makes the first delay exactly
 	// tx.backoff = 4s — without the override a rand draw near 0 made the backoff
 	// finish before the 20ms cancel, so OnError returned nil (a real ~0.5% flake).
-	// ErrThrottledHotShard is in the resource-constrained bucket whose internal cap
+	// ErrProxyMemoryLimitExceeded is in the resource-constrained bucket whose internal cap
 	// is 30s, NOT maxRetryDelay — but we set maxRetryDelay = 4s as belt-and-suspenders
 	// in case the bucket dispatch ever changes.
 	tx := &Transaction{}
@@ -356,7 +356,7 @@ func TestOnError_RespectsContextCancellation(t *testing.T) {
 	}()
 
 	start := time.Now()
-	err := tx.OnError(ctx, &wire.FDBError{Code: ErrThrottledHotShard})
+	err := tx.OnError(ctx, &wire.FDBError{Code: ErrProxyMemoryLimitExceeded})
 	elapsed := time.Since(start)
 
 	// Allow generous slack on slow CI: cancellation should be observed

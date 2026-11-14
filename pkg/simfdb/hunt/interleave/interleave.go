@@ -320,8 +320,8 @@ func (w Workload) run(seed uint64) *Result {
 }
 
 // execStep runs one program step against the transaction and updates the model. The first read
-// (an increment's Get) pins the model read version, mirroring SimFDB's lazy read-version pin at
-// the first Get; modelVersion is kept equal to SimFDB's lastVersion by the single-goroutine loop.
+// (an increment's Get) pins the model read version, mirroring SimFDB's lazy pin.
+// Model versions are commit ordinals; SimFDB's positive genesis adds a constant offset.
 func (w Workload) execStep(ts *txnState, keyBytes [][]byte, modelVersion int64) error {
 	s := ts.prog[ts.cursor]
 	key := fdb.Key(keyBytes[s.key])

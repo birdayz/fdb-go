@@ -53,23 +53,24 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		sm.push(idx, append(a, b...))
 	case "LOG_STACK":
 		prefix := sm.popBytes()
-		sm.logStack(ctx, idx, prefix)
+		return sm.logStack(ctx, idx, prefix)
 
 	// --- Transaction management ---
 	case "NEW_TRANSACTION":
 		sm.trMu.Lock()
-		sm.trMap[sm.trName] = sm.db.CreateTransaction()
+		sm.replaceTransaction(sm.trName)
 		sm.trMu.Unlock()
 	case "USE_TRANSACTION":
 		name := sm.popString()
 		sm.trMu.Lock()
 		sm.trName = name
 		if _, ok := sm.trMap[name]; !ok {
-			sm.trMap[name] = sm.db.CreateTransaction()
+			sm.replaceTransaction(name)
 		}
 		sm.trMu.Unlock()
 	case "COMMIT":
-		tr := sm.currentTr()
+		tr, release := sm.acquireCommitTransaction()
+		defer release()
 		err := tr.Commit(ctx)
 		if err != nil {
 			sm.pushError(idx, err)
@@ -78,7 +79,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		}
 	case "RESET":
 		sm.trMu.Lock()
-		sm.trMap[sm.trName] = sm.db.CreateTransaction()
+		sm.replaceTransaction(sm.trName)
 		sm.trMu.Unlock()
 	case "CANCEL":
 		sm.currentTr().Cancel()
@@ -89,7 +90,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		var val []byte
 		var err error
 		if isDatabase {
-			result, e := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+			result, e := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 				return tx.Get(ctx, key)
 			})
 			if e == nil && result != nil {
@@ -117,7 +118,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		var result []byte
 		var err error
 		if isDatabase {
-			r, e := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+			r, e := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 				return tx.GetKey(ctx, key, orEqual, offset)
 			})
 			if e == nil && r != nil {
@@ -146,12 +147,16 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		end := sm.popBytes()
 		limit := int(sm.popInt64())
 		reverse := sm.popInt64() != 0
-		_ = sm.popInt64() // streaming_mode — ignored, we always do WANT_ALL
+		mode := sm.popInt64()
+		if limit == 0 && mode == 0 {
+			sm.pushError(idx, &wire.FDBError{Code: 2210})
+			return nil
+		}
 
 		var kvs []client.KeyValue
 		var err error
 		if isDatabase {
-			result, e := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+			result, e := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 				var kv []client.KeyValue
 				var rangeErr error
 				if reverse {
@@ -193,13 +198,17 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		prefix := sm.popBytes()
 		limit := int(sm.popInt64())
 		reverse := sm.popInt64() != 0
-		_ = sm.popInt64() // streaming_mode
+		mode := sm.popInt64()
+		if limit == 0 && mode == 0 {
+			sm.pushError(idx, &wire.FDBError{Code: 2210})
+			return nil
+		}
 
 		end := strinc(prefix)
 		var kvs []client.KeyValue
 		var err error
 		if isDatabase {
-			result, e := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+			result, e := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 				var kv []client.KeyValue
 				var rangeErr error
 				if reverse {
@@ -245,8 +254,12 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		endOffset := int32(sm.popInt64())
 		limit := int(sm.popInt64())
 		reverse := sm.popInt64() != 0
-		_ = sm.popInt64() // streaming_mode
+		mode := sm.popInt64()
 		prefix := sm.popBytes()
+		if limit == 0 && mode == 0 {
+			sm.pushError(idx, &wire.FDBError{Code: 2210})
+			return nil
+		}
 
 		// Resolve key selectors to actual keys + range read.
 		// For _DATABASE variant, everything runs in one auto-commit transaction.
@@ -254,7 +267,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 			type rangeResult struct {
 				kvs []client.KeyValue
 			}
-			result, e := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+			result, e := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 				b, bErr := tx.GetKey(ctx, beginKey, beginOrEqual, beginOffset)
 				if bErr != nil {
 					return nil, bErr
@@ -262,14 +275,6 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 				en, eErr := tx.GetKey(ctx, endKey, endOrEqual, endOffset)
 				if eErr != nil {
 					return nil, eErr
-				}
-				// Clamp to prefix.
-				if bytes.Compare(b, prefix) < 0 {
-					b = prefix
-				}
-				prefixEnd := strinc(prefix)
-				if bytes.Compare(en, prefixEnd) > 0 {
-					en = prefixEnd
 				}
 				var kv []client.KeyValue
 				var rangeErr error
@@ -286,7 +291,9 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 				rr := result.(*rangeResult)
 				t := make(tuple.Tuple, 0, len(rr.kvs)*2)
 				for _, kv := range rr.kvs {
-					t = append(t, kv.Key, kv.Value)
+					if bytes.HasPrefix(kv.Key, prefix) {
+						t = append(t, kv.Key, kv.Value)
+					}
 				}
 				sm.push(idx, t.Pack())
 			}
@@ -342,7 +349,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		key := sm.popBytes()
 		value := sm.popBytes()
 		if isDatabase {
-			_, err := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+			_, err := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 				tx.Set(key, value)
 				return nil, nil
 			})
@@ -358,7 +365,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 	case "CLEAR":
 		key := sm.popBytes()
 		if isDatabase {
-			_, err := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+			_, err := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 				tx.Clear(key)
 				return nil, nil
 			})
@@ -375,7 +382,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		begin := sm.popBytes()
 		end := sm.popBytes()
 		if isDatabase {
-			_, err := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+			_, err := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 				return nil, tx.ClearRange(begin, end)
 			})
 			if err != nil {
@@ -393,7 +400,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		prefix := sm.popBytes()
 		end := strinc(prefix)
 		if isDatabase {
-			_, err := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+			_, err := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 				return nil, tx.ClearRange(prefix, end)
 			})
 			if err != nil {
@@ -413,7 +420,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		value := sm.popBytes()
 		mutType := atomicOpType(opType)
 		if isDatabase {
-			_, err := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+			_, err := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 				tx.Atomic(mutType, key, value)
 				return nil, nil
 			})
@@ -471,15 +478,20 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		}
 
 	case "GET_ESTIMATED_RANGE_SIZE":
-		_ = sm.popBytes() // begin
-		_ = sm.popBytes() // end
-		sm.push(idx, []byte("GOT_ESTIMATED_RANGE_SIZE"))
+		begin, end := sm.popBytes(), sm.popBytes()
+		if _, err := sm.currentTr().GetEstimatedRangeSizeBytes(ctx, begin, end); err != nil {
+			sm.pushError(idx, err)
+		} else {
+			sm.push(idx, []byte("GOT_ESTIMATED_RANGE_SIZE"))
+		}
 
 	case "GET_RANGE_SPLIT_POINTS":
-		_ = sm.popBytes() // begin
-		_ = sm.popBytes() // end
-		_ = sm.popInt64() // chunkSize
-		sm.push(idx, []byte("GOT_RANGE_SPLIT_POINTS"))
+		begin, end, chunkSize := sm.popBytes(), sm.popBytes(), sm.popInt64()
+		if _, err := sm.currentTr().GetRangeSplitPoints(ctx, begin, end, chunkSize); err != nil {
+			sm.pushError(idx, err)
+		} else {
+			sm.push(idx, []byte("GOT_RANGE_SPLIT_POINTS"))
+		}
 
 	// --- Conflict ranges ---
 	case "READ_CONFLICT_RANGE":
@@ -594,11 +606,8 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 
 	case "TUPLE_PACK_WITH_VERSIONSTAMP":
 		prefix := sm.popBytes()
-		count := int(sm.popInt64())
-		t := make(tuple.Tuple, count)
-		for i := 0; i < count; i++ {
-			t[i] = sm.pop().value
-		}
+		// Use the pure-Go API version, not the uninitialized C binding's state.
+		t := sm.popTupleRaw()
 		packed, err := t.PackWithVersionstamp(prefix)
 		if err != nil && strings.Contains(err.Error(), "No incomplete") {
 			sm.push(idx, []byte("ERROR: NONE"))
@@ -612,21 +621,44 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 	// --- Threading ---
 	case "START_THREAD":
 		prefix := sm.popBytes()
-		child := NewStackMachine(sm.db, prefix)
-		// Share transaction map and directory list (binding tester spec).
-		child.trMap = sm.trMap
-		child.dirList = sm.dirList
-		child.dirIndex = sm.dirIndex
-		child.dirErrorIndex = sm.dirErrorIndex
+		child := newStackMachine(sm.db, prefix, sm.transactionRegistry)
+		child.childJoinTimeout = sm.childJoinTimeout
+		child.threadPath = sm.threadPath + " -> " + string(prefix)
+		sm.childMu.Lock()
+		if sm.children == nil {
+			sm.children = make(map[string]int)
+		}
+		sm.children[string(prefix)]++
+		sm.childMu.Unlock()
 		sm.wg.Add(1)
 		go func() {
 			defer sm.wg.Done()
-			child.Run(ctx)
+			defer func() {
+				sm.childMu.Lock()
+				sm.children[string(prefix)]--
+				if sm.children[string(prefix)] == 0 {
+					delete(sm.children, string(prefix))
+				}
+				sm.childMu.Unlock()
+			}()
+			if err := child.Run(ctx); err != nil {
+				err = fmt.Errorf("child thread %q: %w", prefix, err)
+				sm.childMu.Lock()
+				if sm.childErr == nil {
+					sm.childErr = err
+				}
+				sm.childMu.Unlock()
+				if sm.cancelRun != nil {
+					sm.cancelRun(err)
+				}
+			}
 		}()
 
 	case "WAIT_EMPTY":
 		prefix := sm.popBytes()
-		sm.waitEmpty(ctx, prefix)
+		if err := sm.waitEmpty(ctx, prefix); err != nil {
+			return err
+		}
 		sm.push(idx, []byte("WAITED_FOR_EMPTY"))
 
 	case "DISABLE_WRITE_CONFLICT":
@@ -654,7 +686,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 	return nil
 }
 
-func (sm *StackMachine) logStack(ctx context.Context, idx int, prefix []byte) {
+func (sm *StackMachine) logStack(ctx context.Context, idx int, prefix []byte) error {
 	// Pop all entries (resolving futures) and write to FDB in batches.
 	n := len(sm.stack)
 	entries := make([]stackEntry, n)
@@ -668,10 +700,10 @@ func (sm *StackMachine) logStack(ctx context.Context, idx int, prefix []byte) {
 			end = len(entries)
 		}
 		batch := entries[i:end]
-		sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+		_, err := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 			for j, e := range batch {
 				globalIdx := i + j
-				key := tuple.Tuple{prefix, int64(globalIdx), int64(e.idx)}.Pack()
+				key := append(append([]byte{}, prefix...), tuple.Tuple{int64(globalIdx), int64(e.idx)}.Pack()...)
 				packed := tuple.Tuple{e.value}.Pack()
 				if len(packed) > 40000 {
 					packed = packed[:40000]
@@ -680,29 +712,38 @@ func (sm *StackMachine) logStack(ctx context.Context, idx int, prefix []byte) {
 			}
 			return nil, nil
 		})
+		if err != nil {
+			return fmt.Errorf("log stack: %w", err)
+		}
 	}
+	return nil
 }
 
-func (sm *StackMachine) waitEmpty(ctx context.Context, prefix []byte) {
+func (sm *StackMachine) waitEmpty(ctx context.Context, prefix []byte) error {
 	end := strinc(prefix)
 	for {
-		if ctx.Err() != nil {
-			return
+		if err := context.Cause(ctx); err != nil {
+			return err
 		}
-		result, err := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+		result, err := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
 			kvs, _, err := tx.GetRange(ctx, prefix, end, 1)
 			return kvs, err
 		})
 		if err != nil {
-			continue
+			return err
 		}
 		kvs := result.([]client.KeyValue)
 		if len(kvs) == 0 {
-			return
+			return nil
 		}
 		// Not empty yet, retry via OnError with not_committed for backoff sleep.
 		tr := sm.db.CreateTransaction()
-		tr.OnError(ctx, &wire.FDBError{Code: client.ErrNotCommitted})
+		untrack := sm.waits.track(tr.Cancel)
+		err = tr.OnError(ctx, &wire.FDBError{Code: client.ErrNotCommitted})
+		untrack()
+		if err != nil {
+			return err
+		}
 	}
 }
 
@@ -718,6 +759,8 @@ func toBigInt(v any) *big.Int {
 		return big.NewInt(x)
 	case int:
 		return big.NewInt(int64(x))
+	case uint64:
+		return new(big.Int).SetUint64(x)
 	case *big.Int:
 		return x
 	case []byte:

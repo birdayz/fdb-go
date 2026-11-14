@@ -170,20 +170,9 @@ func TestReadVersionInstant_UnsetForUserSuppliedReadVersion(t *testing.T) {
 	}
 }
 
-// TestReadVersionInstant_UserVersionAfterGRVClearsTheStamp is the case where the
-// two mechanisms guarding this field come apart, and it is the only one that
-// isolates the SetReadVersion clear.
-//
-// Everywhere else the accessor's hasReadVersion gate and the explicit field clears
-// are REDUNDANT: reset() and postCommitReset() drop hasReadVersion, so the accessor
-// reports not-ok whether or not the field was zeroed. SetReadVersion is different —
-// it SETS hasReadVersion true — so the gate provides nothing and only the explicit
-// clear prevents a previous GRV's stamp being reported as this version's window.
-//
-// Without that clear the failure is the dangerous direction: a stale instant makes a
-// possibly-ancient user-supplied version look like a window that just opened, so a
-// budget built on it grants five seconds that do not exist.
-func TestReadVersionInstant_UserVersionAfterGRVClearsTheStamp(t *testing.T) {
+// NativeAPI rejects SetReadVersion after a GRV. A rejected setter must not
+// overwrite either the cached version or its original observation instant.
+func TestReadVersionInstant_RejectedUserVersionPreservesStamp(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -197,20 +186,23 @@ func TestReadVersionInstant_UserVersionAfterGRVClearsTheStamp(t *testing.T) {
 	if _, err := tx.Get(ctx, []byte(t.Name())); err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if _, ok := tx.ReadVersionInstant(); !ok {
-		t.Fatal("ReadVersionInstant ok=false after a read; this test needs a real stamp in place before it overrides the version")
+	before, ok := tx.ReadVersionInstant()
+	if !ok {
+		t.Fatal("ReadVersionInstant ok=false after a read")
 	}
 
-	// Now override the version. hasReadVersion stays true, so the accessor's gate
-	// cannot help; the stamp must be cleared at the assignment.
+	// The version is already set, even when supplying the same value.
 	rv, err := tx.GetReadVersion(ctx)
 	if err != nil {
 		t.Fatalf("GetReadVersion: %v", err)
 	}
 	tx.SetReadVersion(rv)
 
-	if inst, ok := tx.ReadVersionInstant(); ok {
-		t.Fatalf("ReadVersionInstant ok=true (instant=%v) after SetReadVersion overrode a GRV'd version; the previous GRV's stamp is being reported as this version's MVCC window", inst)
+	if _, err := tx.GetReadVersion(ctx); fdbCodeOf(err) != 2010 {
+		t.Fatalf("rejected setter error=%v, want 2010", err)
+	}
+	if inst, ok := tx.ReadVersionInstant(); !ok || !inst.Equal(before) {
+		t.Fatalf("rejected setter changed instant: got %v,%v want %v,true", inst, ok, before)
 	}
 }
 

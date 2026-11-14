@@ -216,7 +216,10 @@ app observes, it carries full FDB-C-dev review.
   + `fault_test`), versionstamp offset (2000, `TestDifferential_VersionstampValidationOrder`).
 - **Documented divergences (unchanged, out of scope):** special-key-space (`\xff\xff` → 2004, no
   special-key module — separate TODO); `invalid_mutation_type` (Go's typed `Add`/`And`/… facade can't
-  express a bad op-code); `SetReadVersion(v<=0)` graceful (no `version_invalid`, vs C++ `CATCH_AND_DIE`).
+  express a bad op-code).
+- **Corrected setter contract:** `SetReadVersion(v<=0)` defers `version_invalid` (2011),
+  unless an existing or pending read version takes precedence (2010); prior deferred errors
+  remain until reset.
 - **C3 conclusion:** with these two fixes, the FuzzApiCorrectness error-contract is fully covered for
   Go's implemented surface (the rest already pinned). Cycle / AtomicOps / ConflictRange /
   FuzzApiCorrectness + Serializability (via Cycle) all covered → **C3 complete.**

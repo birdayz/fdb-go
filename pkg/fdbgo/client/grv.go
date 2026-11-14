@@ -568,16 +568,8 @@ func (db *database) minAcceptable() int64 {
 	return s.version
 }
 
-// updateMinAcceptable lowers the floor toward the SMALLEST read version this
-// client has seen IN THIS EPOCH. C++ DatabaseContext::minAcceptableReadVersion is
-// a std::min over GRV reply versions (NativeAPI.actor.cpp:3871,:7287), inited to
-// max(). Go treats version 0 as "unset": the first version sets the floor and
-// later (necessarily ≥) versions leave it at the smallest. This is what
-// validateVersion compares against — keeping it the smallest-seen (NOT a rising
-// max) means only a genuinely-ancient pinned version is rejected, never a recent
-// one that merely predates a later GRV. (Previously this ratcheted UPWARD, so
-// RFC-104's fresh-GRV default raced it past pinned versions libfdb_c accepted —
-// the root of the spurious 1007s in the snapshot/conflict/getKey differentials.)
+// updateMinAcceptable lowers this epoch's observed floor (C++ std::min; 0 is unset).
+// Later GRVs cannot raise this storage/commit guard; it is not an MVCC boundary.
 //
 // THE EPOCH CHECK IS ON THE STORE ITSELF, and that placement is the point. The
 // caller already knows whether the reply's epoch was current — but it learned
@@ -639,22 +631,8 @@ func (db *database) updateMinAcceptableOnce(cur *minAcceptableStamp, replyEpoch,
 	return db.minAcceptableReadVersion.CompareAndSwap(cur, &minAcceptableStamp{epoch: curEpoch, version: v})
 }
 
-// validateVersion checks a user-set read version against the client's
-// seen-version floor. A version below minAcceptableReadVersion — the SMALLEST
-// read version this client has seen (std::min; see updateMinAcceptable) — is
-// transaction_too_old. Because the floor is the smallest-seen and NOT a rising
-// max (the RFC-104 fix), this rejects only a genuinely-ancient pinned version
-// (below anything the client has observed), never a recent one that merely
-// predates a later GRV — so a libfdb_c-current version pinned across both
-// clients is honored, and the storage server remains the authority on the 5s
-// MVCC window. (C++ gates the same throw on `switchable` at NativeAPI.actor.cpp:518;
-// the Go client is non-switchable and keeps it as a client-side fail-fast for
-// ancient versions — outcome-equivalent, since the server rejects exactly those.)
-//
-// The absurd-future check is a Go-only client-side guard (real FDB versions are
-// ~10^7/s; even 100 years is ~3×10^16): a wildly-out-of-range version would
-// block the storage server indefinitely, and our RPC timeout races the server's
-// own future_version, so detecting it client-side is more reliable.
+// validateVersion retains storage/commit floor and absurd-future fail-fast checks.
+// It neither validates explicit-pin getters nor models server snapshot retention.
 func (db *database) validateVersion(version int64) error {
 	// Read through the stamp: a floor observed under a previous cluster reads as
 	// unset here, because its version space says nothing about this one.

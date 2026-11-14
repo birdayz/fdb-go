@@ -5,15 +5,29 @@ go_library(
     srcs = [
         "bindingtester_setup.go",
         "main.go",
+        "scheduled.go",
+        "tester_process.go",
     ],
     importpath = "fdb.dev/cmd/fdb-binding-stress",
+    target_compatible_with = ["@platforms//os:linux"],
     visibility = ["//visibility:private"],
-    deps = ["//pkg/testcontainers/foundationdb"],
+    deps = select({
+        "@rules_go//go/platform:android": [
+            "//pkg/testcontainers/foundationdb",
+            "@org_golang_x_sys//unix",
+        ],
+        "@rules_go//go/platform:linux": [
+            "//pkg/testcontainers/foundationdb",
+            "@org_golang_x_sys//unix",
+        ],
+        "//conditions:default": [],
+    }),
 )
 
 go_binary(
     name = "fdb-binding-stress",
     embed = [":fdb-binding-stress_lib"],
+    target_compatible_with = ["@platforms//os:linux"],
     visibility = ["//visibility:public"],
 )
 
@@ -40,19 +54,71 @@ genrule(
           "tar cf $@ --dereference --sort=name --mtime='UTC 1980-01-01' " +
           "--owner=0 --group=0 " +
           "--numeric-owner -C $$(dirname $$pkg) $$(basename $$pkg)",
+    target_compatible_with = ["@platforms//os:linux"],
     visibility = ["//visibility:public"],
 )
 
 go_test(
+    name = "runner_integration_test",
+    size = "large",
+    srcs = [
+        "docker_boundary_test.go",
+        "runner_integration_test.go",
+    ],  # keep
+    data = [
+        ":fdb-binding-stress",
+        ":python_fdb_tar",
+        "//cmd/fdb-stacktester",
+        "@foundationdb//:bindingtester",
+        "@foundationdb//:python_fdb",
+        "@libfdb_c_linux_x86_64//file",
+    ],
+    embed = [":fdb-binding-stress_lib"],
+    tags = [
+        "resources:memory:400",
+        "test-full",
+    ],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+go_test(
     name = "fdb-binding-stress_test",
+    # Integration sources belong to the test-full target above.
     srcs = [
         "bindingtester_setup_test.go",
+        "cleanup_success_test.go",
+        "cli_contract_test.go",
+        "container_cleanup_test.go",
+        "defensive_runner_test.go",
+        "docker_boundary_test.go",
+        "json_contract_test.go",
         "main_test.go",
-    ],
+        "pipe_wait_test.go",
+        "runner_guard_test.go",
+        "scheduled_test.go",
+        "setup_guard_test.go",
+        "tester_process_test.go",
+    ],  # keep
     data = [
         ":python_fdb_tar",
         "@foundationdb//:bindingtester",
     ],
     embed = [":fdb-binding-stress_lib"],
     tags = ["resources:memory:400"],
+    target_compatible_with = ["@platforms//os:linux"],
+    deps = select({
+        "@rules_go//go/platform:android": [
+            "//pkg/testcontainers/foundationdb",
+            "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
+            "@com_github_testcontainers_testcontainers_go//exec",
+            "@org_golang_x_sys//unix",
+        ],
+        "@rules_go//go/platform:linux": [
+            "//pkg/testcontainers/foundationdb",
+            "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
+            "@com_github_testcontainers_testcontainers_go//exec",
+            "@org_golang_x_sys//unix",
+        ],
+        "//conditions:default": [],
+    }),
 )
