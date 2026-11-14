@@ -21,6 +21,24 @@ and retained commit validation keep the existing `1007`/`1009` guards. The
 client's observed minimum version is not an MVCC retention boundary; client-side
 rejection and a storage server's current snapshot availability are distinct.
 
+**Unreleased (#1045):** setter rejection now matches native 7.3.77:
+`SetReadVersion` defers 2010 for a cached, pending or already-failed read-version
+request on the incarnation, before testing the value; otherwise values <= 0
+defer 2011. Setter errors are sticky until `Reset`; callers that re-pin must
+reset or use a fresh transaction. Getter reuse after a failed GRV remains
+different: Go can refetch while native retains the failed future until state
+turnover; see the separate open item in `TODO.md`.
+
+`OnError(0)` now returns 2000, or 4100 at retry-limit exhaustion; 1235/1242 are
+terminal for `OnError` / `IsOnErrorRetryable` under the 7.3.77 pin. SimFDB mirrors
+setter precedence (synchronous GRV) and these OnError contracts, retires a handle
+after terminal OnError until Reset, and starts versions at 1 (first commit 2).
+`fdb.WrapDatabaseContext` supplies the inherited context for facade reads, retry
+loops and snapshots, overridden by explicit `*Ctx` calls. These corrections do
+not change persisted formats, SQL or dependency pins. The hourly hosted
+BindingTester workflow samples only the Go client, with bounds and evidence
+specified in [client correctness](docs/client-correctness.md).
+
 ## Full-text SQL and query execution
 
 Go exposes `CREATE FULLTEXT INDEX ... ON table(text_column) [PARTITION BY (...)]`

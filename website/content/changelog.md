@@ -110,6 +110,14 @@ Each is described in full under Compatibility or Changed below.
   `CommitTransactionRef.Read_conflict_ranges_disabled` a `SpanContext` (RFC-276).
 
 ### Compatibility
+- **Read-version pins (post-v0.2.0, #1045):** pure-Go `SetReadVersion` matches
+  native 7.3.77: a cached, pending or already-failed read-version request on this
+  incarnation defers 2010 before checking the value; otherwise a value <= 0
+  defers 2011. Setter errors are sticky until `Reset`; callers that re-pin must
+  reset or use a fresh transaction. `GetReadVersion` returns an accepted explicit
+  pin without validation; storage-facing reads and commits retain fast validation.
+  SimFDB mirrors setter precedence (its GRV is synchronous). No persisted-format,
+  SQL or dependency-pin change; failed-GRV getter reuse remains open in `TODO.md`.
 - **Go toolchain:** post-v0.2.0 development requires **Go 1.27.4** or newer for
   GO-2026-6859 (`net/http` MaxBytesReader header race); no application API, SQL or
   persisted-format change.
@@ -160,6 +168,11 @@ Each is described in full under Compatibility or Changed below.
   - Legacy GODEBUG values removed in Go 1.27 abort program startup if set.
 
 ### Added
+- Post-v0.2.0: `fdb.WrapDatabaseContext` supplies the inherited context for facade
+  reads, retry loops and snapshots; explicit `*Ctx` calls override it.
+- Post-v0.2.0: hourly hosted Go client BindingTester workflow (minute 17, also
+  manually dispatchable), with bounded regression replay, five-mode exploration
+  and per-case evidence; Go client coverage only, not Record Layer or SQL.
 - `transport.WithAdaptiveLinger`, `client.WithAdaptiveLinger`, `fdb.WithAdaptiveLinger`, and `transport.Conn.AdaptiveLinger` configure and report Nagle-style adaptive writer linger on the pure-Go client's enqueue-only connection writer (RFC-282). `client.Database.ConnectionLinger` reports the effective linger settings. `transport.NetDesign` reports the default writer design; `FDBGO_NET_DESIGN=legacy` (or `0`) selects the legacy writer and timeout path process-wide, while `transport.WithLegacyWriter` selects that writer for one connection.
 - `FDBRecordStore.GetPrimaryKeyBoundaries`, Java's `getPrimaryKeyBoundaries`: the primary keys at
   the records' shard boundaries. `IndexingRangeSet.FirstMissingRangeInBytes`, Java's
@@ -176,6 +189,11 @@ Each is described in full under Compatibility or Changed below.
   and tags now apply to every statement transaction, autocommit and read-only ones included.
 
 ### Changed
+- Post-v0.2.0 (#1045): pure-Go client and SimFDB `OnError(0)` return 2000, or
+  4100 when the retry limit is exhausted. Codes 1235/1242 are terminal under the
+  pinned native 7.3.77 contract, not retried by `OnError` / `IsOnErrorRetryable`.
+  SimFDB retires a transaction after terminal `OnError` until `Reset` and starts
+  versions at 1 (first commit 2).
 - Pure-Go client transport writer and hot path (RFC-282): connections use an enqueue-only writer (`D-NG`) with a 16 MiB high-water backpressure bound and default to immediate flush on wakeup (`0, 0` coalesce delay; pass `WithCoalesceDelay(transport.DefaultMinCoalesceDelay, transport.DefaultMaxCoalesceDelay)` for `libfdb_c`'s 10/20 µs timer coalescing or `WithAdaptiveLinger` for Nagle-style adaptive linger). Reply registration uses a 32-shard connection table, `Transact`/`ReadTransact` pool per-transaction timeout timers, `latencySketch` is 16-way striped, and single-read/single-waiter transaction paths inline their state.
 - Record layer (RFC-275), in full:
   - Native version columns in primary keys are refused at metadata construction and load,
