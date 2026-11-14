@@ -20,7 +20,7 @@ use std::{
 };
 
 const FROZEN_SCHEMA_SHA256: &str =
-    "f450e233899bde0b24705d81860d3c485b8b88173334ddf19f92a039b11c6f1a";
+    "c7d9ae94ed71db095f0de48999e2683a2c12f96525241f1e9a7471f836f57ec6";
 /// The frozen schema's ingest-mode fields; `Job` must require exactly these.
 const JOB_FIELDS: [&str; 28] = [
     "schema",
@@ -238,6 +238,230 @@ fn output(job: &Json) -> PathBuf {
 }
 fn receipt(path: &Path) -> Json {
     serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+}
+/// The job's report, which must satisfy the frozen ingest report contract.
+fn checked_receipt(job: &Json) -> Json {
+    let r = receipt(&output(job));
+    if let Err(violation) = report_contract(&r, job) {
+        panic!("report violates the ingest contract: {violation}\n{r}");
+    }
+    r
+}
+/// A plain field, or a counter marker's value.
+fn value<'a>(r: &'a Json, field: &str) -> &'a Json {
+    if r[field].is_object() {
+        &r[field]["value"]
+    } else {
+        &r[field]
+    }
+}
+
+/// The frozen schema's required ingest report fields ($defs.ingest_ack_and_samples).
+const REPORT_FIELDS: [&str; 23] = [
+    "schema",
+    "mode",
+    "arm",
+    "effective_job",
+    "acked_span_operations",
+    "samples",
+    "status",
+    "error",
+    "frames",
+    "received_spans",
+    "accepted_spans",
+    "rejected_spans",
+    "failed_spans",
+    "queued_spans_at_exit",
+    "ingest_wall_ns",
+    "admission_phase_ns",
+    "drain_ns",
+    "ingest_resources",
+    "committed_batches",
+    "native_retries",
+    "outer_retries",
+    "export_attempts",
+    "queue_retries",
+];
+const MARKERS: [&str; 6] = [
+    "acked_span_operations",
+    "committed_batches",
+    "native_retries",
+    "outer_retries",
+    "export_attempts",
+    "queue_retries",
+];
+const PLAIN_COUNTS: [&str; 6] = [
+    "frames",
+    "received_spans",
+    "accepted_spans",
+    "rejected_spans",
+    "failed_spans",
+    "queued_spans_at_exit",
+];
+const TIMINGS: [&str; 3] = ["ingest_wall_ns", "admission_phase_ns", "drain_ns"];
+const RESOURCE_FIELDS: [&str; 6] = [
+    "scope",
+    "user_cpu_seconds",
+    "system_cpu_seconds",
+    "cpu_seconds",
+    "peak_rss_bytes",
+    "measurement_source",
+];
+const SAMPLE_FIELDS: [&str; 4] = ["ns", "received_spans", "accepted_spans", "error"];
+
+fn nonblank(v: &Json) -> bool {
+    v.as_str().is_some_and(|s| !s.trim().is_empty())
+}
+fn finite_nonnegative(v: &Json) -> bool {
+    v.as_f64().is_some_and(|x| x.is_finite() && x >= 0.0)
+}
+
+/// The frozen report contract for rust_native ingest, plus the binary's own rules:
+/// strict counter markers, plain counts and timings, measured resources on success,
+/// kind-specific sample shapes, the sealed job echoed, and no census or rate field.
+fn report_contract(r: &Json, job: &Json) -> std::result::Result<(), String> {
+    let fail = |what: String| Err(what);
+    let object = r.as_object().ok_or("report is not an object")?;
+    for field in REPORT_FIELDS {
+        if !object.contains_key(field) {
+            return fail(format!("missing {field}"));
+        }
+    }
+    if r["schema"] != "otel_control_report_v1" || r["mode"] != "ingest" || r["arm"] != "rust_native"
+    {
+        return fail("schema, mode or arm".into());
+    }
+    let ok = match (&r["status"], &r["error"]) {
+        (s, Json::Null) if s == "ok" => true,
+        (s, e) if s == "error" && nonblank(e) => false,
+        _ => return fail("status/error pair".into()),
+    };
+    if r["effective_job"] != *job {
+        return fail("effective_job is not the sealed job".into());
+    }
+    // Distinct spans exist only after the census: absent, not even null.
+    if object.contains_key("distinct_spans") {
+        return fail("ingest must not carry distinct_spans".into());
+    }
+    for field in [
+        "spans_per_second",
+        "rate_numerator",
+        "cpu_ms_per_distinct_span",
+        "cpu_denominator",
+    ] {
+        if object.get(field).is_some_and(|v| !v.is_null()) {
+            return fail(format!("ingest must not report {field}"));
+        }
+    }
+    // Timings are integers on every report, 0 when ingest never started.
+    for field in TIMINGS {
+        if !r[field].is_u64() {
+            return fail(format!("{field} is not a plain duration"));
+        }
+    }
+    for field in MARKERS {
+        let marker = r[field]
+            .as_object()
+            .ok_or(format!("{field} is not a marker"))?;
+        let keys: BTreeSet<&str> = marker.keys().map(String::as_str).collect();
+        let valid = match marker.get("availability").and_then(Json::as_str) {
+            Some("available") => {
+                keys == BTreeSet::from(["availability", "value"]) && marker["value"].is_u64()
+            }
+            Some("unavailable") => {
+                keys == BTreeSet::from(["availability", "reason"]) && nonblank(&marker["reason"])
+            }
+            _ => false,
+        };
+        if !valid {
+            return fail(format!("{field} marker {}", r[field]));
+        }
+    }
+    if r["acked_span_operations"]["availability"] != "available" {
+        return fail("rust_native must report its ACK operations".into());
+    }
+    for field in PLAIN_COUNTS {
+        if !r[field].is_u64() {
+            return fail(format!("{field} is not a plain count"));
+        }
+    }
+    let resources = &r["ingest_resources"];
+    let reason = object.get("ingest_resources_unavailable_reason");
+    if resources.is_null() {
+        // Only a failed report may lack the ingest-window measurement, and says why.
+        if ok || !reason.is_some_and(nonblank) {
+            return fail("ingest_resources null without a failed status and reason".into());
+        }
+    } else {
+        let fields = resources
+            .as_object()
+            .ok_or("ingest_resources is not an object")?;
+        let keys: BTreeSet<&str> = fields.keys().map(String::as_str).collect();
+        let (user, system, cpu) = (
+            &resources["user_cpu_seconds"],
+            &resources["system_cpu_seconds"],
+            &resources["cpu_seconds"],
+        );
+        if reason.is_some()
+            || keys != BTreeSet::from(RESOURCE_FIELDS)
+            || resources["scope"] != "first_read_through_flush"
+            || ![user, system, cpu].into_iter().all(finite_nonnegative)
+            || (user.as_f64().unwrap() + system.as_f64().unwrap() - cpu.as_f64().unwrap()).abs()
+                > 1e-9
+            || resources["peak_rss_bytes"]
+                .as_u64()
+                .is_none_or(|rss| rss == 0)
+            || !nonblank(&resources["measurement_source"])
+        {
+            return fail(format!("ingest_resources {resources}"));
+        }
+    }
+    let samples = r["samples"].as_array().ok_or("samples is not an array")?;
+    if ok && (samples.is_empty() || r["ingest_wall_ns"].as_u64().is_none_or(|ns| ns == 0)) {
+        return fail("a successful ingest needs samples and wall time".into());
+    }
+    let direct = job["workload"]["kind"] == "writer_direct";
+    for s in samples {
+        let fields = s.as_object().ok_or("sample is not an object")?;
+        let mut keys: BTreeSet<&str> = fields.keys().map(String::as_str).collect();
+        let ack = keys.remove("direct_write_acked_operations");
+        if keys != BTreeSet::from(SAMPLE_FIELDS)
+            || (ack && (!direct || !s["direct_write_acked_operations"].is_u64()))
+            || !s["ns"].is_u64()
+            || s["received_spans"].as_u64().is_none_or(|n| n == 0)
+            || !s["accepted_spans"].is_u64()
+            || !(s["error"].is_null() || s["error"].is_string())
+        {
+            return fail(format!("sample {s}"));
+        }
+    }
+    let sum = |pick: &dyn Fn(&Json) -> u64| samples.iter().map(pick).sum::<u64>();
+    if r["received_spans"] != sum(&|s| s["received_spans"].as_u64().unwrap()) {
+        return fail("received_spans is not the sample population".into());
+    }
+    if direct {
+        let failed = sum(&|s| {
+            if s["error"].is_null() {
+                0
+            } else {
+                s["received_spans"].as_u64().unwrap()
+            }
+        });
+        if r["accepted_spans"] != sum(&|s| s["accepted_spans"].as_u64().unwrap())
+            || r["failed_spans"] != failed
+            || r["rejected_spans"] != 0
+            || r["queued_spans_at_exit"] != 0
+            || r["export_attempts"]["availability"] != "unavailable"
+            || r["queue_retries"]["availability"] != "unavailable"
+        {
+            return fail("writer_direct counts".into());
+        }
+    } else if r["export_attempts"]["availability"] != "available"
+        || r["queue_retries"]["availability"] != "available"
+    {
+        return fail("collector_queue counters must be observed".into());
+    }
+    Ok(())
 }
 fn vectors() -> Vec<Json> {
     let all: Json = serde_json::from_slice(include_bytes!("../testdata/vectors.json")).unwrap();
@@ -488,6 +712,51 @@ fn frozen_schema_copy_pins_the_ingest_corpus_and_workload_field_sets() {
         schema["allOf"][1]["then"]["properties"]["writer_workers"]["const"],
         1
     );
+    // The report contract's field lists are the frozen schema's own.
+    let defs = &schema["$defs"];
+    let report = &defs["ingest_ack_and_samples"];
+    assert_eq!(str_set(&report["required"]), names(&REPORT_FIELDS));
+    let mut policy = str_set(&defs["counter_policy"]["required"]);
+    assert!(policy.remove("arm"));
+    assert_eq!(policy, names(&MARKERS));
+    for marker in MARKERS {
+        assert!(report["properties"].get(marker).is_some(), "{marker}");
+    }
+    // Plain counts and timings are nonnegative integers in the schema, never nullable.
+    for field in PLAIN_COUNTS.iter().chain(TIMINGS.iter()) {
+        let property = &report["properties"][field];
+        assert_eq!(
+            (&property["type"], &property["minimum"]),
+            (&json!("integer"), &json!(0)),
+            "{field}"
+        );
+    }
+    assert_eq!(
+        str_set(&defs["ingest_resources"]["required"]),
+        names(&RESOURCE_FIELDS)
+    );
+    for sample in ["writer_direct_sample", "collector_admission_sample"] {
+        assert_eq!(str_set(&defs[sample]["required"]), names(&SAMPLE_FIELDS));
+        assert_eq!(defs[sample]["additionalProperties"], false);
+    }
+    let mut direct_fields = names(&SAMPLE_FIELDS);
+    direct_fields.insert("direct_write_acked_operations".into());
+    assert_eq!(
+        key_set(&defs["writer_direct_sample"]["properties"]),
+        direct_fields
+    );
+    assert_eq!(
+        key_set(&defs["collector_admission_sample"]["properties"]),
+        names(&SAMPLE_FIELDS)
+    );
+    // Null resources only on a failed report that says why; measured ones forbid the reason.
+    let branches = defs["ingest_resource_policy"]["oneOf"].as_array().unwrap();
+    assert_eq!(
+        branches[0]["not"]["required"],
+        json!(["ingest_resources_unavailable_reason"])
+    );
+    assert_eq!(branches[1]["properties"]["status"]["const"], "error");
+    assert!(str_set(&branches[1]["required"]).contains("ingest_resources_unavailable_reason"));
     let files = Files::new();
     let job = files.job(&frames()[..2], direct(1, 1));
     assert_eq!(key_set(&job), names(&JOB_FIELDS));
@@ -671,7 +940,7 @@ fn writer_direct_job_reports_exact_acks_samples_seals_and_exclusive_output() {
     job["writer_batch_size"] = json!(4);
     let db = Fake::new(Mode::Success);
     files.run(&job, &db).unwrap();
-    let r = receipt(&output(&job));
+    let r = checked_receipt(&job);
     assert_eq!(
         (&r["schema"], &r["mode"], &r["arm"], &r["status"]),
         (
@@ -701,33 +970,38 @@ fn writer_direct_job_reports_exact_acks_samples_seals_and_exclusive_output() {
         json!({"availability": "available", "value": 8})
     );
     assert!(r.get("distinct_spans").is_none());
-    assert!(r["ingest_resources_unavailable"].is_null());
+    assert!(r.get("ingest_resources_unavailable_reason").is_none());
     assert_eq!(
         (
             &r["frames"],
             &r["acked_span_operations"]["value"],
-            &r["committed_batches"],
-            &r["native_retries"],
-            &r["outer_retries"]
+            &r["committed_batches"]["value"],
+            &r["native_retries"]["value"],
+            &r["outer_retries"]["value"]
         ),
         (&json!(8), &json!(8), &json!(2), &json!(0), &json!(0))
     );
-    for absent in [
-        "accepted_spans",
-        "rejected_spans",
-        "export_attempts",
-        "queue_retries",
-        "exported_spans",
-        "failed_spans",
-        "queued_spans_at_exit",
-        "drain_ns",
-        "queue",
+    // No queue: nothing rejected, held or drained, and its counters are not applicable.
+    for (field, want) in [
+        ("received_spans", 8),
+        ("accepted_spans", 8),
+        ("rejected_spans", 0),
+        ("failed_spans", 0),
+        ("queued_spans_at_exit", 0),
+        ("drain_ns", 0),
     ] {
+        assert_eq!(value(&r, field), &json!(want), "{field}");
+    }
+    for field in ["export_attempts", "queue_retries"] {
+        assert_eq!(r[field]["availability"], "unavailable", "{field}");
         assert!(
-            r[absent].is_null(),
-            "{absent} applies to collector_queue only"
+            r[field]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("not applicable")
         );
     }
+    assert!(r["exported_spans"].is_null() && r["queue"].is_null());
     let samples = r["samples"].as_array().unwrap();
     assert_eq!(samples.len(), 2);
     for s in samples {
@@ -748,10 +1022,10 @@ fn writer_direct_job_reports_exact_acks_samples_seals_and_exclusive_output() {
     assert_eq!(r["transaction_spans"], json!({"4": 2}));
     assert!(r["admission_phase_ns"].as_u64().unwrap() <= r["ingest_wall_ns"].as_u64().unwrap());
     assert_eq!(r["ingest_resources"]["scope"], "first_read_through_flush");
-    let effective = &r["effective_job"];
-    assert_eq!(effective["workload"], job["workload"]);
-    assert_eq!(effective["global_write_bound"], 2);
-    assert_eq!(effective["corpus_config"]["seed"], u64::MAX);
+    // The effective job is the sealed job itself, u64 seed included.
+    assert_eq!(r["effective_job"], job);
+    assert_eq!(r["effective_job"]["corpus_config"]["seed"], u64::MAX);
+    assert_eq!(r["global_write_bound"], 2);
     assert_eq!(
         fs::metadata(output(&job)).unwrap().permissions().mode() & 0o777,
         0o600
@@ -791,7 +1065,7 @@ fn collector_queue_job_runs_the_real_writer_and_reports_queue_populations() {
     job["writer_batch_size"] = json!(4);
     let db = Fake::new(Mode::Success);
     files.run(&job, &db).unwrap();
-    let r = receipt(&output(&job));
+    let r = checked_receipt(&job);
     assert_eq!(r["status"], "ok", "{r}");
     assert_eq!(r["latency_boundary"], QUEUE_LATENCY);
     for (field, want) in [
@@ -805,15 +1079,15 @@ fn collector_queue_job_runs_the_real_writer_and_reports_queue_populations() {
         ("native_retries", 0),
         ("outer_retries", 0),
     ] {
-        assert_eq!(r[field], want, "{field}");
+        assert_eq!(value(&r, field), &json!(want), "{field}");
     }
     assert_eq!(
         r["acked_span_operations"],
         json!({"availability": "available", "value": 8})
     );
     // Writer batches of 4 cover every export of at most 4 spans in one transaction.
-    let attempts = r["export_attempts"].as_u64().unwrap();
-    assert_eq!(r["committed_batches"], attempts);
+    let attempts = r["export_attempts"]["value"].as_u64().unwrap();
+    assert_eq!(r["committed_batches"]["value"], attempts);
     assert_eq!(sum_sizes(&r["queue"]["export_call_spans"]), (8, attempts));
     assert_eq!(sum_sizes(&r["transaction_spans"]), (8, attempts));
     let samples = r["samples"].as_array().unwrap();
@@ -841,7 +1115,7 @@ fn collector_queue_job_runs_the_real_writer_and_reports_queue_populations() {
     assert_eq!(r["queue"]["completion_samples_omitted"], 0);
     assert!((1..=8).contains(&r["queue"]["max_outstanding_spans"].as_u64().unwrap()));
     assert!(r["drain_ns"].as_u64().is_some());
-    assert_eq!(r["effective_job"]["global_write_bound"], 2);
+    assert_eq!(r["global_write_bound"], 2);
     assert_eq!(
         db.0.lock().unwrap().data,
         expected_physical(&[0, 1, 2, 3, 4, 5, 6, 7])
@@ -868,16 +1142,16 @@ fn stage0_point2_workload_text_runs_verbatim_through_the_collector() {
         |_| Ok(()),
     )
     .unwrap();
-    let r = receipt(&output(&job));
+    let r = checked_receipt(&job);
     assert_eq!(r["status"], "ok", "{r}");
     assert_eq!(r["effective_job"]["workload"], workload);
-    assert_eq!(r["effective_job"]["global_write_bound"], 8);
+    assert_eq!(r["global_write_bound"], 8);
     for (field, want) in [
         ("accepted_spans", 8),
         ("exported_spans", 8),
         ("failed_spans", 0),
     ] {
-        assert_eq!(r[field], want, "{field}");
+        assert_eq!(value(&r, field), &json!(want), "{field}");
     }
     assert_eq!(
         r["acked_span_operations"],
@@ -906,7 +1180,7 @@ fn failures_after_reservation_write_synced_error_receipts_with_exact_progress() 
     )
     .unwrap_err();
     assert_eq!(err.to_string(), "Operation: injected open failure");
-    let r = receipt(&output(&job));
+    let r = checked_receipt(&job);
     assert_eq!(
         (&r["status"], &r["error"]),
         (&json!("error"), &json!("Operation: injected open failure"))
@@ -916,7 +1190,15 @@ fn failures_after_reservation_write_synced_error_receipts_with_exact_progress() 
         (&json!(0), &json!(0))
     );
     assert!(r["samples"].as_array().unwrap().is_empty());
-    assert!(r["ingest_resources"].is_null() && r["ingest_wall_ns"].is_null());
+    // Ingest never started: null resources with a reason, and exact zero timings.
+    assert!(r["ingest_resources"].is_null());
+    for field in TIMINGS {
+        assert_eq!(r[field], 0, "{field}");
+    }
+    assert_eq!(
+        r["ingest_resources_unavailable_reason"],
+        "ingest did not start, so there is no ingest-window measurement"
+    );
     assert_eq!(r["admission_latency"]["population"], 0);
     assert!(r["admission_latency"]["p50_ns"].is_null());
 
@@ -924,7 +1206,7 @@ fn failures_after_reservation_write_synced_error_receipts_with_exact_progress() 
     let job = files.job(&source[..3], direct(1, 1));
     let db = Fake::new(Mode::FailSecond);
     files.run(&job, &db).unwrap_err();
-    let r = receipt(&output(&job));
+    let r = checked_receipt(&job);
     assert_eq!(r["status"], "error");
     assert!(
         r["error"]
@@ -936,7 +1218,7 @@ fn failures_after_reservation_write_synced_error_receipts_with_exact_progress() 
         (
             &r["frames"],
             &r["acked_span_operations"]["value"],
-            &r["committed_batches"]
+            &r["committed_batches"]["value"]
         ),
         (&json!(2), &json!(1), &json!(1))
     );
@@ -958,7 +1240,7 @@ fn failures_after_reservation_write_synced_error_receipts_with_exact_progress() 
     job["workload"]["retry_initial_ms"] = json!(0);
     let db = Fake::new(Mode::FailSecond);
     assert_eq!(files.run(&job, &db).unwrap_err().kind, ErrorKind::Operation);
-    let r = receipt(&output(&job));
+    let r = checked_receipt(&job);
     assert_eq!(r["status"], "error");
     for (field, want) in [
         ("frames", 3),
@@ -971,7 +1253,7 @@ fn failures_after_reservation_write_synced_error_receipts_with_exact_progress() 
         ("export_attempts", 3),
         ("queue_retries", 0),
     ] {
-        assert_eq!(r[field], want, "{field}");
+        assert_eq!(value(&r, field), &json!(want), "{field}");
     }
     assert_eq!(
         r["acked_span_operations"],
@@ -996,14 +1278,14 @@ fn job_deadline_cancels_the_commit_without_ack_or_followup() {
     job["timeout_seconds"] = json!(1);
     let db = Fake::new(Mode::Deadline);
     files.run(&job, &db).unwrap_err();
-    let r = receipt(&output(&job));
+    let r = checked_receipt(&job);
     assert_eq!(r["status"], "error");
     assert!(r["error"].as_str().unwrap().contains("Canceled"));
     assert_eq!(
         (
             &r["frames"],
             &r["acked_span_operations"]["value"],
-            &r["committed_batches"]
+            &r["committed_batches"]["value"]
         ),
         (&json!(1), &json!(0), &json!(0))
     );
@@ -1029,7 +1311,7 @@ fn source_population_must_reconcile_with_expected_frames_and_row_budget() {
         job["row_budget"] = json!(budget);
         let db = Fake::new(Mode::Success);
         files.run(&job, &db).unwrap_err();
-        let r = receipt(&output(&job));
+        let r = checked_receipt(&job);
         assert_eq!(r["status"], "error");
         assert!(r["error"].as_str().unwrap().contains(text), "{r}");
         assert_eq!(
@@ -1071,7 +1353,7 @@ fn malformed_and_many_span_frames_never_reach_transaction_commit() {
             job["workload"]["producer_batch_spans"] = json!(2);
             let db = Fake::new(Mode::Success);
             files.run(&job, &db).unwrap_err();
-            let r = receipt(&output(&job));
+            let r = checked_receipt(&job);
             assert_eq!(r["status"], "error", "{name}");
             assert!(
                 r["error"].as_str().unwrap().contains("exactly one span"),
@@ -1131,7 +1413,7 @@ fn frame_precheck_applies_prepare_identity_start_and_one_span_rules() {
         let db = Fake::new(Mode::Success);
         files.run(&job, &db).unwrap();
         assert_eq!(
-            receipt(&output(&job))["acked_span_operations"]["value"],
+            checked_receipt(&job)["acked_span_operations"]["value"],
             2,
             "{name}"
         );
@@ -1187,7 +1469,7 @@ fn frame_precheck_applies_prepare_identity_start_and_one_span_rules() {
         let job = files.job(&[frame(&[vec![ok.clone()]]), bad], direct(1, 2));
         let db = Fake::new(Mode::Success);
         files.run(&job, &db).unwrap_err();
-        let r = receipt(&output(&job));
+        let r = checked_receipt(&job);
         assert_eq!(r["acked_span_operations"]["value"], 0, "{name}");
         assert!(r["samples"].as_array().unwrap().is_empty(), "{name}");
         assert!(
@@ -1213,7 +1495,7 @@ fn first_producer_spawn_failure_writes_empty_synced_receipt_without_transactions
             .unwrap_err();
         assert_eq!(err.to_string(), SPAWN_ERROR);
         assert_eq!(calls, [0], "no producer launch after the failed spawn");
-        let r = receipt(&output(&job));
+        let r = checked_receipt(&job);
         assert_eq!(
             (&r["status"], &r["error"]),
             (&json!("error"), &json!(SPAWN_ERROR))
@@ -1222,7 +1504,7 @@ fn first_producer_spawn_failure_writes_empty_synced_receipt_without_transactions
             (
                 &r["frames"],
                 &r["acked_span_operations"]["value"],
-                &r["committed_batches"]
+                &r["committed_batches"]["value"]
             ),
             (&json!(0), &json!(0), &json!(0))
         );
@@ -1259,12 +1541,12 @@ fn later_producer_spawn_failure_cancels_joins_and_keeps_exact_acknowledged_progr
         .unwrap_err();
     assert_eq!(err.to_string(), SPAWN_ERROR);
     assert_eq!(calls, [0, 1], "no producer launch after the failed spawn");
-    let r = receipt(&output(&job));
+    let r = checked_receipt(&job);
     assert_eq!(
         (
             &r["frames"],
             &r["acked_span_operations"]["value"],
-            &r["committed_batches"]
+            &r["committed_batches"]["value"]
         ),
         (&json!(1), &json!(1), &json!(1))
     );
@@ -1305,12 +1587,12 @@ fn multiple_producers_spawn_and_commit_the_exact_population() {
         })
         .unwrap();
     assert_eq!(calls, [0, 1, 2]);
-    let r = receipt(&output(&job));
+    let r = checked_receipt(&job);
     assert_eq!(
         (
             &r["frames"],
             &r["acked_span_operations"]["value"],
-            &r["committed_batches"]
+            &r["committed_batches"]["value"]
         ),
         (&json!(6), &json!(6), &json!(6))
     );
@@ -1333,7 +1615,7 @@ fn collector_deadline_settles_every_admitted_request_exactly_once() {
     let db = Fake::new(Mode::Deadline);
     let err = files.run(&job, &db).unwrap_err();
     assert_eq!(err.kind, ErrorKind::Canceled);
-    let r = receipt(&output(&job));
+    let r = checked_receipt(&job);
     assert_eq!(r["status"], "error");
     assert!(r["error"].as_str().unwrap().contains("Canceled"));
     for (field, want) in [
@@ -1346,7 +1628,7 @@ fn collector_deadline_settles_every_admitted_request_exactly_once() {
         ("committed_batches", 0),
         ("export_attempts", 1),
     ] {
-        assert_eq!(r[field], want, "{field}");
+        assert_eq!(value(&r, field), &json!(want), "{field}");
     }
     assert_eq!(
         r["acked_span_operations"],
@@ -1398,7 +1680,7 @@ fn producer_failure_stops_publishing_but_admitted_requests_still_drain() {
     let db = Fake::new(Mode::Success);
     let err = files.run(&job, &db).unwrap_err();
     assert_eq!(err.kind, ErrorKind::Admission);
-    let r = receipt(&output(&job));
+    let r = checked_receipt(&job);
     assert_eq!(r["status"], "error");
     assert!(
         r["error"]
@@ -1413,7 +1695,7 @@ fn producer_failure_stops_publishing_but_admitted_requests_still_drain() {
         ("failed_spans", 0),
         ("queued_spans_at_exit", 0),
     ] {
-        assert_eq!(r[field], want, "{field}");
+        assert_eq!(value(&r, field), &json!(want), "{field}");
     }
     assert_eq!(
         r["acked_span_operations"],
@@ -1464,17 +1746,295 @@ fn resources_report_exact_cpu_deltas_and_the_rss_high_water_scope() {
         max_rss_kb: 2048,
         _rest: [0; 13],
     };
-    let r = resources(&start, &end);
+    let r = resources(&start, &end).expect("a valid measurement");
     assert_eq!(
         (r.user_cpu_seconds, r.system_cpu_seconds, r.cpu_seconds),
         (1.75, 1.5, 3.25)
     );
     assert_eq!(r.peak_rss_bytes, 2048 * 1024);
     assert_eq!(r.scope, "first_read_through_flush");
-    assert!(r.peak_rss_scope.contains("whole-process high-water"));
-    let negative = RUsage {
-        max_rss_kb: -1,
-        ..end
-    };
-    assert_eq!(resources(&start, &negative).peak_rss_bytes, 0);
+    assert!(r.measurement_source.contains("whole-process high-water"));
+    // No fallback: a missing RSS or CPU that went backwards is not a measurement.
+    for (case, bad) in [
+        (
+            "no RSS",
+            RUsage {
+                max_rss_kb: 0,
+                ..end
+            },
+        ),
+        (
+            "negative RSS",
+            RUsage {
+                max_rss_kb: -1,
+                ..end
+            },
+        ),
+        ("user CPU backwards", RUsage { user_s: 0, ..end }),
+        (
+            "system CPU backwards",
+            RUsage {
+                system_us: 0,
+                system_s: 0,
+                ..end
+            },
+        ),
+    ] {
+        assert!(resources(&start, &bad).is_none(), "{case}");
+    }
+}
+
+/// One report mutation, typed so each case's closure is a plain function pointer.
+fn mutation(f: fn(&mut Json)) -> fn(&mut Json) {
+    f
+}
+
+#[test]
+fn report_contract_rejects_marker_count_resource_sample_and_policy_violations() {
+    let files = Files::new();
+    let source = frames();
+    let direct_job = files.job(&source[..2], direct(1, 1));
+    files.run(&direct_job, &Fake::new(Mode::Success)).unwrap();
+    let queue_job = files.job(&source[..2], queue(1, 1, 1, 1));
+    files.run(&queue_job, &Fake::new(Mode::Success)).unwrap();
+    // An early failure: the native client never opened, so no ingest window exists.
+    let early_job = files.job(&source[..2], direct(1, 1));
+    run_spawning(
+        &files.write(&serde_json::to_vec(&early_job).unwrap()),
+        &files.pin,
+        |_: &Path, _: &Path| -> Result<Fake> {
+            Err(Error::new(
+                ErrorKind::Operation,
+                "native client open failed",
+            ))
+        },
+        |_| Ok(()),
+    )
+    .unwrap_err();
+    let jobs = [&direct_job, &queue_job, &early_job];
+    // checked_receipt asserts each real report satisfies the contract.
+    let reports = jobs.map(checked_receipt);
+    assert!(reports[0]["ingest_resources"].is_object());
+    assert!(
+        reports[0]
+            .get("ingest_resources_unavailable_reason")
+            .is_none()
+    );
+    assert!(reports[2]["ingest_resources"].is_null());
+    for field in REPORT_FIELDS {
+        let mut r = reports[0].clone();
+        r.as_object_mut().unwrap().remove(field);
+        assert!(report_contract(&r, jobs[0]).is_err(), "missing {field}");
+    }
+    let cases: Vec<(&str, usize, fn(&mut Json))> = vec![
+        (
+            "bare marker",
+            0,
+            mutation(|r| r["committed_batches"] = json!(1)),
+        ),
+        (
+            "null marker value",
+            0,
+            mutation(|r| r["native_retries"]["value"] = Json::Null),
+        ),
+        (
+            "value and reason",
+            0,
+            mutation(|r| r["outer_retries"]["reason"] = json!("both")),
+        ),
+        (
+            "blank reason",
+            0,
+            mutation(|r| r["export_attempts"]["reason"] = json!("  ")),
+        ),
+        (
+            "unavailable without reason",
+            0,
+            mutation(|r| {
+                r["export_attempts"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("reason");
+            }),
+        ),
+        (
+            "ACK unavailable",
+            0,
+            mutation(|r| {
+                r["acked_span_operations"] = json!({"availability": "unavailable", "reason": "no"})
+            }),
+        ),
+        (
+            "unknown availability",
+            0,
+            mutation(|r| r["queue_retries"]["availability"] = json!("maybe")),
+        ),
+        ("count as string", 0, mutation(|r| r["frames"] = json!("2"))),
+        (
+            "negative count",
+            0,
+            mutation(|r| r["failed_spans"] = json!(-1)),
+        ),
+        (
+            "fractional count",
+            0,
+            mutation(|r| r["accepted_spans"] = json!(2.5)),
+        ),
+        (
+            "measured without timing",
+            0,
+            mutation(|r| r["drain_ns"] = Json::Null),
+        ),
+        (
+            "zero RSS",
+            0,
+            mutation(|r| r["ingest_resources"]["peak_rss_bytes"] = json!(0)),
+        ),
+        (
+            "CPU sum",
+            0,
+            mutation(|r| r["ingest_resources"]["cpu_seconds"] = json!(1e9)),
+        ),
+        (
+            "negative CPU",
+            0,
+            mutation(|r| r["ingest_resources"]["user_cpu_seconds"] = json!(-1.0)),
+        ),
+        (
+            "resource scope",
+            0,
+            mutation(|r| r["ingest_resources"]["scope"] = json!("argv_to_exit")),
+        ),
+        (
+            "extra resource key",
+            0,
+            mutation(|r| r["ingest_resources"]["peak_rss_scope"] = json!("x")),
+        ),
+        (
+            "reason with measured resources",
+            0,
+            mutation(|r| r["ingest_resources_unavailable_reason"] = json!("why")),
+        ),
+        (
+            "null reason with measured resources",
+            0,
+            mutation(|r| r["ingest_resources_unavailable_reason"] = Json::Null),
+        ),
+        (
+            "success without resources",
+            0,
+            mutation(|r| {
+                r["ingest_resources"] = Json::Null;
+                r["ingest_resources_unavailable_reason"] = json!("why");
+            }),
+        ),
+        (
+            "ACK name in a sample",
+            0,
+            mutation(|r| r["samples"][0]["acked_span_operations"] = json!(1)),
+        ),
+        (
+            "null direct sample ACK",
+            0,
+            mutation(|r| r["samples"][0]["direct_write_acked_operations"] = Json::Null),
+        ),
+        (
+            "distinct spans",
+            0,
+            mutation(|r| r["distinct_spans"] = json!(2)),
+        ),
+        (
+            "null distinct spans",
+            0,
+            mutation(|r| r["distinct_spans"] = Json::Null),
+        ),
+        ("rate", 0, mutation(|r| r["spans_per_second"] = json!(1.0))),
+        (
+            "other effective job",
+            0,
+            mutation(|r| r["effective_job"]["run"] = json!("other_run_name")),
+        ),
+        (
+            "received population",
+            0,
+            mutation(|r| r["received_spans"] = json!(99)),
+        ),
+        (
+            "direct rejection",
+            0,
+            mutation(|r| r["rejected_spans"] = json!(1)),
+        ),
+        (
+            "direct export attempts",
+            0,
+            mutation(|r| r["export_attempts"] = json!({"availability": "available", "value": 0})),
+        ),
+        (
+            "success with an error",
+            0,
+            mutation(|r| r["error"] = json!("x")),
+        ),
+        (
+            "failure without an error",
+            0,
+            mutation(|r| r["status"] = json!("error")),
+        ),
+        (
+            "success without samples",
+            0,
+            mutation(|r| r["samples"] = json!([])),
+        ),
+        (
+            "ACK in a collector sample",
+            1,
+            mutation(|r| r["samples"][0]["direct_write_acked_operations"] = json!(1)),
+        ),
+        (
+            "collector export attempts unavailable",
+            1,
+            mutation(|r| {
+                r["export_attempts"] = json!({"availability": "unavailable", "reason": "no"})
+            }),
+        ),
+        (
+            "early blank reason",
+            2,
+            mutation(|r| r["ingest_resources_unavailable_reason"] = json!(" ")),
+        ),
+        (
+            "early without reason",
+            2,
+            mutation(|r| {
+                r.as_object_mut()
+                    .unwrap()
+                    .remove("ingest_resources_unavailable_reason");
+            }),
+        ),
+        (
+            "early success",
+            2,
+            mutation(|r| {
+                r["status"] = json!("ok");
+                r["error"] = Json::Null;
+            }),
+        ),
+        ("early null error", 2, mutation(|r| r["error"] = Json::Null)),
+    ];
+    for (case, base, mutate) in cases {
+        let mut r = reports[base].clone();
+        mutate(&mut r);
+        assert!(
+            report_contract(&r, jobs[base]).is_err(),
+            "{case} was accepted"
+        );
+    }
+    // Timings are integers on measured and early reports alike, never null.
+    for (field, base) in TIMINGS.iter().flat_map(|f| [(*f, 0), (*f, 2)]) {
+        let mut r = reports[base].clone();
+        r[field] = Json::Null;
+        assert!(
+            report_contract(&r, jobs[base]).is_err(),
+            "null {field} on report {base} was accepted"
+        );
+    }
 }

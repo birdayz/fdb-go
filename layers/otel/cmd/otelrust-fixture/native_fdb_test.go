@@ -10,9 +10,11 @@ import (
 	"flag"
 	"fmt"
 	"maps"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -639,23 +641,35 @@ type pairedJob struct {
 	LayoutSHA256          string          `json:"layout_sha256"`
 }
 
+// ingestReport decodes the frozen ingest report: six counter markers, plain counts and
+// timings, and measured resources, with a reason only when no ingest window was measured.
 type ingestReport struct {
-	Schema              string       `json:"schema"`
-	Status              string       `json:"status"`
-	Error               *string      `json:"error"`
-	JobSHA256           string       `json:"job_sha256"`
-	Frames              int          `json:"frames"`
-	AcceptedSpans       *int         `json:"accepted_spans"`
-	ExportedSpans       *int         `json:"exported_spans"`
-	FailedSpans         *int         `json:"failed_spans"`
-	QueuedSpansAtExit   *int         `json:"queued_spans_at_exit"`
-	AckedSpanOperations availability `json:"acked_span_operations"`
-	DistinctSpans       *int         `json:"distinct_spans"`
-	CommittedBatches    int          `json:"committed_batches"`
-	ExportAttempts      *int         `json:"export_attempts"`
-	NativeRetries       int          `json:"native_retries"`
-	QueueRetries        *int         `json:"queue_retries"`
-	Samples             []struct {
+	Schema                           string           `json:"schema"`
+	Status                           string           `json:"status"`
+	Error                            *string          `json:"error"`
+	JobSHA256                        string           `json:"job_sha256"`
+	EffectiveJob                     json.RawMessage  `json:"effective_job"`
+	GlobalWriteBound                 int              `json:"global_write_bound"`
+	Frames                           int              `json:"frames"`
+	ReceivedSpans                    int              `json:"received_spans"`
+	AcceptedSpans                    int              `json:"accepted_spans"`
+	RejectedSpans                    int              `json:"rejected_spans"`
+	FailedSpans                      int              `json:"failed_spans"`
+	QueuedSpansAtExit                int              `json:"queued_spans_at_exit"`
+	ExportedSpans                    *int             `json:"exported_spans"`
+	AckedSpanOperations              availability     `json:"acked_span_operations"`
+	CommittedBatches                 availability     `json:"committed_batches"`
+	NativeRetries                    availability     `json:"native_retries"`
+	OuterRetries                     availability     `json:"outer_retries"`
+	ExportAttempts                   availability     `json:"export_attempts"`
+	QueueRetries                     availability     `json:"queue_retries"`
+	DistinctSpans                    json.RawMessage  `json:"distinct_spans"`
+	IngestWallNs                     *int64           `json:"ingest_wall_ns"`
+	AdmissionPhaseNs                 *int64           `json:"admission_phase_ns"`
+	DrainNs                          *int64           `json:"drain_ns"`
+	IngestResources                  *ingestResources `json:"ingest_resources"`
+	IngestResourcesUnavailableReason *string          `json:"ingest_resources_unavailable_reason"`
+	Samples                          []struct {
 		ReceivedSpans int  `json:"received_spans"`
 		AcceptedSpans *int `json:"accepted_spans"`
 		// Present only on writer_direct samples; collector samples carry no ACK field.
@@ -664,15 +678,68 @@ type ingestReport struct {
 		AckedSpanOperations json.RawMessage `json:"acked_span_operations"`
 		Error               *string         `json:"error"`
 	} `json:"samples"`
-	EffectiveJob struct {
-		GlobalWriteBound int `json:"global_write_bound"`
-	} `json:"effective_job"`
+}
+
+type ingestResources struct {
+	Scope             string  `json:"scope"`
+	UserCPUSeconds    float64 `json:"user_cpu_seconds"`
+	SystemCPUSeconds  float64 `json:"system_cpu_seconds"`
+	CPUSeconds        float64 `json:"cpu_seconds"`
+	PeakRSSBytes      int64   `json:"peak_rss_bytes"`
+	MeasurementSource string  `json:"measurement_source"`
+}
+
+// measured: real ingest-window resources and timings, with no unavailable reason.
+func (r ingestReport) measured() bool {
+	m := r.IngestResources
+	cpu := func(x float64) bool { return !math.IsNaN(x) && !math.IsInf(x, 0) && x >= 0 }
+	return m != nil && r.IngestResourcesUnavailableReason == nil && m.Scope == "first_read_through_flush" &&
+		cpu(m.UserCPUSeconds) && cpu(m.SystemCPUSeconds) && math.Abs(m.UserCPUSeconds+m.SystemCPUSeconds-m.CPUSeconds) < 1e-9 &&
+		m.PeakRSSBytes > 0 && strings.TrimSpace(m.MeasurementSource) != "" &&
+		r.IngestWallNs != nil && *r.IngestWallNs > 0 && r.AdmissionPhaseNs != nil && r.DrainNs != nil
+}
+
+// echoes reports whether the report's effective job is exactly the sealed job file.
+func (r ingestReport) echoes(t *testing.T, path string) bool {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var job, effective any
+	if json.Unmarshal(b, &job) != nil || json.Unmarshal(r.EffectiveJob, &effective) != nil {
+		return false
+	}
+	return reflect.DeepEqual(job, effective)
+}
+
+// plainIntegerFields are the report's required plain counts and timings: nonnegative
+// integers on every report, zero rather than null when ingest never started.
+var plainIntegerFields = []string{
+	"frames", "received_spans", "accepted_spans", "rejected_spans", "failed_spans", "queued_spans_at_exit",
+	"ingest_wall_ns", "admission_phase_ns", "drain_ns",
+}
+
+// plainIntegers checks the raw report, since decoding into a non-pointer int turns null into 0.
+func plainIntegers(b []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	for _, f := range plainIntegerFields {
+		var n *int64
+		v, ok := raw[f]
+		if !ok || json.Unmarshal(v, &n) != nil || n == nil || *n < 0 {
+			return fmt.Errorf("%s is %s, want a nonnegative integer", f, v)
+		}
+	}
+	return nil
 }
 
 func intIs(p *int, want int) bool { return p != nil && *p == want }
 
-// availability is the report's counter object: Rust ingest reports ACK operations
-// (replays included) as available; distinct spans exist only after the census.
+// availability is the report's counter marker: an exact value, or unavailable with a
+// reason. ACK operations count replays; distinct spans exist only after the census.
 type availability struct {
 	Availability string  `json:"availability"`
 	Value        *int    `json:"value"`
@@ -681,6 +748,14 @@ type availability struct {
 
 func (a availability) is(want int) bool {
 	return a.Availability == "available" && intIs(a.Value, want) && a.Reason == nil
+}
+
+func (a availability) observed() bool {
+	return a.Availability == "available" && a.Value != nil && *a.Value >= 0 && a.Reason == nil
+}
+
+func (a availability) inapplicable() bool {
+	return a.Availability == "unavailable" && a.Value == nil && a.Reason != nil && strings.Contains(*a.Reason, "not applicable")
 }
 
 // cliTenant is one fresh production tenant with its Go reference, layout and corpus.
@@ -742,6 +817,9 @@ func (h *nativeHarness) runCLI(t *testing.T, path, output string, env []string) 
 	if err != nil {
 		t.Fatalf("no report: %v stderr=%q", err, res.stderr)
 	}
+	if err := plainIntegers(b); err != nil {
+		t.Fatalf("report %s: %v", b, err)
+	}
 	var r ingestReport
 	if err := json.Unmarshal(b, &r); err != nil {
 		t.Fatalf("report %q: %v", b, err)
@@ -764,7 +842,11 @@ func (h *nativeHarness) productionCLI(t *testing.T, want []vector, cfg corpusCon
 	if res.err == nil || strings.TrimSpace(string(res.stderr)) != envRefused {
 		t.Fatalf("inherited network option: err=%v stderr=%q", res.err, res.stderr)
 	}
-	if r.Status != "error" || r.Error == nil || *r.Error != envRefused || r.Frames != 0 || !r.AckedSpanOperations.is(0) || len(r.Samples) != 0 {
+	// The client never opened: no ingest window, so null resources with a reason and zero timings.
+	if r.Status != "error" || r.Error == nil || *r.Error != envRefused || r.Frames != 0 || r.ReceivedSpans != 0 ||
+		!r.AckedSpanOperations.is(0) || len(r.Samples) != 0 || r.IngestResources != nil ||
+		*r.IngestWallNs != 0 || *r.AdmissionPhaseNs != 0 || *r.DrainNs != 0 ||
+		r.IngestResourcesUnavailableReason == nil || strings.TrimSpace(*r.IngestResourcesUnavailableReason) == "" || !r.echoes(t, path) {
 		t.Fatalf("refused report: %s", b)
 	}
 	if diff := mapDiff(h.physical(t, c.ts), c.base); diff != "" {
@@ -781,8 +863,11 @@ func (h *nativeHarness) productionCLI(t *testing.T, want []vector, cfg corpusCon
 		if res.err != nil {
 			t.Fatalf("%s run: %v stderr=%q", name, res.err, res.stderr)
 		}
-		if r.Status != "ok" || r.Error != nil || r.Frames != 8 || !r.AckedSpanOperations.is(8) || r.DistinctSpans != nil || r.CommittedBatches != 2 ||
-			len(r.Samples) != 2 || r.AcceptedSpans != nil || r.EffectiveJob.GlobalWriteBound != 2 {
+		if r.Status != "ok" || r.Error != nil || r.Frames != 8 || r.ReceivedSpans != 8 || r.AcceptedSpans != 8 ||
+			r.RejectedSpans != 0 || r.FailedSpans != 0 || r.QueuedSpansAtExit != 0 || r.ExportedSpans != nil ||
+			!r.AckedSpanOperations.is(8) || !r.CommittedBatches.is(2) || !r.NativeRetries.observed() || !r.OuterRetries.is(0) ||
+			!r.ExportAttempts.inapplicable() || !r.QueueRetries.inapplicable() || r.DistinctSpans != nil ||
+			len(r.Samples) != 2 || r.GlobalWriteBound != 2 || !r.measured() || *r.DrainNs != 0 || !r.echoes(t, path) {
 			t.Fatalf("%s report: %s", name, b)
 		}
 		for _, s := range r.Samples {
@@ -790,7 +875,7 @@ func (h *nativeHarness) productionCLI(t *testing.T, want []vector, cfg corpusCon
 				t.Fatalf("%s report sample: %s", name, b)
 			}
 		}
-		t.Logf("%s writer_direct run: 8 frames, 8 ACKs, 2 batches, %d native retries", name, r.NativeRetries)
+		t.Logf("%s writer_direct run: 8 frames, 8 ACK operations, 2 batches, %d native retries", name, *r.NativeRetries.Value)
 		got := h.audit(t, c.ts, c.base, c.ref, want)
 		if written != nil {
 			if diff := mapDiff(got, written); diff != "" {
@@ -815,9 +900,11 @@ func (h *nativeHarness) collectorCLI(t *testing.T, want []vector, cfg corpusConf
 		t.Fatalf("collector run: %v stderr=%q", res.err, res.stderr)
 	}
 	n := len(want)
-	if r.Status != "ok" || r.Error != nil || r.Frames != n || !intIs(r.AcceptedSpans, n) || !intIs(r.ExportedSpans, n) ||
-		!intIs(r.FailedSpans, 0) || !intIs(r.QueuedSpansAtExit, 0) || !r.AckedSpanOperations.is(n) || r.DistinctSpans != nil ||
-		r.ExportAttempts == nil || r.CommittedBatches != *r.ExportAttempts || len(r.Samples) != n || r.EffectiveJob.GlobalWriteBound != 1 {
+	if r.Status != "ok" || r.Error != nil || r.Frames != n || r.ReceivedSpans != n || r.AcceptedSpans != n ||
+		r.RejectedSpans != 0 || !intIs(r.ExportedSpans, n) || r.FailedSpans != 0 || r.QueuedSpansAtExit != 0 ||
+		!r.AckedSpanOperations.is(n) || !r.ExportAttempts.observed() || !r.CommittedBatches.is(*r.ExportAttempts.Value) ||
+		!r.QueueRetries.observed() || !r.NativeRetries.observed() || !r.OuterRetries.is(0) || r.DistinctSpans != nil ||
+		len(r.Samples) != n || r.GlobalWriteBound != 1 || !r.measured() || !r.echoes(t, path) {
 		t.Fatalf("collector report: %s", b)
 	}
 	for _, s := range r.Samples {
@@ -825,7 +912,7 @@ func (h *nativeHarness) collectorCLI(t *testing.T, want []vector, cfg corpusConf
 			t.Fatalf("collector report sample: %s", b)
 		}
 	}
-	t.Logf("collector_queue run: %d frames, %d ACK operations, %d batches, %d export attempts", n, *r.AckedSpanOperations.Value, r.CommittedBatches, *r.ExportAttempts)
+	t.Logf("collector_queue run: %d frames, %d ACK operations, %d batches, %d export attempts", n, *r.AckedSpanOperations.Value, *r.CommittedBatches.Value, *r.ExportAttempts.Value)
 	h.audit(t, c.ts, c.base, c.ref, want)
 	if !sameKVs(h.outside(t, c.ts), c.outside) {
 		t.Fatal("collector run changed keys outside the tenant")
@@ -917,6 +1004,42 @@ func TestNativeCensusMapDiff(t *testing.T) {
 		if got := mapDiff(c.got, want); got != c.diff {
 			t.Errorf("%s: mapDiff = %q, want %q", c.name, got, c.diff)
 		}
+	}
+}
+
+func TestNativeReportPlainIntegers(t *testing.T) {
+	t.Parallel()
+	// A real early receipt shape: zero counts and zero timings are valid values.
+	early := `{"frames":0,"received_spans":0,"accepted_spans":0,"rejected_spans":0,"failed_spans":0,` +
+		`"queued_spans_at_exit":0,"ingest_wall_ns":0,"admission_phase_ns":0,"drain_ns":0,"ingest_resources":null}`
+	if err := plainIntegers([]byte(early)); err != nil {
+		t.Fatalf("early receipt with zero timings rejected: %v", err)
+	}
+	var base map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(early), &base); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range plainIntegerFields {
+		for name, v := range map[string]string{"null": "null", "missing": "", "negative": "-1", "fraction": "1.5", "string": `"0"`} {
+			r := maps.Clone(base)
+			if v == "" {
+				delete(r, f)
+			} else {
+				r[f] = json.RawMessage(v)
+			}
+			b, err := json.Marshal(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plainIntegers(b) == nil {
+				t.Errorf("%s %s was accepted", name, f)
+			}
+		}
+	}
+	// The typed decode keeps zero timings non-nil, as the refused assertion dereferences them.
+	var r ingestReport
+	if err := json.Unmarshal([]byte(early), &r); err != nil || r.IngestWallNs == nil || *r.IngestWallNs != 0 || r.Frames != 0 {
+		t.Fatalf("early receipt decode: %v %+v", err, r)
 	}
 }
 

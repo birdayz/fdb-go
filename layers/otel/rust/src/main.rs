@@ -23,13 +23,13 @@ use std::{
 
 const JOB_SCHEMA: &str = "otel_paired_job_v1";
 const REPORT_SCHEMA: &str = "otel_control_report_v1";
-const BOUNDARY: &str = "span-only in-process ingest of one sealed otel_paired_job_v1 job; native libfdb_c 7.3.77 API 730, multi-version client disabled, 10000ms transaction timeout, no retry-count limit; writer_direct is driver->Writer and collector_queue is driver->Collector->Writer; admission is not an ACK; top-level acked_span_operations is an availability object counting acknowledged write operations including replays, not distinct durable spans; a sample's accepted_spans counts prechecked frames submitted to Writer::write (writer_direct) or spans Collector::consume admitted (collector_queue), never ACKs; only writer_direct samples carry direct_write_acked_operations; outer_retries is structurally 0 because the Rust Writer has no outer retry loop; no OTLP receiver, logs, messages, TEXT, HA or open-loop SLO claim; wall is first corpus read through Flush/shutdown, not external durable drain or audit";
+const BOUNDARY: &str = "span-only in-process ingest of one sealed otel_paired_job_v1 job; native libfdb_c 7.3.77 API 730, multi-version client disabled, 10000ms transaction timeout, no retry-count limit; writer_direct is driver->Writer and collector_queue is driver->Collector->Writer; admission is not an ACK; the six counters are availability markers (an exact value, or unavailable with a reason, never a stand-in zero); acked_span_operations counts acknowledged write operations including replays, not distinct durable spans; writer_direct export_attempts and queue_retries are not applicable; a sample's accepted_spans counts prechecked frames submitted to Writer::write (writer_direct) or spans Collector::consume admitted (collector_queue), never ACKs; only writer_direct samples carry direct_write_acked_operations; outer_retries is structurally 0 because the Rust Writer has no outer retry loop; no OTLP receiver, logs, messages, TEXT, HA or open-loop SLO claim; wall is first corpus read through Flush/shutdown, not external durable drain or audit";
 const DIRECT_LATENCY: &str =
     "decode-inclusive Writer::write call per producer batch; frame shape precheck excluded";
 const QUEUE_LATENCY: &str = "decode-inclusive Collector::consume admission per producer batch; frame shape precheck excluded; not an ACK";
 
 /// The ingest-mode fields of the frozen paired-job-v1 schema, all required.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Job {
     schema: String,
@@ -61,7 +61,7 @@ struct Job {
     layout_file: PathBuf,
     layout_sha256: String,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CorpusConfig {
     generator: String,
@@ -416,7 +416,6 @@ struct Resources {
     system_cpu_seconds: f64,
     cpu_seconds: f64,
     peak_rss_bytes: u64,
-    peak_rss_scope: &'static str,
     measurement_source: &'static str,
 }
 
@@ -448,35 +447,53 @@ fn rusage() -> Option<RUsage> {
 fn rusage() -> Option<RUsage> {
     None
 }
-fn resources(start: &RUsage, end: &RUsage) -> Resources {
+/// The ingest window's CPU and RSS, or None when the readings are not a valid measurement.
+fn resources(start: &RUsage, end: &RUsage) -> Option<Resources> {
     let seconds = |s: i64, us: i64| s as f64 + us as f64 / 1e6;
     let user = seconds(end.user_s, end.user_us) - seconds(start.user_s, start.user_us);
     let system = seconds(end.system_s, end.system_us) - seconds(start.system_s, start.system_us);
-    Resources {
+    let valid = |cpu: f64| cpu.is_finite() && cpu >= 0.0;
+    if !valid(user) || !valid(system) || end.max_rss_kb <= 0 {
+        return None;
+    }
+    Some(Resources {
         scope: "first_read_through_flush",
         user_cpu_seconds: user,
         system_cpu_seconds: system,
         cpu_seconds: user + system,
-        peak_rss_bytes: end.max_rss_kb.max(0) as u64 * 1024,
-        peak_rss_scope: "whole-process high-water mark at end of Flush/shutdown, not a phase peak",
-        measurement_source: "getrusage(RUSAGE_SELF) deltas from before the first corpus read to after Flush/shutdown",
-    }
+        peak_rss_bytes: end.max_rss_kb as u64 * 1024,
+        measurement_source: "getrusage(RUSAGE_SELF) user/system CPU deltas from before the first corpus read to after Flush/shutdown, all threads; peak_rss_bytes is the whole-process high-water mark then, not a phase peak",
+    })
 }
 
-/// A counter with explicit availability; Rust ingest always observes its ACK operations.
+/// A counter marker: an exact observed value, or unavailable with a reason, never a
+/// stand-in zero. Exactly one of `value` and `reason` is serialized.
 #[derive(Serialize)]
-struct Availability {
+struct Counter {
     availability: &'static str,
-    value: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'static str>,
 }
-impl Availability {
+impl Counter {
     fn available(value: u64) -> Self {
         Self {
             availability: "available",
-            value,
+            value: Some(value),
+            reason: None,
+        }
+    }
+    fn unavailable(reason: &'static str) -> Self {
+        Self {
+            availability: "unavailable",
+            value: None,
+            reason: Some(reason),
         }
     }
 }
+const NO_QUEUE: &str = "not applicable: writer_direct has no collector queue";
+const NOT_STARTED: &str = "ingest did not start, so there is no ingest-window measurement";
 
 #[derive(Serialize)]
 struct Report {
@@ -495,31 +512,40 @@ struct Report {
     client_library_sha256: String,
     boundary: &'static str,
     latency_boundary: &'static str,
+    /// The sealed job exactly as parsed: itself a valid ingest job.
     effective_job: serde_json::Value,
+    global_write_bound: usize,
+    native_policy: serde_json::Value,
     artifacts: Vec<serde_json::Value>,
     frames: u64,
-    accepted_spans: Option<u64>,
-    rejected_spans: Option<u64>,
-    /// Acknowledged write operations including replays; not distinct durable spans.
-    acked_span_operations: Availability,
-    committed_batches: u64,
-    export_attempts: Option<u64>,
-    native_retries: u64,
-    outer_retries: u64,
-    queue_retries: Option<u64>,
+    /// Spans in timed calls; writer_direct accepts what it submits to Writer::write.
+    received_spans: u64,
+    accepted_spans: u64,
+    rejected_spans: u64,
+    /// writer_direct: spans of failed calls, whatever they partially acknowledged.
+    failed_spans: u64,
+    queued_spans_at_exit: u64,
+    /// collector_queue logical completions; null for writer_direct.
     exported_spans: Option<u64>,
-    failed_spans: Option<u64>,
-    queued_spans_at_exit: Option<u64>,
-    ingest_wall_ns: Option<u64>,
-    admission_phase_ns: Option<u64>,
-    drain_ns: Option<u64>,
+    /// Acknowledged write operations including replays; not distinct durable spans.
+    acked_span_operations: Counter,
+    committed_batches: Counter,
+    native_retries: Counter,
+    outer_retries: Counter,
+    export_attempts: Counter,
+    queue_retries: Counter,
+    /// Always integers: 0 when ingest never started; writer_direct has no drain (0).
+    ingest_wall_ns: u64,
+    admission_phase_ns: u64,
+    drain_ns: u64,
     samples: Vec<Sample>,
     admission_latency: Latency,
     transaction_spans: BTreeMap<u64, u64>,
     queue: Option<QueueReport>,
     ingest_resources: Option<Resources>,
-    /// Why `ingest_resources` is null although ingest started.
-    ingest_resources_unavailable: Option<&'static str>,
+    /// Present only when `ingest_resources` is null; the report is then an error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ingest_resources_unavailable_reason: Option<&'static str>,
 }
 
 /// State shared by producer threads; the first error wins and stops publishing.
@@ -627,47 +653,30 @@ fn produce(
     });
 }
 
+/// The sealed job re-serialized; it validates as an ingest job itself.
 fn effective_job(job: &Job) -> serde_json::Value {
-    let (producers, _) = job.workload.producers();
+    serde_json::to_value(job).expect("a job parsed from JSON serializes")
+}
+
+/// Concurrent write calls: one per writer_direct producer or collector consumer.
+fn global_write_bound(job: &Job) -> usize {
     let writers = match job.workload {
-        Workload::WriterDirect { .. } => producers,
+        Workload::WriterDirect { producers, .. } => producers,
         Workload::CollectorQueue { consumers, .. } => consumers,
     };
+    writers * job.writer_workers
+}
+
+fn native_policy() -> serde_json::Value {
     serde_json::json!({
-        "schema": job.schema,
-        "mode": job.mode,
-        "arm": job.arm,
-        "client_backend": job.client_backend,
-        "run": job.run,
-        "corpus_config": {
-            "generator": job.corpus_config.generator,
-            "seed": job.corpus_config.seed,
-            "count": job.corpus_config.count,
-            "tenants": job.corpus_config.tenants,
-            "attributes": job.corpus_config.attributes,
-            "match_every": job.corpus_config.match_every,
-        },
-        "expected_frames": job.expected_frames,
-        "row_budget": job.row_budget,
-        "timeout_seconds": job.timeout_seconds,
-        "workload": job.workload,
-        "writer_batch_size": job.writer_batch_size,
-        "writer_workers": job.writer_workers,
-        "global_write_bound": writers * job.writer_workers,
-        "record_compression": job.record_compression,
-        "enable_message_deltas": job.enable_message_deltas,
-        "enable_message_full_text": job.enable_message_full_text,
-        "bulk_index_conflicts": job.bulk_index_conflicts,
-        "native_policy": {
-            "client": "libfdb_c 7.3.77",
-            "api_version": 730,
-            "multi_version_client": "disabled",
-            "transaction_timeout_ms": 10000,
-            "transaction_retry_limit": -1,
-            "transaction_max_spans": 64,
-            "transaction_estimate_bytes": 300000,
-            "transaction_actual_bytes": 500000,
-        },
+        "client": "libfdb_c 7.3.77",
+        "api_version": 730,
+        "multi_version_client": "disabled",
+        "transaction_timeout_ms": 10000,
+        "transaction_retry_limit": -1,
+        "transaction_max_spans": 64,
+        "transaction_estimate_bytes": 300000,
+        "transaction_actual_bytes": 500000,
     })
 }
 
@@ -761,28 +770,40 @@ fn run_spawning<D: Database + 'static>(
             DIRECT_LATENCY
         },
         effective_job: effective_job(&job),
+        global_write_bound: global_write_bound(&job),
+        native_policy: native_policy(),
         artifacts: Vec::new(),
+        // Until ingest starts nothing is written: these zeros are exact, not stand-ins.
         frames: 0,
-        accepted_spans: collector.then_some(0),
-        rejected_spans: collector.then_some(0),
-        acked_span_operations: Availability::available(0),
-        committed_batches: 0,
-        export_attempts: collector.then_some(0),
-        native_retries: 0,
-        outer_retries: 0,
-        queue_retries: collector.then_some(0),
+        received_spans: 0,
+        accepted_spans: 0,
+        rejected_spans: 0,
+        failed_spans: 0,
+        queued_spans_at_exit: 0,
         exported_spans: collector.then_some(0),
-        failed_spans: collector.then_some(0),
-        queued_spans_at_exit: collector.then_some(0),
-        ingest_wall_ns: None,
-        admission_phase_ns: None,
-        drain_ns: None,
+        acked_span_operations: Counter::available(0),
+        committed_batches: Counter::available(0),
+        native_retries: Counter::available(0),
+        outer_retries: Counter::available(0),
+        export_attempts: if collector {
+            Counter::available(0)
+        } else {
+            Counter::unavailable(NO_QUEUE)
+        },
+        queue_retries: if collector {
+            Counter::available(0)
+        } else {
+            Counter::unavailable(NO_QUEUE)
+        },
+        ingest_wall_ns: 0,
+        admission_phase_ns: 0,
+        drain_ns: 0,
         samples: Vec::new(),
         admission_latency: Latency::default(),
         transaction_spans: BTreeMap::new(),
         queue: None,
         ingest_resources: None,
-        ingest_resources_unavailable: None,
+        ingest_resources_unavailable_reason: Some(NOT_STARTED),
     };
     let deadline = deadline_start + Duration::from_secs(job.timeout_seconds);
     let outcome = ingest(
@@ -903,7 +924,7 @@ fn ingest<D: Database + 'static>(
         }
     }
     let admitted = Instant::now();
-    report.admission_phase_ns = Some(nanos(admitted - t0));
+    report.admission_phase_ns = nanos(admitted - t0);
     // Sequence-covering Flush and shutdown within the job deadline, then the final drop
     // cancels what remains and joins every consumer: only settled counters are reported.
     let settled = collector.map(|queue| {
@@ -915,20 +936,34 @@ fn ingest<D: Database + 'static>(
         }
         queue.into_final()
     });
-    if settled.is_some() {
-        report.drain_ns = Some(nanos(admitted.elapsed()));
-    }
+    // writer_direct has no queue to drain.
+    report.drain_ns = if settled.is_some() {
+        nanos(admitted.elapsed())
+    } else {
+        0
+    };
     let end_usage = rusage();
-    report.ingest_wall_ns = Some(nanos(t0.elapsed()));
-    report.ingest_resources = start_usage
+    report.ingest_wall_ns = nanos(t0.elapsed());
+    // Success requires a real measurement; there is no CPU or RSS fallback.
+    match start_usage
         .zip(end_usage)
-        .map(|(start, end)| resources(&start, &end));
-    if report.ingest_resources.is_none() {
-        report.ingest_resources_unavailable = Some(if RUSAGE_BOUND {
-            "getrusage(RUSAGE_SELF) failed"
-        } else {
-            "getrusage is bound only for Linux x86_64"
-        });
+        .map(|(start, end)| resources(&start, &end))
+    {
+        Some(Some(measured)) => {
+            report.ingest_resources = Some(measured);
+            report.ingest_resources_unavailable_reason = None;
+        }
+        unmeasured => {
+            report.ingest_resources_unavailable_reason = Some(match unmeasured {
+                Some(_) => "getrusage returned negative or non-finite CPU or no RSS",
+                None if RUSAGE_BOUND => "getrusage(RUSAGE_SELF) failed",
+                None => "getrusage is bound only for Linux x86_64",
+            });
+            shared.fail(failure(
+                ErrorKind::Operation,
+                "ingest resources could not be measured",
+            ));
+        }
     }
     let (frames, ended) = {
         let input = shared.input.lock().unwrap();
@@ -936,28 +971,34 @@ fn ingest<D: Database + 'static>(
     };
     report.frames = frames;
     let samples = std::mem::take(&mut *shared.samples.lock().unwrap());
+    report.received_spans = samples.iter().map(|s| s.received_spans).sum();
     report.admission_latency = Latency::of(&samples);
-    report.samples = samples;
     let exact = match settled {
         None => {
             let total = shared.direct.lock().unwrap();
-            report.acked_span_operations = Availability::available(total.committed_spans);
-            report.committed_batches = total.committed_batches;
-            report.native_retries = total.retries;
+            report.accepted_spans = samples.iter().map(|s| s.accepted_spans).sum();
+            report.failed_spans = samples
+                .iter()
+                .filter(|s| s.error.is_some())
+                .map(|s| s.received_spans)
+                .sum();
+            report.acked_span_operations = Counter::available(total.committed_spans);
+            report.committed_batches = Counter::available(total.committed_batches);
+            report.native_retries = Counter::available(total.retries);
             report.transaction_spans = total.transaction_spans.clone();
             total.committed_spans == job.expected_frames
         }
         Some((s, completions)) => {
-            report.accepted_spans = Some(s.accepted_spans);
-            report.rejected_spans = Some(s.rejected_spans);
-            report.acked_span_operations = Availability::available(s.stored_spans);
-            report.committed_batches = s.committed_batches;
-            report.export_attempts = Some(s.export_attempts);
-            report.native_retries = s.native_retries;
-            report.queue_retries = Some(s.retries);
+            report.accepted_spans = s.accepted_spans;
+            report.rejected_spans = s.rejected_spans;
+            report.acked_span_operations = Counter::available(s.stored_spans);
+            report.committed_batches = Counter::available(s.committed_batches);
+            report.export_attempts = Counter::available(s.export_attempts);
+            report.native_retries = Counter::available(s.native_retries);
+            report.queue_retries = Counter::available(s.retries);
             report.exported_spans = Some(s.exported_spans);
-            report.failed_spans = Some(s.failed_spans);
-            report.queued_spans_at_exit = Some(s.queued_spans as u64);
+            report.failed_spans = s.failed_spans;
+            report.queued_spans_at_exit = s.queued_spans as u64;
             report.transaction_spans = s.transaction_spans.clone();
             let since = |at: Instant| nanos(at.saturating_duration_since(t0));
             report.queue = Some(QueueReport {
@@ -984,6 +1025,7 @@ fn ingest<D: Database + 'static>(
                 && s.queued_spans == 0
         }
     };
+    report.samples = samples;
     if let Some(err) = shared.error.lock().unwrap().take() {
         return Err(err);
     }

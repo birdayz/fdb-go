@@ -62,14 +62,18 @@ replacement. There are no measured performance or economics results yet.
   length followed by one single-span ResourceSpans. Before a call is timed,
   `Schema::validate` checks every frame with `Writer::write`'s decode and
   identity/start rules and requires exactly one span; the timed call still
-  includes its own decode. Reports separate admission samples from ACKs: the
-  top-level `acked_span_operations` is an availability object counting
-  acknowledged write operations including replays (never distinct durable
-  spans), only writer_direct samples carry `direct_write_acked_operations`, and
-  counters are read only after the Collector is dropped and every consumer
-  joined. They carry operation versus logical counters, export/transaction size
-  distributions, bounded per-request completions and getrusage CPU from the
-  first read through Flush/shutdown. Report field shapes are provisional.
+  includes its own decode. Reports follow the frozen schema's ingest report:
+  six counter markers (`acked_span_operations`, `committed_batches`,
+  `native_retries`, `outer_retries`, `export_attempts`, `queue_retries`) are each
+  an exact observed value or unavailable with a reason, never a stand-in zero.
+  `acked_span_operations` counts acknowledged write operations including replays,
+  never distinct durable spans; writer_direct has no queue counters. Counts and
+  timings are plain integers, `effective_job` is the sealed job itself, and only
+  writer_direct samples carry `direct_write_acked_operations`. Counters are read
+  only after the Collector is dropped and every consumer joined. Success requires
+  real getrusage CPU and RSS from the first read through Flush/shutdown; a
+  failure before ingest starts reports null resources with
+  `ingest_resources_unavailable_reason` and zero timings.
 
 A layout manifest is an immutable control-plane description of an **exclusively
 owned** tenant: record/index prefixes, exact expected header/layout/catalog

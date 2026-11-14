@@ -247,7 +247,74 @@
               "minimum": 1,
               "maximum": 64
             }
-          }
+          },
+          "$comment": "The bounded producer batch (1..64) is compared with capacity using portable JSON Schema implications, without a nonstandard $data extension.",
+          "allOf": [
+            {"if":{"properties":{"retry_enabled":{"const":true}}},"then":{"properties":{"retry_initial_ms":{"minimum":1}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":2}}},"then":{"properties":{"queue_capacity_spans":{"minimum":2}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":3}}},"then":{"properties":{"queue_capacity_spans":{"minimum":3}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":4}}},"then":{"properties":{"queue_capacity_spans":{"minimum":4}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":5}}},"then":{"properties":{"queue_capacity_spans":{"minimum":5}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":6}}},"then":{"properties":{"queue_capacity_spans":{"minimum":6}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":7}}},"then":{"properties":{"queue_capacity_spans":{"minimum":7}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":8}}},"then":{"properties":{"queue_capacity_spans":{"minimum":8}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":9}}},"then":{"properties":{"queue_capacity_spans":{"minimum":9}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":10}}},"then":{"properties":{"queue_capacity_spans":{"minimum":10}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":11}}},"then":{"properties":{"queue_capacity_spans":{"minimum":11}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":12}}},"then":{"properties":{"queue_capacity_spans":{"minimum":12}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":13}}},"then":{"properties":{"queue_capacity_spans":{"minimum":13}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":14}}},"then":{"properties":{"queue_capacity_spans":{"minimum":14}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":15}}},"then":{"properties":{"queue_capacity_spans":{"minimum":15}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":16}}},"then":{"properties":{"queue_capacity_spans":{"minimum":16}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":17}}},"then":{"properties":{"queue_capacity_spans":{"minimum":17}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":18}}},"then":{"properties":{"queue_capacity_spans":{"minimum":18}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":19}}},"then":{"properties":{"queue_capacity_spans":{"minimum":19}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":20}}},"then":{"properties":{"queue_capacity_spans":{"minimum":20}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":21}}},"then":{"properties":{"queue_capacity_spans":{"minimum":21}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":22}}},"then":{"properties":{"queue_capacity_spans":{"minimum":22}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":23}}},"then":{"properties":{"queue_capacity_spans":{"minimum":23}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":24}}},"then":{"properties":{"queue_capacity_spans":{"minimum":24}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":25}}},"then":{"properties":{"queue_capacity_spans":{"minimum":25}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":26}}},"then":{"properties":{"queue_capacity_spans":{"minimum":26}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":27}}},"then":{"properties":{"queue_capacity_spans":{"minimum":27}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":28}}},"then":{"properties":{"queue_capacity_spans":{"minimum":28}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":29}}},"then":{"properties":{"queue_capacity_spans":{"minimum":29}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":30}}},"then":{"properties":{"queue_capacity_spans":{"minimum":30}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":31}}},"then":{"properties":{"queue_capacity_spans":{"minimum":31}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":32}}},"then":{"properties":{"queue_capacity_spans":{"minimum":32}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":33}}},"then":{"properties":{"queue_capacity_spans":{"minimum":33}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":34}}},"then":{"properties":{"queue_capacity_spans":{"minimum":34}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":35}}},"then":{"properties":{"queue_capacity_spans":{"minimum":35}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":36}}},"then":{"properties":{"queue_capacity_spans":{"minimum":36}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":37}}},"then":{"properties":{"queue_capacity_spans":{"minimum":37}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":38}}},"then":{"properties":{"queue_capacity_spans":{"minimum":38}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":39}}},"then":{"properties":{"queue_capacity_spans":{"minimum":39}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":40}}},"then":{"properties":{"queue_capacity_spans":{"minimum":40}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":41}}},"then":{"properties":{"queue_capacity_spans":{"minimum":41}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":42}}},"then":{"properties":{"queue_capacity_spans":{"minimum":42}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":43}}},"then":{"properties":{"queue_capacity_spans":{"minimum":43}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":44}}},"then":{"properties":{"queue_capacity_spans":{"minimum":44}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":45}}},"then":{"properties":{"queue_capacity_spans":{"minimum":45}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":46}}},"then":{"properties":{"queue_capacity_spans":{"minimum":46}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":47}}},"then":{"properties":{"queue_capacity_spans":{"minimum":47}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":48}}},"then":{"properties":{"queue_capacity_spans":{"minimum":48}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":49}}},"then":{"properties":{"queue_capacity_spans":{"minimum":49}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":50}}},"then":{"properties":{"queue_capacity_spans":{"minimum":50}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":51}}},"then":{"properties":{"queue_capacity_spans":{"minimum":51}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":52}}},"then":{"properties":{"queue_capacity_spans":{"minimum":52}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":53}}},"then":{"properties":{"queue_capacity_spans":{"minimum":53}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":54}}},"then":{"properties":{"queue_capacity_spans":{"minimum":54}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":55}}},"then":{"properties":{"queue_capacity_spans":{"minimum":55}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":56}}},"then":{"properties":{"queue_capacity_spans":{"minimum":56}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":57}}},"then":{"properties":{"queue_capacity_spans":{"minimum":57}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":58}}},"then":{"properties":{"queue_capacity_spans":{"minimum":58}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":59}}},"then":{"properties":{"queue_capacity_spans":{"minimum":59}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":60}}},"then":{"properties":{"queue_capacity_spans":{"minimum":60}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":61}}},"then":{"properties":{"queue_capacity_spans":{"minimum":61}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":62}}},"then":{"properties":{"queue_capacity_spans":{"minimum":62}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":63}}},"then":{"properties":{"queue_capacity_spans":{"minimum":63}}}},
+            {"if":{"properties":{"producer_batch_spans":{"const":64}}},"then":{"properties":{"queue_capacity_spans":{"minimum":64}}}}
+          ]
         }
       ]
     },
@@ -434,6 +501,701 @@
       }
     }
   ],
+  "$defs": {
+    "available_ack_operations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "availability",
+        "value"
+      ],
+      "properties": {
+        "availability": {
+          "const": "available"
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "unavailable_metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "availability",
+        "reason"
+      ],
+      "properties": {
+        "availability": {
+          "const": "unavailable"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        }
+      }
+    },
+    "acked_span_operations": {
+      "description": "Top-level acknowledged write operations INCLUDING replays, never distinct rows or a rate numerator. Rust must report available; Go must report unavailable with an honest collector-capability reason.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/available_ack_operations"
+        },
+        {
+          "$ref": "#/$defs/unavailable_metric"
+        }
+      ]
+    },
+    "writer_direct_sample": {
+      "description": "Decode-inclusive direct write call. Optional direct_write_acked_operations is known operations for this call; omit when unknown, never null. The top-level marker name is forbidden here.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ns",
+        "received_spans",
+        "accepted_spans",
+        "error"
+      ],
+      "properties": {
+        "ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "received_spans": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "accepted_spans": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "error": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "direct_write_acked_operations": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "collector_admission_sample": {
+      "description": "Decode and queue admission/backpressure, NOT an ACK. No ACK-operation field is permitted.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ns",
+        "received_spans",
+        "accepted_spans",
+        "error"
+      ],
+      "properties": {
+        "ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "received_spans": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "accepted_spans": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "error": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    "ingest_ack_and_samples": {
+      "$comment": "Producer ingest report; required plain source/timing/process-resource populations and explicit counter capability markers. Runtime additionally checks seals, source/sample counts, user+system CPU sum, and success/queue completion; rates require a later independent census.",
+      "type": "object",
+      "required": [
+        "schema",
+        "mode",
+        "arm",
+        "effective_job",
+        "acked_span_operations",
+        "samples",
+        "status",
+        "error",
+        "frames",
+        "received_spans",
+        "accepted_spans",
+        "rejected_spans",
+        "failed_spans",
+        "queued_spans_at_exit",
+        "ingest_wall_ns",
+        "admission_phase_ns",
+        "drain_ns",
+        "ingest_resources",
+        "committed_batches",
+        "native_retries",
+        "outer_retries",
+        "export_attempts",
+        "queue_retries"
+      ],
+      "properties": {
+        "schema": {
+          "const": "otel_control_report_v1"
+        },
+        "mode": {
+          "const": "ingest"
+        },
+        "arm": {
+          "enum": [
+            "go_pure",
+            "go_native",
+            "rust_native"
+          ]
+        },
+        "effective_job": {
+          "allOf": [
+            {
+              "$ref": "#"
+            },
+            {
+              "properties": {
+                "mode": {
+                  "const": "ingest"
+                }
+              }
+            }
+          ]
+        },
+        "acked_span_operations": {
+          "$ref": "#/$defs/acked_span_operations"
+        },
+        "samples": {
+          "type": "array",
+          "minItems": 0
+        },
+        "spans_per_second": {
+          "type": "null"
+        },
+        "rate_numerator": {
+          "type": "null"
+        },
+        "cpu_ms_per_distinct_span": {
+          "type": "null"
+        },
+        "cpu_denominator": {
+          "type": "null"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "error"
+          ]
+        },
+        "error": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "frames": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "received_spans": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "accepted_spans": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rejected_spans": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failed_spans": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queued_spans_at_exit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ingest_wall_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "admission_phase_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "drain_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ingest_resources": {
+          "oneOf": [
+            {"$ref": "#/$defs/ingest_resources"},
+            {"type": "null"}
+          ]
+        },
+        "ingest_resources_unavailable_reason": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "committed_batches": {
+          "$ref": "#/$defs/counter"
+        },
+        "native_retries": {
+          "$ref": "#/$defs/counter"
+        },
+        "outer_retries": {
+          "$ref": "#/$defs/counter"
+        },
+        "export_attempts": {
+          "$ref": "#/$defs/counter",
+          "description": "Collector queue sink-call count (Go public Stats.Exports), not committed transactions or native retry attempts."
+        },
+        "queue_retries": {
+          "$ref": "#/$defs/counter",
+          "description": "Collector queue retry-decision count (Go public Stats.Retries), not native or RecordLayer transaction retries."
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/counter_policy"
+        },
+        {
+          "$ref": "#/$defs/ingest_resource_policy"
+        },
+        {
+          "if": {
+            "properties": {
+              "effective_job": {
+                "properties": {
+                  "workload": {
+                    "properties": {
+                      "kind": {
+                        "const": "writer_direct"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "samples": {
+                "items": {
+                  "$ref": "#/$defs/writer_direct_sample"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "effective_job": {
+                "properties": {
+                  "workload": {
+                    "properties": {
+                      "kind": {
+                        "const": "collector_queue"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "samples": {
+                "items": {
+                  "$ref": "#/$defs/collector_admission_sample"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "ok"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "samples": {
+                "minItems": 1
+              },
+              "ingest_wall_ns": {
+                "minimum": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "arm": {
+                "enum": [
+                  "go_pure",
+                  "go_native"
+                ]
+              },
+              "effective_job": {
+                "properties": {
+                  "workload": {
+                    "properties": {
+                      "kind": {
+                        "const": "collector_queue"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "export_attempts": {
+                "$ref": "#/$defs/available_ack_operations"
+              },
+              "queue_retries": {
+                "$ref": "#/$defs/available_ack_operations"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "verified_result": {
+      "$comment": "Successful joined result only, after independent census/oracle. Runtime also recomputes rates and CPU/span from distinct_spans; ingest alone cannot emit this proof.",
+      "type": "object",
+      "required": [
+        "schema",
+        "arm",
+        "accepted",
+        "rate_eligible",
+        "acked_span_operations",
+        "distinct_spans",
+        "rate_numerator",
+        "cpu_denominator",
+        "spans_per_second",
+        "cpu_ms_per_distinct_span",
+        "raw_report",
+        "raw_verification_report",
+        "committed_batches",
+        "native_retries",
+        "outer_retries",
+        "export_attempts",
+        "queue_retries"
+      ],
+      "properties": {
+        "schema": {
+          "const": "otel_paired_result_v1"
+        },
+        "arm": {
+          "enum": [
+            "go_pure",
+            "go_native",
+            "rust_native"
+          ]
+        },
+        "accepted": {
+          "const": true
+        },
+        "rate_eligible": {
+          "const": true
+        },
+        "acked_span_operations": {
+          "$ref": "#/$defs/acked_span_operations"
+        },
+        "distinct_spans": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "rate_numerator": {
+          "const": "census_verified_distinct_spans"
+        },
+        "cpu_denominator": {
+          "const": "census_verified_distinct_spans"
+        },
+        "spans_per_second": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "cpu_ms_per_distinct_span": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "availability",
+            "value"
+          ],
+          "properties": {
+            "availability": {
+              "const": "available"
+            },
+            "value": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "raw_report": {
+          "allOf": [
+            {"$ref": "#/$defs/ingest_ack_and_samples"},
+            {"properties": {"status": {"const": "ok"}}}
+          ]
+        },
+        "raw_verification_report": {
+          "type": "object"
+        },
+        "committed_batches": {
+          "$ref": "#/$defs/counter"
+        },
+        "native_retries": {
+          "$ref": "#/$defs/counter"
+        },
+        "outer_retries": {
+          "$ref": "#/$defs/counter"
+        },
+        "export_attempts": {
+          "$ref": "#/$defs/counter"
+        },
+        "queue_retries": {
+          "$ref": "#/$defs/counter"
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/counter_policy"
+        }
+      ]
+    },
+    "counter": {
+      "description": "An exact instrumented nonnegative counter, or explicitly unavailable with a reason; never substitute zero for missing telemetry.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/available_ack_operations"
+        },
+        {
+          "$ref": "#/$defs/unavailable_metric"
+        }
+      ]
+    },
+    "go_unexposed_counter": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/unavailable_metric"
+        },
+        {
+          "properties": {
+            "reason": {
+              "allOf": [
+                {
+                  "pattern": "[Gg]o [Cc]ollector"
+                },
+                {
+                  "pattern": "[Nn]ot [Ee]xposed|[Dd]oes not [Ee]xpose"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "go_inapplicable_counter": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/unavailable_metric"
+        },
+        {
+          "properties": {
+            "reason": {
+              "pattern": "[Nn]ot [Aa]pplicable"
+            }
+          }
+        }
+      ]
+    },
+    "counter_policy": {
+      "type": "object",
+      "required": [
+        "arm",
+        "acked_span_operations",
+        "committed_batches",
+        "native_retries",
+        "outer_retries",
+        "export_attempts",
+        "queue_retries"
+      ],
+      "properties": {
+        "acked_span_operations": {
+          "$ref": "#/$defs/acked_span_operations"
+        },
+        "committed_batches": {
+          "$ref": "#/$defs/counter"
+        },
+        "native_retries": {
+          "$ref": "#/$defs/counter"
+        },
+        "outer_retries": {
+          "$ref": "#/$defs/counter"
+        },
+        "export_attempts": {
+          "$ref": "#/$defs/counter"
+        },
+        "queue_retries": {
+          "$ref": "#/$defs/counter"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "arm": {
+                "const": "rust_native"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "acked_span_operations": {
+                "$ref": "#/$defs/available_ack_operations"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "arm": {
+                "const": "go_pure"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "acked_span_operations": {
+                "$ref": "#/$defs/go_unexposed_counter"
+              },
+              "committed_batches": {
+                "$ref": "#/$defs/go_unexposed_counter"
+              },
+              "native_retries": {
+                "$ref": "#/$defs/go_inapplicable_counter"
+              },
+              "outer_retries": {
+                "$ref": "#/$defs/go_unexposed_counter"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "arm": {
+                "const": "go_native"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "acked_span_operations": {
+                "$ref": "#/$defs/go_unexposed_counter"
+              },
+              "committed_batches": {
+                "$ref": "#/$defs/go_unexposed_counter"
+              },
+              "native_retries": {
+                "$ref": "#/$defs/go_unexposed_counter"
+              },
+              "outer_retries": {
+                "$ref": "#/$defs/go_unexposed_counter"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ingest_resource_policy": {
+      "$comment": "Real measured resources are required for success. An early failed receipt may explicitly lack an ingest-window measurement; it remains failed, charged and never comparison-eligible.",
+      "oneOf": [
+        {
+          "required": ["ingest_resources"],
+          "properties": {
+            "ingest_resources": {"$ref": "#/$defs/ingest_resources"}
+          },
+          "not": {"required": ["ingest_resources_unavailable_reason"]}
+        },
+        {
+          "required": ["status", "error", "ingest_resources", "ingest_resources_unavailable_reason"],
+          "properties": {
+            "status": {"const": "error"},
+            "error": {"type": "string", "minLength": 1, "pattern": "\\S"},
+            "ingest_resources": {"type": "null"},
+            "ingest_resources_unavailable_reason": {"type": "string", "minLength": 1, "pattern": "\\S"}
+          }
+        }
+      ]
+    },
+    "ingest_resources": {
+      "type": "object",
+      "required": [
+        "scope",
+        "user_cpu_seconds",
+        "system_cpu_seconds",
+        "cpu_seconds",
+        "peak_rss_bytes",
+        "measurement_source"
+      ],
+      "properties": {
+        "scope": {
+          "const": "first_read_through_flush"
+        },
+        "user_cpu_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "system_cpu_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cpu_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "peak_rss_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "measurement_source": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        }
+      }
+    }
+  },
   "$comment": "Control modes execute the Go control binary even for arm=rust_native; ingest selects measured arm. Cross-field bounds and output exclusivity are additionally checked by runner and binaries. Verify with oracle none is local-only and never a paid gate.",
   "oneOf": [
     {
