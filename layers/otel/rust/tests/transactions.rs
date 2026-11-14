@@ -2,11 +2,13 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use fdb_otel_rust::{
     Error, ErrorKind, Result,
-    collector::{Collector, Config},
+    collector::{Collector, Completion, Config, Stats},
     row::Schema,
     storage::{self, RecordCompression},
     tuple::{self, Element},
-    writer::{Context, Database, ExpectedValue, KeyValues, Layout, Transaction, Writer},
+    writer::{
+        Context, Database, Diagnostics, ExpectedValue, KeyValues, Layout, Transaction, Writer,
+    },
 };
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage, Value};
@@ -1277,4 +1279,207 @@ fn canceled_whole_call_retry_keeps_partial_commits_and_a_replay_completes() {
         db.0.lock().unwrap().data,
         expected_physical(&layout(), &four)
     );
+}
+
+/// Every exact Collector counter, functional or ACK-side; none of its diagnostics.
+fn counters(s: &Stats) -> [u64; 10] {
+    [
+        s.accepted_spans,
+        s.rejected_spans,
+        s.exported_spans,
+        s.stored_spans,
+        s.committed_batches,
+        s.export_attempts,
+        s.native_retries,
+        s.failed_spans,
+        s.retries,
+        s.queued_spans as u64,
+    ]
+}
+/// The fake database's attempts, transactions, native retries and final contents.
+type Outcome = (usize, usize, usize, BTreeMap<Vec<u8>, Vec<u8>>);
+fn outcome(db: &Fake) -> Outcome {
+    let state = db.0.lock().unwrap();
+    (
+        state.attempts,
+        state.transactions,
+        state.retries,
+        state.data.clone(),
+    )
+}
+struct Queued {
+    stats: Stats,
+    completions: Vec<Completion>,
+    flush: Option<ErrorKind>,
+    db: Outcome,
+}
+/// One real Writer -> Collector run on a fresh fake, both constructed under
+/// `diagnostics`: admit each request, Flush, shut down, read the settled result.
+fn queued(
+    diagnostics: Diagnostics,
+    outcomes: &[Option<i32>],
+    writer_batch: usize,
+    queue_batch: usize,
+    requests: &[Vec<Vec<u8>>],
+) -> Queued {
+    let db = database();
+    db.0.lock().unwrap().outcomes = outcomes.iter().copied().collect();
+    let writer = Writer::new_with_diagnostics(
+        db.clone(),
+        &layout(),
+        writer_batch,
+        RecordCompression::None,
+        diagnostics,
+    )
+    .unwrap();
+    let collector =
+        Collector::start_with_diagnostics(Arc::new(writer), queue(queue_batch, 1), diagnostics)
+            .unwrap();
+    for request in requests {
+        collector.consume(&bounded(), request).unwrap();
+    }
+    let flush = collector.flush(&bounded()).err().map(|e| e.kind);
+    collector.shutdown(&bounded()).unwrap();
+    let (stats, completions) = collector.into_final();
+    Queued {
+        stats,
+        completions,
+        flush,
+        db: outcome(&db),
+    }
+}
+
+/// Disabled diagnostics change no outcome: the same counters, Flush results, physical
+/// map and transaction history as the default, with nothing optional collected.
+#[test]
+fn disabled_diagnostics_keep_every_collector_outcome() {
+    let fixtures = vectors();
+    let pick = |names: &[&str]| otlp(&named(&fixtures, names));
+    let four = pick(&["v2_0", "v2_1", "v2_2", "v2_3"]);
+    for (name, outcomes, writer_batch, queue_batch, requests, flushed) in [
+        // Three requests split across queue batches of 3, the last one short.
+        (
+            "split requests and a short final batch",
+            vec![],
+            2,
+            3,
+            vec![four.clone(), pick(&["v2_4"]), pick(&["v2_5", "v2_6"])],
+            None,
+        ),
+        // The call's first transaction commits, its second gets 1031: a whole-call retry.
+        (
+            "partial success then a whole-call retry",
+            vec![None, Some(1031)],
+            2,
+            4,
+            vec![four.clone()],
+            None,
+        ),
+        (
+            "native OnError and dedup",
+            vec![Some(1020)],
+            64,
+            3,
+            vec![pick(&["v2_0", "v2_1", "fidelity"])],
+            None,
+        ),
+        (
+            "permanent merged failure and isolation",
+            vec![None, None, Some(2004), None, None, Some(2004)],
+            1,
+            3,
+            vec![pick(&["v2_0", "v2_1"]), pick(&["v2_2"])],
+            Some(ErrorKind::Operation),
+        ),
+    ] {
+        let on = queued(
+            Diagnostics::Enabled,
+            &outcomes,
+            writer_batch,
+            queue_batch,
+            &requests,
+        );
+        let off = queued(
+            Diagnostics::Disabled,
+            &outcomes,
+            writer_batch,
+            queue_batch,
+            &requests,
+        );
+        assert_eq!(counters(&off.stats), counters(&on.stats), "{name}");
+        assert_eq!((on.flush, off.flush), (flushed, flushed), "{name}");
+        assert_eq!(off.db, on.db, "{name}");
+        assert!(on.db.3.len() > 1, "{name}");
+        assert_eq!(on.stats.queued_spans, 0, "{name}");
+        // The default collects; the disabled run has nothing optional to report.
+        assert_eq!(on.completions.len(), requests.len(), "{name}");
+        assert!(
+            !on.stats.export_call_spans.is_empty() && !on.stats.transaction_spans.is_empty(),
+            "{name}"
+        );
+        assert!(off.completions.is_empty(), "{name}");
+        assert!(
+            off.stats.export_call_spans.is_empty() && off.stats.transaction_spans.is_empty(),
+            "{name}"
+        );
+        assert_eq!(
+            (
+                off.stats.max_outstanding_spans,
+                off.stats.blocked_requests,
+                off.stats.completions_omitted
+            ),
+            (0, 0, 0),
+            "{name}"
+        );
+    }
+}
+
+/// Cancellation in a whole-call retry's backoff ends the same way with diagnostics
+/// disabled: the partial acknowledgment is kept and every worker joins.
+#[test]
+fn disabled_diagnostics_keep_partial_progress_through_cancellation() {
+    let fixtures = vectors();
+    let four = named(&fixtures, &["v2_0", "v2_1", "v2_2", "v2_3"]);
+    let mut runs = Vec::new();
+    for diagnostics in [Diagnostics::Enabled, Diagnostics::Disabled] {
+        let db = database();
+        db.0.lock().unwrap().outcomes = VecDeque::from([None, Some(1031)]);
+        let writer = Writer::new_with_diagnostics(
+            db.clone(),
+            &layout(),
+            2,
+            RecordCompression::None,
+            diagnostics,
+        )
+        .unwrap();
+        // A one-minute backoff: cancellation, not the retry, ends the call.
+        let collector =
+            Collector::start_with_diagnostics(Arc::new(writer), queue(4, 60_000), diagnostics)
+                .unwrap();
+        collector.consume(&bounded(), &otlp(&four)).unwrap();
+        let limit = bounded();
+        while collector.stats().retries == 0 {
+            limit.check().unwrap();
+            std::thread::yield_now();
+        }
+        let canceled = Context::default();
+        canceled.cancel();
+        assert_eq!(
+            collector.shutdown(&canceled).unwrap_err().kind,
+            ErrorKind::Canceled
+        );
+        let (stats, completions) = collector.into_final();
+        // Joined: the map read now cannot change afterwards.
+        let settled = outcome(&db);
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(outcome(&db), settled);
+        assert_eq!(settled.3, expected_physical(&layout(), &four[..2]));
+        assert_eq!(counters(&stats), [4, 0, 0, 2, 1, 1, 0, 4, 1, 0]);
+        assert_eq!(
+            completions.len(),
+            usize::from(diagnostics == Diagnostics::Enabled)
+        );
+        runs.push(settled);
+    }
+    assert_eq!(runs[0], runs[1]);
 }

@@ -9,7 +9,7 @@ use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage, Value};
 use serde_json::{Value as Json, json};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     os::unix::fs::PermissionsExt,
     sync::{
@@ -308,6 +308,18 @@ const RESOURCE_FIELDS: [&str; 6] = [
     "measurement_source",
 ];
 const SAMPLE_FIELDS: [&str; 4] = ["ns", "received_spans", "accepted_spans", "error"];
+/// A settled Collector's optional diagnostics, each disabled in the measured path.
+const QUEUE_DIAGNOSTIC_FIELDS: [&str; 6] = [
+    "max_outstanding_spans",
+    "blocked_requests",
+    "blocked_ns",
+    "export_call_spans",
+    "completion_samples",
+    "completion_samples_omitted",
+];
+fn disabled_diagnostic() -> Json {
+    json!({"availability": "unavailable", "reason": DIAGNOSTICS_OFF})
+}
 
 fn nonblank(v: &Json) -> bool {
     v.as_str().is_some_and(|s| !s.trim().is_empty())
@@ -460,6 +472,21 @@ fn report_contract(r: &Json, job: &Json) -> std::result::Result<(), String> {
         || r["queue_retries"]["availability"] != "available"
     {
         return fail("collector_queue counters must be observed".into());
+    }
+    // Optional diagnostics are disabled in the measured path: each says exactly so, and
+    // none is a measured empty map, array or zero, nor a claimed observation.
+    if r["transaction_spans"] != disabled_diagnostic() {
+        return fail(format!("transaction_spans {}", r["transaction_spans"]));
+    }
+    let queue = &r["queue"];
+    let settled = queue.as_object().is_some_and(|q| {
+        q.keys().map(String::as_str).collect::<BTreeSet<_>>()
+            == BTreeSet::from(QUEUE_DIAGNOSTIC_FIELDS)
+            && q.values().all(|v| *v == disabled_diagnostic())
+    });
+    // writer_direct has no queue; a Collector reports one once it settled, as on success.
+    if (direct && !queue.is_null()) || (!direct && !settled && (ok || !queue.is_null())) {
+        return fail(format!("queue diagnostics {queue}"));
     }
     Ok(())
 }
@@ -1019,7 +1046,9 @@ fn writer_direct_job_reports_exact_acks_samples_seals_and_exclusive_output() {
     }
     assert_eq!(r["admission_latency"]["population"], 2);
     assert!(r["admission_latency"]["p99_ns"].as_u64().unwrap() > 0);
-    assert_eq!(r["transaction_spans"], json!({"4": 2}));
+    // Diagnostics are disabled at the source: no transaction-size distribution.
+    assert_eq!(r["transaction_spans"], disabled_diagnostic());
+    assert!(r["queue"].is_null());
     assert!(r["admission_phase_ns"].as_u64().unwrap() <= r["ingest_wall_ns"].as_u64().unwrap());
     assert_eq!(r["ingest_resources"]["scope"], "first_read_through_flush");
     // The effective job is the sealed job itself, u64 seed included.
@@ -1046,15 +1075,14 @@ fn writer_direct_job_reports_exact_acks_samples_seals_and_exclusive_output() {
     assert!(!output(&job).exists());
 }
 
-fn sum_sizes(sizes: &Json) -> (u64, u64) {
-    sizes
-        .as_object()
-        .unwrap()
-        .iter()
-        .fold((0, 0), |(spans, calls), (size, count)| {
-            let count = count.as_u64().unwrap();
-            (spans + size.parse::<u64>().unwrap() * count, calls + count)
-        })
+/// The settled queue's diagnostics are each the disabled marker, never observations.
+fn assert_queue_diagnostics_disabled(r: &Json) {
+    let queue = r["queue"].as_object().unwrap();
+    assert_eq!(queue.len(), QUEUE_DIAGNOSTIC_FIELDS.len());
+    for field in QUEUE_DIAGNOSTIC_FIELDS {
+        assert_eq!(queue[field], disabled_diagnostic(), "{field}");
+    }
+    assert_eq!(r["transaction_spans"], disabled_diagnostic());
 }
 
 #[test]
@@ -1088,8 +1116,6 @@ fn collector_queue_job_runs_the_real_writer_and_reports_queue_populations() {
     // Writer batches of 4 cover every export of at most 4 spans in one transaction.
     let attempts = r["export_attempts"]["value"].as_u64().unwrap();
     assert_eq!(r["committed_batches"]["value"], attempts);
-    assert_eq!(sum_sizes(&r["queue"]["export_call_spans"]), (8, attempts));
-    assert_eq!(sum_sizes(&r["transaction_spans"]), (8, attempts));
     let samples = r["samples"].as_array().unwrap();
     assert_eq!(samples.len(), 8);
     for s in samples {
@@ -1101,19 +1127,7 @@ fn collector_queue_job_runs_the_real_writer_and_reports_queue_populations() {
         assert!(s.get("acked_span_operations").is_none());
         assert!(s.get("direct_write_acked_operations").is_none());
     }
-    let completions = r["queue"]["completion_samples"].as_array().unwrap();
-    let mut seqs: Vec<u64> = completions
-        .iter()
-        .map(|c| c["seq"].as_u64().unwrap())
-        .collect();
-    seqs.sort_unstable();
-    assert_eq!(seqs, (0..8).collect::<Vec<u64>>());
-    for c in completions {
-        assert_eq!((&c["spans"], &c["error"]), (&json!(1), &Json::Null));
-        assert!(c["arrival_ns"].as_u64().unwrap() <= c["completed_ns"].as_u64().unwrap());
-    }
-    assert_eq!(r["queue"]["completion_samples_omitted"], 0);
-    assert!((1..=8).contains(&r["queue"]["max_outstanding_spans"].as_u64().unwrap()));
+    assert_queue_diagnostics_disabled(&r);
     assert!(r["drain_ns"].as_u64().is_some());
     assert_eq!(r["global_write_bound"], 2);
     assert_eq!(
@@ -1146,6 +1160,7 @@ fn stage0_point2_workload_text_runs_verbatim_through_the_collector() {
     assert_eq!(r["status"], "ok", "{r}");
     assert_eq!(r["effective_job"]["workload"], workload);
     assert_eq!(r["global_write_bound"], 8);
+    assert_queue_diagnostics_disabled(&r);
     for (field, want) in [
         ("accepted_spans", 8),
         ("exported_spans", 8),
@@ -1259,15 +1274,7 @@ fn failures_after_reservation_write_synced_error_receipts_with_exact_progress() 
         r["acked_span_operations"],
         json!({"availability": "available", "value": 2})
     );
-    let completions = r["queue"]["completion_samples"].as_array().unwrap();
-    assert_eq!(completions.len(), 3);
-    assert_eq!(
-        completions
-            .iter()
-            .filter(|c| c["error"].is_string())
-            .count(),
-        1
-    );
+    assert_queue_diagnostics_disabled(&r);
     assert_eq!(db.0.lock().unwrap().data, expected_physical(&[0, 2]));
 }
 
@@ -1634,19 +1641,9 @@ fn collector_deadline_settles_every_admitted_request_exactly_once() {
         r["acked_span_operations"],
         json!({"availability": "available", "value": 0})
     );
-    // Settled after the final join: every admitted request is terminal exactly once.
-    let completions = r["queue"]["completion_samples"].as_array().unwrap();
-    let mut seqs: Vec<u64> = completions
-        .iter()
-        .map(|c| c["seq"].as_u64().unwrap())
-        .collect();
-    seqs.sort_unstable();
-    assert_eq!(seqs, [0, 1, 2]);
-    assert!(
-        completions
-            .iter()
-            .all(|c| c["spans"] == 1 && c["error"].is_string())
-    );
+    // Settled after the final join: no request is left queued, and no optional
+    // completion history is reported.
+    assert_queue_diagnostics_disabled(&r);
     let settled = {
         let state = db.0.lock().unwrap();
         assert_eq!(
@@ -1702,9 +1699,7 @@ fn producer_failure_stops_publishing_but_admitted_requests_still_drain() {
         json!({"availability": "available", "value": 3})
     );
     assert_eq!(r["samples"].as_array().unwrap().len(), 3);
-    let completions = r["queue"]["completion_samples"].as_array().unwrap();
-    assert_eq!(completions.len(), 3);
-    assert!(completions.iter().all(|c| c["error"].is_null()));
+    assert_queue_diagnostics_disabled(&r);
     assert_eq!(db.0.lock().unwrap().data, expected_physical(&[0, 1, 2]));
 }
 
@@ -1826,7 +1821,93 @@ fn report_contract_rejects_marker_count_resource_sample_and_policy_violations() 
         r.as_object_mut().unwrap().remove(field);
         assert!(report_contract(&r, jobs[0]).is_err(), "missing {field}");
     }
+    // The disabled-diagnostics policy is explicit on every report.
+    assert_eq!(reports[0]["transaction_spans"], disabled_diagnostic());
+    assert!(reports[0]["queue"].is_null() && reports[2]["queue"].is_null());
+    assert_queue_diagnostics_disabled(&reports[1]);
     let cases: Vec<(&str, usize, fn(&mut Json))> = vec![
+        (
+            "measured empty transaction map",
+            0,
+            mutation(|r| r["transaction_spans"] = json!({})),
+        ),
+        (
+            "transaction-size distribution",
+            1,
+            mutation(|r| r["transaction_spans"] = json!({"1": 2})),
+        ),
+        (
+            "available transaction diagnostic",
+            0,
+            mutation(|r| r["transaction_spans"] = json!({"availability": "available", "value": 2})),
+        ),
+        (
+            "blank disabled reason",
+            0,
+            mutation(|r| r["transaction_spans"]["reason"] = json!(" ")),
+        ),
+        (
+            "contradictory disabled reason",
+            1,
+            mutation(|r| r["queue"]["blocked_ns"]["reason"] = json!("not measured")),
+        ),
+        (
+            "early receipt with a measured map",
+            2,
+            mutation(|r| r["transaction_spans"] = json!({})),
+        ),
+        (
+            "measured empty completion array",
+            1,
+            mutation(|r| r["queue"]["completion_samples"] = json!([])),
+        ),
+        (
+            "measured zero max outstanding",
+            1,
+            mutation(|r| r["queue"]["max_outstanding_spans"] = json!(0)),
+        ),
+        (
+            "measured zero omitted completions",
+            1,
+            mutation(|r| r["queue"]["completion_samples_omitted"] = json!(0)),
+        ),
+        (
+            "available export sizes",
+            1,
+            mutation(|r| {
+                r["queue"]["export_call_spans"] = json!({"availability": "available", "value": 1})
+            }),
+        ),
+        (
+            "missing queue diagnostic",
+            1,
+            mutation(|r| {
+                r["queue"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("blocked_requests");
+            }),
+        ),
+        (
+            "extra queue diagnostic",
+            1,
+            mutation(|r| r["queue"]["completion_timeline"] = disabled_diagnostic()),
+        ),
+        (
+            "settled collector without its queue",
+            1,
+            mutation(|r| r["queue"] = Json::Null),
+        ),
+        (
+            "writer_direct with a queue",
+            0,
+            mutation(|r| {
+                r["queue"] = json!({});
+                for field in QUEUE_DIAGNOSTIC_FIELDS {
+                    r["queue"][field] = disabled_diagnostic();
+                }
+            }),
+        ),
         (
             "bare marker",
             0,

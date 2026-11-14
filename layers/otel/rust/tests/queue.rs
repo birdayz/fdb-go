@@ -2,10 +2,11 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use fdb_otel_rust::{
     Error, ErrorKind, Result,
     collector::{Collector, Config, Sink},
-    writer::{Context, WriteStats},
+    writer::{Context, Diagnostics, WriteStats},
 };
 use serde::Deserialize;
 use std::{
+    collections::BTreeMap,
     sync::{
         Arc, Condvar, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -236,4 +237,101 @@ fn retry_is_explicitly_enabled_and_an_enabled_zero_interval_is_refused() {
             .unwrap()
             .contains("retry me")
     );
+}
+/// Acknowledges every call and reports a populated transaction map of its own.
+struct Sizes;
+impl Sink for Sizes {
+    fn export(&self, _: &Context, spans: &[Vec<u8>]) -> (WriteStats, Result<()>) {
+        let n = spans.len() as u64;
+        (
+            WriteStats {
+                committed_spans: n,
+                committed_batches: 1,
+                transaction_spans: BTreeMap::from([(n, 1)]),
+                ..WriteStats::default()
+            },
+            Ok(()),
+        )
+    }
+}
+/// The public composition: a disabled Collector merges none of a sink's own
+/// diagnostics, records no completions, and admits, rejects and drains exactly as the
+/// default does.
+#[test]
+fn a_disabled_collector_collects_nothing_optional_and_keeps_capacity() {
+    let spans = source();
+    for diagnostics in [Diagnostics::Enabled, Diagnostics::Disabled] {
+        let enabled = diagnostics == Diagnostics::Enabled;
+        // One request of three spans in exports of 2 and then 1.
+        let collector = Collector::start_with_diagnostics(
+            Arc::new(Sizes),
+            config(10_000, 2, 60_000, None),
+            diagnostics,
+        )
+        .unwrap();
+        collector.consume(&bounded(), &spans[..3]).unwrap();
+        collector.flush(&bounded()).unwrap();
+        collector.shutdown(&bounded()).unwrap();
+        let completions = collector.completions();
+        let stats = collector.stats();
+        assert_eq!(
+            (
+                stats.accepted_spans,
+                stats.exported_spans,
+                stats.stored_spans,
+                stats.committed_batches,
+                stats.export_attempts
+            ),
+            (3, 3, 3, 2, 2)
+        );
+        let sizes = BTreeMap::from([(1, 1), (2, 1)]);
+        if enabled {
+            assert_eq!(
+                (&stats.export_call_spans, &stats.transaction_spans),
+                (&sizes, &sizes)
+            );
+            assert_eq!(completions.len(), 1);
+            assert!(stats.max_outstanding_spans >= 3);
+        } else {
+            assert!(stats.export_call_spans.is_empty() && stats.transaction_spans.is_empty());
+            assert!(completions.is_empty());
+            assert_eq!(stats.max_outstanding_spans, 0);
+        }
+
+        // Capacity counts active spans in both modes.
+        let (entered, receiver) = mpsc::sync_channel(8);
+        let sink = Arc::new(Gate {
+            open: Mutex::new(false),
+            changed: Condvar::new(),
+            entered,
+        });
+        let collector = Collector::start_with_diagnostics(
+            sink.clone(),
+            config(2, 1, 200, Some(5_000)),
+            diagnostics,
+        )
+        .unwrap();
+        let ctx = bounded();
+        collector.consume(&ctx, &spans[..1]).unwrap();
+        receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+        collector.consume(&ctx, &spans[1..2]).unwrap();
+        assert_eq!(
+            collector.consume(&ctx, &spans[2..3]).unwrap_err().kind,
+            ErrorKind::Budget
+        );
+        *sink.open.lock().unwrap() = true;
+        sink.changed.notify_all();
+        collector.shutdown(&ctx).unwrap();
+        let (stats, completions) = collector.into_final();
+        assert_eq!(
+            (
+                stats.accepted_spans,
+                stats.rejected_spans,
+                stats.exported_spans,
+                stats.queued_spans
+            ),
+            (2, 1, 2, 0)
+        );
+        assert_eq!(completions.len(), if enabled { 2 } else { 0 });
+    }
 }

@@ -1,0 +1,110 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+# Hand-maintained: one native-enabled executable dispatches both Go clients (the
+# libfdbc tag selects native_cgo.go over native_stub.go), which Gazelle cannot express.
+# gazelle:ignore
+
+go_library(
+    name = "otelrust-control_lib",
+    testonly = True,
+    srcs = [
+        "census.go",
+        "corpus.go",
+        "ingest.go",
+        "layout.go",
+        "main.go",
+        "native.go",
+        "native_cgo.go",
+        "native_stub.go",
+        "verify.go",
+    ],
+    importpath = "fdb.dev/layers/otel/cmd/otelrust-control",
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+    visibility = ["//visibility:private"],
+    deps = [
+        "//gen",
+        "//layers/otel",
+        "//layers/otel/collector",
+        "//layers/otel/otelsql",
+        "//layers/otel/otelsql/otelv1pb",
+        "//pkg/fdbgo/client",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/fdbgo/libfdbc:libfdbc_native",
+        "//pkg/recordlayer",
+        "//pkg/relational/core/catalog",
+        "//pkg/relational/core/embedded",
+        "//pkg/relational/core/keyspace",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb",
+        "@io_opentelemetry_go_proto_otlp//trace/v1:trace",
+        "@org_golang_google_protobuf//encoding/protowire",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protodesc",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/descriptorpb",
+    ],
+)
+
+# A campaign executable, not a measurement inside the test lane.
+go_binary(
+    name = "otelrust-control",
+    testonly = True,
+    embed = [":otelrust-control_lib"],
+    gotags = ["libfdbc"],
+    pure = "off",
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "otelrust-control_test",
+    timeout = "long",
+    srcs = [
+        "census_test.go",
+        "ingest_test.go",
+        "main_test.go",
+        "native_fdb_test.go",
+        "native_test.go",
+    ],
+    args = [
+        "-control=$(rlocationpath :otelrust-control)",
+        "-libfdb-c=$(rlocationpath @libfdb_c_linux_x86_64//file)",
+        "-otel-rust=$(rlocationpath //layers/otel/rust:otel-rust)",
+    ],
+    data = [
+        "testdata/paired-job-v1.schema.json",
+        ":otelrust-control",
+        "//layers/otel/rust:otel-rust",
+        "@libfdb_c_linux_x86_64//file",
+    ],
+    embed = [":otelrust-control_lib"],
+    gotags = ["libfdbc"],
+    pure = "off",
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+    deps = [
+        "//gen",
+        "//layers/otel",
+        "//layers/otel/collector",
+        "//layers/otel/otelsql",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "//pkg/relational/core/catalog",
+        "//pkg/testcontainers/foundationdb",
+        "@io_opentelemetry_go_proto_otlp//common/v1:common",
+        "@io_opentelemetry_go_proto_otlp//trace/v1:trace",
+        "@org_golang_google_protobuf//proto",
+        "@rules_go//go/runfiles",
+    ],
+)

@@ -153,12 +153,43 @@ impl Layout {
     }
 }
 
+/// Whether a Writer or Collector collects its optional diagnostics: size maps, logical
+/// OTLP bytes, request completions and capacity-wait timers. Chosen once, at
+/// construction. Disabled leaves those fields uncollected (empty or zero), which is
+/// not an observation; the ACK, batch, retry and queue counters stay exact either way.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Diagnostics {
+    #[default]
+    Enabled,
+    Disabled,
+}
+
+/// Counts entries into diagnostic-only work, per instance, so unit tests can show a
+/// disabled policy never starts it. Outside this crate's unit tests it is empty.
+#[derive(Default)]
+pub(crate) struct Probe {
+    #[cfg(test)]
+    entered: std::sync::atomic::AtomicUsize,
+}
+impl Probe {
+    pub(crate) fn enter(&self) {
+        #[cfg(test)]
+        self.entered.fetch_add(1, Ordering::Relaxed);
+    }
+    #[cfg(test)]
+    pub(crate) fn entered(&self) -> usize {
+        self.entered.load(Ordering::Relaxed)
+    }
+}
+
 #[derive(Default, Debug, Clone, Serialize)]
 pub struct WriteStats {
     pub committed_spans: u64,
-    /// Committed transactions keyed by their span count.
+    /// Committed transactions keyed by their span count; uncollected when the
+    /// Writer's diagnostics are disabled.
     pub transaction_spans: BTreeMap<u64, u64>,
     pub committed_batches: u64,
+    /// Uncollected (0) when the Writer's diagnostics are disabled.
     pub logical_otlp_bytes: u64,
     pub retries: u64,
 }
@@ -169,6 +200,8 @@ pub struct Writer<D: Database> {
     layout: BoundLayout,
     batch_size: usize,
     compression: RecordCompression,
+    diagnostics: Diagnostics,
+    probe: Probe,
 }
 impl<D: Database> Writer<D> {
     pub fn new(
@@ -176,6 +209,18 @@ impl<D: Database> Writer<D> {
         layout: &Layout,
         batch_size: usize,
         compression: RecordCompression,
+    ) -> Result<Self> {
+        Self::new_with_diagnostics(db, layout, batch_size, compression, Diagnostics::Enabled)
+    }
+
+    /// `new` with an explicit diagnostics policy; a Disabled Writer never builds its
+    /// transaction-size map or sums logical OTLP bytes.
+    pub fn new_with_diagnostics(
+        db: D,
+        layout: &Layout,
+        batch_size: usize,
+        compression: RecordCompression,
+        diagnostics: Diagnostics,
     ) -> Result<Self> {
         if !(1..=64).contains(&batch_size) {
             return Err(Error::new(ErrorKind::Config, "batch size must be 1..64"));
@@ -186,6 +231,8 @@ impl<D: Database> Writer<D> {
             layout: layout.bind()?,
             batch_size,
             compression,
+            diagnostics,
+            probe: Probe::default(),
         })
     }
 
@@ -224,12 +271,15 @@ impl<D: Database> Writer<D> {
                 Ok(()) => {
                     stats.committed_spans += spans.len() as u64;
                     stats.committed_batches += 1;
-                    *stats
-                        .transaction_spans
-                        .entry(spans.len() as u64)
-                        .or_default() += 1;
-                    stats.logical_otlp_bytes +=
-                        spans.iter().map(|s| s.otlp.len() as u64).sum::<u64>();
+                    if self.diagnostics == Diagnostics::Enabled {
+                        self.probe.enter();
+                        *stats
+                            .transaction_spans
+                            .entry(spans.len() as u64)
+                            .or_default() += 1;
+                        stats.logical_otlp_bytes +=
+                            spans.iter().map(|s| s.otlp.len() as u64).sum::<u64>();
+                    }
                     return Ok(());
                 }
                 Err(err) if err.kind == ErrorKind::Budget => {
@@ -395,5 +445,197 @@ impl<D: Database> Writer<D> {
             return Err(corrupt());
         }
         Ok(Some(row))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use std::sync::Mutex;
+
+    /// An in-memory database: `conflicts` commits fail with 1020 first, and commit
+    /// number `fail_at` fails terminally.
+    #[derive(Clone, Default)]
+    struct Memory(Arc<Mutex<MemoryState>>);
+    #[derive(Default)]
+    struct MemoryState {
+        data: BTreeMap<Vec<u8>, Vec<u8>>,
+        conflicts: usize,
+        fail_at: Option<usize>,
+        commits: usize,
+    }
+    struct Tx {
+        db: Memory,
+        changes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
+    }
+    impl Database for Memory {
+        fn transaction(&self) -> Result<Box<dyn Transaction + '_>> {
+            Ok(Box::new(Tx {
+                db: self.clone(),
+                changes: BTreeMap::new(),
+            }))
+        }
+    }
+    impl Transaction for Tx {
+        fn get(&mut self, key: &[u8], _: &Context) -> Result<Option<Vec<u8>>> {
+            Ok(self.db.0.lock().unwrap().data.get(key).cloned())
+        }
+        fn ranges(&mut self, ranges: &[(Vec<u8>, Vec<u8>)], _: &Context) -> Result<Vec<KeyValues>> {
+            let state = self.db.0.lock().unwrap();
+            Ok(ranges
+                .iter()
+                .map(|(b, e)| {
+                    state
+                        .data
+                        .range(b.clone()..e.clone())
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect()
+                })
+                .collect())
+        }
+        fn set(&mut self, key: &[u8], value: &[u8]) {
+            self.changes.insert(key.to_vec(), Some(value.to_vec()));
+        }
+        fn clear(&mut self, key: &[u8]) {
+            self.changes.insert(key.to_vec(), None);
+        }
+        fn approximate_size(&mut self, _: &Context) -> Result<i64> {
+            Ok(0)
+        }
+        fn commit(&mut self, _: &Context) -> Result<()> {
+            let mut state = self.db.0.lock().unwrap();
+            if state.conflicts > 0 {
+                state.conflicts -= 1;
+                return Err(Error {
+                    kind: ErrorKind::Transient,
+                    message: "injected conflict".into(),
+                    fdb_code: Some(1020),
+                });
+            }
+            state.commits += 1;
+            if state.fail_at == Some(state.commits) {
+                return Err(Error {
+                    kind: ErrorKind::Operation,
+                    message: "injected terminal failure".into(),
+                    fdb_code: Some(2000),
+                });
+            }
+            for (k, v) in std::mem::take(&mut self.changes) {
+                match v {
+                    Some(v) => state.data.insert(k, v),
+                    None => state.data.remove(&k),
+                };
+            }
+            Ok(())
+        }
+        fn on_error(&mut self, code: i32, _: &Context) -> Result<()> {
+            self.changes.clear();
+            if code == 1020 {
+                Ok(())
+            } else {
+                Err(Error::new(ErrorKind::Operation, "terminal FDB error"))
+            }
+        }
+    }
+    fn layout() -> Layout {
+        Layout {
+            version: 1,
+            descriptor_sha256: hex::encode(Sha256::digest(include_bytes!(
+                "../testdata/descriptors.pb"
+            ))),
+            record_prefix: "01".into(),
+            index_prefixes: INDEXES
+                .iter()
+                .enumerate()
+                .map(|(i, n)| ((*n).into(), format!("02{:02x}", i)))
+                .collect(),
+            checks: vec![ExpectedValue {
+                key: "00".into(),
+                value: Some("0102".into()),
+            }],
+            empty_ranges: vec![("03".into(), "04".into())],
+            messages: "none".into(),
+        }
+    }
+    fn inputs() -> Vec<Vec<u8>> {
+        let vectors: serde_json::Value =
+            serde_json::from_slice(include_bytes!("../testdata/vectors.json")).unwrap();
+        vectors
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|v| v["name"].as_str().unwrap().starts_with("v2_"))
+            .map(|v| STANDARD.decode(v["otlp"].as_str().unwrap()).unwrap())
+            .collect()
+    }
+
+    /// One write of the eight fixture spans in batches of 3 under `diagnostics`: its
+    /// progress, outcome, diagnostic entries and the database afterward.
+    fn write(
+        diagnostics: Diagnostics,
+        conflicts: usize,
+        fail_at: Option<usize>,
+    ) -> (WriteStats, Result<()>, usize, BTreeMap<Vec<u8>, Vec<u8>>) {
+        let db = Memory::default();
+        {
+            let mut state = db.0.lock().unwrap();
+            state.data.insert(vec![0], vec![1, 2]);
+            state.conflicts = conflicts;
+            state.fail_at = fail_at;
+        }
+        let writer = Writer::new_with_diagnostics(
+            db.clone(),
+            &layout(),
+            3,
+            RecordCompression::None,
+            diagnostics,
+        )
+        .unwrap();
+        let (stats, result) = writer.write(&Context::default(), &inputs());
+        let data = db.0.lock().unwrap().data.clone();
+        (stats, result, writer.probe.entered(), data)
+    }
+
+    #[test]
+    fn disabled_diagnostics_are_never_entered_and_progress_stays_exact() {
+        assert_eq!(inputs().len(), 8);
+        // A 1020 conflict and native retry, then success; then a terminal failure on
+        // the second commit after the first batch's acknowledgment.
+        for (conflicts, fail_at, batches) in [(1, None, 3), (0, Some(2), 1)] {
+            let (on, on_result, on_entered, on_data) =
+                write(Diagnostics::Enabled, conflicts, fail_at);
+            let (off, off_result, off_entered, off_data) =
+                write(Diagnostics::Disabled, conflicts, fail_at);
+            assert_eq!(on_result.is_ok(), fail_at.is_none());
+            assert_eq!(off_result.is_ok(), fail_at.is_none());
+            for stats in [&on, &off] {
+                assert_eq!(
+                    (
+                        stats.committed_spans,
+                        stats.committed_batches,
+                        stats.retries
+                    ),
+                    (
+                        if fail_at.is_none() { 8 } else { 3 },
+                        batches,
+                        conflicts as u64
+                    )
+                );
+            }
+            assert!(on_data.len() > 1);
+            assert_eq!(on_data, off_data);
+            // The default policy collects: one diagnostic entry per committed batch.
+            assert_eq!(on_entered, batches as usize);
+            assert_eq!(on.transaction_spans.values().sum::<u64>(), batches);
+            assert!(on.logical_otlp_bytes > 0);
+            // Disabled never starts that work, rather than discarding its result.
+            assert_eq!(off_entered, 0);
+            assert!(off.transaction_spans.is_empty());
+            assert_eq!(off.logical_otlp_bytes, 0);
+        }
+        let default =
+            Writer::new(Memory::default(), &layout(), 3, RecordCompression::None).unwrap();
+        assert_eq!(default.diagnostics, Diagnostics::Enabled);
     }
 }

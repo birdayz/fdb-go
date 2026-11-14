@@ -6,12 +6,11 @@ use fdb_otel_rust::{
     native::{self, NativeDatabase},
     row::Schema,
     storage::RecordCompression,
-    writer::{Context, Database, Layout, WriteStats, Writer},
+    writer::{Context, Database, Diagnostics, Layout, WriteStats, Writer},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
     fs::{File, OpenOptions},
     io::{BufReader, Read, Write},
     os::unix::fs::OpenOptionsExt,
@@ -23,7 +22,11 @@ use std::{
 
 const JOB_SCHEMA: &str = "otel_paired_job_v1";
 const REPORT_SCHEMA: &str = "otel_control_report_v1";
-const BOUNDARY: &str = "span-only in-process ingest of one sealed otel_paired_job_v1 job; native libfdb_c 7.3.77 API 730, multi-version client disabled, 10000ms transaction timeout, no retry-count limit; writer_direct is driver->Writer and collector_queue is driver->Collector->Writer; admission is not an ACK; the six counters are availability markers (an exact value, or unavailable with a reason, never a stand-in zero); acked_span_operations counts acknowledged write operations including replays, not distinct durable spans; writer_direct export_attempts and queue_retries are not applicable; a sample's accepted_spans counts prechecked frames submitted to Writer::write (writer_direct) or spans Collector::consume admitted (collector_queue), never ACKs; only writer_direct samples carry direct_write_acked_operations; outer_retries is structurally 0 because the Rust Writer has no outer retry loop; no OTLP receiver, logs, messages, TEXT, HA or open-loop SLO claim; wall is first corpus read through Flush/shutdown, not external durable drain or audit";
+const BOUNDARY: &str = "span-only in-process ingest of one sealed otel_paired_job_v1 job; native libfdb_c 7.3.77 API 730, multi-version client disabled, 10000ms transaction timeout, no retry-count limit; writer_direct is driver->Writer and collector_queue is driver->Collector->Writer; admission is not an ACK; the six counters are availability markers (an exact value, or unavailable with a reason, never a stand-in zero); acked_span_operations counts acknowledged write operations including replays, not distinct durable spans; writer_direct export_attempts and queue_retries are not applicable; a sample's accepted_spans counts prechecked frames submitted to Writer::write (writer_direct) or spans Collector::consume admitted (collector_queue), never ACKs; only writer_direct samples carry direct_write_acked_operations; outer_retries is structurally 0 because the Rust Writer has no outer retry loop; no OTLP receiver, logs, messages, TEXT, HA or open-loop SLO claim; the measured path keeps exactly one sample per timed producer call plus final settled scalar counters, as every arm does, and collects no optional completion, timestamp, transaction-size, export-size or capacity-wait diagnostics (those report fields are unavailable); wall ends when the pipeline is drained: producers complete, a sequence-covering Flush, and shutdown joining every worker; that is not durable-storage drain, storage-lag stability or a verified distinct population";
+/// The measured path's diagnostics policy, given to both the Writer and the Collector:
+/// a disabled Collector cannot keep an enabled sink from collecting its own.
+const MEASURED: Diagnostics = Diagnostics::Disabled;
+const DIAGNOSTICS_OFF: &str = "disabled in the measured path to match per-call bookkeeping across arms; optional diagnostics are not comparison inputs";
 const DIRECT_LATENCY: &str =
     "decode-inclusive Writer::write call per producer batch; frame shape precheck excluded";
 const QUEUE_LATENCY: &str = "decode-inclusive Collector::consume admission per producer batch; frame shape precheck excluded; not an ACK";
@@ -392,23 +395,35 @@ impl Latency {
         }
     }
 }
-#[derive(Serialize)]
-struct CompletionSample {
-    seq: u64,
-    spans: usize,
-    arrival_ns: u64,
-    completed_ns: u64,
-    error: Option<String>,
+/// An optional diagnostic the measured path never collects: not an observed empty
+/// population or zero.
+#[derive(Clone, Copy, Serialize)]
+struct Unavailable {
+    availability: &'static str,
+    reason: &'static str,
 }
+const DISABLED: Unavailable = Unavailable {
+    availability: "unavailable",
+    reason: DIAGNOSTICS_OFF,
+};
+/// A settled Collector's optional diagnostics, each disabled in the measured path.
 #[derive(Serialize)]
 struct QueueReport {
-    max_outstanding_spans: usize,
-    blocked_requests: u64,
-    blocked_ns: u64,
-    export_call_spans: BTreeMap<u64, u64>,
-    completion_samples: Vec<CompletionSample>,
-    completion_samples_omitted: u64,
+    max_outstanding_spans: Unavailable,
+    blocked_requests: Unavailable,
+    blocked_ns: Unavailable,
+    export_call_spans: Unavailable,
+    completion_samples: Unavailable,
+    completion_samples_omitted: Unavailable,
 }
+const QUEUE_DIAGNOSTICS: QueueReport = QueueReport {
+    max_outstanding_spans: DISABLED,
+    blocked_requests: DISABLED,
+    blocked_ns: DISABLED,
+    export_call_spans: DISABLED,
+    completion_samples: DISABLED,
+    completion_samples_omitted: DISABLED,
+};
 #[derive(Serialize)]
 struct Resources {
     scope: &'static str,
@@ -462,7 +477,7 @@ fn resources(start: &RUsage, end: &RUsage) -> Option<Resources> {
         system_cpu_seconds: system,
         cpu_seconds: user + system,
         peak_rss_bytes: end.max_rss_kb as u64 * 1024,
-        measurement_source: "getrusage(RUSAGE_SELF) user/system CPU deltas from before the first corpus read to after Flush/shutdown, all threads; peak_rss_bytes is the whole-process high-water mark then, not a phase peak",
+        measurement_source: "getrusage(RUSAGE_SELF) user/system CPU deltas from before the first corpus read to the drained pipeline (after Flush, shutdown and every worker's join; the frozen scope name says first_read_through_flush), all threads; peak_rss_bytes is the whole-process high-water mark then, not a phase peak; whole-process argv-to-exit CPU and RSS are the runner's separate measurement",
     })
 }
 
@@ -540,7 +555,9 @@ struct Report {
     drain_ns: u64,
     samples: Vec<Sample>,
     admission_latency: Latency,
-    transaction_spans: BTreeMap<u64, u64>,
+    /// Disabled in the measured path for both workloads.
+    transaction_spans: Unavailable,
+    /// A started, settled Collector's disabled diagnostics; null for writer_direct.
     queue: Option<QueueReport>,
     ingest_resources: Option<Resources>,
     /// Present only when `ingest_resources` is null; the report is then an error.
@@ -626,10 +643,6 @@ fn produce(
                         total.committed_spans += progress.committed_spans;
                         total.committed_batches += progress.committed_batches;
                         total.retries += progress.retries;
-                        total.logical_otlp_bytes += progress.logical_otlp_bytes;
-                        for (size, count) in progress.transaction_spans {
-                            *total.transaction_spans.entry(size).or_default() += count;
-                        }
                     }
                     if let Err(err) = result {
                         shared.fail(err);
@@ -800,7 +813,7 @@ fn run_spawning<D: Database + 'static>(
         drain_ns: 0,
         samples: Vec::new(),
         admission_latency: Latency::default(),
-        transaction_spans: BTreeMap::new(),
+        transaction_spans: DISABLED,
         queue: None,
         ingest_resources: None,
         ingest_resources_unavailable_reason: Some(NOT_STARTED),
@@ -846,7 +859,13 @@ fn ingest<D: Database + 'static>(
     report: &mut Report,
 ) -> Result<()> {
     let db = open(&job.client_library, &job.cluster_file)?;
-    let writer = Arc::new(Writer::new(db, layout, job.writer_batch_size, compression)?);
+    let writer = Arc::new(Writer::new_with_diagnostics(
+        db,
+        layout,
+        job.writer_batch_size,
+        compression,
+        MEASURED,
+    )?);
     let schema = Schema::pinned()?;
     let (producers, producer_batch) = job.workload.producers();
     let shared = Shared {
@@ -883,7 +902,7 @@ fn ingest<D: Database + 'static>(
             retry_max_ms,
             retry_elapsed_ms,
             ..
-        } => Some(Collector::start(
+        } => Some(Collector::start_with_diagnostics(
             writer.clone(),
             collector::Config {
                 consumers,
@@ -898,6 +917,7 @@ fn ingest<D: Database + 'static>(
                 retry_max_ms,
                 retry_elapsed_ms,
             },
+            MEASURED,
         )?),
     };
     let start_usage = rusage();
@@ -985,10 +1005,10 @@ fn ingest<D: Database + 'static>(
             report.acked_span_operations = Counter::available(total.committed_spans);
             report.committed_batches = Counter::available(total.committed_batches);
             report.native_retries = Counter::available(total.retries);
-            report.transaction_spans = total.transaction_spans.clone();
             total.committed_spans == job.expected_frames
         }
-        Some((s, completions)) => {
+        // Disabled diagnostics leave the completion list empty and its maps unfilled.
+        Some((s, _)) => {
             report.accepted_spans = s.accepted_spans;
             report.rejected_spans = s.rejected_spans;
             report.acked_span_operations = Counter::available(s.stored_spans);
@@ -999,25 +1019,7 @@ fn ingest<D: Database + 'static>(
             report.exported_spans = Some(s.exported_spans);
             report.failed_spans = s.failed_spans;
             report.queued_spans_at_exit = s.queued_spans as u64;
-            report.transaction_spans = s.transaction_spans.clone();
-            let since = |at: Instant| nanos(at.saturating_duration_since(t0));
-            report.queue = Some(QueueReport {
-                max_outstanding_spans: s.max_outstanding_spans,
-                blocked_requests: s.blocked_requests,
-                blocked_ns: s.blocked_ns,
-                export_call_spans: s.export_call_spans.clone(),
-                completion_samples: completions
-                    .into_iter()
-                    .map(|c| CompletionSample {
-                        seq: c.seq,
-                        spans: c.spans,
-                        arrival_ns: since(c.arrival),
-                        completed_ns: since(c.completed),
-                        error: c.error,
-                    })
-                    .collect(),
-                completion_samples_omitted: s.completions_omitted,
-            });
+            report.queue = Some(QUEUE_DIAGNOSTICS);
             s.accepted_spans == job.expected_frames
                 && s.exported_spans == job.expected_frames
                 && s.rejected_spans == 0

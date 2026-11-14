@@ -58,7 +58,10 @@ rust_binary(
     edition = "2024",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     rustc_flags = ["-Dwarnings"],
-    visibility = ["//layers/otel/cmd/otelrust-fixture:__pkg__"],
+    visibility = [
+        "//layers/otel/cmd/otelrust-control:__pkg__",
+        "//layers/otel/cmd/otelrust-fixture:__pkg__",
+    ],
     deps = [":fdb_otel_rust"] + all_crate_deps(normal = True),
 )
 
