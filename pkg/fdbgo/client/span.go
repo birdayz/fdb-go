@@ -2,11 +2,11 @@ package client
 
 import (
 	"encoding/binary"
-	"fmt"
 	"math/rand/v2"
 
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
@@ -68,7 +68,7 @@ func childSpanContext(parent types.SpanContext) types.SpanContext {
 // BinaryReader here can't cause a wire divergence (the field layout is version-independent).
 func parseSpanParent(b []byte) (types.SpanContext, error) {
 	if len(b) != spanParentSize {
-		return types.SpanContext{}, fmt.Errorf("SPAN_PARENT: got %d bytes, want %d (8-byte version header + 16+8+1 SpanContext)", len(b), spanParentSize)
+		return types.SpanContext{}, &wire.FDBError{Code: ErrInvalidOptionValue}
 	}
 	var sc types.SpanContext
 	copy(sc.TraceID[:], b[8:24]) // skip the 8-byte protocol-version header
