@@ -9,8 +9,11 @@
     "--nohome_rc",
     "build",
     "--announce_rc",
+    "--compilation_mode=opt",
     "//layers/otel/rust:otel-rust"
   ],
+  "compilation_mode": "opt",
+  "configured_output_path": "bazel-out/k8-opt/bin/layers/otel/rust/otel-rust",
   "developer_home": "/home/bench",
   "rc_set": [
     {

@@ -25,6 +25,8 @@ def main(argv=None):
     parser.add_argument("--developer-home", required=True)
     parser.add_argument("--build-command-file", required=True, help="JSON argv array for the exact completed build")
     parser.add_argument("--build-exit-code", required=True, type=int, choices=(0,), help="recorded exit status of that build")
+    parser.add_argument("--compilation-mode", required=True, choices=("opt",), help="each toolchain's default optimized configuration")
+    parser.add_argument("--configured-output-path", required=True, help="exact bazel-out/<configuration>-opt/bin/... output from cquery")
     parser.add_argument("--rc-file", action="append", default=[], help="repeat in effective rc-set order, from --announce_rc")
     parser.add_argument("--deployment", required=True, help="binary + runfiles tar, materialized in original relative layout")
     parser.add_argument("--executable-relative-path", required=True)
@@ -37,9 +39,13 @@ def main(argv=None):
     source = {"root": str(Path(args.source_root).absolute()), "revision": args.source_revision,
               "manifest": str(Path(args.source_manifest).absolute()), "manifest_sha256": sealed(args.source_manifest)["sha256"]}
     command = json.loads(Path(args.build_command_file).read_text())
+    configured = builds._relative(args.configured_output_path)
+    if sealed(Path(source["root"]) / configured)["sha256"] != binary["sha256"]:
+        raise ValueError("configured opt output does not match the measured executable")
     receipt = {"schema": "otel_paired_build_receipt_v1", "executable_asset": name,
                "binary_sha256": binary["sha256"], "source_revision": source["revision"],
                "source_manifest_sha256": source["manifest_sha256"], "build_command": command,
+               "compilation_mode": args.compilation_mode, "configured_output_path": configured,
                "developer_home": str(Path(args.developer_home).absolute()), "rc_set": [sealed(path) for path in args.rc_file],
                "build_exit_code": args.build_exit_code, "readelf_command": ["readelf", "-d", binary["path"]],
                "readelf_output": builds.readelf_dynamic(binary["path"]), "readelf_exit_code": 0,

@@ -86,6 +86,7 @@ class ReceiptToolTests(BuildFixture):
                 "--source-root", str(self.root), "--source-revision", "a" * 40,
                 "--source-manifest", str(self.root / "source.manifest"), "--developer-home", str(self.root / "home"),
                 "--build-command-file", str(command), "--build-exit-code", "0",
+                "--compilation-mode", "opt", "--configured-output-path", receipt["configured_output_path"],
                 "--deployment", self.plan["assets"][b.deployment_asset(name)]["path"],
                 "--executable-relative-path", receipt["executable_relative_path"], "--output", str(output)]
         if name == "control_native_binary":
@@ -117,6 +118,25 @@ class ReceiptToolTests(BuildFixture):
             creator.main(args)
         self.assertFalse(output.exists())
 
+    def test_creator_refuses_non_opt_configured_outputs_and_mismatched_artifact(self):
+        name = "rust_binary"
+        for mode in ("fastbuild", "dbg"):
+            output = self.root / (mode + "-receipt.json")
+            args = self.args(name, output)
+            configured = self.receipt(name)["configured_output_path"].replace("-opt/", "-" + mode + "/")
+            path = self.root / configured; path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(Path(self.plan["assets"][name]["path"]).read_bytes())
+            args[args.index("--configured-output-path") + 1] = configured
+            with mock.patch.object(b, "readelf_dynamic", return_value=b.fake_readelf(name)), self.assertRaisesRegex(ValueError, "-opt configuration"):
+                creator.main(args)
+            self.assertFalse(output.exists())
+        output = self.root / "mismatched-configured-output.json"
+        args = self.args(name, output)
+        (self.root / self.receipt(name)["configured_output_path"]).write_bytes(b"different configured executable")
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            creator.main(args)
+        self.assertFalse(output.exists())
+
     def test_schema_and_all_three_literal_examples_match_closed_receipt_fields(self):
         root = Path(__file__).parent
         schema = json.loads((root / "paired-build-receipt-v1.schema.json").read_text())
@@ -130,6 +150,8 @@ class ReceiptToolTests(BuildFixture):
             self.assertEqual(example["deployment_asset"], b.deployment_asset(name))
             self.assertEqual(example["files"], sorted(example["files"], key=lambda row: row["path"]))
             self.assertIn("--nohome_rc", example["build_command"])
+            self.assertEqual(example["compilation_mode"], "opt")
+            self.assertTrue(b.optimized_build(example))
 
 
 class ProvenanceTests(BuildFixture):
@@ -147,6 +169,50 @@ class ProvenanceTests(BuildFixture):
             self.validate()
         with mock.patch.object(b, "readelf_dynamic", return_value=b.fake_readelf("control_native_binary")):
             b.validate(self.plan, "control_native_binary")
+
+    def test_all_roles_require_explicit_opt_and_configured_opt_output(self):
+        for name in b.EXECUTABLES:
+            original = self.receipt(name)
+            for option in (["--compilation_mode=opt"], ["--compilation_mode", "opt"], ["-c", "opt"]):
+                value = copy.deepcopy(original)
+                value["build_command"] = ["bazelisk", "--nohome_rc", "build", *option, "//synthetic:" + name]
+                self.save(value, name)
+                self.validate(name)
+                self.assertEqual(b.read_receipt(self.plan, name), value)
+            mutations = [("compilation_mode", mode) for mode in ("fastbuild", "dbg", None)]
+            mutations += [("configured_output_path", original["configured_output_path"].replace("-opt/", "-" + mode + "/"))
+                          for mode in ("fastbuild", "dbg")]
+            mutations += [("configured_output_path", "bazel-bin/" + original["executable_relative_path"]),
+                          ("configured_output_path", "bazel-out/k8-opt/bin/wrong-executable"),
+                          ("build_command", ["bazelisk", "--nohome_rc", "build", "//synthetic:" + name])]
+            for mode in ("fastbuild", "dbg"):
+                mutations += [("build_command", ["bazelisk", "--nohome_rc", "build", "--compilation_mode=" + mode, "//synthetic:" + name]),
+                              ("build_command", original["build_command"] + ["-c", mode]),
+                              ("build_command", original["build_command"] + ["-c" + mode]),
+                              ("build_command", ["bazelisk", "--nohome_rc", "build", "-c", mode, "--compilation_mode=opt", "//synthetic:" + name])]
+            for key, bad in mutations:
+                value = copy.deepcopy(original); value[key] = bad; self.save(value, name)
+                with self.subTest(name=name, field=key, value=bad), self.assertRaises(ValueError):
+                    self.validate(name)
+                with self.assertRaises(ValueError):
+                    b.read_receipt(self.plan, name)
+            for key in ("compilation_mode", "configured_output_path"):
+                value = copy.deepcopy(original); del value[key]; self.save(value, name)
+                with self.assertRaisesRegex(ValueError, "exact build receipt"):
+                    self.validate(name)
+            self.save(original, name)
+
+    def test_toolchain_default_opt_forbids_explicit_tuning(self):
+        original = self.receipt()
+        for flag in ("--rustcopt=-Clto=thin", "--copt=-flto", "--features=thin_lto", "--fdo_optimize=/profile",
+                     "--copt=-fprofile-generate", "--rustcopt=-Ctarget-cpu=native", "--copt=-march=native",
+                     "--rustcopt=-Ccodegen-units=1", "--@rules_go//go/config:gc_goopts=-pgo=/profile",
+                     "--copt=-O0", "--copt=-O2", "--@rules_rust//rust/settings:extra_rustc_flags=-Copt-level=0",
+                     "--@rules_go//go/config:gc_goopts=-N", "--fdo_profile=//profiles:trained",
+                     "--copt=-fauto-profile=/tmp/trained.afdo", "--copt=-fprofile-sample-use=/tmp/trained.prof"):
+            value = copy.deepcopy(original); value["build_command"].append(flag); self.save(value)
+            with self.subTest(flag=flag), self.assertRaisesRegex(ValueError, "toolchain-default opt"):
+                self.validate()
 
     def test_lightweight_receipt_does_not_read_bundle_or_binary(self):
         name = "control_native_binary"

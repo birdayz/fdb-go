@@ -208,6 +208,27 @@ class PlanTests(Fixture):
         with mock.patch.object(q, "NATIVE_SHA256", value["assets"]["libfdb_c"]["sha256"]), \
                 mock.patch.object(q.builds, "readelf_dynamic", side_effect=lambda path: q.builds.fake_readelf(Path(path).name)):
             q.validate_plan(value)
+            for arm in value["arms"]:
+                name = q.ARM_EXECUTABLES[arm]
+                ref = value["assets"][name]["build_receipt"]
+                receipt_path = Path(ref["path"]); original = receipt_path.read_bytes()
+                try:
+                    for mode in ("fastbuild", "dbg"):
+                        for field in ("compilation_mode", "configured_output_path", "build_command"):
+                            built = d.loads(original.decode())
+                            if field == "configured_output_path":
+                                built[field] = built[field].replace("-opt/", "-" + mode + "/")
+                            elif field == "build_command":
+                                built[field] = [arg for arg in built[field] if arg != "--compilation_mode=opt"]
+                            else:
+                                built[field] = mode
+                            receipt_path.write_text(json.dumps(built, sort_keys=True) + "\n")
+                            bad = copy.deepcopy(value)
+                            bad["assets"][name]["build_receipt"]["sha256"] = q.p.sha(receipt_path)
+                            with self.subTest(arm=arm, mode=mode, field=field), self.assertRaisesRegex(ValueError, "opt"):
+                                q.validate_plan(bad)
+                finally:
+                    receipt_path.write_bytes(original)
             missing = copy.deepcopy(value); del missing["preflight_verifications"]["rust_native"]
             with self.assertRaisesRegex(ValueError, "every selected arm"):
                 q.validate_plan(missing)

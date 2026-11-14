@@ -4,7 +4,7 @@
   "$comment": "Controller also verifies current file hashes, source identity, effective rc files, live readelf output and the complete bounded tar manifest. This is NOT a benchmark report or permission to execute.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "executable_asset", "binary_sha256", "source_revision", "source_manifest_sha256", "build_command", "developer_home", "rc_set", "build_exit_code", "readelf_command", "readelf_output", "readelf_exit_code", "deployment_asset", "deployment_sha256", "executable_relative_path", "client_library_relative_path", "files"],
+  "required": ["schema", "executable_asset", "binary_sha256", "source_revision", "source_manifest_sha256", "build_command", "compilation_mode", "configured_output_path", "developer_home", "rc_set", "build_exit_code", "readelf_command", "readelf_output", "readelf_exit_code", "deployment_asset", "deployment_sha256", "executable_relative_path", "client_library_relative_path", "files"],
   "properties": {
     "schema": {"const": "otel_paired_build_receipt_v1"},
     "executable_asset": {"enum": ["control_pure_binary", "control_native_binary", "rust_binary"]},
@@ -12,6 +12,8 @@
     "source_revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
     "source_manifest_sha256": {"$ref": "#/$defs/sha256"},
     "build_command": {"type": "array", "minItems": 4, "maxItems": 256, "items": {"type": "string", "minLength": 1}},
+    "compilation_mode": {"const": "opt"},
+    "configured_output_path": {"type": "string", "pattern": "^bazel-out/[A-Za-z0-9_.+-]+-opt(?:-[A-Za-z0-9_.+]+)*/bin/.+$"},
     "developer_home": {"type": "string", "pattern": "^/", "minLength": 2},
     "rc_set": {"type": "array", "maxItems": 1000, "items": {"$ref": "#/$defs/sealed_file"}},
     "build_exit_code": {"const": 0},

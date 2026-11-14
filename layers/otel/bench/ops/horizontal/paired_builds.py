@@ -24,7 +24,7 @@ MAX_BYTES = 512 * 1024 ** 2
 MAX_FILES = 10000
 RECEIPT_FIELDS = frozenset((
     "schema", "executable_asset", "binary_sha256", "source_revision", "source_manifest_sha256",
-    "build_command", "developer_home", "rc_set", "build_exit_code", "readelf_command",
+    "build_command", "compilation_mode", "configured_output_path", "developer_home", "rc_set", "build_exit_code", "readelf_command",
     "readelf_output", "readelf_exit_code", "deployment_asset", "deployment_sha256",
     "executable_relative_path", "client_library_relative_path", "files"))
 
@@ -238,6 +238,41 @@ def _argv(value):
     return type(value) is list and 1 <= len(value) <= 256 and all(type(arg) is str and arg and "\x00" not in arg for arg in value)
 
 
+def optimized_build(receipt):
+    """Require explicit default-optimized target configuration, never infer it from bytes."""
+    command = receipt["build_command"]
+    _require(_argv(command) and "build" in command, "exact Bazel build argv required")
+    options = command[command.index("build") + 1:]
+    modes, index = [], 0
+    while index < len(options):
+        option = options[index]
+        if option == "--":
+            break
+        if option in ("-c", "--compilation_mode"):
+            _require(index + 1 < len(options), "explicit opt compilation mode required")
+            index += 1
+            modes.append(options[index])
+        elif option.startswith("--compilation_mode="):
+            modes.append(option.partition("=")[2])
+        elif option.startswith("-c") and not option.startswith("--"):
+            modes.append(option[2:])
+        index += 1
+    _require(receipt.get("compilation_mode") == "opt" and modes and all(mode == "opt" for mode in modes),
+             "measured builds require explicit --compilation_mode=opt (or -c opt), without conflicting modes")
+    configured = _relative(receipt["configured_output_path"])
+    parts = PurePosixPath(configured).parts
+    _require(len(parts) >= 4 and parts[0] == "bazel-out" and parts[2] == "bin"
+             and re.fullmatch(r"[A-Za-z0-9_.+-]+-opt(?:-[A-Za-z0-9_.+]+)*", parts[1]) is not None
+             and not {"fastbuild", "dbg"} & set(parts[1].split("-"))
+             and "/".join(parts[3:]) == _relative(receipt["executable_relative_path"]),
+             "configured output must be the preserved executable under a Bazel -opt configuration")
+    tuning = re.compile(r"(?i)(?:(?:^|[^A-Za-z0-9_])(?:-?C)?(?:lto|flto|thin_lto|fat_lto|pgo|target[-_]cpu|codegen[-_]units|opt[-_]level|(?:[a-z]+_)?fdo[-_](?:optimize|instrument|profile)|fauto[-_]profile|fprofile[-_](?:generate|use|instr-generate|instr-use|sample-use))\b|-(?:march|mcpu)=)")
+    level = re.compile(r"(?i)(?:^|[=,\s])-(?:O(?:[0-9]+|s|g|z|fast)?|N)(?=$|[=,\s])")
+    _require(not any(tuning.search(option) or level.search(option) for option in options if not option.startswith(("//", "@"))),
+             "toolchain-default opt policy forbids optimization-level, LTO, PGO, target-cpu and codegen-units overrides")
+    return True
+
+
 def _same_path(left, right):
     if left.resolve() == right.resolve():
         return True
@@ -265,6 +300,7 @@ def read_receipt(plan, name):
              and receipt["deployment_asset"] == deployment
              and receipt["deployment_sha256"] == plan["assets"][deployment]["sha256"]
              and _hex(receipt["deployment_sha256"]), "build binary/deployment identity mismatch")
+    optimized_build(receipt)
     files = _manifest(receipt["files"])
     relative = _relative(receipt["executable_relative_path"])
     _require(relative in files and files[relative]["sha256"] == executable["sha256"]
@@ -351,6 +387,7 @@ def validate(plan, name, check_assets=True, inspect_elf=True):
     bundle_path = _sealed(bundle_ref, check_assets)
     _require(receipt["deployment_asset"] == deployment and receipt["deployment_sha256"] == bundle_ref["sha256"],
              "deployment identity mismatch")
+    optimized_build(receipt)
     files = _manifest(receipt["files"])
     relative = _relative(receipt["executable_relative_path"])
     _require(relative in files and files[relative]["sha256"] == executable["sha256"]
@@ -419,6 +456,9 @@ def fake_artifacts(name, executable_asset, source, library_asset):
     deployment = deployment_asset(name)
     binary = Path(executable_asset["path"])
     relative = "bin/" + name
+    configured = Path(source["root"]) / "bazel-out/k8-opt/bin" / relative
+    configured.parent.mkdir(parents=True, exist_ok=True)
+    configured.write_bytes(binary.read_bytes())
     payloads = {relative: (binary.read_bytes(), 0o755),
                 relative + ".runfiles/_main/MANIFEST": (b"synthetic runfiles marker\n", 0o644)}
     library = None
@@ -437,7 +477,8 @@ def fake_artifacts(name, executable_asset, source, library_asset):
     receipt = {"schema": "otel_paired_build_receipt_v1", "executable_asset": name,
                "binary_sha256": executable_asset["sha256"], "source_revision": source["revision"],
                "source_manifest_sha256": source["manifest_sha256"],
-               "build_command": ["bazelisk", "--nohome_rc", "build", "//synthetic:" + name],
+               "build_command": ["bazelisk", "--nohome_rc", "build", "--compilation_mode=opt", "//synthetic:" + name],
+               "compilation_mode": "opt", "configured_output_path": "bazel-out/k8-opt/bin/" + relative,
                "developer_home": str(binary.parent / "synthetic-developer-home"),
                "rc_set": [{"path": str(rc), "sha256": _sha(rc)}] if rc.exists() else [], "build_exit_code": 0,
                "readelf_command": ["readelf", "-d", str(binary)], "readelf_output": fake_readelf(name), "readelf_exit_code": 0,

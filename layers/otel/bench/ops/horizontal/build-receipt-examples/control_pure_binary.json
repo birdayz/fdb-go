@@ -9,8 +9,11 @@
     "--nohome_rc",
     "build",
     "--announce_rc",
+    "--compilation_mode=opt",
     "//layers/otel/cmd/otelrust-control:control-pure"
   ],
+  "compilation_mode": "opt",
+  "configured_output_path": "bazel-out/k8-opt/bin/layers/otel/cmd/otelrust-control/control-pure",
   "developer_home": "/home/bench",
   "rc_set": [
     {

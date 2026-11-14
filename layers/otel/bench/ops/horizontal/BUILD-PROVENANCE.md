@@ -2,7 +2,11 @@
 
 This is an artifact-creation recipe, **not permission to run an ingest job**.
 Stage 0 and paid evidence require these receipts; correctness-test executables
-built with the developer home rc are not measured artifacts. The ordinary
+built with the developer home rc are not measured artifacts. ALL THREE arms use
+**each toolchain's default optimized build under Bazel `-c opt`** (`--compilation_mode=opt`):
+no LTO, PGO, target-cpu or codegen-units overrides on either side. A common
+`fastbuild` label does not imply common optimization across Go and Rust.
+Fastbuild/dbg or missing-mode receipts are refused, not normalized to opt. The ordinary
 `just test` / verified lane keeps its existing rc configuration, unchanged.
 No command below runs an ingest executable or issues campaign rows.
 
@@ -29,7 +33,10 @@ Each also requires a normal `{path,sha256}` deployment asset:
 
 Job/report field names and the frozen shared-job schema are unchanged.
 `build_receipt` binds source revision/manifest, executable SHA256, exact successful
-build argv, developer home, the effective rc file set and its hashes, exact
+build argv, required `compilation_mode:"opt"`, required `configured_output_path`
+(normalized `bazel-out/<configuration>-opt/bin/<original-target-relative-path>`,
+including normal opt transition suffixes), developer home, the effective rc file
+set and its hashes, exact
 successful `readelf -d` command/output, deployment SHA256, original relative
 executable path, optional native client runfile, and the COMPLETE file manifest.
 Receipt objects are closed; duplicate keys and nonfinite JSON are rejected.
@@ -49,7 +56,7 @@ SOURCE_REVISION="$(git rev-parse HEAD)"
 # SOURCE_MANIFEST is the approved, current manifest for this exact source tree.
 # ARTIFACTS is a fresh private directory; do not overwrite earlier receipts.
 mkdir -m 0700 "$ARTIFACTS"
-cmd=(bazelisk --nohome_rc build --announce_rc "$target")
+cmd=(bazelisk --nohome_rc build --announce_rc --compilation_mode=opt "$target")
 python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${cmd[@]}" \
   > "$ARTIFACTS/build-command.json"
 if "${cmd[@]}" > "$ARTIFACTS/build.log" 2>&1; then
@@ -59,10 +66,17 @@ else
   cat "$ARTIFACTS/build.log" >&2
   exit "$build_exit"
 fi
-BINDIR="$(bazelisk --nohome_rc info bazel-bin)"
+BINDIR="$(bazelisk --nohome_rc info --compilation_mode=opt bazel-bin)"
+bazelisk --nohome_rc cquery --compilation_mode=opt --output=files "$target" \
+  > "$ARTIFACTS/configured-output.path"
+# This must name exactly the configured executable, not bazel-bin or a guessed
+# configuration. Stop if cquery reports multiple outputs or another mode.
+configured_output="$(cat "$ARTIFACTS/configured-output.path")"
+bazelisk --nohome_rc aquery --compilation_mode=opt --output=textproto "$target" \
+  > "$ARTIFACTS/configured-actions.textproto"
 # Copy for controller-side hashing/readelf only. It is NOT the deployed launcher.
-cp -- "$BINDIR/$relative" "$ARTIFACTS/$name"
-readelf -d "$ARTIFACTS/$name" > "$ARTIFACTS/readelf.txt"
+cp -- "$SOURCE_ROOT/$configured_output" "$ARTIFACTS/$name"
+LC_ALL=C readelf -d "$ARTIFACTS/$name" > "$ARTIFACTS/readelf.txt"
 sha256sum "$ARTIFACTS/$name" > "$ARTIFACTS/executable.sha256"
 
 # Include the original relative executable and its full runfiles tree. Include
@@ -102,6 +116,7 @@ python3 -B "$RUNNER_HORIZONTAL/paired_build_receipt.py" \
   --source-root "$SOURCE_ROOT" --source-revision "$SOURCE_REVISION" \
   --source-manifest "$SOURCE_MANIFEST" --developer-home "$HOME" \
   --build-command-file "$ARTIFACTS/build-command.json" --build-exit-code "$build_exit" \
+  --compilation-mode opt --configured-output-path "$configured_output" \
   "${RC_ARGS[@]}" --deployment "$ARTIFACTS/$name.deployment.tar" \
   --executable-relative-path "$relative" "${NATIVE_ARGS[@]}" \
   --output "$ARTIFACTS/$name.build-receipt.json" \
@@ -114,8 +129,26 @@ build an executable, run an ingest, infer rc files or invent a successful build.
 The creator supplies the observed zero build exit status. It scans the complete
 tar, captures live readelf output, validates before publishing, creates the
 receipt exclusively0600, and prints the two sealed plan asset entries. Preserve
-all original build logs, command JSON, readelf output, receipts and archives.
+all original build logs, command JSON, configured-output path, configured-action
+capture, readelf output, receipts and archives. The creator also hashes the
+configured source-tree output and requires it to equal the measured executable.
 The controller repeats live ELF/hash/rc/tar validation before any provider call.
+Both the recorded build command and the configured output must explicitly show
+opt; a copied artifact path or a claimed `compilation_mode` alone is insufficient.
+Contradictory fastbuild/dbg command options are refused even if a later opt option
+would otherwise override them. Local Stage 0 receipt creation and paid preflight
+use the same rule. Old receipts lacking these required fields must not be reused.
+
+Retain and inspect actual top-level compile-action flags from the configured
+capture: Rust opt-level, debug-assertions, overflow-checks, codegen-units, lto and
+panic strategy; Go gc flags and control-native cgo copts. Record the observed
+toolchain defaults, not assumed settings. Disclose the default-optimized rule in
+any comparison table. Do not add tuning flags to make the arms appear aligned;
+Optimization-level overrides (including `-O0`, `-Copt-level=0` and Go `-N`),
+LTO, PGO, target-cpu and codegen-units overrides are forbidden. The command guard
+rejects explicit forms; captured rc files and action flags remain audit evidence
+for indirect settings. Rebuild all three arms under the same policy and never
+join superseded fastbuild results with replacement opt results.
 
 Every RUNPATH/RPATH line must contain NO `/home` path. Native Go must have
 DT_NEEDED `libfdb_c.so`; pure and Rust must not prelink it. Do not edit ELF rpaths
