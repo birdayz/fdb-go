@@ -103,6 +103,8 @@ class PlanTests(Fixture):
             q.verify_sources(self.plan)
 
     def test_paid_validation_replays_each_arm_preflight_oracle_before_effects(self):
+        self.plan = q.fake_plan(self.root / "local-queue", kind="collector_queue")
+        self.assets = self.backend.remote_assets(self.plan)
         value = copy.deepcopy(self.plan)
         value["fake_provider"] = False
         source = value["sources"]["go_pure"]
@@ -115,6 +117,8 @@ class PlanTests(Fixture):
         proofs = {}
         for arm in value["arms"]:
             job = self.job(arm)
+            # Stage0's sealed64/64 queue and concurrency1 differ from the pilot.
+            job["workload"].update(producers=1, consumers=1, batch_max_spans=64)
             files = {}
             for name, data in (("ingest_job", job), ("ingest_report", r.fake_ingest(job)),
                                ("verification", r.fake_verify(job, control_identity=q.control_identity(value)))):
@@ -260,6 +264,8 @@ class GeometryTests(Fixture):
         value["native_geometry"]["log"]["memory_mib"] = 4096
         value["native_geometry"]["fdb_slice"]["memory_max_mib"] = 24576
         campaign = d.Campaign(value, self.root / "observation", None)
+        campaign.remote_root = "/srv/otel-horizontal/" + value["campaign"]
+        campaign.remote_harness = campaign.remote_root + "/harness"
         campaign.nodes = {"node1": {"id": 1}}
         sample = {"node_id": 1, "epoch": 1000, "total_bytes": 360 * q.p.GIB, "available_bytes": 300 * q.p.GIB,
                   "filesystem": "ext4", "mem_available_bytes": 32 * q.p.GIB, "allocated_bytes": q.p.GIB,
@@ -341,6 +347,24 @@ class ProducerTests(Fixture):
             value = r.fake_verify(job); mutator(value)
             with self.assertRaises(ValueError):
                 q.verify_audit(value, job, "fixture")
+
+
+    def test_oracle_rejects_empty_answers_duplicate_iterations_and_untyped_results(self):
+        job = self.job()
+        value = r.fake_verify(job)
+        for sample in value["queries"]:
+            sample["expected_results"] = []; sample["actual_results"] = []
+        with self.assertRaisesRegex(ValueError, "nonempty"):
+            q.verify_audit(value, job, "fixture")
+        value = r.fake_verify(job)
+        value["queries"][16]["iteration_in_class"] = value["queries"][0]["iteration_in_class"]
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            q.verify_audit(value, job, "fixture")
+        value = r.fake_verify(job)
+        value["queries"][0]["expected_results"] = ["not an object"]
+        value["queries"][0]["actual_results"] = ["not an object"]
+        with self.assertRaisesRegex(ValueError, "ordered results"):
+            q.verify_audit(value, job, "fixture")
 
 
 class ReceiptTests(Fixture):

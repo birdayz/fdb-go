@@ -250,8 +250,8 @@ def validate_plan(plan, *, check_assets=True):
                           and job["client_library_sha256"] == (None if arm == "go_pure" else plan["assets"]["libfdb_c"]["sha256"])
                           and job["record_compression"] == plan["storage_options"]["record_compression"]
                           and job["writer_batch_size"] == plan["writer_batch_size"] and job["writer_workers"] == plan["writer_workers"]
-                          and {k: v for k, v in job["workload"].items() if k not in ("producers", "consumers")} ==
-                              {k: v for k, v in plan["workload"].items() if k not in ("producers", "consumers")},
+                          and job["workload"]["kind"] == plan["workload"]["kind"]
+                          and job["workload"]["producer_batch_spans"] == plan["workload"]["producer_batch_spans"],
                           "Stage0 proof must exercise current source/binary/corpus/client and matched pipeline parameters")
                 p.require(reports.envelope(job, d.read(proof["ingest_report"]["path"]))["accepted"], "Stage0 ingest failed")
                 reports.verify_audit(d.read(proof["verification"]["path"]), job, "local", control_identity=control_identity(plan))

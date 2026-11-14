@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
+import driver as d
 import policy as p
 
 TELEMETRY = ("process_cpu_ns", "peak_rss_bytes", "network_bytes", "disk_bytes", "allocations",
@@ -108,19 +109,27 @@ def verify_audit(value, job, namespace, *, control_identity=None):
               "paid gate requires all1600 source-oracle queries")
     p.require(type(queries) is list and len(queries) == 1600, "complete raw independent oracle sidecar")
     by_class = {name: 0 for name in p.CLASSES}
+    seen = set()
     for i, sample in enumerate(queries):
         p.require(type(sample) is dict and type(sample.get("ordinal")) is int and sample["ordinal"] == i
                   and sample.get("class") in by_class and sample.get("matched") is True
                   and p.integer(sample.get("ns")) and sample.get("error") in (None, "")
-                  and type(sample.get("expected_results")) is list and sample["expected_results"] == sample.get("actual_results")
+                  and type(sample.get("iteration_in_class")) is int and 0 <= sample["iteration_in_class"] < 100
+                  and type(sample.get("query")) is dict and type(sample.get("expected_results")) is list
+                  and all(type(result) is dict for result in sample["expected_results"])
+                  and sample["expected_results"] == sample.get("actual_results")
                   and p.hexstr(sample.get("expected_digest")) and sample["expected_digest"] == sample.get("actual_digest"),
                   "source-oracle ordered results mismatch")
+        key = (sample["class"], sample["iteration_in_class"])
+        p.require(key not in seen, "duplicate source-oracle class/iteration")
+        seen.add(key)
         by_class[sample["class"]] += 1
+    p.require(any(sample["expected_results"] for sample in queries), "nonempty source-oracle answer population required")
     p.require(all(n == 100 for n in by_class.values()) and oracle.get("classes") ==
               {name: {"expected": 100, "executed": 100, "passed": 100} for name in p.CLASSES}, "16 classes x100 required")
     raw = value.get("query_raw")
     if raw is not None:
-        p.require(type(raw) is str and raw.endswith("\n") and [json.loads(line) for line in raw.splitlines()] == queries,
+        p.require(type(raw) is str and raw.endswith("\n") and [d.loads(line) for line in raw.splitlines()] == queries,
                   "original NDJSON bytes must match retained parsed queries")
         raw = raw.encode()
     else:
@@ -153,7 +162,9 @@ def fake_verify(job, *, control_identity=None):
         verify.update(control_identity)
     count = job["expected_frames"]
     queries = [{"ordinal": i, "class": p.CLASSES[i % 16], "iteration_in_class": i // 16, "query": {"fixture": i},
-                "expected_results": [], "actual_results": [], "expected_digest": "c" * 64, "actual_digest": "c" * 64,
+                "expected_results": [{"fixture_result": i}] if p.CLASSES[i % 16] == "time_broad" else [],
+                "actual_results": [{"fixture_result": i}] if p.CLASSES[i % 16] == "time_broad" else [],
+                "expected_digest": "c" * 64, "actual_digest": "c" * 64,
                 "matched": True, "error": None, "ns": 1} for i in range(1600)]
     fixture = p.census(count)
     counts = {"header_kvs": 1, "span_record_identities": count, "physical_span_record_kvs": count,
