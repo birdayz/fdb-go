@@ -7,7 +7,10 @@ use crate::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use prost::Message;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 pub const INDEXES: [&str; 8] = [
     "SPANS_TIME",
@@ -34,6 +37,24 @@ pub struct PreparedSpan {
     pub estimate: usize,
 }
 
+/// One accepted span: its decoded request, shared with the request's other spans,
+/// and which scope and span of it this is.
+#[derive(Clone)]
+pub struct Admitted {
+    frame: Arc<Frame>,
+    at: Selection,
+}
+impl Admitted {
+    /// This span as its own ResourceSpans wire. Encodes on every call.
+    pub fn otlp(&self) -> Vec<u8> {
+        self.frame.single(self.at)
+    }
+    #[cfg(test)]
+    pub(crate) fn encodes(&self) -> usize {
+        self.frame.encodes()
+    }
+}
+
 impl Schema {
     pub fn pinned() -> Result<Self> {
         Ok(Self)
@@ -41,56 +62,69 @@ impl Schema {
 
     /// A later duplicate identity replaces the earlier item at its original position.
     pub fn prepare(&self, inputs: &[Vec<u8>]) -> Result<Vec<PreparedSpan>> {
+        self.prepare_admitted(&self.accept(inputs)?)
+    }
+
+    /// The consumer's single preparation of already decoded spans: the identity and start
+    /// time recheck, one single-span wrap and encode, then the row and index entries.
+    /// A later duplicate identity replaces the earlier item at its original position.
+    pub fn prepare_admitted(&self, spans: &[Admitted]) -> Result<Vec<PreparedSpan>> {
         let mut out = Vec::new();
         let mut positions = HashMap::new();
-        self.each_span(inputs, |frame, at| {
-            let item = build(frame, at, frame.single(at))?;
+        for span in spans {
+            check_span(span.frame.span(span.at.span))?;
+            let item = build(&span.frame, span.at, span.frame.single(span.at))?;
             if let Some(&i) = positions.get(&item.primary_key) {
                 out[i] = item;
             } else {
                 positions.insert(item.primary_key.clone(), out.len());
                 out.push(item);
             }
-            Ok(())
-        })?;
+        }
         Ok(out)
     }
 
     /// Decode and check identity/start times without building rows or re-encoding.
     pub fn validate(&self, inputs: &[Vec<u8>]) -> Result<usize> {
         let mut count = 0;
-        self.each_span(inputs, |_, _| {
-            count += 1;
-            Ok(())
-        })?;
+        for input in inputs {
+            count += Self::decode_checked(input)?.span_count();
+        }
         Ok(count)
     }
 
-    /// Split at span boundaries while keeping wrapper fields and duplicates.
-    pub fn admit(&self, inputs: &[Vec<u8>]) -> Result<Vec<Vec<u8>>> {
+    /// Acceptance: decode each request once and check every span's well-formedness,
+    /// identifiers and start time. The decoded spans are what a queue carries on.
+    pub fn accept(&self, inputs: &[Vec<u8>]) -> Result<Vec<Admitted>> {
         let mut out = Vec::new();
-        self.each_span(inputs, |frame, at| {
-            out.push(frame.single(at));
-            Ok(())
-        })?;
-        Ok(out)
-    }
-
-    fn each_span(
-        &self,
-        inputs: &[Vec<u8>],
-        mut visit: impl FnMut(&Frame, Selection) -> Result<()>,
-    ) -> Result<()> {
         for input in inputs {
-            let frame = Frame::decode(input)?;
+            let frame = Arc::new(Self::decode_checked(input)?);
             for &scope in &frame.root().scope_spans {
                 for &span in &frame.scope_spans(scope).spans {
-                    check_span(frame.span(span))?;
-                    visit(&frame, Selection { scope, span })?;
+                    out.push(Admitted {
+                        frame: frame.clone(),
+                        at: Selection { scope, span },
+                    });
                 }
             }
         }
-        Ok(())
+        Ok(out)
+    }
+
+    /// The single-span OTLP bytes of every accepted span, encoded now. Inspection only:
+    /// the write path encodes once, inside `prepare_admitted`.
+    pub fn admit(&self, inputs: &[Vec<u8>]) -> Result<Vec<Vec<u8>>> {
+        Ok(self.accept(inputs)?.iter().map(Admitted::otlp).collect())
+    }
+
+    fn decode_checked(input: &[u8]) -> Result<Frame> {
+        let frame = Frame::decode(input)?;
+        for &scope in &frame.root().scope_spans {
+            for &span in &frame.scope_spans(scope).spans {
+                check_span(frame.span(span))?;
+            }
+        }
+        Ok(frame)
     }
 
     pub fn decode_row(&self, wire: &[u8]) -> Result<Spans> {

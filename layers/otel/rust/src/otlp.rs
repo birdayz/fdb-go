@@ -14,6 +14,10 @@ pub(crate) struct Node {
 pub(crate) struct Frame {
     nodes: Vec<Node>,
     sizes: Vec<usize>,
+    /// Single-span encodes of this request (shared by clones), so unit tests can show
+    /// the write path encodes each span once.
+    #[cfg(test)]
+    encodes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 #[derive(Clone, Copy)]
 pub(crate) struct Selection {
@@ -376,6 +380,8 @@ impl Frame {
         let mut frame = Self {
             nodes: vec![Kind::ResourceSpans.node()],
             sizes: Vec::new(),
+            #[cfg(test)]
+            encodes: Default::default(),
         };
         let mut pending = vec![(0, input, 1)];
         while let Some((id, mut buf, depth)) = pending.pop() {
@@ -419,6 +425,13 @@ impl Frame {
     }
     pub(crate) fn root(&self) -> &ResourceSpans {
         self.resource_spans(0)
+    }
+    pub(crate) fn span_count(&self) -> usize {
+        self.root()
+            .scope_spans
+            .iter()
+            .map(|&scope| self.scope_spans(scope).spans.len())
+            .sum()
     }
     fn fields<'a>(
         &'a self,
@@ -466,7 +479,14 @@ impl Frame {
         });
         size
     }
+    #[cfg(test)]
+    pub(crate) fn encodes(&self) -> usize {
+        self.encodes.load(std::sync::atomic::Ordering::SeqCst)
+    }
     pub(crate) fn single(&self, select: Selection) -> Vec<u8> {
+        #[cfg(test)]
+        self.encodes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let scope_size = self.size(select.scope, Some(select), &self.sizes);
         // Only the root's selected-scope length differs from the base arena sizes.
         let mut root_size = self.nodes[0].unknown.len();

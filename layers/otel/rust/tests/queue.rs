@@ -2,6 +2,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use fdb_otel_rust::{
     Error, ErrorKind, Result,
     collector::{Collector, Config, Sink},
+    row::Admitted,
     writer::{Context, Diagnostics, WriteStats},
 };
 use serde::Deserialize;
@@ -53,7 +54,7 @@ struct Gate {
     entered: mpsc::SyncSender<()>,
 }
 impl Sink for Gate {
-    fn export(&self, ctx: &Context, spans: &[Vec<u8>]) -> (WriteStats, Result<()>) {
+    fn export(&self, ctx: &Context, spans: &[Admitted]) -> (WriteStats, Result<()>) {
         let _ = self.entered.try_send(());
         let mut open = self.open.lock().unwrap();
         while !*open {
@@ -116,9 +117,9 @@ struct Selective {
     calls: AtomicUsize,
 }
 impl Sink for Selective {
-    fn export(&self, _: &Context, spans: &[Vec<u8>]) -> (WriteStats, Result<()>) {
+    fn export(&self, _: &Context, spans: &[Admitted]) -> (WriteStats, Result<()>) {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        if spans.contains(&self.bad) {
+        if spans.iter().any(|s| s.otlp() == self.bad) {
             return (
                 WriteStats::default(),
                 Err(Error::new(ErrorKind::Admission, "bad request")),
@@ -161,7 +162,7 @@ fn permanent_merged_failure_isolates_requests_and_flush_clears_errors() {
 }
 struct Transient(AtomicUsize);
 impl Sink for Transient {
-    fn export(&self, _: &Context, spans: &[Vec<u8>]) -> (WriteStats, Result<()>) {
+    fn export(&self, _: &Context, spans: &[Admitted]) -> (WriteStats, Result<()>) {
         if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
             return (
                 WriteStats::default(),
@@ -241,7 +242,7 @@ fn retry_is_explicitly_enabled_and_an_enabled_zero_interval_is_refused() {
 /// Acknowledges every call and reports a populated transaction map of its own.
 struct Sizes;
 impl Sink for Sizes {
-    fn export(&self, _: &Context, spans: &[Vec<u8>]) -> (WriteStats, Result<()>) {
+    fn export(&self, _: &Context, spans: &[Admitted]) -> (WriteStats, Result<()>) {
         let n = spans.len() as u64;
         (
             WriteStats {

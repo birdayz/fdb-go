@@ -2,7 +2,7 @@
 //! sequence barrier, and export counters only count completed sink calls.
 use crate::{
     Error, ErrorKind, Result,
-    row::Schema,
+    row::{Admitted, Schema},
     writer::{Context, Database, Diagnostics, Probe, WriteStats, Writer},
 };
 use serde::{Deserialize, Serialize};
@@ -14,11 +14,11 @@ use std::{
 };
 
 pub trait Sink: Send + Sync + 'static {
-    fn export(&self, ctx: &Context, spans: &[Vec<u8>]) -> (WriteStats, Result<()>);
+    fn export(&self, ctx: &Context, spans: &[Admitted]) -> (WriteStats, Result<()>);
 }
 impl<D: Database + 'static> Sink for Writer<D> {
-    fn export(&self, ctx: &Context, spans: &[Vec<u8>]) -> (WriteStats, Result<()>) {
-        self.write(ctx, spans)
+    fn export(&self, ctx: &Context, spans: &[Admitted]) -> (WriteStats, Result<()>) {
+        self.write_admitted(ctx, spans)
     }
 }
 
@@ -92,7 +92,7 @@ struct OpenDiagnostic {
 }
 struct Part {
     seq: u64,
-    spans: VecDeque<Vec<u8>>,
+    spans: VecDeque<Admitted>,
     /// Functional in every mode: the oldest pending part's age drives the flush timeout.
     at: Instant,
 }
@@ -229,7 +229,7 @@ impl Collector {
             s.probe.enter();
             Instant::now()
         });
-        let spans = self.schema.admit(inputs)?;
+        let spans = self.schema.accept(inputs)?;
         let n = spans.len();
         if n == 0 {
             return Ok(());
@@ -505,7 +505,7 @@ fn worker(s: Arc<Shared>, sink: Arc<dyn Sink>) {
     }
 }
 
-fn export_with_retry(s: &Shared, sink: &dyn Sink, spans: &[Vec<u8>]) -> Result<()> {
+fn export_with_retry(s: &Shared, sink: &dyn Sink, spans: &[Admitted]) -> Result<()> {
     let started = Instant::now();
     let mut delay = s.config.retry_initial_ms;
     loop {
@@ -666,7 +666,7 @@ mod tests {
         entered: mpsc::SyncSender<()>,
     }
     impl Sink for Partial {
-        fn export(&self, ctx: &Context, _: &[Vec<u8>]) -> (WriteStats, Result<()>) {
+        fn export(&self, ctx: &Context, _: &[Admitted]) -> (WriteStats, Result<()>) {
             if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
                 return (
                     WriteStats {
@@ -722,7 +722,7 @@ mod tests {
         }
     }
     impl Sink for Populated {
-        fn export(&self, _: &Context, spans: &[Vec<u8>]) -> (WriteStats, Result<()>) {
+        fn export(&self, _: &Context, spans: &[Admitted]) -> (WriteStats, Result<()>) {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             if let Some(gate) = &self.gate {
                 gate.lock()
@@ -736,10 +736,10 @@ mod tests {
             }
             if let Some(poison) = &self.poison {
                 let err = Error::new(ErrorKind::Operation, "injected permanent failure");
-                if spans.len() > 1 && spans.contains(poison) {
+                if spans.len() > 1 && spans.iter().any(|s| s.otlp() == *poison) {
                     return (acked(1), Err(err));
                 }
-                if spans.len() == 1 && spans[0] == *poison {
+                if spans.len() == 1 && spans[0].otlp() == *poison {
                     return (WriteStats::default(), Err(err));
                 }
             }

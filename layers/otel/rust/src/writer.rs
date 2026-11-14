@@ -1,6 +1,6 @@
 use crate::{
     Error, ErrorKind, Result,
-    row::{ACTUAL_TXN_BYTES, ADMISSION_BYTES, INDEXES, PreparedSpan, Schema},
+    row::{ACTUAL_TXN_BYTES, ADMISSION_BYTES, Admitted, INDEXES, PreparedSpan, Schema},
     storage::{self, RecordCompression},
     tuple::{self, Element},
 };
@@ -242,25 +242,45 @@ impl<D: Database> Writer<D> {
         let mut stats = WriteStats::default();
         let result = (|| {
             ctx.check()?;
-            let spans = self.schema.prepare(inputs)?;
-            ctx.check()?;
-            let mut start = 0;
-            while start < spans.len() {
-                let mut end = start;
-                let mut estimate = 0;
-                while end < spans.len()
-                    && end - start < self.batch_size
-                    && estimate + spans[end].estimate <= ADMISSION_BYTES
-                {
-                    estimate += spans[end].estimate;
-                    end += 1;
-                }
-                self.save(ctx, &spans[start..end], &mut stats)?;
-                start = end;
-            }
-            Ok(())
+            let accepted = self.schema.accept(inputs)?;
+            self.write_prepared(ctx, &accepted, &mut stats)
         })();
         (stats, result)
+    }
+
+    /// `write` for spans a queue already accepted: they are prepared here, once.
+    pub fn write_admitted(&self, ctx: &Context, spans: &[Admitted]) -> (WriteStats, Result<()>) {
+        let mut stats = WriteStats::default();
+        let result = (|| {
+            ctx.check()?;
+            self.write_prepared(ctx, spans, &mut stats)
+        })();
+        (stats, result)
+    }
+
+    fn write_prepared(
+        &self,
+        ctx: &Context,
+        accepted: &[Admitted],
+        stats: &mut WriteStats,
+    ) -> Result<()> {
+        let spans = self.schema.prepare_admitted(accepted)?;
+        ctx.check()?;
+        let mut start = 0;
+        while start < spans.len() {
+            let mut end = start;
+            let mut estimate = 0;
+            while end < spans.len()
+                && end - start < self.batch_size
+                && estimate + spans[end].estimate <= ADMISSION_BYTES
+            {
+                estimate += spans[end].estimate;
+                end += 1;
+            }
+            self.save(ctx, &spans[start..end], stats)?;
+            start = end;
+        }
+        Ok(())
     }
 
     fn save(&self, ctx: &Context, spans: &[PreparedSpan], stats: &mut WriteStats) -> Result<()> {
@@ -633,5 +653,87 @@ mod tests {
         let default =
             Writer::new(Memory::default(), &layout(), 3, RecordCompression::None).unwrap();
         assert_eq!(default.diagnostics, Diagnostics::Enabled);
+    }
+
+    #[test]
+    fn standalone_write_and_admitted_write_store_identical_bytes() {
+        let schema = Schema::pinned().unwrap();
+        let accepted = schema.accept(&inputs()).unwrap();
+        assert_eq!(accepted.len(), 8);
+        // Acceptance decodes and checks; it builds no single-span wire.
+        assert!(accepted.iter().all(|s| s.encodes() == 0));
+        let db = Memory::default();
+        db.0.lock().unwrap().data.insert(vec![0], vec![1, 2]);
+        let writer = Writer::new(db.clone(), &layout(), 3, RecordCompression::None).unwrap();
+        let (stats, result) = writer.write_admitted(&Context::default(), &accepted);
+        result.unwrap();
+        assert_eq!(stats.committed_spans, 8);
+        // The consumer wraps and encodes each span exactly once.
+        assert!(accepted.iter().all(|s| s.encodes() == 1));
+        let (_, result, _, standalone) = write(Diagnostics::Enabled, 0, None);
+        result.unwrap();
+        assert_eq!(db.0.lock().unwrap().data, standalone);
+    }
+
+    /// Records each span's encode count as the sink receives it and after it returns.
+    struct Observe {
+        writer: Writer<Memory>,
+        seen: Mutex<Vec<(usize, usize)>>,
+    }
+    impl crate::collector::Sink for Observe {
+        fn export(&self, ctx: &Context, spans: &[Admitted]) -> (WriteStats, Result<()>) {
+            let before: Vec<_> = spans.iter().map(Admitted::encodes).collect();
+            let out = crate::collector::Sink::export(&self.writer, ctx, spans);
+            let after: Vec<_> = spans.iter().map(Admitted::encodes).collect();
+            self.seen
+                .lock()
+                .unwrap()
+                .extend(before.into_iter().zip(after));
+            out
+        }
+    }
+
+    #[test]
+    fn a_queued_span_is_decoded_at_acceptance_and_encoded_once_by_its_consumer() {
+        use crate::collector::{Collector, Config};
+        let db = Memory::default();
+        db.0.lock().unwrap().data.insert(vec![0], vec![1, 2]);
+        // One native retry: the whole export is prepared once, not once per attempt.
+        db.0.lock().unwrap().conflicts = 1;
+        let sink = Arc::new(Observe {
+            writer: Writer::new(db.clone(), &layout(), 3, RecordCompression::None).unwrap(),
+            seen: Mutex::new(Vec::new()),
+        });
+        let collector = Collector::start(
+            sink.clone(),
+            Config {
+                consumers: 1,
+                queue_spans: 100,
+                batch_min: 4,
+                batch_max: 4,
+                flush_ms: 60_000,
+                block_on_overflow: false,
+                export_timeout_ms: 30_000,
+                retry_enabled: true,
+                retry_initial_ms: 1,
+                retry_max_ms: 1,
+                retry_elapsed_ms: 300_000,
+            },
+        )
+        .unwrap();
+        let ctx =
+            Context::default().with_deadline(Instant::now() + std::time::Duration::from_secs(10));
+        collector.consume(&ctx, &inputs()).unwrap();
+        collector.flush(&ctx).unwrap();
+        collector.shutdown(&ctx).unwrap();
+        let seen = sink.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 8);
+        assert!(
+            seen.iter()
+                .all(|&(before, after)| (before, after) == (0, 1))
+        );
+        let (_, result, _, expected) = write(Diagnostics::Enabled, 1, None);
+        result.unwrap();
+        assert_eq!(db.0.lock().unwrap().data, expected);
     }
 }

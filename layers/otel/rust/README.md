@@ -44,7 +44,11 @@ replacement. There are no measured performance or economics results yet.
 - `collector::Collector` is a span-bounded queue including in-flight exports,
   with overflow rejection/blocking, bounded batch sizes, timeout flushing,
   exponential retry, permanent-error request isolation, Flush sequence barriers,
-  draining shutdown and cancellation. Admission is **not** a durable ACK.
+  draining shutdown and cancellation. Admission is **not** a durable ACK. Admission
+  decodes each request once and synchronously rejects malformed wire, bad identifiers
+  or an out-of-range start time; the queue carries the decoded spans, and the consumer
+  wraps and encodes each span once (`Writer::write_admitted`). `Writer::write` on raw
+  frames decodes them first and then does the same.
   `stored_spans` counts acknowledged span-write operations across every completed
   sink attempt, including retry/isolation replays; it is not a unique durable-row
   count. `exported_spans`/`failed_spans` count logical queue completion outcomes;
