@@ -1,6 +1,12 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+// test2json writes a fixture's ^V as the literal 0x16 framing byte testing emits.
+func test2json(s string) string { return strings.ReplaceAll(s, "^V", "\x16") }
 
 // nightlyGetValueReply is the tail of the real 2026-07-14 nightly failure
 // (run 29311279420, "Differential Serialization Fuzzer" job), verbatim. The run
@@ -31,10 +37,7 @@ FAIL	fdb.dev/cmd/fdb-diff-oracle	120.093s
 // is how 124 of the 142 nightly (target, func) pairs run. Bazel frames the captured
 // test log with its own lines and exits 3, not 1.
 //
-// The `=== RUN` / `=== NAME` framing is load-bearing, not decoration: .bazelrc:23
-// sets `test --test_arg="-test.v"` globally, so every bazel-run target emits the
-// VERBOSE shape. A non-verbose fixture here would claim to pin this path while
-// pinning output it never produces.
+// This is the plain -test.v shape; bazelFramedDeadlineRace is what GO_TEST_WRAP_TESTV produces.
 const bazelDeadlineRace = `==================== Test output for //pkg/fdbgo/client:client_test:
 === RUN   FuzzRYWCache
 fuzz: elapsed: 1m27s, execs: 2210544 (25000/sec), new interesting: 0 (total: 41)
@@ -50,12 +53,52 @@ FAILED: //pkg/fdbgo/client:client_test (Exit 1) (see /home/x/.cache/bazel/.../te
 Executed 1 out of 1 test: 1 fails locally.
 `
 
+// bazelFramedDeadlineRace is bazelDeadlineRace under .bazelrc's GO_TEST_WRAP_TESTV=1:
+// testing's -test.v=test2json frames each status line with ^V (testing.go markFraming).
+var bazelFramedDeadlineRace = test2json(`==================== Test output for //pkg/fdbgo/client:client_test:
+^V=== RUN   FuzzRYWCache
+fuzz: elapsed: 1m27s, execs: 2210544 (25000/sec), new interesting: 0 (total: 41)
+fuzz: elapsed: 1m30s, execs: 2284412 (0/sec), new interesting: 0 (total: 41)
+^V--- FAIL: FuzzRYWCache (90.02s)
+    context deadline exceeded
+` + "^V=== NAME  \n" + `^VFAIL
+================================================================================
+FAILED: //pkg/fdbgo/client:client_test (Exit 1) (see /home/x/.cache/bazel/.../test.log)
+//pkg/fdbgo/client:client_test                                           FAILED in 95.0s
+
+Executed 1 out of 1 test: 1 fails locally.
+`)
+
 func TestClassify_DeadlineRaceIsRetryable(t *testing.T) {
 	t.Parallel()
 	cases := map[string]runResult{
 		"FuzzGetValueReply 2026-07-14": {output: nightlyGetValueReply, exitCode: 1},
 		"FuzzEndpoint 2026-07-11":      {output: nightlyEndpoint, exitCode: 1},
 		"bazel framing, exit 3":        {output: bazelDeadlineRace, exitCode: 3},
+		"test2json framing, exit 3":    {output: bazelFramedDeadlineRace, exitCode: 3},
+		"test2json framing, go test exit 1": {output: test2json(`fuzz: elapsed: 2m0s, execs: 5650945 (0/sec), new interesting: 0 (total: 16)
+^V--- FAIL: FuzzGetValueReply (120.08s)
+    context deadline exceeded
+^VFAIL
+exit status 1
+FAIL	fdb.dev/cmd/fdb-diff-oracle	120.091s
+`), exitCode: 1},
+		// Every framed status form chattyPrinter writes, including an indented nested result.
+		"test2json framing of other tests' status lines": {output: test2json(`^V=== RUN   TestSetup
+^V=== PAUSE TestSetup
+^V=== CONT  TestSetup
+^V    --- PASS: TestSetup/sub (0.00s)
+^V--- PASS: TestSetup (0.00s)
+^V=== RUN   TestOptional
+^V--- SKIP: TestOptional (0.00s)
+^V=== RUN   FuzzRYWCache
+fuzz: elapsed: 1m30s, execs: 2284412 (0/sec), new interesting: 0 (total: 41)
+^V--- FAIL: FuzzRYWCache (90.02s)
+    context deadline exceeded
+^VFAIL
+`), exitCode: 3},
+		"test2json framing with CRLF line ends": {output: test2json("fuzz: elapsed: 1m30s, execs: 2284412 (0/sec), new interesting: 0 (total: 41)\r\n" +
+			"^V--- FAIL: FuzzRYWCache (90.02s)\r\n    context deadline exceeded\r\n^VFAIL\r\n"), exitCode: 3},
 	}
 	for name, r := range cases {
 		if got := classify(r); got != verdictDeadlineRace {
@@ -176,6 +219,62 @@ FAIL
 	}
 	for name, r := range cases {
 		if got := classify(r); got != verdictRealFailure {
+			t.Errorf("%s: classify = %v, want %v", name, got, verdictRealFailure)
+		}
+	}
+}
+
+// Framed output gets the same scrutiny as plain output, and ^V anywhere but before a
+// status line at a line start is unrecognised, so it is a real failure.
+func TestClassify_Test2jsonFramingFailsClosed(t *testing.T) {
+	t.Parallel()
+	benign := strings.Split(bazelFramedDeadlineRace, "\n=====")[0] // drop bazel's closing banner
+	if got := classify(runResult{output: benign, exitCode: 3}); got != verdictDeadlineRace {
+		t.Fatalf("control: classify = %v, want %v", got, verdictDeadlineRace)
+	}
+	cases := map[string]string{
+		"framed second failure": test2json(`fuzz: elapsed: 2m0s, execs: 5650945 (0/sec), new interesting: 0 (total: 16)
+^V--- FAIL: TestSomethingElse (0.01s)
+    thing_test.go:12: broke
+^V--- FAIL: FuzzGetValueReply (120.08s)
+    context deadline exceeded
+^VFAIL
+`),
+		"framed repeated fuzz failure": test2json(`fuzz: elapsed: 2m0s, execs: 5650945 (0/sec), new interesting: 0 (total: 16)
+^V--- FAIL: FuzzGetValueReply (120.08s)
+    context deadline exceeded
+^V--- FAIL: FuzzGetValueReply (120.08s)
+    context deadline exceeded
+`),
+		"framed crasher found during minimization": test2json(`^V=== RUN   FuzzRYWCache
+fuzz: elapsed: 1m27s, execs: 2210544 (25000/sec), new interesting: 3 (total: 41)
+fuzz: minimizing 37-byte failing input file
+^V--- FAIL: FuzzRYWCache (90.02s)
+    context deadline exceeded
+` + "^V=== NAME  \n" + `^VFAIL
+`),
+		"framed minimization stats line only": test2json(`fuzz: elapsed: 1m30s, minimizing
+^V--- FAIL: FuzzRYWCache (90.02s)
+    context deadline exceeded
+`),
+		"framed failure with no fuzz progress": test2json(`^V=== RUN   FuzzGetValueReply
+^V--- FAIL: FuzzGetValueReply (0.00s)
+    context deadline exceeded
+^VFAIL
+`),
+		"framed extra detail line": test2json(`fuzz: elapsed: 2m0s, execs: 5650945 (0/sec), new interesting: 0 (total: 16)
+^V--- FAIL: FuzzGetValueReply (120.08s)
+    fuzz_test.go:1585: GetValueReply: STRUCTURAL MISMATCH
+    context deadline exceeded
+`),
+		// These would read as benign if the ^V were dropped wherever it appears.
+		"framed detail line":    strings.Replace(benign, "    context", "\x16    context", 1),
+		"doubly framed header":  strings.Replace(benign, "\x16--- FAIL", "\x16\x16--- FAIL", 1),
+		"framing inside a line": benign + "\nfuzz: elapsed: 1m31s, execs: 1 (0/sec)\x16--- FAIL: TestOther (0.01s)\n    other_test.go:9: broke",
+		"escaped framing byte":  benign + "\n\x1b\x16--- FAIL: TestOther (0.01s)\n    other_test.go:9: broke",
+	}
+	for name, out := range cases {
+		if got := classify(runResult{output: out, exitCode: 3}); got != verdictRealFailure {
 			t.Errorf("%s: classify = %v, want %v", name, got, verdictRealFailure)
 		}
 	}

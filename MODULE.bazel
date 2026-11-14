@@ -89,6 +89,67 @@ go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
 go_sdk.from_file(go_mod = "//:go.mod")
 go_sdk.nogo(nogo = "//:nogo")
 
+# Experimental source-only Rust span writer; all six upstream archives are pinned.
+bazel_dep(name = "rules_rust", version = "0.69.0")
+bazel_dep(name = "bazel_skylib", version = "1.9.0")
+
+otel_rust_sha256s = {
+    "rustc-1.99.1-x86_64-unknown-linux-gnu.tar.xz": "2ff05ff9c08a90861e7f6e4065b40a8b87463b4576186fd613871c3e37f2091f",
+    "cargo-1.99.1-x86_64-unknown-linux-gnu.tar.xz": "53f3521949404d595efb06a55c12c5658d4ed1c75566f33d3d514eaebe70bd8a",
+    "rust-std-1.99.1-x86_64-unknown-linux-gnu.tar.xz": "109b074225bf5b9ea3820890876bfdf4ed161adbfaf94b2b4b5984c85ee5d958",
+    "clippy-1.99.1-x86_64-unknown-linux-gnu.tar.xz": "458339712a058e52cc4522ff9ef8b59cd1ea1340312216cd94194c464a3f6dc5",
+    "rustfmt-1.99.1-x86_64-unknown-linux-gnu.tar.xz": "e3b36c4c7ec3486c059d8067ff48787676612007123aad7a4e8ec12c48ee9ba2",
+    "llvm-tools-1.99.1-x86_64-unknown-linux-gnu.tar.xz": "8429c5117debfb45c22cf2f97712ef00e0e94976c96cf92f661974a458ca7e84",
+}
+
+otel_rust_urls = ["https://static.rust-lang.org/dist/2026-10-15/{}.tar.xz"]
+
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(versions = [])
+rust.repository_set(
+    name = "otel_rust_linux_x86_64",
+    dev_components = False,
+    edition = "2024",
+    exec_triple = "x86_64-unknown-linux-gnu",
+    rustfmt_version = "1.99.1",
+    sha256s = otel_rust_sha256s,
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+    target_triple = "x86_64-unknown-linux-gnu",
+    urls = otel_rust_urls,
+    versions = ["1.99.1"],
+)
+use_repo(rust, "otel_rust_linux_x86_64__x86_64-unknown-linux-gnu__stable")
+
+register_toolchains("@otel_rust_linux_x86_64__x86_64-unknown-linux-gnu__stable//:toolchain")
+
+otel_rust_host = use_extension("@rules_rust//rust:extensions.bzl", "rust_host_tools")
+otel_rust_host.host_tools(
+    name = "otel_rust_host_tools",
+    dev_components = False,
+    edition = "2024",
+    rustfmt_version = "1.99.1",
+    sha256s = otel_rust_sha256s,
+    urls = otel_rust_urls,
+    version = "1.99.1",
+)
+use_repo(otel_rust_host, "otel_rust_host_tools")
+
+otel_rust_crate = use_extension("//layers/otel/rust:crate_extension.bzl", "otel_crates")
+otel_rust_crate.from_cargo(
+    name = "otel_rust_crates",
+    cargo_lockfile = "//layers/otel/rust:Cargo.lock",
+    host_tools = "@otel_rust_host_tools//:BUILD.bazel",
+    isolated = True,
+    lockfile = "//layers/otel/rust:Cargo.Bazel.lock",
+    manifests = ["//layers/otel/rust:Cargo.toml"],
+    skip_cargo_lockfile_overwrite = True,
+    supported_platform_triples = ["x86_64-unknown-linux-gnu"],
+)
+use_repo(otel_rust_crate, "otel_rust_crates")
+
 # C++ (wire format generation + FDB build)
 bazel_dep(name = "rules_cc", version = "0.2.26")
 
@@ -98,6 +159,7 @@ bazel_dep(name = "rules_cc", version = "0.2.26")
 bazel_dep(name = "foundationdb", version = "7.3.77")
 archive_override(
     module_name = "foundationdb",
+    integrity = "sha256-XlpcbZ0Of1EIYaqKo58A/w81rQu7UzQCB8+d383ycwA=",
     patch_cmds = [
         """cat > MODULE.bazel <<'MODEOF'
 module(name = "foundationdb", version = "7.3.77")
@@ -138,7 +200,6 @@ filegroup(
 )
 BUILDEOF""",
     ],
-    integrity = "sha256-XlpcbZ0Of1EIYaqKo58A/w81rQu7UzQCB8+d383ycwA=",
     strip_prefix = "foundationdb-7.3.77",
     urls = ["https://github.com/apple/foundationdb/archive/refs/tags/7.3.77.tar.gz"],
 )

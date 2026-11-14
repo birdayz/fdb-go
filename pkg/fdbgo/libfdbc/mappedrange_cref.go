@@ -1,4 +1,4 @@
-//go:build cgo && libfdbc
+//go:build cgo && (libfdbc || libfdbc_backend)
 
 // This file is the libfdb_c (raw cgo) REFERENCE side of the mapped-range
 // differential. Apple's Go binding (cgofdb) has no mapped-range call at all —

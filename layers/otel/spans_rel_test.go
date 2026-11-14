@@ -1,7 +1,9 @@
 package otel
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"reflect"
@@ -95,6 +97,74 @@ func rowAttributes(r *otelv1pb.SPANS) []Attribute {
 func sortedAttributes(as ...Attribute) []Attribute {
 	sort.Slice(as, func(i, j int) bool { return attributeLess(as[i], as[j]) })
 	return as
+}
+
+// The expected bytes are independent of the fixture generator: known fields
+// reorder, while each principal node retains its nonminimal unknown value.
+func TestRelPrepareRawUnknownFields(t *testing.T) {
+	t.Parallel()
+	decode := func(s string) []byte {
+		t.Helper()
+		b, err := hex.DecodeString(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	input := decode("a00685001a0172123fa00684001a0173122ca00683003901000000000000002a016e120841414141414141410a10313131313131313131313131313131310a08a00682000a0273630a06a00681001002")
+	want := decode("0a061002a0068100123f0a080a027363a0068200122c0a1031313131313131313131313131313131120841414141414141412a016e390100000000000000a00683001a0173a00684001a0172a0068500")
+	inputBefore := append([]byte(nil), input...)
+	rs := &tracepb.ResourceSpans{}
+	if err := proto.Unmarshal(input, rs); err != nil {
+		t.Fatal(err)
+	}
+	before := proto.Clone(rs)
+	checkUnknown := func(rs *tracepb.ResourceSpans) {
+		t.Helper()
+		if len(rs.ScopeSpans) != 1 || len(rs.ScopeSpans[0].Spans) != 1 {
+			t.Fatal("expected exactly one scope and span")
+		}
+		ss := rs.ScopeSpans[0]
+		for _, node := range []struct {
+			name    string
+			message proto.Message
+			unknown string
+		}{
+			{"Resource", rs.Resource, "a0068100"},
+			{"InstrumentationScope", ss.Scope, "a0068200"},
+			{"Span", ss.Spans[0], "a0068300"},
+			{"ScopeSpans", ss, "a0068400"},
+			{"ResourceSpans", rs, "a0068500"},
+		} {
+			if !bytes.Equal(node.message.ProtoReflect().GetUnknown(), decode(node.unknown)) {
+				t.Errorf("%s: unknown bytes %x, want %s", node.name, node.message.ProtoReflect().GetUnknown(), node.unknown)
+			}
+		}
+	}
+	checkUnknown(rs)
+	w := &SpanWriter{opts: SpanWriterOptions{BatchSize: 64}}
+	items, stats, err := w.prepare(t.Context(), []*tracepb.ResourceSpans{rs}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || stats != (ExportStats{ReceivedSpans: 1}) {
+		t.Fatalf("prepared %d rows with stats %+v", len(items), stats)
+	}
+	row := items[0].row.(*otelv1pb.SPANS)
+	if !bytes.Equal(row.OTLP, want) {
+		t.Fatalf("stored OTLP\n got %x\nwant %x", row.OTLP, want)
+	}
+	if len(row.ProtoReflect().GetUnknown()) != 0 || items[0].logical != 80 {
+		t.Fatal("OTLP unknowns became row unknowns or changed logical byte accounting")
+	}
+	stored := &tracepb.ResourceSpans{}
+	if err := proto.Unmarshal(row.OTLP, stored); err != nil {
+		t.Fatal(err)
+	}
+	checkUnknown(stored)
+	if !proto.Equal(rs, before) || !bytes.Equal(input, inputBefore) {
+		t.Fatal("preparing the row mutated its decoded input or raw frame")
+	}
 }
 
 // TestRelPrepare pins the row builder: bools and doubles are typed values

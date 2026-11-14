@@ -88,7 +88,31 @@ var (
 	// `\r?$` because anchoring cost the CRLF tolerance a substring match had: a log
 	// captured through a CRLF-translating path would otherwise slip the backstop.
 	minimizingStatsRE = regexp.MustCompile(`(?m)^fuzz: elapsed: .*, minimizing\r?$`)
+	// A status line testing frames under -test.v=test2json (testing.go chattyPrinter).
+	framedStatusRE = regexp.MustCompile(`^(?:    )*(?:=== (?:RUN|PAUSE|CONT|NAME) |--- (?:FAIL|PASS|SKIP): |FAIL\r?$)`)
 )
+
+// markFraming is testing's ^V, which GO_TEST_WRAP_TESTV's -test.v=test2json puts before status lines.
+const markFraming = "\x16"
+
+// unframe drops a ^V that frames a status line at its start. Any other ^V, framing
+// non-status text or inside a line, is a shape this classifier does not recognise.
+func unframe(out string) (string, bool) {
+	lines := strings.Split(out, "\n")
+	for i, line := range lines {
+		if rest, framed := strings.CutPrefix(line, markFraming); framed {
+			if !framedStatusRE.MatchString(rest) {
+				return "", false
+			}
+			line = rest
+		}
+		if strings.Contains(line, markFraming) {
+			return "", false
+		}
+		lines[i] = line
+	}
+	return strings.Join(lines, "\n"), true
+}
 
 // classify decides whether a non-zero fuzz run is a genuine finding or the known
 // Go stdlib race that leaks "context deadline exceeded" when the -fuzztime budget
@@ -135,7 +159,10 @@ func classify(r runResult) verdict {
 	if r.exitCode != exitGoTestFailure && r.exitCode != exitBazelTestsFailed {
 		return verdictRealFailure
 	}
-	out := r.output
+	out, ok := unframe(r.output)
+	if !ok {
+		return verdictRealFailure
+	}
 	for _, m := range hardFailureMarkers {
 		if strings.Contains(out, m) {
 			return verdictRealFailure
