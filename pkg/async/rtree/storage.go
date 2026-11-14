@@ -11,6 +11,7 @@ package rtree
 import (
 	"fmt"
 	"maps"
+	"math"
 	"math/big"
 	"slices"
 	"sort"
@@ -462,6 +463,42 @@ func (s *StorageAdapter) serializeItemSlot(slot ItemSlot) tuple.Tuple {
 	return tuple.Tuple{hv, itemKey, slot.Value}
 }
 
+// decodeHilbertValue matches Tuple.getBigInteger: preserve integers exactly,
+// including uint64 above MaxInt64, and narrow floats through Number.longValue().
+func decodeHilbertValue(value any) (*big.Int, error) {
+	switch v := value.(type) {
+	case int64:
+		return big.NewInt(v), nil
+	case uint64:
+		return new(big.Int).SetUint64(v), nil
+	case float32:
+		return decodeHilbertValue(float64(v)) // Widening float to double is exact.
+	case float64:
+		// Java's narrowing conversion saturates overflow and maps NaN to zero.
+		switch {
+		case math.IsNaN(v):
+			return big.NewInt(0), nil
+		case v >= 0x1p63:
+			return big.NewInt(math.MaxInt64), nil
+		case v <= -0x1p63:
+			return big.NewInt(math.MinInt64), nil
+		default:
+			return big.NewInt(int64(v)), nil
+		}
+	case big.Int:
+		return new(big.Int).Set(&v), nil
+	case *big.Int:
+		if v != nil {
+			return new(big.Int).Set(v), nil
+		}
+		return nil, &NullPointerError{}
+	case nil:
+		return nil, &NullPointerError{}
+	default:
+		return nil, &ClassCastError{ValueType: fmt.Sprintf("%T", value)}
+	}
+}
+
 // deserializeItemSlots deserializes leaf slots from the slot list tuple.
 // Each element in slotList is a nested tuple: (hv, itemKey, value).
 func (s *StorageAdapter) deserializeItemSlots(slotList tuple.Tuple) ([]ItemSlot, error) {
@@ -475,17 +512,13 @@ func (s *StorageAdapter) deserializeItemSlots(slotList tuple.Tuple) ([]ItemSlot,
 			return nil, fmt.Errorf("rtree: slot %d has %d elements, need 3", i, len(slotTuple))
 		}
 
-		// Hilbert value — may be *big.Int (large) or int64 (small, FDB decodes as int).
+		// Only a null leaf Hilbert value means recompute from its point.
 		if slotTuple[0] != nil {
-			switch v := slotTuple[0].(type) {
-			case *big.Int:
-				slots[i].HilbertValue = v
-			case big.Int:
-				cp := new(big.Int).Set(&v)
-				slots[i].HilbertValue = cp
-			case int64:
-				slots[i].HilbertValue = big.NewInt(v)
+			hv, err := decodeHilbertValue(slotTuple[0])
+			if err != nil {
+				return nil, fmt.Errorf("rtree: item slot %d Hilbert value: %w", i, err)
 			}
+			slots[i].HilbertValue = hv
 		}
 
 		// Item key: (pointCoords, keySuffix)
@@ -547,25 +580,19 @@ func (s *StorageAdapter) deserializeChildSlots(slotList tuple.Tuple) ([]ChildSlo
 			return nil, fmt.Errorf("rtree: child slot %d has %d elements, need 6", i, len(slotTuple))
 		}
 
-		switch v := slotTuple[0].(type) {
-		case *big.Int:
-			slots[i].SmallestHV = v
-		case int64:
-			slots[i].SmallestHV = big.NewInt(v)
-		default:
-			slots[i].SmallestHV = big.NewInt(0)
+		smallestHV, err := decodeHilbertValue(slotTuple[0])
+		if err != nil {
+			return nil, fmt.Errorf("rtree: child slot %d smallest Hilbert value: %w", i, err)
 		}
+		slots[i].SmallestHV = smallestHV
 		if v, ok := slotTuple[1].(tuple.Tuple); ok {
 			slots[i].SmallestKey = v
 		}
-		switch v := slotTuple[2].(type) {
-		case *big.Int:
-			slots[i].LargestHV = v
-		case int64:
-			slots[i].LargestHV = big.NewInt(v)
-		default:
-			slots[i].LargestHV = big.NewInt(0)
+		largestHV, err := decodeHilbertValue(slotTuple[2])
+		if err != nil {
+			return nil, fmt.Errorf("rtree: child slot %d largest Hilbert value: %w", i, err)
 		}
+		slots[i].LargestHV = largestHV
 		if v, ok := slotTuple[3].(tuple.Tuple); ok {
 			slots[i].LargestKey = v
 		}
