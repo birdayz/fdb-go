@@ -32,7 +32,8 @@ const DISABLE_MULTI_VERSION_CLIENT_API: i32 = 60;
 const ENV_OPTION_PREFIX: &[u8] = b"FDB_NETWORK_OPTION_";
 const ENV_OPTION_REFUSED: &str =
     "inherited FDB_NETWORK_OPTION_* environment variables are not allowed";
-const CLIENT_SHA256: &str = "617572467897d0360f76ffc33f24b58090ee691e3273750d2ff334cc71aae3fa";
+/// SHA256 of the only loadable libfdb_c, pinned in MODULE.bazel.
+pub const CLIENT_SHA256: &str = "617572467897d0360f76ffc33f24b58090ee691e3273750d2ff334cc71aae3fa";
 static NETWORK_STARTED: AtomicBool = AtomicBool::new(false);
 const NETWORK_RUNNING: i32 = i32::MIN;
 // libfdb_c is a process-global, one-shot runtime. Pin executable code until

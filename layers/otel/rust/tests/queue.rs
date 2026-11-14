@@ -30,6 +30,22 @@ fn source() -> Vec<Vec<u8>> {
 fn bounded() -> Context {
     Context::default().with_deadline(Instant::now() + Duration::from_secs(3))
 }
+/// One consumer and `batch` spans per export; every parameter explicit.
+fn config(queue_spans: usize, batch: usize, flush_ms: u64, retry: Option<u64>) -> Config {
+    Config {
+        consumers: 1,
+        queue_spans,
+        batch_min: batch,
+        batch_max: batch,
+        flush_ms,
+        block_on_overflow: false,
+        export_timeout_ms: 30_000,
+        retry_enabled: retry.is_some(),
+        retry_initial_ms: retry.unwrap_or(0),
+        retry_max_ms: retry.unwrap_or(1),
+        retry_elapsed_ms: 300_000,
+    }
+}
 struct Gate {
     open: Mutex<bool>,
     changed: Condvar,
@@ -66,13 +82,7 @@ fn queue_capacity_includes_active_spans_and_shutdown_drains() {
         changed: Condvar::new(),
         entered,
     });
-    let cfg = Config {
-        consumers: 1,
-        queue_spans: 2,
-        batch_min: 1,
-        batch_max: 1,
-        ..Config::default()
-    };
+    let cfg = config(2, 1, 200, Some(5_000));
     let collector = Collector::start(sink.clone(), cfg).unwrap();
     let spans = source();
     let ctx = bounded();
@@ -130,14 +140,7 @@ fn permanent_merged_failure_isolates_requests_and_flush_clears_errors() {
         bad: source[2].clone(),
         calls: AtomicUsize::new(0),
     });
-    let cfg = Config {
-        consumers: 1,
-        queue_spans: 8,
-        batch_min: 8,
-        batch_max: 8,
-        flush_ms: 60_000,
-        ..Config::default()
-    };
+    let cfg = config(8, 8, 60_000, Some(5_000));
     let collector = Collector::start(sink.clone(), cfg).unwrap();
     collector.consume(&ctx, &source[..2]).unwrap();
     collector.consume(&ctx, &source[2..3]).unwrap();
@@ -176,14 +179,7 @@ impl Sink for Transient {
 #[test]
 fn transient_retry_and_deadline_cancellation_do_not_claim_an_ack() {
     let sink = Arc::new(Transient(AtomicUsize::new(0)));
-    let cfg = Config {
-        consumers: 1,
-        batch_min: 1,
-        batch_max: 1,
-        retry_initial_ms: 1,
-        retry_max_ms: 1,
-        ..Config::default()
-    };
+    let cfg = config(10_000, 1, 200, Some(1));
     let collector = Collector::start(sink.clone(), cfg).unwrap();
     let source = source();
     collector.consume(&bounded(), &source[..1]).unwrap();
@@ -197,13 +193,7 @@ fn transient_retry_and_deadline_cancellation_do_not_claim_an_ack() {
         changed: Condvar::new(),
         entered,
     });
-    let cfg = Config {
-        consumers: 1,
-        batch_min: 1,
-        batch_max: 1,
-        retry_initial_ms: 0,
-        ..Config::default()
-    };
+    let cfg = config(10_000, 1, 200, None);
     let collector = Collector::start(gate, cfg).unwrap();
     collector.consume(&bounded(), &source[..1]).unwrap();
     receiver.recv_timeout(Duration::from_secs(2)).unwrap();
@@ -217,4 +207,33 @@ fn transient_retry_and_deadline_cancellation_do_not_claim_an_ack() {
     assert_eq!(collector.stats().exported_spans, 0);
     assert_eq!(collector.stats().failed_spans, 1);
     assert_eq!(collector.stats().queued_spans, 0);
+}
+#[test]
+fn retry_is_explicitly_enabled_and_an_enabled_zero_interval_is_refused() {
+    let mut zero = config(10_000, 1, 200, Some(1));
+    zero.retry_initial_ms = 0;
+    let refused = Collector::start(Arc::new(Transient(AtomicUsize::new(0))), zero);
+    assert_eq!(refused.err().unwrap().kind, ErrorKind::Config);
+    // Disabled retry: a transient failure completes the request as failed after one attempt.
+    let sink = Arc::new(Transient(AtomicUsize::new(0)));
+    let collector = Collector::start(sink.clone(), config(10_000, 1, 200, None)).unwrap();
+    collector.consume(&bounded(), &source()[..1]).unwrap();
+    assert_eq!(
+        collector.shutdown(&bounded()).unwrap_err().kind,
+        ErrorKind::Transient
+    );
+    let stats = collector.stats();
+    assert_eq!(sink.0.load(Ordering::SeqCst), 1);
+    assert_eq!((stats.export_attempts, stats.retries), (1, 0));
+    assert_eq!((stats.exported_spans, stats.failed_spans), (0, 1));
+    let completions = collector.completions();
+    assert_eq!(completions.len(), 1);
+    assert_eq!((completions[0].seq, completions[0].spans), (0, 1));
+    assert!(
+        completions[0]
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("retry me")
+    );
 }

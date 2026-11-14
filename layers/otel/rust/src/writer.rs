@@ -156,6 +156,8 @@ impl Layout {
 #[derive(Default, Debug, Clone, Serialize)]
 pub struct WriteStats {
     pub committed_spans: u64,
+    /// Committed transactions keyed by their span count.
+    pub transaction_spans: BTreeMap<u64, u64>,
     pub committed_batches: u64,
     pub logical_otlp_bytes: u64,
     pub retries: u64,
@@ -222,6 +224,10 @@ impl<D: Database> Writer<D> {
                 Ok(()) => {
                     stats.committed_spans += spans.len() as u64;
                     stats.committed_batches += 1;
+                    *stats
+                        .transaction_spans
+                        .entry(spans.len() as u64)
+                        .or_default() += 1;
                     stats.logical_otlp_bytes +=
                         spans.iter().map(|s| s.otlp.len() as u64).sum::<u64>();
                     return Ok(());

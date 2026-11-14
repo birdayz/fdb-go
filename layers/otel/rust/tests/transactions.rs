@@ -2,6 +2,7 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use fdb_otel_rust::{
     Error, ErrorKind, Result,
+    collector::{Collector, Config},
     row::Schema,
     storage::{self, RecordCompression},
     tuple::{self, Element},
@@ -14,6 +15,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 #[derive(Default)]
@@ -116,8 +118,13 @@ impl Transaction for Tx {
         ctx.check()?;
         self.changes.clear();
         if code != 1020 {
+            // As native `checked`: 1000..1500 is transient (e.g. 1031), the rest terminal.
             return Err(Error {
-                kind: ErrorKind::Operation,
+                kind: if (1000..1500).contains(&code) {
+                    ErrorKind::Transient
+                } else {
+                    ErrorKind::Operation
+                },
                 message: "terminal FDB error".into(),
                 fdb_code: Some(code),
             });
@@ -1066,4 +1073,208 @@ fn go_unknown_field_rows_and_keys_reach_the_physical_map() {
             m.name
         );
     }
+}
+
+// The real Collector over the real Writer over this transactional fake. Every
+// counter below is the composed result of Writer partial progress, not a supplied value.
+
+fn bounded() -> Context {
+    Context::default().with_deadline(Instant::now() + Duration::from_secs(5))
+}
+/// One consumer exporting exactly `batch` queued spans per call; flush forces the rest.
+fn queue(batch: usize, retry_ms: u64) -> Config {
+    Config {
+        consumers: 1,
+        queue_spans: 10_000,
+        batch_min: batch,
+        batch_max: batch,
+        flush_ms: 60_000,
+        block_on_overflow: false,
+        export_timeout_ms: 30_000,
+        retry_enabled: true,
+        retry_initial_ms: retry_ms,
+        retry_max_ms: retry_ms,
+        retry_elapsed_ms: 300_000,
+    }
+}
+fn otlp(fixtures: &[&Vector]) -> Vec<Vec<u8>> {
+    fixtures
+        .iter()
+        .map(|v| STANDARD.decode(&v.otlp).unwrap())
+        .collect()
+}
+fn named<'a>(fixtures: &'a [Vector], names: &[&str]) -> Vec<&'a Vector> {
+    names
+        .iter()
+        .map(|n| fixtures.iter().find(|v| v.name == *n).unwrap())
+        .collect()
+}
+fn sizes(pairs: &[(u64, u64)]) -> BTreeMap<u64, u64> {
+    pairs.iter().copied().collect()
+}
+
+#[test]
+fn collector_retries_a_partially_committed_writer_call_as_a_whole() {
+    let fixtures = vectors();
+    let four = named(&fixtures, &["v2_0", "v2_1", "v2_2", "v2_3"]);
+    let db = database();
+    // Writer batches of 2: the call's first transaction commits, its second gets 1031.
+    db.0.lock().unwrap().outcomes = VecDeque::from([None, Some(1031)]);
+    let writer = Writer::new(db.clone(), &layout(), 2, RecordCompression::None).unwrap();
+    let collector = Collector::start(Arc::new(writer), queue(4, 1)).unwrap();
+    collector.consume(&bounded(), &otlp(&four)).unwrap();
+    collector.flush(&bounded()).unwrap();
+    collector.shutdown(&bounded()).unwrap();
+    let stats = collector.stats();
+    assert_eq!((stats.accepted_spans, stats.rejected_spans), (4, 0));
+    assert_eq!((stats.exported_spans, stats.failed_spans), (4, 0));
+    // Operations: 2 from the failed attempt plus 4 from the whole-call retry.
+    assert_eq!((stats.stored_spans, stats.committed_batches), (6, 3));
+    assert_eq!(
+        (stats.export_attempts, stats.retries, stats.native_retries),
+        (2, 1, 0)
+    );
+    assert_eq!(stats.export_call_spans, sizes(&[(4, 2)]));
+    assert_eq!(stats.transaction_spans, sizes(&[(2, 3)]));
+    assert_eq!(stats.queued_spans, 0);
+    let completions = collector.completions();
+    assert_eq!(completions.len(), 1);
+    assert_eq!((completions[0].seq, completions[0].spans), (0, 4));
+    assert!(completions[0].error.is_none());
+    let state = db.0.lock().unwrap();
+    assert_eq!(
+        (state.attempts, state.transactions, state.retries),
+        (4, 4, 0)
+    );
+    assert_eq!(state.committed_records, [2, 2, 2]);
+    assert_eq!(state.data, expected_physical(&layout(), &four));
+}
+
+#[test]
+fn collector_counts_writer_dedup_and_native_on_error_retries() {
+    let fixtures = vectors();
+    // Fidelity replaces v2_0's identity inside the same call: two rows are written.
+    let request = named(&fixtures, &["v2_0", "v2_1", "fidelity"]);
+    let db = database();
+    db.0.lock().unwrap().outcomes = VecDeque::from([Some(1020)]);
+    let writer = Writer::new(db.clone(), &layout(), 64, RecordCompression::None).unwrap();
+    let collector = Collector::start(Arc::new(writer), queue(3, 1)).unwrap();
+    collector.consume(&bounded(), &otlp(&request)).unwrap();
+    collector.shutdown(&bounded()).unwrap();
+    let stats = collector.stats();
+    assert_eq!((stats.accepted_spans, stats.exported_spans), (3, 3));
+    assert_eq!((stats.stored_spans, stats.committed_batches), (2, 1));
+    assert_eq!(
+        (stats.export_attempts, stats.retries, stats.native_retries),
+        (1, 0, 1)
+    );
+    assert_eq!(stats.export_call_spans, sizes(&[(3, 1)]));
+    assert_eq!(stats.transaction_spans, sizes(&[(2, 1)]));
+    let state = db.0.lock().unwrap();
+    assert_eq!(
+        (state.attempts, state.transactions, state.retries),
+        (2, 1, 1)
+    );
+    assert_eq!(
+        state.data,
+        expected_physical(&layout(), &named(&fixtures, &["fidelity", "v2_1"]))
+    );
+}
+
+#[test]
+fn permanent_merged_failure_isolates_requests_after_partial_commits() {
+    let fixtures = vectors();
+    let a = named(&fixtures, &["v2_0", "v2_1"]);
+    let b = named(&fixtures, &["v2_2"]);
+    let db = database();
+    // One-span transactions: the merged call commits A then fails on B (2004 is
+    // terminal); isolation replays A (two commits) and B fails alone.
+    db.0.lock().unwrap().outcomes =
+        VecDeque::from([None, None, Some(2004), None, None, Some(2004)]);
+    let writer = Writer::new(db.clone(), &layout(), 1, RecordCompression::None).unwrap();
+    let collector = Collector::start(Arc::new(writer), queue(3, 1)).unwrap();
+    collector.consume(&bounded(), &otlp(&a)).unwrap();
+    collector.consume(&bounded(), &otlp(&b)).unwrap();
+    let err = collector.flush(&bounded()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Operation);
+    collector.shutdown(&bounded()).unwrap();
+    let stats = collector.stats();
+    assert_eq!(
+        (
+            stats.accepted_spans,
+            stats.exported_spans,
+            stats.failed_spans
+        ),
+        (3, 2, 1)
+    );
+    // Operations: A's two from the merged call plus A's two replayed alone.
+    assert_eq!((stats.stored_spans, stats.committed_batches), (4, 4));
+    assert_eq!(
+        (stats.export_attempts, stats.retries, stats.native_retries),
+        (3, 0, 0)
+    );
+    assert_eq!(stats.export_call_spans, sizes(&[(1, 1), (2, 1), (3, 1)]));
+    assert_eq!(stats.transaction_spans, sizes(&[(1, 4)]));
+    let completions = collector.completions();
+    assert_eq!(completions.len(), 2);
+    assert_eq!((completions[0].seq, completions[0].spans), (0, 2));
+    assert!(completions[0].error.is_none());
+    assert_eq!((completions[1].seq, completions[1].spans), (1, 1));
+    assert!(completions[1].error.is_some());
+    let state = db.0.lock().unwrap();
+    assert_eq!((state.attempts, state.transactions), (6, 6));
+    assert_eq!(state.data, expected_physical(&layout(), &a));
+}
+
+#[test]
+fn canceled_whole_call_retry_keeps_partial_commits_and_a_replay_completes() {
+    let fixtures = vectors();
+    let four = named(&fixtures, &["v2_0", "v2_1", "v2_2", "v2_3"]);
+    let db = database();
+    db.0.lock().unwrap().outcomes = VecDeque::from([None, Some(1031)]);
+    let writer = Writer::new(db.clone(), &layout(), 2, RecordCompression::None).unwrap();
+    // A one-minute backoff: cancellation, not the retry, ends the call.
+    let collector = Collector::start(Arc::new(writer), queue(4, 60_000)).unwrap();
+    collector.consume(&bounded(), &otlp(&four)).unwrap();
+    let limit = bounded();
+    while collector.stats().retries == 0 {
+        limit.check().unwrap();
+        std::thread::yield_now();
+    }
+    let canceled = Context::default();
+    canceled.cancel();
+    assert_eq!(
+        collector.shutdown(&canceled).unwrap_err().kind,
+        ErrorKind::Canceled
+    );
+    assert!(collector.shutdown(&bounded()).is_err());
+    let stats = collector.stats();
+    assert_eq!(
+        (stats.exported_spans, stats.failed_spans, stats.queued_spans),
+        (0, 4, 0)
+    );
+    assert_eq!((stats.stored_spans, stats.committed_batches), (2, 1));
+    assert_eq!((stats.export_attempts, stats.retries), (1, 1));
+    assert_eq!(
+        db.0.lock().unwrap().data,
+        expected_physical(&layout(), &four[..2])
+    );
+    // Replaying the whole call later is idempotent and completes the population.
+    let writer = Writer::new(db.clone(), &layout(), 2, RecordCompression::None).unwrap();
+    let replay = Collector::start(Arc::new(writer), queue(4, 1)).unwrap();
+    replay.consume(&bounded(), &otlp(&four)).unwrap();
+    replay.shutdown(&bounded()).unwrap();
+    let stats = replay.stats();
+    assert_eq!(
+        (
+            stats.exported_spans,
+            stats.stored_spans,
+            stats.committed_batches
+        ),
+        (4, 4, 2)
+    );
+    assert_eq!(
+        db.0.lock().unwrap().data,
+        expected_physical(&layout(), &four)
+    );
 }

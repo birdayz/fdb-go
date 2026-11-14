@@ -12,10 +12,19 @@ filegroup(
     name = "compatibility_fixtures",
     srcs = [
         "testdata/descriptors.pb",
+        "testdata/paired-job-v1.schema.json",
         "testdata/vectors.json",
         "testdata/wire_vectors.json",
     ],
     visibility = ["//layers/otel/cmd/otelrust-fixture:__pkg__"],
+)
+
+# Byte-exact copy of the frozen runner schema (SHA256 f450e233...6f1a); the driver
+# tests pin its hash and field sets. For the Rust driver and the forthcoming Go control.
+filegroup(
+    name = "paired_job_schema",
+    srcs = ["testdata/paired-job-v1.schema.json"],
+    visibility = ["//layers/otel:__subpackages__"],
 )
 
 rust_library(

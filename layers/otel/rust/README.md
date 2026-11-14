@@ -47,18 +47,29 @@ replacement. There are no measured performance or economics results yet.
   count. `exported_spans`/`failed_spans` count logical queue completion outcomes;
   export attempts, committed batches and native retries are separate counters.
   Only an independent post-drain census establishes unique stored identities.
-- The binary is a closed-loop, finite-corpus **writer driver**, not the queued
-  Collector benchmark. It requires an explicit JSON job with absolute client,
-  cluster, layout, framed corpus and new output paths; corpus/binary SHA256,
-  source revision, expected frame count, row budget, batch size, workers,
-  record compression and absolute run timeout. Corpus frames have a four-byte
-  big-endian length followed by one single-span ResourceSpans. Before a batch's
-  call is timed, `Schema::validate` checks every frame with the decode and
-  identity/start rules `Writer::write` applies and requires exactly one span, so
-  a bad batch starts no write; the recorded call latency still includes
-  `Writer::write`'s own decode, row preparation and size admission. It records raw
-  call latencies, acknowledged progress and failures. Its job/manifest interfaces
-  are experimental, not a cloud execution admission mechanism.
+- The binary runs exactly one `otel_paired_job_v1` job (the frozen runner
+  schema, copied byte-exact into `testdata/paired-job-v1.schema.json` and
+  hash-pinned by `driver_test`) with `mode=ingest`, `arm=rust_native`,
+  `client_backend=native_c` and `writer_workers=1`. Every field is required, with
+  no defaults; unknown, duplicate, null, trailing or out-of-bound values fail
+  closed. Job, executable, client, cluster, layout and corpus seals and clean,
+  distinct absolute paths are checked before the new 0600 report is reserved.
+  After that, every failure still writes a synced `status=error` report.
+  `workload.kind=writer_direct` is driver -> Writer; `collector_queue` is
+  driver -> Collector -> Writer, with every queue and retry parameter explicit
+  (an explicit `retry_enabled`; Go's per-attempt timeout, doubling capped
+  backoff and elapsed-time rule). Corpus frames have a four-byte big-endian
+  length followed by one single-span ResourceSpans. Before a call is timed,
+  `Schema::validate` checks every frame with `Writer::write`'s decode and
+  identity/start rules and requires exactly one span; the timed call still
+  includes its own decode. Reports separate admission samples from ACKs: the
+  top-level `acked_span_operations` is an availability object counting
+  acknowledged write operations including replays (never distinct durable
+  spans), only writer_direct samples carry `direct_write_acked_operations`, and
+  counters are read only after the Collector is dropped and every consumer
+  joined. They carry operation versus logical counters, export/transaction size
+  distributions, bounded per-request completions and getrusage CPU from the
+  first read through Flush/shutdown. Report field shapes are provisional.
 
 A layout manifest is an immutable control-plane description of an **exclusively
 owned** tenant: record/index prefixes, exact expected header/layout/catalog
@@ -107,8 +118,11 @@ benchmark can be accepted. No service/cloud execution is authorized by this file
 The minimum live native proof is `TestNativeRustAgainstOwnedFDB` in
 `cmd/otelrust-fixture`. It starts its own FDB 7.3.77 container and creates real
 tenants through the production Go Exporter. It then runs the production
-`otel-rust` executable (2 workers x 4-frame calls, an identical replay and a
-refused inherited `FDB_NETWORK_OPTION_*` run) and the test-only `native_proof`
+`otel-rust` executable on frozen-schema jobs over the fixture's eight
+otel_fixture_v2 frames: `writer_direct` (2 producers x 4-frame calls), an
+identical replay, a refused inherited `FDB_NETWORK_OPTION_*` run (status=error
+report, no store change), and a `collector_queue` run with the Stage0 point1
+queue shape on its own tenant. It also runs the test-only `native_proof`
 driver. That driver lets one commit really apply, reports it once as
 commit_unknown_result at the client boundary (fault-injected, not server- or
 transport-generated), and replays through real OnError(1021) on the same
@@ -122,7 +136,7 @@ Still missing: the live tenant/corpus/control adapter, matched Go-native driver,
 live cross-read and fault cases, producer/cluster telemetry and a validated
 comparison runner; logs, GenAI message dedup/restoration, message TEXT indexes,
 joined queries, metrics, upstream Collector integration and OTLP transport.
-The binary does not yet drive the queue. These are not silently replaced by a
+These are not silently replaced by a
 null sink, a decode-only benchmark, or a Go-backed Rust ingest proxy.
 
 ## Comparison boundary to preregister

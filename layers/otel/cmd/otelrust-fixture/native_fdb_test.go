@@ -65,21 +65,26 @@ func TestNativeRustAgainstOwnedFDB(t *testing.T) {
 	digest := sha256.Sum256(wire)
 	h.digest = hex.EncodeToString(digest[:])
 	var executed []string
+	// The eight v2 vectors are fixtureInputs' otel_fixture_v2 corpus under this config.
+	gen := otel.DefaultConfig()
+	gen.Count, gen.Tenants, gen.Attributes = 8, 1, 8
+	corpus := corpusConfig{Generator: "otel_fixture_v2", Seed: gen.Seed, Count: gen.Count, Tenants: gen.Tenants, Attributes: gen.Attributes, MatchEvery: gen.MatchEvery}
+	var canonical []vector
+	for _, v := range vectors {
+		if strings.HasPrefix(v.Name, "v2_") {
+			canonical = append(canonical, v)
+		}
+	}
+	if len(canonical) != gen.Count {
+		t.Fatalf("canonical corpus has %d frames, want %d", len(canonical), gen.Count)
+	}
 	t.Run("production_cli", func(t *testing.T) {
-		var population []vector
-		for _, v := range vectors {
-			if strings.HasPrefix(v.Name, "v2_") {
-				population = append(population, v)
-			}
-		}
-		for _, c := range wf.Cases {
-			population = append(population, c.Outputs...)
-		}
-		if len(population) != 20 {
-			t.Fatalf("CLI population is %d frames, want 8 v2 + 12 wire outputs", len(population))
-		}
-		h.productionCLI(t, population)
+		h.productionCLI(t, canonical, corpus)
 		executed = append(executed, "production_cli")
+	})
+	t.Run("collector_cli", func(t *testing.T) {
+		h.collectorCLI(t, canonical, corpus)
+		executed = append(executed, "collector_cli")
 	})
 	t.Run(proofScenario, func(t *testing.T) {
 		c := wf.Cases[0]
@@ -89,7 +94,7 @@ func TestNativeRustAgainstOwnedFDB(t *testing.T) {
 		h.appliedCommitUnknown(t, c)
 		executed = append(executed, proofScenario)
 	})
-	if want := []string{"production_cli", proofScenario}; !slices.Equal(executed, want) {
+	if want := []string{"production_cli", "collector_cli", proofScenario}; !slices.Equal(executed, want) {
 		t.Fatalf("executed native scenarios %v, want %v", executed, want)
 	}
 	t.Logf("executed native scenarios: %v", executed)
@@ -591,118 +596,239 @@ func fileSHA256(t *testing.T, path string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// cliJob is the sealed flat job main.rs reads (deny_unknown_fields).
-type cliJob struct {
-	ClientLibrary     string `json:"client_library"`
-	ClusterFile       string `json:"cluster_file"`
-	LayoutFile        string `json:"layout_file"`
-	CorpusFile        string `json:"corpus_file"`
-	CorpusSHA256      string `json:"corpus_sha256"`
-	BinarySHA256      string `json:"binary_sha256"`
-	SourceRevision    string `json:"source_revision"`
-	ExpectedFrames    int    `json:"expected_frames"`
-	RowBudget         int    `json:"row_budget"`
-	BatchSize         int    `json:"batch_size"`
-	Workers           int    `json:"workers"`
-	RecordCompression string `json:"record_compression"`
-	TimeoutSeconds    int    `json:"timeout_seconds"`
-	Output            string `json:"output"`
+// corpusConfig is the frozen schema's corpus identity of the fixture's otel_fixture_v2 frames.
+type corpusConfig struct {
+	Generator  string `json:"generator"`
+	Seed       uint64 `json:"seed"`
+	Count      int    `json:"count"`
+	Tenants    int    `json:"tenants"`
+	Attributes int    `json:"attributes"`
+	MatchEvery int    `json:"match_every"`
 }
 
-type cliReceipt struct {
-	Frames           int     `json:"frames"`
-	CommittedSpans   int     `json:"committed_spans"`
-	CommittedBatches int     `json:"committed_batches"`
-	Retries          int     `json:"retries"`
-	Error            *string `json:"error"`
-	Samples          []struct {
-		ReceivedSpans  int     `json:"received_spans"`
-		CommittedSpans int     `json:"committed_spans"`
-		Error          *string `json:"error"`
+// pairedJob is an ingest job of the frozen otel_paired_job_v1 schema
+// (layers/otel/rust/testdata/paired-job-v1.schema.json); main.rs rejects anything else.
+type pairedJob struct {
+	Schema                string          `json:"schema"`
+	Mode                  string          `json:"mode"`
+	Arm                   string          `json:"arm"`
+	BinarySHA256          string          `json:"binary_sha256"`
+	SourceRevision        string          `json:"source_revision"`
+	SourceManifestSHA256  string          `json:"source_manifest_sha256"`
+	TimeoutSeconds        int             `json:"timeout_seconds"`
+	Output                string          `json:"output"`
+	CorpusConfig          corpusConfig    `json:"corpus_config"`
+	ExpectedFrames        int             `json:"expected_frames"`
+	RowBudget             int             `json:"row_budget"`
+	CorpusFile            string          `json:"corpus_file"`
+	Run                   string          `json:"run"`
+	ClusterFile           string          `json:"cluster_file"`
+	ClusterSHA256         string          `json:"cluster_sha256"`
+	ClientBackend         string          `json:"client_backend"`
+	ClientLibrary         string          `json:"client_library"`
+	ClientLibrarySHA256   string          `json:"client_library_sha256"`
+	CorpusSHA256          string          `json:"corpus_sha256"`
+	Workload              json.RawMessage `json:"workload"`
+	WriterBatchSize       int             `json:"writer_batch_size"`
+	WriterWorkers         int             `json:"writer_workers"`
+	RecordCompression     string          `json:"record_compression"`
+	EnableMessageDeltas   bool            `json:"enable_message_deltas"`
+	EnableMessageFullText bool            `json:"enable_message_full_text"`
+	BulkIndexConflicts    bool            `json:"bulk_index_conflicts"`
+	LayoutFile            string          `json:"layout_file"`
+	LayoutSHA256          string          `json:"layout_sha256"`
+}
+
+type ingestReport struct {
+	Schema              string       `json:"schema"`
+	Status              string       `json:"status"`
+	Error               *string      `json:"error"`
+	JobSHA256           string       `json:"job_sha256"`
+	Frames              int          `json:"frames"`
+	AcceptedSpans       *int         `json:"accepted_spans"`
+	ExportedSpans       *int         `json:"exported_spans"`
+	FailedSpans         *int         `json:"failed_spans"`
+	QueuedSpansAtExit   *int         `json:"queued_spans_at_exit"`
+	AckedSpanOperations availability `json:"acked_span_operations"`
+	DistinctSpans       *int         `json:"distinct_spans"`
+	CommittedBatches    int          `json:"committed_batches"`
+	ExportAttempts      *int         `json:"export_attempts"`
+	NativeRetries       int          `json:"native_retries"`
+	QueueRetries        *int         `json:"queue_retries"`
+	Samples             []struct {
+		ReceivedSpans int  `json:"received_spans"`
+		AcceptedSpans *int `json:"accepted_spans"`
+		// Present only on writer_direct samples; collector samples carry no ACK field.
+		DirectWriteAckedOperations *int `json:"direct_write_acked_operations"`
+		// Must be absent from every sample: only the report top level carries it.
+		AckedSpanOperations json.RawMessage `json:"acked_span_operations"`
+		Error               *string         `json:"error"`
 	} `json:"samples"`
+	EffectiveJob struct {
+		GlobalWriteBound int `json:"global_write_bound"`
+	} `json:"effective_job"`
 }
 
-// productionCLI runs the real otel-rust executable: a refused inherited network option
-// first, then 2 workers x 4-frame calls, then an identical replay.
-func (h *nativeHarness) productionCLI(t *testing.T, want []vector) {
-	target := h.tenant(t, "rustcli_target")
-	base := h.baseline(t, target)
-	ref := h.reference(t, "rustcli_reference", want)
-	h.sentinels(t, target)
-	dir := t.TempDir()
-	layoutPath, corpusPath := filepath.Join(dir, "layout.json"), filepath.Join(dir, "corpus")
-	writeJSON(t, layoutPath, h.layout(t, target, base))
+func intIs(p *int, want int) bool { return p != nil && *p == want }
+
+// availability is the report's counter object: Rust ingest reports ACK operations
+// (replays included) as available; distinct spans exist only after the census.
+type availability struct {
+	Availability string  `json:"availability"`
+	Value        *int    `json:"value"`
+	Reason       *string `json:"reason"`
+}
+
+func (a availability) is(want int) bool {
+	return a.Availability == "available" && intIs(a.Value, want) && a.Reason == nil
+}
+
+// cliTenant is one fresh production tenant with its Go reference, layout and corpus.
+type cliTenant struct {
+	run                 string
+	ts                  *otelsql.TenantStore
+	base, ref           map[string][]byte
+	dir, layout, corpus string
+	want                []vector
+	cfg                 corpusConfig
+	outside             []fdb.KeyValue
+}
+
+func (h *nativeHarness) cliTenant(t *testing.T, run string, want []vector, cfg corpusConfig) *cliTenant {
+	c := &cliTenant{run: run + "_target", want: want, cfg: cfg, dir: t.TempDir()}
+	c.ts = h.tenant(t, c.run)
+	c.base = h.baseline(t, c.ts)
+	c.ref = h.reference(t, run+"_reference", want)
+	h.sentinels(t, c.ts)
+	c.layout, c.corpus = filepath.Join(c.dir, "layout.json"), filepath.Join(c.dir, "corpus")
+	writeJSON(t, c.layout, h.layout(t, c.ts, c.base))
 	var corpus []byte
 	for _, v := range want {
 		corpus = binary.BigEndian.AppendUint32(corpus, uint32(len(v.OTLP)))
 		corpus = append(corpus, v.OTLP...)
 	}
-	if err := os.WriteFile(corpusPath, corpus, 0o600); err != nil {
+	if err := os.WriteFile(c.corpus, corpus, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	job := func(name string) (string, string) {
-		output := filepath.Join(dir, name+".receipt.json")
-		path := filepath.Join(dir, name+".job.json")
-		writeJSON(t, path, cliJob{
-			ClientLibrary: h.client, ClusterFile: h.cluster, LayoutFile: layoutPath, CorpusFile: corpusPath,
-			CorpusSHA256: fileSHA256(t, corpusPath), BinarySHA256: fileSHA256(t, h.cli), SourceRevision: strings.Repeat("0", 40),
-			ExpectedFrames: len(want), RowBudget: len(want), BatchSize: 4, Workers: 2, RecordCompression: "none",
-			TimeoutSeconds: 90, Output: output,
-		})
-		return path, output
-	}
-	outside := h.outside(t, target)
+	c.outside = h.outside(t, c.ts)
+	return c
+}
 
-	// The inherited option is refused before libfdb_c loads: no store or receipt bytes.
-	path, output := job("refused")
-	refused := h.run(h.cli, []string{path}, []string{"FDB_NETWORK_OPTION_TRACE_ENABLE=" + t.TempDir()})
-	if refused.err == nil || strings.TrimSpace(string(refused.stderr)) != envRefused {
-		t.Fatalf("inherited network option: err=%v stderr=%q", refused.err, refused.stderr)
+// cliJob writes a sealed ingest job running workload (verbatim JSON) over c.
+func (h *nativeHarness) cliJob(t *testing.T, c *cliTenant, name, workload string, writerBatch int) (string, string) {
+	t.Helper()
+	output := filepath.Join(c.dir, name+".report.json")
+	path := filepath.Join(c.dir, name+".job.json")
+	manifest := sha256.Sum256([]byte("native-proof-test-source-manifest"))
+	writeJSON(t, path, pairedJob{
+		Schema: "otel_paired_job_v1", Mode: "ingest", Arm: "rust_native",
+		BinarySHA256: fileSHA256(t, h.cli), SourceRevision: strings.Repeat("0", 40),
+		SourceManifestSHA256: hex.EncodeToString(manifest[:]), TimeoutSeconds: 90, Output: output,
+		CorpusConfig: c.cfg, ExpectedFrames: len(c.want), RowBudget: len(c.want), CorpusFile: c.corpus,
+		Run: c.run, ClusterFile: h.cluster, ClusterSHA256: fileSHA256(t, h.cluster),
+		ClientBackend: "native_c", ClientLibrary: h.client, ClientLibrarySHA256: fileSHA256(t, h.client),
+		CorpusSHA256: fileSHA256(t, c.corpus), Workload: json.RawMessage(workload),
+		WriterBatchSize: writerBatch, WriterWorkers: 1, RecordCompression: "none",
+		LayoutFile: c.layout, LayoutSHA256: fileSHA256(t, c.layout),
+	})
+	return path, output
+}
+
+// runCLI runs the production executable with exactly env and decodes its report.
+func (h *nativeHarness) runCLI(t *testing.T, path, output string, env []string) (child, ingestReport, []byte) {
+	t.Helper()
+	res := h.run(h.cli, []string{path}, env)
+	b, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatalf("no report: %v stderr=%q", err, res.stderr)
 	}
-	if info, err := os.Stat(output); err != nil || info.Size() != 0 {
-		t.Fatalf("refused run must leave its reserved receipt empty: %v", err)
+	var r ingestReport
+	if err := json.Unmarshal(b, &r); err != nil {
+		t.Fatalf("report %q: %v", b, err)
 	}
-	if diff := mapDiff(h.physical(t, target), base); diff != "" {
+	if r.Schema != "otel_control_report_v1" || r.JobSHA256 != fileSHA256(t, path) {
+		t.Fatalf("report identity: %s", b)
+	}
+	return res, r, b
+}
+
+// productionCLI runs the real otel-rust executable on writer_direct jobs: a refused
+// inherited network option first, then 2 producers x 4-frame calls, then a replay.
+func (h *nativeHarness) productionCLI(t *testing.T, want []vector, cfg corpusConfig) {
+	c := h.cliTenant(t, "rustcli", want, cfg)
+	direct := `{"kind":"writer_direct","producers":2,"producer_batch_spans":4}`
+
+	// The inherited option is refused before libfdb_c loads: an error report, no store change.
+	path, output := h.cliJob(t, c, "refused", direct, 4)
+	res, r, b := h.runCLI(t, path, output, []string{"FDB_NETWORK_OPTION_TRACE_ENABLE=" + t.TempDir()})
+	if res.err == nil || strings.TrimSpace(string(res.stderr)) != envRefused {
+		t.Fatalf("inherited network option: err=%v stderr=%q", res.err, res.stderr)
+	}
+	if r.Status != "error" || r.Error == nil || *r.Error != envRefused || r.Frames != 0 || !r.AckedSpanOperations.is(0) || len(r.Samples) != 0 {
+		t.Fatalf("refused report: %s", b)
+	}
+	if diff := mapDiff(h.physical(t, c.ts), c.base); diff != "" {
 		t.Fatalf("refused run changed the tenant: %s", diff)
 	}
-	if !sameKVs(h.outside(t, target), outside) {
+	if !sameKVs(h.outside(t, c.ts), c.outside) {
 		t.Fatal("refused run changed keys outside the tenant")
 	}
 
 	var written map[string][]byte
 	for _, name := range []string{"first", "replay"} {
-		path, output := job(name)
-		res := h.run(h.cli, []string{path}, []string{})
+		path, output := h.cliJob(t, c, name, direct, 4)
+		res, r, b := h.runCLI(t, path, output, []string{})
 		if res.err != nil {
 			t.Fatalf("%s run: %v stderr=%q", name, res.err, res.stderr)
 		}
-		var r cliReceipt
-		b, err := os.ReadFile(output)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := json.Unmarshal(b, &r); err != nil {
-			t.Fatal(err)
-		}
-		if r.Error != nil || r.Frames != 20 || r.CommittedSpans != 20 || r.CommittedBatches != 5 || len(r.Samples) != 5 {
-			t.Fatalf("%s receipt: %s", name, b)
+		if r.Status != "ok" || r.Error != nil || r.Frames != 8 || !r.AckedSpanOperations.is(8) || r.DistinctSpans != nil || r.CommittedBatches != 2 ||
+			len(r.Samples) != 2 || r.AcceptedSpans != nil || r.EffectiveJob.GlobalWriteBound != 2 {
+			t.Fatalf("%s report: %s", name, b)
 		}
 		for _, s := range r.Samples {
-			if s.ReceivedSpans != 4 || s.CommittedSpans != 4 || s.Error != nil {
-				t.Fatalf("%s receipt sample: %s", name, b)
+			if s.ReceivedSpans != 4 || !intIs(s.AcceptedSpans, 4) || !intIs(s.DirectWriteAckedOperations, 4) || s.AckedSpanOperations != nil || s.Error != nil {
+				t.Fatalf("%s report sample: %s", name, b)
 			}
 		}
-		t.Logf("%s run: 20 frames, 20 spans, 5 batches, %d retries", name, r.Retries)
-		got := h.audit(t, target, base, ref, want)
+		t.Logf("%s writer_direct run: 8 frames, 8 ACKs, 2 batches, %d native retries", name, r.NativeRetries)
+		got := h.audit(t, c.ts, c.base, c.ref, want)
 		if written != nil {
 			if diff := mapDiff(got, written); diff != "" {
 				t.Fatalf("replay changed the map: %s", diff)
 			}
 		}
 		written = got
-		if !sameKVs(h.outside(t, target), outside) {
+		if !sameKVs(h.outside(t, c.ts), c.outside) {
 			t.Fatalf("%s run changed keys outside the tenant", name)
 		}
+	}
+}
+
+// collectorCLI runs the real otel-rust executable on a collector_queue job (driver ->
+// Collector -> Writer -> NativeDatabase) with the Stage0 point1 queue shape.
+func (h *nativeHarness) collectorCLI(t *testing.T, want []vector, cfg corpusConfig) {
+	c := h.cliTenant(t, "rustqueue", want, cfg)
+	queue := `{"kind":"collector_queue","producers":1,"producer_batch_spans":1,"consumers":1,"queue_capacity_spans":10000,"batch_min_spans":64,"batch_max_spans":64,"flush_ms":200,"block_on_overflow":true,"export_timeout_ms":120000,"retry_enabled":true,"retry_initial_ms":500,"retry_max_ms":10000,"retry_elapsed_ms":300000}`
+	path, output := h.cliJob(t, c, "queue", queue, 64)
+	res, r, b := h.runCLI(t, path, output, []string{})
+	if res.err != nil {
+		t.Fatalf("collector run: %v stderr=%q", res.err, res.stderr)
+	}
+	n := len(want)
+	if r.Status != "ok" || r.Error != nil || r.Frames != n || !intIs(r.AcceptedSpans, n) || !intIs(r.ExportedSpans, n) ||
+		!intIs(r.FailedSpans, 0) || !intIs(r.QueuedSpansAtExit, 0) || !r.AckedSpanOperations.is(n) || r.DistinctSpans != nil ||
+		r.ExportAttempts == nil || r.CommittedBatches != *r.ExportAttempts || len(r.Samples) != n || r.EffectiveJob.GlobalWriteBound != 1 {
+		t.Fatalf("collector report: %s", b)
+	}
+	for _, s := range r.Samples {
+		if s.ReceivedSpans != 1 || !intIs(s.AcceptedSpans, 1) || s.DirectWriteAckedOperations != nil || s.AckedSpanOperations != nil || s.Error != nil {
+			t.Fatalf("collector report sample: %s", b)
+		}
+	}
+	t.Logf("collector_queue run: %d frames, %d ACK operations, %d batches, %d export attempts", n, *r.AckedSpanOperations.Value, r.CommittedBatches, *r.ExportAttempts)
+	h.audit(t, c.ts, c.base, c.ref, want)
+	if !sameKVs(h.outside(t, c.ts), c.outside) {
+		t.Fatal("collector run changed keys outside the tenant")
 	}
 }
 

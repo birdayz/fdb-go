@@ -22,6 +22,7 @@ impl<D: Database + 'static> Sink for Writer<D> {
     }
 }
 
+/// Every queue parameter is explicit; there are no defaults.
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -32,26 +33,25 @@ pub struct Config {
     pub flush_ms: u64,
     pub block_on_overflow: bool,
     pub export_timeout_ms: u64,
+    pub retry_enabled: bool,
     pub retry_initial_ms: u64,
     pub retry_max_ms: u64,
     pub retry_elapsed_ms: u64,
 }
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            consumers: 4,
-            queue_spans: 10_000,
-            batch_min: 512,
-            batch_max: 4096,
-            flush_ms: 200,
-            block_on_overflow: false,
-            export_timeout_ms: 30_000,
-            retry_initial_ms: 5000,
-            retry_max_ms: 30_000,
-            retry_elapsed_ms: 300_000,
-        }
-    }
+
+/// At most this many request completions are kept; later ones are only counted.
+pub const COMPLETION_SAMPLES: usize = 100_000;
+
+/// One admitted request's terminal outcome: arrival is the `consume` call's start.
+#[derive(Clone, Debug)]
+pub struct Completion {
+    pub seq: u64,
+    pub spans: usize,
+    pub arrival: Instant,
+    pub completed: Instant,
+    pub error: Option<String>,
 }
+
 #[derive(Clone, Default, Debug, Serialize)]
 pub struct Stats {
     pub accepted_spans: u64,
@@ -66,6 +66,20 @@ pub struct Stats {
     pub failed_spans: u64,
     pub retries: u64,
     pub queued_spans: usize,
+    pub max_outstanding_spans: usize,
+    /// Requests that waited for capacity, and their total wait.
+    pub blocked_requests: u64,
+    pub blocked_ns: u64,
+    /// Export attempts and committed writer transactions, keyed by span count.
+    pub export_call_spans: BTreeMap<u64, u64>,
+    pub transaction_spans: BTreeMap<u64, u64>,
+    pub completions_omitted: u64,
+}
+struct Open {
+    left: usize,
+    spans: usize,
+    arrival: Instant,
+    error: Option<String>,
 }
 struct Part {
     seq: u64,
@@ -77,7 +91,8 @@ struct State {
     pending_spans: usize,
     outstanding: usize,
     next: u64,
-    remaining: BTreeMap<u64, usize>,
+    remaining: BTreeMap<u64, Open>,
+    completions: Vec<Completion>,
     failures: Vec<Error>,
     omitted: usize,
     force: Option<u64>,
@@ -106,7 +121,10 @@ impl Collector {
             || config.batch_max < config.batch_min
             || config.flush_ms == 0
             || config.export_timeout_ms == 0
+            || config.retry_max_ms == 0
             || config.retry_max_ms < config.retry_initial_ms
+            // Go's retry_on_failure validation: an enabled retry needs a positive interval.
+            || (config.retry_enabled && config.retry_initial_ms == 0)
         {
             return Err(Error::new(
                 ErrorKind::Config,
@@ -121,6 +139,7 @@ impl Collector {
                 outstanding: 0,
                 next: 0,
                 remaining: BTreeMap::new(),
+                completions: Vec::new(),
                 failures: Vec::new(),
                 omitted: 0,
                 force: None,
@@ -166,6 +185,7 @@ impl Collector {
     }
 
     pub fn consume(&self, ctx: &Context, inputs: &[Vec<u8>]) -> Result<()> {
+        let arrival = Instant::now();
         let spans = self.schema.admit(inputs)?;
         let n = spans.len();
         if n == 0 {
@@ -180,33 +200,50 @@ impl Collector {
                 "request exceeds queue capacity",
             ));
         }
-        loop {
+        let mut blocked: Option<Instant> = None;
+        let admitted = loop {
             if let Err(err) = ctx.check() {
-                state.stats.rejected_spans += n as u64;
-                return Err(err);
+                break Err(err);
             }
             if state.stopping {
-                state.stats.rejected_spans += n as u64;
-                return Err(Error::new(ErrorKind::Operation, "collector is stopped"));
+                break Err(Error::new(ErrorKind::Operation, "collector is stopped"));
             }
             if state.outstanding + n <= s.config.queue_spans {
-                break;
+                break Ok(());
             }
             if !s.config.block_on_overflow {
-                state.stats.rejected_spans += n as u64;
-                return Err(Error::new(ErrorKind::Budget, "sending queue is full"));
+                break Err(Error::new(ErrorKind::Budget, "sending queue is full"));
             }
+            blocked.get_or_insert_with(Instant::now);
             state = s
                 .changed
                 .wait_timeout(state, Duration::from_millis(10))
                 .unwrap()
                 .0;
+        };
+        if let Some(since) = blocked {
+            state.stats.blocked_requests += 1;
+            state.stats.blocked_ns += since.elapsed().as_nanos() as u64;
+        }
+        if let Err(err) = admitted {
+            state.stats.rejected_spans += n as u64;
+            return Err(err);
         }
         let seq = state.next;
         state.next += 1;
         state.outstanding += n;
+        state.stats.max_outstanding_spans =
+            state.stats.max_outstanding_spans.max(state.outstanding);
         state.pending_spans += n;
-        state.remaining.insert(seq, n);
+        state.remaining.insert(
+            seq,
+            Open {
+                left: n,
+                spans: n,
+                arrival,
+                error: None,
+            },
+        );
         state.pending.push_back(Part {
             seq,
             spans: spans.into(),
@@ -222,6 +259,11 @@ impl Collector {
         let mut stats = state.stats.clone();
         stats.queued_spans = state.outstanding;
         stats
+    }
+
+    /// Completed requests in completion order, at most `COMPLETION_SAMPLES`.
+    pub fn completions(&self) -> Vec<Completion> {
+        self.shared.state.lock().unwrap().completions.clone()
     }
 
     pub fn flush(&self, ctx: &Context) -> Result<()> {
@@ -292,12 +334,28 @@ impl Collector {
                 .0;
         }
         drop(state);
+        // Join every handle, even after a failed join, so none is detached.
+        let mut panicked = false;
         for t in self.threads.lock().unwrap().drain(..) {
-            if t.join().is_err() {
-                return Err(Error::new(ErrorKind::Operation, "export worker panicked"));
-            }
+            panicked |= t.join().is_err();
+        }
+        if panicked {
+            return Err(Error::new(ErrorKind::Operation, "export worker panicked"));
         }
         result
+    }
+
+    /// Drops the collector (cancel, then join every worker) and returns the settled
+    /// counters and completions, read together once no worker can change them.
+    /// Joining after cancellation only waits for native waits to observe it (they poll
+    /// every 10ms); it allows no new export or retry.
+    pub fn into_final(self) -> (Stats, Vec<Completion>) {
+        let shared = self.shared.clone();
+        drop(self);
+        let state = shared.state.lock().unwrap();
+        let mut stats = state.stats.clone();
+        stats.queued_spans = state.outstanding;
+        (stats, state.completions.clone())
     }
 }
 impl Drop for Collector {
@@ -415,13 +473,21 @@ fn export_with_retry(s: &Shared, sink: &dyn Sink, spans: &[Vec<u8>]) -> Result<(
             state.stats.committed_batches += stats.committed_batches;
             state.stats.native_retries += stats.retries;
             state.stats.export_attempts += 1;
+            *state
+                .stats
+                .export_call_spans
+                .entry(spans.len() as u64)
+                .or_default() += 1;
+            for (size, count) in stats.transaction_spans {
+                *state.stats.transaction_spans.entry(size).or_default() += count;
+            }
         }
         match result {
             Ok(()) => break Ok(()),
             Err(err) => {
                 if err.permanent()
                     || s.work.check().is_err()
-                    || s.config.retry_initial_ms == 0
+                    || !s.config.retry_enabled
                     || (s.config.retry_elapsed_ms > 0
                         && started.elapsed() + Duration::from_millis(delay)
                             > Duration::from_millis(s.config.retry_elapsed_ms))
@@ -447,11 +513,26 @@ fn export_with_retry(s: &Shared, sink: &dyn Sink, spans: &[Vec<u8>]) -> Result<(
 fn complete(s: &Shared, parts: BTreeMap<u64, usize>, count: usize, outcome: Result<()>) {
     let mut state = s.state.lock().unwrap();
     state.outstanding -= count;
+    let error = outcome.as_ref().err().map(ToString::to_string);
     for (seq, count) in parts {
-        let remaining = state.remaining.get_mut(&seq).unwrap();
-        *remaining -= count;
-        if *remaining == 0 {
-            state.remaining.remove(&seq);
+        let open = state.remaining.get_mut(&seq).unwrap();
+        open.left -= count;
+        if open.error.is_none() {
+            open.error = error.clone();
+        }
+        if open.left == 0 {
+            let open = state.remaining.remove(&seq).unwrap();
+            if state.completions.len() < COMPLETION_SAMPLES {
+                state.completions.push(Completion {
+                    seq,
+                    spans: open.spans,
+                    arrival: open.arrival,
+                    completed: Instant::now(),
+                    error: open.error,
+                });
+            } else {
+                state.stats.completions_omitted += 1;
+            }
         }
     }
     if let Err(err) = outcome {
@@ -478,6 +559,22 @@ mod tests {
 
     fn bounded() -> Context {
         Context::default().with_deadline(Instant::now() + Duration::from_secs(5))
+    }
+    /// One consumer, `batch` spans per export, fixed retry interval `retry_ms`.
+    fn config(batch: usize, flush_ms: u64, retry_ms: u64) -> Config {
+        Config {
+            consumers: 1,
+            queue_spans: 10_000,
+            batch_min: batch,
+            batch_max: batch,
+            flush_ms,
+            block_on_overflow: false,
+            export_timeout_ms: 30_000,
+            retry_enabled: true,
+            retry_initial_ms: retry_ms,
+            retry_max_ms: retry_ms,
+            retry_elapsed_ms: 300_000,
+        }
     }
     fn source(n: usize) -> Vec<u8> {
         let vectors: serde_json::Value =
@@ -531,17 +628,7 @@ mod tests {
             isolation: false,
             entered,
         });
-        let collector = Collector::start(
-            sink,
-            Config {
-                consumers: 1,
-                batch_min: 8,
-                batch_max: 8,
-                flush_ms: 60_000,
-                ..Config::default()
-            },
-        )
-        .unwrap();
+        let collector = Collector::start(sink, config(8, 60_000, 5_000)).unwrap();
         collector.flush(&bounded()).unwrap();
         let forced = collector.shared.state.lock().unwrap().force;
         assert!(forced.is_none());
@@ -554,18 +641,7 @@ mod tests {
             isolation: false,
             entered,
         });
-        let collector = Collector::start(
-            sink.clone(),
-            Config {
-                consumers: 1,
-                batch_min: 2,
-                batch_max: 2,
-                retry_initial_ms: 60_000,
-                retry_max_ms: 60_000,
-                ..Config::default()
-            },
-        )
-        .unwrap();
+        let collector = Collector::start(sink.clone(), config(2, 200, 60_000)).unwrap();
         collector
             .consume(&bounded(), &[source(0), source(1)])
             .unwrap();
@@ -596,18 +672,7 @@ mod tests {
             isolation: true,
             entered,
         });
-        let collector = Collector::start(
-            sink.clone(),
-            Config {
-                consumers: 1,
-                batch_min: 2,
-                batch_max: 2,
-                retry_initial_ms: 1,
-                retry_max_ms: 1,
-                ..Config::default()
-            },
-        )
-        .unwrap();
+        let collector = Collector::start(sink.clone(), config(2, 200, 1)).unwrap();
         collector.consume(&bounded(), &[source(0)]).unwrap();
         collector.consume(&bounded(), &[source(1)]).unwrap();
         received.recv_timeout(Duration::from_secs(5)).unwrap();
