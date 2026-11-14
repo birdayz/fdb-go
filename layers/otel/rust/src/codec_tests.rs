@@ -188,3 +188,72 @@ fn deep_go_fixtures_decode_clone_project_encode_and_drop_on_two_mib_stack() {
         .join()
         .unwrap();
 }
+
+mod footprint {
+    //! Bytes a queued span holds between acceptance and its consumer's single encode.
+    use super::*;
+    use std::{
+        alloc::{GlobalAlloc, Layout, System},
+        cell::Cell,
+    };
+
+    thread_local! {
+        /// Live heap bytes requested by the current thread (frees by other threads subtract
+        /// from theirs), so concurrently running tests do not disturb a measurement.
+        static LIVE: Cell<isize> = const { Cell::new(0) };
+    }
+    struct Counting;
+    fn add(delta: isize) {
+        let _ = LIVE.try_with(|live| live.set(live.get() + delta));
+    }
+    // SAFETY: forwards every call to the system allocator unchanged and only counts sizes.
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            add(layout.size() as isize);
+            unsafe { System.alloc(layout) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            add(-(layout.size() as isize));
+            unsafe { System.dealloc(ptr, layout) }
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            add(new_size as isize - layout.size() as isize);
+            unsafe { System.realloc(ptr, layout, new_size) }
+        }
+    }
+    #[global_allocator]
+    static COUNTING: Counting = Counting;
+
+    fn live() -> isize {
+        LIVE.with(Cell::get)
+    }
+
+    /// Eight fixture frames of about 440 bytes each held 9.6 KB per span (21.7x) before
+    /// nodes were right-sized and the large messages boxed, and 3.3 KB (7.5x) after.
+    #[test]
+    fn a_queued_span_costs_a_small_multiple_of_its_encoded_size() {
+        let vectors: serde_json::Value =
+            serde_json::from_slice(include_bytes!("../testdata/vectors.json")).unwrap();
+        let schema = Schema::pinned().unwrap();
+        let mut checked = 0;
+        for v in vectors.as_array().unwrap() {
+            let name = v["name"].as_str().unwrap();
+            if !name.starts_with("v2_") {
+                continue;
+            }
+            let wire = STANDARD.decode(v["otlp"].as_str().unwrap()).unwrap();
+            let before = live();
+            let accepted = schema.accept(std::slice::from_ref(&wire)).unwrap();
+            let held = (live() - before) as usize;
+            assert_eq!(accepted.len(), 1);
+            assert!(
+                held <= 10 * wire.len(),
+                "{name}: {held} bytes held for {} encoded",
+                wire.len()
+            );
+            checked += 1;
+            drop(accepted);
+        }
+        assert_eq!(checked, 8);
+    }
+}

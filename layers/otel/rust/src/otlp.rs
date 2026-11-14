@@ -349,14 +349,20 @@ impl AnyValue {
         }
     }
 }
+/// A node's stored type: `boxed` keeps a large message behind a pointer so the arena's
+/// uniform node stays small for the many small messages (attributes and values).
+macro_rules! stored {
+    ($kind:ident boxed) => { Box<$kind> };
+    ($kind:ident) => { $kind };
+}
 macro_rules! graph {
-    ($($kind:ident $(=> $get:ident)?),* $(,)?) => {
+    ($($kind:ident $(=> $get:ident)? $([$boxed:ident])?),* $(,)?) => {
         #[derive(Clone, Copy)]
         enum Kind { $($kind),* }
         #[derive(Clone, Debug)]
-        pub(crate) enum Data { $($kind($kind)),* }
+        pub(crate) enum Data { $($kind(stored!($kind $($boxed)?))),* }
         impl Kind {
-            fn node(self) -> Node { Node { data: match self { $(Self::$kind => Data::$kind($kind::default())),* }, unknown: Vec::new() } }
+            fn node(self) -> Node { Node { data: match self { $(Self::$kind => Data::$kind($kind::default().into())),* }, unknown: Vec::new() } }
         }
         impl Data {
             fn read(&mut self, tag: u32, wt: u8, buf: &mut &[u8]) -> Result<Step> {
@@ -370,9 +376,9 @@ macro_rules! graph {
         })?)* }
     };
 }
-graph!(ResourceSpans => resource_spans, ScopeSpans => scope_spans, Span => span,
-    Event => event, Link => link, Status => status, Resource => resource,
-    EntityRef, InstrumentationScope => scope, KeyValue => key_value,
+graph!(ResourceSpans => resource_spans, ScopeSpans => scope_spans, Span => span [boxed],
+    Event => event, Link => link [boxed], Status => status, Resource => resource,
+    EntityRef [boxed], InstrumentationScope => scope, KeyValue => key_value,
     AnyValue => any_value, ArrayValue => array, KeyValueList => kvlist);
 
 impl Frame {
@@ -417,6 +423,8 @@ impl Frame {
                 }
             }
         }
+        // A request is kept (queued) until its consumer encodes it: keep no spare capacity.
+        frame.nodes.shrink_to_fit();
         frame.sizes.resize(frame.nodes.len(), 0);
         for id in (0..frame.nodes.len()).rev() {
             frame.sizes[id] = frame.size(id, None, &frame.sizes);
