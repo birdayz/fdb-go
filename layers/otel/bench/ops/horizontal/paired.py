@@ -746,7 +746,7 @@ def fake_plan(root, *, profile="scaling", arms=ARMS, kind="writer_direct"):
                 "log": {"memory_mib": 2048, "cache_mib": 64}, "control": {"memory_mib": 1024, "cache_mib": 64},
                 "fdb_slice": {"allowed_cpus": "0-3", "cpu_quota_percent": 400, "memory_max_mib": 16384, "swap_max_bytes": 0},
                 "client_slice": {"allowed_cpus": "0-3", "cpu_quota_percent": 400, "memory_max_mib": 16384, "swap_max_bytes": 0}, "gomaxprocs": 4},
-            "managed_watch": {"root": str(root.parent / "fake-watch"), "output": str(root.parent / "fake-output")}, 
+            "managed_watch": {"root": str(root.parent / "fake-watch"), "output": str(root.parent / "fake-output")},
             "assets": assets, "sources": {arm: {"revision": "a" * 40, "root": str(root), "manifest": str(manifest),
                                                 "manifest_sha256": p.sha(manifest)} for arm in arms},
             "pricing": quote, "pricing_seal_sha256": quote["seal_sha256"], "fake_provider": True}
