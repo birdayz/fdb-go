@@ -15,7 +15,6 @@ import (
 	"time"
 
 	oteltrace "go.opentelemetry.io/otel/trace"
-	"go.opentelemetry.io/otel/trace/noop"
 
 	"fdb.dev/pkg/fdbgo/internal/sendqueue"
 	"fdb.dev/pkg/fdbgo/transport"
@@ -372,9 +371,8 @@ type database struct {
 	// overrides it. The zero value never samples. Read-only after open.
 	readTags readTagSampling
 
-	// OpenTelemetry export backend (WithTracer, RFC-115 §4 Layer 2). Never nil after
-	// open — defaulted to a no-op tracer (C++ NoopTracer analog) so the span-emission
-	// paths are unconditional and allocation-free when unset. Read-only after open.
+	// A nil tracer disables export without constructing OTel contexts or spans.
+	// Wire propagation and sampling remain independent of the export backend.
 	tracer oteltrace.Tracer
 
 	// Selected FDB API version (WithAPIVersion, RFC-149) — the C++
@@ -953,12 +951,6 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 	failMon := newFailureMonitor()
 	queueModel := newQueueModel()
 	queueModel.failMon = failMon
-	// Default to a no-op tracer (C++ NoopTracer) so span emission is unconditional and
-	// zero-cost when WithTracer is unset (RFC-115 §4 Layer 2).
-	tracer := o.tracer
-	if tracer == nil {
-		tracer = noop.NewTracerProvider().Tracer("fdbgo")
-	}
 	db := &database{
 		connRecord:        newConnRecord(cf, o.clusterFilePath, logger),
 		dialFn:            o.dialFn,
@@ -967,7 +959,7 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 		logger:            logger,
 		rangeByteCeiling:  o.rangeByteCeiling,
 		tracingSampleRate: o.tracingSampleRate,
-		tracer:            tracer,
+		tracer:            o.tracer,
 		apiVersion:        o.apiVersion,
 		connPool:          make(map[string]*transport.Conn),
 		dialing:           make(map[string]*dialCall),
@@ -1041,6 +1033,7 @@ func (d *Database) ConnectionLinger() (minDelay, maxDelay, adaptive time.Duratio
 // The transaction is reused across retries — retryCount and backoff escalate.
 func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, error)) (any, error) {
 	tx := d.createTransaction(true)
+	defer tx.endTxSpan()
 	defer tx.releaseTransactTimeout()
 	for {
 		if ctx.Err() != nil {
@@ -1080,6 +1073,7 @@ func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, 
 // The transaction is never committed — only reads are performed.
 func (d *Database) ReadTransact(ctx context.Context, fn func(tx *Transaction) (any, error)) (any, error) {
 	tx := d.createTransaction(true)
+	defer tx.endTxSpan()
 	defer tx.releaseTransactTimeout()
 	for {
 		if ctx.Err() != nil {

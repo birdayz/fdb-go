@@ -464,17 +464,14 @@ governors above, not FDB tag throttling.
 The hooks themselves are described in [`operations.md` §8](operations.md#8-observability-hooks).
 What follows is only what a multi-tenant operator has to do differently.
 
-### Retain the `*client.Database` handle at startup, or you get no metrics
+### Retain a client or facade handle for client metrics
 
-`Metrics()` lives on `*client.Database` (`pkg/fdbgo/client/database.go:784`) and **only** there.
-`fdb.Database` is a one-way wrapper — its `inner *client.Database` field is unexported with no
-accessor (`pkg/fdbgo/fdb/database.go:94`, `:101`) — and `*recordlayer.FDBDatabase`
-(`pkg/recordlayer/database.go:134`) has no `Metrics()` either. There is no way back down the stack.
-
-So the handle has to be captured on the way up:
+Both `*client.Database` and the pure-Go `fdb.Database` facade expose `Metrics()`
+and can be passed to `fdbmetrics.Handler`. `*recordlayer.FDBDatabase` does not
+expose client metrics, so keep either underlying handle when wrapping a record store:
 
 ```go
-cdb, err := client.OpenDatabase(ctx, clusterFile)   // *client.Database — keep this
+cdb, err := client.OpenDatabase(ctx, clusterFile, client.WithAPIVersion(730))
 if err != nil {
 	return err
 }

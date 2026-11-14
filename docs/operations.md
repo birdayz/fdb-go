@@ -274,15 +274,22 @@ cluster-level backup captures it consistently.
 
 ## 8. Observability hooks
 
+**Tracing.** Pass `WithTracer` and `WithTracingSampleRate` when opening the pure-Go
+client or `fdb` facade. Applications own providers, bounded exporters, and shutdown;
+no global provider is installed. Managed transaction helpers end their attempt spans
+on every exit. See [observability](observability.md) for setup, sampling, span
+boundaries, callback restrictions, and the distinction between OTel and FDB wire IDs.
+
 **Metrics.** The low-level pure-Go client (`*client.Database`) carries `ClientMetrics` (the `libfdb_c`
 `DatabaseContext` transaction-metrics subset, RFC-097): commits started/completed, per-code retry
 counters (conflicts 1020, maybe-committed 1021, too-old 1007, future-version 1009, throttled, …),
-GRV cache hits, and latency sketches. `Metrics()` lives on `*client.Database` (a `MetricsSource`),
-**not** on `fdb.Database` or `*recordlayer.FDBDatabase`. So keep the `*client.Database` handle when
-you want metrics:
+GRV cache hits, and latency sketches. Both `*client.Database` and the pure-Go
+`fdb.Database` facade expose `Metrics()` and satisfy `fdbmetrics.MetricsSource`.
+Keep either handle when wrapping `*recordlayer.FDBDatabase`, which does not
+expose client metrics:
 
 ```go
-cdb, _ := client.OpenDatabase(ctx, clusterFile)        // *client.Database — has Metrics()
+cdb, _ := client.OpenDatabase(ctx, clusterFile, client.WithAPIVersion(730))
 http.Handle("/metrics", fdbmetrics.Handler(cdb))       // zero-dep Prometheus text exposition
 rdb := recordlayer.NewFDBDatabase(fdb.WrapDatabase(cdb))
 ```

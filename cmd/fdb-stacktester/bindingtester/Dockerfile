@@ -14,7 +14,7 @@ COPY bindingtester/ /opt/fdb/bindings/bindingtester/
 
 # Patch __init__.py: remove sys.path hack that shadows pip fdb with source tree.
 RUN sed -i "s|sys.path\[:0\].*||" /opt/fdb/bindings/bindingtester/__init__.py && \
-    sed -i "s|import util|from bindingtester import util|" /opt/fdb/bindings/bindingtester/__init__.py && \
+    sed -i "s|^import util$|from bindingtester import util|" /opt/fdb/bindings/bindingtester/__init__.py && \
     sed -i "s|from fdb import LATEST_API_VERSION|LATEST_API_VERSION = 730|" /opt/fdb/bindings/bindingtester/__init__.py
 
 COPY fdb-stacktester /usr/local/bin/fdb-stacktester
