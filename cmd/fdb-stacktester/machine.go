@@ -36,7 +36,7 @@ type stackEntry struct {
 
 // transactionRegistry is shared by all machines in a tester run.
 type transactionRegistry struct {
-	trMap map[string]*client.Transaction
+	trMap map[string]*namedTransaction
 	trMu  sync.RWMutex
 	waits transactionWaits
 }
@@ -71,7 +71,7 @@ type StackMachine struct {
 
 // NewStackMachine creates a stack machine with the given prefix.
 func NewStackMachine(db *client.Database, prefix []byte) *StackMachine {
-	return newStackMachine(db, prefix, &transactionRegistry{trMap: make(map[string]*client.Transaction)})
+	return newStackMachine(db, prefix, &transactionRegistry{trMap: make(map[string]*namedTransaction)})
 }
 
 func newStackMachine(db *client.Database, prefix []byte, registry *transactionRegistry) *StackMachine {
@@ -84,7 +84,7 @@ func newStackMachine(db *client.Database, prefix []byte, registry *transactionRe
 		childJoinTimeout:    2 * time.Minute,
 	}
 	sm.trMu.Lock()
-	sm.trMap[sm.trName] = sm.createTransaction()
+	sm.replaceTransaction(sm.trName)
 	sm.trMu.Unlock()
 	sm.initDirectoryState()
 	return sm
@@ -232,7 +232,7 @@ type rangeResult struct {
 func (sm *StackMachine) currentTr() *client.Transaction {
 	sm.trMu.RLock()
 	defer sm.trMu.RUnlock()
-	return sm.trMap[sm.trName]
+	return sm.trMap[sm.trName].tx
 }
 
 func (sm *StackMachine) push(idx int, value any) {

@@ -108,10 +108,8 @@ func clientSetupEncodeEvents(events []clientSetupEvent) string {
 	return b.String()
 }
 
-// No command in this double can invoke sudo, install host files, dpkg, Docker or
-// the network. The production shell and its control flow are not rewritten.
-// sha256sum independently checks each real remote pin, then delegates to the real
-// checksum executable with the independently computed fixture-payload digest.
+// The unchanged production shell runs isolated tools; remote pins and fixture
+// checksums are checked independently, without host installation or network use.
 const clientSetupToolDouble = `#!/bin/bash
 set -euo pipefail
 tool=${0##*/}
@@ -273,7 +271,7 @@ func TestClientCorrectnessSetupShell(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, "bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script)
-			evidenceDraftOwnProcessGroup(cmd)
+			evidenceDraftBoundProcess(cmd)
 			cmd.Dir = root
 			// Remove inherited values first: an unset-env row must actually be unset.
 			for _, entry := range os.Environ() {

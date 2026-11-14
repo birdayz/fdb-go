@@ -6,10 +6,14 @@ go_library(
         "bindingtester_setup.go",
         "main.go",
         "scheduled.go",
+        "tester_process.go",
     ],
     importpath = "fdb.dev/cmd/fdb-binding-stress",
     visibility = ["//visibility:private"],
-    deps = ["//pkg/testcontainers/foundationdb"],
+    deps = [
+        "//pkg/testcontainers/foundationdb",
+        "@org_golang_x_sys//unix",
+    ],
 )
 
 go_binary(
@@ -77,6 +81,7 @@ go_test(
         "runner_guard_test.go",
         "scheduled_test.go",
         "setup_guard_test.go",
+        "tester_process_test.go",
     ],  # keep
     data = [
         ":python_fdb_tar",
@@ -84,5 +89,8 @@ go_test(
     ],
     embed = [":fdb-binding-stress_lib"],
     tags = ["resources:memory:400"],
-    deps = ["//pkg/testcontainers/foundationdb"],
+    deps = [
+        "//pkg/testcontainers/foundationdb",
+        "@org_golang_x_sys//unix",
+    ],
 )

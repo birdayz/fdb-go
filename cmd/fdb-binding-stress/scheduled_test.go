@@ -10,7 +10,6 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -28,13 +27,23 @@ with open(sys.argv[1] + '.tmp', 'w') as ready:
 os.replace(sys.argv[1] + '.tmp', sys.argv[1])
 time.sleep(60)
 `, ready)
-	configureTesterProcess(cmd)
-	t.Cleanup(func() { killTesterGroup(cmd) })
+	process := configureTesterProcess(cmd)
+	t.Cleanup(cancel)
 	var output bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &output, &output
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	done := make(chan error, 1)
+	go func() { done <- process.Wait() }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("tester cleanup did not reap leader")
+		}
+	})
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		if _, err := os.Stat(ready); err == nil {
@@ -50,10 +59,9 @@ time.sleep(60)
 		t.Fatalf("child PID not recorded: %q %v", childPID, err)
 	}
 	cancel()
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
 	select {
 	case err := <-done:
+		done <- err
 		if err == nil {
 			t.Fatal("cancelled harness passed")
 		}
@@ -104,7 +112,6 @@ print('Test had 0 incorrect result(s) and 0 error(s)', flush=True)
 	if err != nil || pid <= 0 {
 		t.Fatalf("invalid child PID %q: %v", data, err)
 	}
-	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")

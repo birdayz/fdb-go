@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,19 +17,9 @@ import (
 	"time"
 )
 
-func evidenceDraftOwnProcessGroup(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+func evidenceDraftBoundProcess(cmd *exec.Cmd) {
+	// CommandContext cancels through its Go-owned process handle, not a raw PID.
 	cmd.WaitDelay = 2 * time.Second
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return os.ErrProcessDone
-		}
-		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		if errors.Is(err, syscall.ESRCH) {
-			return os.ErrProcessDone
-		}
-		return err
-	}
 }
 
 func evidenceDraftAwait(t *testing.T, done <-chan error, cancel context.CancelFunc) error {
@@ -93,7 +82,7 @@ func TestClientCorrectnessInitializationFailureStopsExport(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, "bash", "-euo", "pipefail", "-c", steps[0].Run)
-			evidenceDraftOwnProcessGroup(cmd)
+			evidenceDraftBoundProcess(cmd)
 			cmd.Env = append(os.Environ(), "RUNNER_TEMP="+root, "GITHUB_ENV="+envFile)
 			output, err := cmd.CombinedOutput()
 			if ctx.Err() != nil {
@@ -178,11 +167,6 @@ set -euo pipefail
 printf '%s\0' "$@" > "$ARGV_NUL"
 mkdir -p "$EVIDENCE/results"
 printf '{}\n' > "$EVIDENCE/results/report.json"
-if [[ "$SIGNAL_CASE" = 1 ]]; then
- printf R >&3
- IFS= read -r released <&4
- [[ "$released" = release ]] || exit 96
-fi
 `, 0o700)
 	evidenceDraftWrite(t, filepath.Join(f.bin, "jq"), "#!/bin/bash\nset -euo pipefail\nprintf 'true\\n'\n", 0o700)
 	evidenceDraftWrite(t, filepath.Join(f.repo, "secrets.py"), `import os
@@ -199,8 +183,16 @@ def randbelow(bound):
 func (f evidenceDraftFixture) command(t *testing.T) (*exec.Cmd, context.CancelFunc) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	cmd := exec.CommandContext(ctx, "bash", "-euo", "pipefail", "-c", f.script)
-	evidenceDraftOwnProcessGroup(cmd)
+	// Gate in the directly owned shell itself, after all short-lived tools exit.
+	script := f.script + `
+if [[ "$SIGNAL_CASE" = 1 ]]; then
+ printf R >&3
+ IFS= read -r released <&4
+ [[ "$released" = release ]] || exit 96
+fi
+`
+	cmd := exec.CommandContext(ctx, "bash", "-euo", "pipefail", "-c", script)
+	evidenceDraftBoundProcess(cmd)
 	realSort, err := exec.LookPath("sort")
 	if err != nil {
 		cancel()
@@ -323,11 +315,10 @@ func TestClientCorrectnessSignalsFinalizeEvidence(t *testing.T) {
 				t.Fatalf("runner readiness watchdog expired; wait: %v", waitErr)
 			}
 			signalErr := cmd.Process.Signal(tc.signal)
-			_, releaseErr := releaseW.Write([]byte("release\n"))
-			releaseW.Close()
 			err = evidenceDraftAwait(t, done, cancel)
-			if signalErr != nil || releaseErr != nil {
-				t.Fatalf("signal=%v release=%v", signalErr, releaseErr)
+			releaseW.Close()
+			if signalErr != nil {
+				t.Fatalf("signal=%v", signalErr)
 			}
 			if got := clientCorrectnessExit(err); got != tc.exit {
 				t.Fatalf("exit=%d want %d: %v %s", got, tc.exit, err, output.String())
@@ -371,7 +362,7 @@ func TestClientCorrectnessArtifactRoutingAndFailureSummary(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, "bash", "-euo", "pipefail", "-c", step.Run)
-			evidenceDraftOwnProcessGroup(cmd)
+			evidenceDraftBoundProcess(cmd)
 			cmd.Env = append(os.Environ(), "GITHUB_STEP_SUMMARY="+summary)
 			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("summary: %v %s", err, out)

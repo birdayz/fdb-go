@@ -232,8 +232,7 @@ print('Test had 0 incorrect result(s) and 0 error(s)')
 			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, program, args...)
-			configureTesterProcess(cmd)
-			defer killTesterGroup(cmd)
+			process := configureTesterProcess(cmd)
 			cmd.Dir = initial
 			cmd.Env = append(os.Environ(), "BUILD_WORKSPACE_DIRECTORY="+ws, "FIXTURE_OUTPUT_BASE="+base, "PATH="+tools+":"+os.Getenv("PATH"), "LD_LIBRARY_PATH="+native+":"+os.Getenv("LD_LIBRARY_PATH"), "ACTUAL_STACKTESTER="+stacktester, "ACTUAL_TESTER_ARGV="+filepath.Join(root, "actual-tester-argv"))
 			if tc.name == "scheduled" {
@@ -245,7 +244,7 @@ print('Test had 0 incorrect result(s) and 0 error(s)')
 			if tc.name == "version_override" {
 				cmd.Env = append(cmd.Env, "FDB_VERSION=7.3.63")
 			}
-			out, runErr := cmd.CombinedOutput()
+			out, runErr := process.CombinedOutput()
 			if (runErr == nil) != tc.pass {
 				t.Fatalf("pass=%v err=%v output=%s", tc.pass, runErr, out)
 			}
@@ -458,7 +457,7 @@ func TestScheduledRunnerProcess(t *testing.T) {
 	if mode == "" {
 		return
 	}
-	_, harness, err := setup()
+	harness, err := setup()
 	if err != nil {
 		t.Fatal(err)
 	}

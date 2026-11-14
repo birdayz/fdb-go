@@ -409,7 +409,7 @@ func TestSetupCleansHarnessAfterClientInitializationFailure(t *testing.T) {
 		} else if err := os.WriteFile(clientTar, []byte("invalid tar"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		_, _, err := setup()
+		_, err := setup()
 		want := "unpack python fdb"
 		if preflightFailure {
 			want = "broken pinned client"

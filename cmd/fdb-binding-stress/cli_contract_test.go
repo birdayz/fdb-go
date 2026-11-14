@@ -165,14 +165,12 @@ func (f cliContractFixture) run(t *testing.T, workspace, out string, extra ...st
 		t.Fatal(err)
 	}
 	cmd := exec.CommandContext(ctx, exe, "-test.run=^TestHarnessLifecycleChild$")
-	configureTesterProcess(cmd)
-	// Context cancellation kills the private group; WaitDelay bounds pipe drain.
-	// Do not defer group kill after Wait: its PID may already have been reused.
-	// Set cmd.Dir to an existing workspace even for the failed-Chdir test. The
-	// production setup must reject the missing env path, not exec itself.
+	process := configureTesterProcess(cmd)
+	// Reject missing workspaces in setup, not while starting the subprocess.
+
 	cmd.Dir = f.ws
 	cmd.Env = append(os.Environ(), "PATH="+f.bin+string(os.PathListSeparator)+os.Getenv("PATH"), "BUILD_WORKSPACE_DIRECTORY="+workspace, "FDB_TEST_OUTPUT_BASE="+f.base, "TMPDIR="+f.root, "FDB_VERSION=7.3.77", "FDB_STRESS_LIFECYCLE=cli", "FDB_STRESS_CLI_ARGS="+string(encoded), "FDB_STRESS_CLI_SEED_MARKER="+f.seedMarker, "CLI_BAZEL_LOG="+f.bazelLog, "CLI_PREFLIGHT_PROGRAM="+preflightPythonProgram)
-	output, err := cmd.CombinedOutput()
+	output, err := process.CombinedOutput()
 	if ctx.Err() != nil {
 		t.Fatalf("CLI child exceeded bound: %v\n%s", ctx.Err(), output)
 	}

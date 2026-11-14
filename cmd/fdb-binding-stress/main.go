@@ -84,7 +84,7 @@ func run(seedRunner func(context.Context, int, workload, string, string) SeedRes
 		log.Print(err)
 		return 1
 	}
-	_, btRunDir, err := setup()
+	btRunDir, err := setup()
 	if err != nil {
 		log.Print(err)
 		return 1
@@ -162,14 +162,13 @@ func realRunSeedWithDeps(ctx context.Context, seed int, w workload, btRunDir, se
 	args := testerArgs(seed, w, clusterFile, btRunDir)
 	r.Command = append([]string{"python3"}, args...)
 	cmd := exec.CommandContext(ctx, "python3", args...)
-	configureTesterProcess(cmd)
-	defer killTesterGroup(cmd)
+	process := configureTesterProcess(cmd)
 	cmd.Dir = btRunDir
 	cmd.Env = append(os.Environ(), "PYTHONPATH="+btRunDir)
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
-	err = cmd.Run()
+	err = process.Run()
 
 	output := buf.String()
 	if writeErr := os.WriteFile(filepath.Join(seedDir, "tester.log"), []byte(output), 0o644); writeErr != nil {
@@ -192,21 +191,12 @@ func applyTesterVerdict(r *SeedResult, output string, commandErr error, alive bo
 	}
 }
 
-// The Python harness spawns both bindings. Killing just its PID leaves those
-// children holding output pipes open and can make CommandContext wait forever.
-func configureTesterProcess(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return killTesterGroup(cmd) }
-	cmd.WaitDelay = 5 * time.Second
-}
-
-func killTesterGroup(cmd *exec.Cmd) error {
-	return killTesterGroupWithKill(cmd, syscall.Kill)
-}
-
 func killTesterGroupWithKill(cmd *exec.Cmd, kill func(int, syscall.Signal) error) error {
 	if cmd.Process == nil {
 		return nil
+	}
+	if cmd.ProcessState != nil {
+		return os.ErrProcessDone
 	}
 	err := kill(-cmd.Process.Pid, syscall.SIGKILL)
 	if errors.Is(err, syscall.ESRCH) {
@@ -297,18 +287,18 @@ func databaseAvailable(output string, err error) bool {
 	return json.Unmarshal([]byte(output), &status) == nil && status.Client.DatabaseStatus.Available
 }
 
-func setup() (stacktester string, btRunDir string, err error) {
+func setup() (btRunDir string, err error) {
 	return setupWithRegistryOpener(func(path string, flags int, perm os.FileMode) (io.WriteCloser, error) {
 		return os.OpenFile(path, flags, perm)
 	})
 }
 
-func setupWithRegistryOpener(openRegistry func(string, int, os.FileMode) (io.WriteCloser, error)) (stacktester string, btRunDir string, err error) {
+func setupWithRegistryOpener(openRegistry func(string, int, os.FileMode) (io.WriteCloser, error)) (btRunDir string, err error) {
 	// When run via `bazelisk run`, cwd is the sandbox. Use workspace dir.
 	wsDir := os.Getenv("BUILD_WORKSPACE_DIRECTORY")
 	if wsDir != "" {
 		if err := os.Chdir(wsDir); err != nil {
-			return "", "", fmt.Errorf("change to workspace: %w", err)
+			return "", fmt.Errorf("change to workspace: %w", err)
 		}
 	}
 
@@ -319,12 +309,12 @@ func setupWithRegistryOpener(openRegistry func(string, int, os.FileMode) (io.Wri
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return "", "", fmt.Errorf("bazelisk build failed: %w", err)
+		return "", fmt.Errorf("bazelisk build failed: %w", err)
 	}
 
-	stacktester, err = filepath.Abs("bazel-bin/cmd/fdb-stacktester/fdb-stacktester_/fdb-stacktester")
+	stacktester, err := filepath.Abs("bazel-bin/cmd/fdb-stacktester/fdb-stacktester_/fdb-stacktester")
 	if err != nil {
-		return "", "", fmt.Errorf("resolve stacktester path: %w", err)
+		return "", fmt.Errorf("resolve stacktester path: %w", err)
 	}
 	// Resolve symlinks to get the stable cache path. The bazel-bin/ symlink
 	// gets recreated on every Bazel invocation, so if a concurrent build runs
@@ -333,20 +323,20 @@ func setupWithRegistryOpener(openRegistry func(string, int, os.FileMode) (io.Wri
 	// cache which survives across builds.
 	stacktester, err = filepath.EvalSymlinks(stacktester)
 	if err != nil {
-		return "", "", fmt.Errorf("resolve stacktester symlinks: %w", err)
+		return "", fmt.Errorf("resolve stacktester symlinks: %w", err)
 	}
 	if _, err := os.Stat(stacktester); err != nil {
-		return "", "", fmt.Errorf("stacktester not found at %s: %w", stacktester, err)
+		return "", fmt.Errorf("stacktester not found at %s: %w", stacktester, err)
 	}
 
 	btDir, err := findBindingTesterDir()
 	if err != nil {
-		return "", "", fmt.Errorf("find bindingtester: %w", err)
+		return "", fmt.Errorf("find bindingtester: %w", err)
 	}
 
 	btRunDir, err = prepareBindingTester(btDir, os.TempDir())
 	if err != nil {
-		return "", "", fmt.Errorf("prepare bindingtester: %w", err)
+		return "", fmt.Errorf("prepare bindingtester: %w", err)
 	}
 	defer func(dir string) {
 		if err != nil {
@@ -357,26 +347,26 @@ func setupWithRegistryOpener(openRegistry func(string, int, os.FileMode) (io.Wri
 	// The oracle stack machine is upstream test code, not part of the Python sdist.
 	pythonTests := filepath.Join(filepath.Dir(btDir), "python", "tests")
 	if out, err := exec.Command("cp", "-rL", pythonTests, filepath.Join(btRunDir, "python")).CombinedOutput(); err != nil {
-		return "", "", fmt.Errorf("copy Python oracle: %s: %w", out, err)
+		return "", fmt.Errorf("copy Python oracle: %s: %w", out, err)
 	}
 	known := filepath.Join(btRunDir, "bindingtester", "known_testers.py")
 	f, err := openRegistry(known, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
-		return "", "", fmt.Errorf("open known testers: %w", err)
+		return "", fmt.Errorf("open known testers: %w", err)
 	}
 	if err = registerTesters(f, btRunDir, stacktester); err != nil {
-		return "", "", err
+		return "", err
 	}
 
 	if err = installPythonFDB(btRunDir); err != nil {
-		return "", "", err
+		return "", err
 	}
 	if err = preflightPythonFDB(btRunDir); err != nil {
-		return "", "", err
+		return "", err
 	}
 
 	fmt.Fprintf(os.Stderr, "Stacktester: %s\nHarness: %s\n\n", stacktester, btRunDir)
-	return stacktester, btRunDir, nil
+	return btRunDir, nil
 }
 
 func registerTesters(f io.WriteCloser, btRunDir, stacktester string) error {

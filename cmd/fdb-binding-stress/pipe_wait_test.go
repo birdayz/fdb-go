@@ -85,7 +85,7 @@ print('parent exits zero without cancelling escaped child', flush=True)
 	// installed, but this fixture exercises normal parent exit, not cancellation.
 	ctx := context.Background()
 	cmd := exec.CommandContext(ctx, "python3", "-c", testerProgram, listener.Addr().String())
-	configureTesterProcess(cmd)
+	process := configureTesterProcess(cmd)
 	// Do not replace WaitDelay: exercise the production five-second assignment.
 	var output bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &output, &output
@@ -152,7 +152,7 @@ print('parent exits zero without cancelling escaped child', flush=True)
 		t.Fatal(err)
 	}
 	testerStarted = true
-	go func() { waitErr = cmd.Wait(); close(waitDone) }()
+	go func() { waitErr = process.Wait(); close(waitDone) }()
 
 	conn, err = listener.AcceptUnix()
 	if err != nil {

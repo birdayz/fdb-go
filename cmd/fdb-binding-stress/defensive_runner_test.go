@@ -16,8 +16,8 @@ import (
 
 func TestDefensiveKillTesterGroup(t *testing.T) {
 	t.Parallel()
-	// Call the public wrapper too: this must not invoke a real syscall.
-	if err := killTesterGroup(&exec.Cmd{}); err != nil {
+	// The unstarted-command guard must not invoke a real syscall.
+	if err := killTesterGroupWithKill(&exec.Cmd{}, syscall.Kill); err != nil {
 		t.Fatalf("unstarted command: %v", err)
 	}
 	for _, tc := range []struct {
@@ -157,7 +157,7 @@ func TestDefensiveSetupChild(t *testing.T) {
 		}
 		return w, nil
 	}
-	_, harness, err := setupWithRegistryOpener(opener)
+	harness, err := setupWithRegistryOpener(opener)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "CONTROLLED_SETUP_ERROR="+err.Error())
 		os.Exit(42)
@@ -271,10 +271,10 @@ printf 'fixture preflight\n'
 			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, exe, "-test.run=^TestDefensiveSetupChild$", "-test.v")
-			configureTesterProcess(cmd)
+			process := configureTesterProcess(cmd)
 			cmd.Dir = ws
 			cmd.Env = append(os.Environ(), "DEFENSIVE_SETUP_CHILD=1", "BUILD_WORKSPACE_DIRECTORY="+ws, "PATH="+bin+":"+os.Getenv("PATH"), "TMPDIR="+tmp, "SELECTED_BASE="+base, "REAL_CP="+realCP, "DEFENSIVE_MODE="+mode, "ORACLE_SOURCE="+filepath.Join(bindings, "python/tests"), "BINDINGTESTER_SOURCE="+filepath.Join(bindings, "bindingtester"), "WORKSPACE="+ws, "CP_ARG_LOG="+cpLog, "COPY_PHASE_LOG="+phaseLog, "PROBE_PROGRAM="+preflightPythonProgram, "PREFLIGHT_LOG="+preflight)
-			out, runErr := cmd.CombinedOutput()
+			out, runErr := process.CombinedOutput()
 			if ctx.Err() != nil {
 				t.Fatalf("setup subprocess exceeded bound: %v\n%s", ctx.Err(), out)
 			}

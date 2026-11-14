@@ -58,18 +58,19 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 	// --- Transaction management ---
 	case "NEW_TRANSACTION":
 		sm.trMu.Lock()
-		sm.trMap[sm.trName] = sm.createTransaction()
+		sm.replaceTransaction(sm.trName)
 		sm.trMu.Unlock()
 	case "USE_TRANSACTION":
 		name := sm.popString()
 		sm.trMu.Lock()
 		sm.trName = name
 		if _, ok := sm.trMap[name]; !ok {
-			sm.trMap[name] = sm.createTransaction()
+			sm.replaceTransaction(name)
 		}
 		sm.trMu.Unlock()
 	case "COMMIT":
-		tr := sm.currentTr()
+		tr, release := sm.acquireCommitTransaction()
+		defer release()
 		err := tr.Commit(ctx)
 		if err != nil {
 			sm.pushError(idx, err)
@@ -78,7 +79,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		}
 	case "RESET":
 		sm.trMu.Lock()
-		sm.trMap[sm.trName] = sm.createTransaction()
+		sm.replaceTransaction(sm.trName)
 		sm.trMu.Unlock()
 	case "CANCEL":
 		sm.currentTr().Cancel()

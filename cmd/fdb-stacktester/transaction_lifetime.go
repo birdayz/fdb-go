@@ -55,10 +55,41 @@ func (w *transactionWaits) failure() error {
 	return w.cause
 }
 
-func (sm *StackMachine) createTransaction() *client.Transaction {
+type namedTransaction struct {
+	tx      *client.Transaction
+	refs    int
+	untrack func()
+}
+
+// Registry slots and dispatched COMMIT calls each own a reference.
+// Callers of replaceTransaction and releaseTransaction hold trMu.
+func (sm *StackMachine) replaceTransaction(name string) {
 	tx := sm.db.CreateTransaction()
-	sm.waits.track(tx.Cancel)
-	return tx
+	next := &namedTransaction{tx: tx, refs: 1, untrack: sm.waits.track(tx.Cancel)}
+	old := sm.trMap[name]
+	sm.trMap[name] = next
+	if old != nil {
+		sm.releaseTransaction(old)
+	}
+}
+
+func (sm *StackMachine) releaseTransaction(handle *namedTransaction) {
+	handle.refs--
+	if handle.refs == 0 {
+		handle.untrack()
+	}
+}
+
+func (sm *StackMachine) acquireCommitTransaction() (*client.Transaction, func()) {
+	sm.trMu.Lock()
+	handle := sm.trMap[sm.trName]
+	handle.refs++
+	sm.trMu.Unlock()
+	return handle.tx, func() {
+		sm.trMu.Lock()
+		sm.releaseTransaction(handle)
+		sm.trMu.Unlock()
+	}
 }
 
 func (sm *StackMachine) transact(ctx context.Context, body func(*client.Transaction) (any, error)) (any, error) {

@@ -43,6 +43,7 @@ go_test(
         "operations_test.go",
         "split_forwarding_test.go",
         "thread_test.go",
+        "transaction_ownership_test.go",
         "tuple_directory_test.go",
     ],
     data = [":fdb-stacktester"],

@@ -14,7 +14,7 @@ func TestSetupGuardProcess(t *testing.T) {
 	if os.Getenv("RUNNER_SETUP_GUARD_PROCESS") != "1" {
 		return
 	}
-	_, harness, err := setup()
+	harness, err := setup()
 	if err != nil {
 		t.Fatal(err)
 	}
