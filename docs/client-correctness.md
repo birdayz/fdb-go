@@ -5,6 +5,18 @@ FoundationDB BindingTester hourly (minute 17), or on `workflow_dispatch`.
 This is **Go client coverage only**: it does not run Record Layer, SQL, Java
 conformance, or the general repository test lanes.
 
+## Recorded hosted acceptance
+
+Manual merged-master run [43569938200](https://github.com/birdayz/fdb-go/actions/runs/43569938200)
+passed on `7ce10d143a229001a0b6cd8149b9d31e42ef1602`: 142/142 cases,
+14 borrowed regressions plus 128 exploration cases, including 25 complete
+five-mode cycles, with zero failures/FDB deaths and unchanged input hashes.
+The per-mode census, guard and per-case evidence files, artifact retention,
+heavyweight CI execution, and remaining gaps are recorded in
+[`TODO.md`](../TODO.md#go-client-scheduled-correctness--hosted-acceptance-recorded).
+The first cron-triggered green run remains unobserved; this manual dispatch
+establishes hosted execution, not hourly schedule delivery.
+
 ## Contract and bounds
 
 The single job runs on GitHub-hosted `ubuntu-24.04`, not the shared local heavy
