@@ -3,6 +3,7 @@ package otel
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 
 	"fdb.dev/layers/otel/otelsql"
@@ -61,6 +62,8 @@ type Exporter struct {
 	logs     *relLogStore
 	// txnSlots holds one token per in-flight write transaction.
 	txnSlots chan struct{}
+	// closeDatabase releases the owned database handle, once, after active calls and hooks.
+	closeDatabase func()
 
 	mu     sync.Mutex
 	closed bool
@@ -77,7 +80,6 @@ func NewExporter(ctx context.Context, cfg ExporterConfig) (*Exporter, error) {
 
 // newExporter is NewExporter with the parts other code or tests supply.
 func newExporter(ctx context.Context, cfg ExporterConfig, parts relParts) (*Exporter, error) {
-	const op = "open exporter"
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -94,9 +96,64 @@ func newExporter(ctx context.Context, cfg ExporterConfig, parts relParts) (*Expo
 	if newDatabase == nil {
 		newDatabase = recordlayer.NewFDBDatabase
 	}
-	db := newDatabase(raw)
+	return initializeExporter(ctx, cfg, serializer, newDatabase(raw), raw, raw.Close, parts)
+}
+
+// NewExporterWithBackend is NewExporter on an opened backend, such as a native client;
+// it opens no client. A valid backend is owned from entry: closed on any failure or at
+// Shutdown, so the caller must not close or share it. Nil, typed-nil and zero handles
+// are rejected as config errors without calling their methods.
+func NewExporterWithBackend(ctx context.Context, cfg ExporterConfig, backend fdb.BackendDatabase) (*Exporter, error) {
+	return newExporterWithBackend(ctx, cfg, backend, relParts{})
+}
+
+// newExporterWithBackend is NewExporterWithBackend with test parts; newDatabase is unused.
+func newExporterWithBackend(ctx context.Context, cfg ExporterConfig, backend fdb.BackendDatabase, parts relParts) (*Exporter, error) {
+	if !validBackend(backend) {
+		return nil, fail("config", "open exporter", "an opened FDB backend is required")
+	}
+	if err := cfg.Validate(); err != nil {
+		backend.Close()
+		return nil, err
+	}
+	serializer, err := RecordSerializer(cfg.RecordCompression)
+	if err != nil {
+		backend.Close()
+		return nil, err
+	}
+	ctx = withExporterTxns(ctx, cfg.TransactionTimeout)
+	// A pure-Go backend, by value or by pointer, keeps its concrete handle (and client
+	// metrics); others leave raw zero.
+	if p, ok := backend.(*fdb.Database); ok {
+		backend = *p
+	}
+	raw, _ := backend.(fdb.Database)
+	return initializeExporter(ctx, cfg, serializer, recordlayer.NewFDBDatabaseWithBackend(backend), raw, backend.Close, parts)
+}
+
+// validBackend rejects nil, typed-nil and zero handles without calling their methods.
+func validBackend(backend fdb.BackendDatabase) bool {
+	switch b := backend.(type) {
+	case nil:
+		return false
+	case fdb.Database:
+		return b.IsValid()
+	case *fdb.Database:
+		return b != nil && b.IsValid()
+	}
+	switch v := reflect.ValueOf(backend); v.Kind() {
+	case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
+		return !v.IsNil()
+	}
+	return true
+}
+
+// initializeExporter is both constructors' shared setup on an opened database; it owns
+// closeDatabase from entry and calls it exactly once if setup fails.
+func initializeExporter(ctx context.Context, cfg ExporterConfig, serializer *recordlayer.TransformedRecordSerializer, db *recordlayer.FDBDatabase, raw fdb.Database, closeDatabase func(), parts relParts) (*Exporter, error) {
+	const op = "open exporter"
 	abort := func(err error) (*Exporter, error) {
-		raw.Close()
+		closeDatabase()
 		return nil, err
 	}
 	keyspace.RegisterDomainIfNotExists(relDomain)
@@ -111,7 +168,7 @@ func newExporter(ctx context.Context, cfg ExporterConfig, parts relParts) (*Expo
 		return abort(relOpenError(ctx, op, err))
 	}
 	e := &Exporter{
-		cfg: cfg, raw: raw, store: store,
+		cfg: cfg, raw: raw, store: store, closeDatabase: closeDatabase,
 		reader:   &SpanReader{store: store, cfg: cfg.backendConfig(), keys: storeMetaContinuationKeys{}},
 		writer:   newSpanWriter(store, SpanWriterOptions{BatchSize: cfg.BatchSize, Workers: cfg.Workers, BulkIndexConflicts: cfg.BulkIndexConflicts}),
 		txnSlots: make(chan struct{}, cfg.MaxInFlightTransactions),
@@ -207,7 +264,7 @@ func (e *Exporter) Shutdown(ctx context.Context) error {
 			if e.messages != nil {
 				e.messages.close()
 			}
-			e.raw.Close()
+			e.closeDatabase()
 			close(e.done)
 		}()
 	}

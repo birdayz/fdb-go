@@ -200,7 +200,9 @@ The Record Layer targets Java's tuple keys, record serialization, split records,
 versions, store headers and supported index layouts. The conformance suite in
 `conformance/` performs bidirectional reads/writes for covered cases. The
 `libfdbc` build tag changes the Record Layer / SQL transport backend, not the
-higher-level storage layout; it does not remove the exceptions below.
+higher-level storage layout; it does not remove the exceptions below. The
+`libfdbc_backend` tag only compiles that backend package and leaves the Record Layer on
+the pure-Go client.
 
 **Unreleased (post-v0.2.0):** The shared R-tree storage adapter preserves
 persisted Hilbert integers exactly,
@@ -574,6 +576,29 @@ catalog databases (`otelbench --backend sql`: `/OTELBENCH/R_<RUN>`, which its
 run-level Drop removes); a production tenant's shared signal store must never
 be cleared by that operation. Java-readable stores must use
 an interoperable serializer, not Go-only Brotli.
+
+**Experimental Rust span writer.** `layers/otel/rust` is a separate, in-process,
+span-only alternative to the Go `SpanWriter`; it does not replace the production
+`otel.Exporter` contract above. Its source projects SPANS and all eight span
+VALUE indexes, stores the original single-span OTLP, and implements prior-image
+replacement, split records and version-1 raw/zlib serialization. It dynamically
+loads only an explicit SHA256-matched native C client 7.3.77 (API 730), not the
+production pure-Go client. An immutable, exclusively owned tenant manifest must
+seal the exact descriptor, prefixes, header, catalog values and empty state
+ranges; Rust checks all of them once, when its Writer is constructed, and then in
+every write attempt (retries included) only the tenant store header and the
+index-state range, as the Go writer reads. A tenant name-to-location mapping
+rewritten, or a catalog-only edit made, while the Rust writer runs is therefore no
+longer detected (the Go writer, which caches its resolved prefix and metadata, has
+the same boundary). Rust cannot create, resolve, upgrade or adopt a catalog. Concurrent schema evolution is unsupported. The queued collector is
+in-process only, and its admission is not a durable ACK. Source fixtures and
+fake transaction/queue tests are not live native-ABI, FDB durability or Go/Java
+cross-read conformance. Those integrations, the independent record/index census
+and the complete query oracle remain unverified. Logs, GenAI message
+decomposition/deduplication/restoration, message TEXT indexes, metrics and OTLP
+receivers are outside this milestone. See `layers/otel/rust/README.md` for the
+validation and comparison boundaries; no Rust performance/economics advantage
+or full Collector parity is established.
 
 SQL keyset pages use an expanded scalar predicate over `(time, trace, span)`;
 row-value comparison is unsupported in both engines. Go's LIMIT is not Java

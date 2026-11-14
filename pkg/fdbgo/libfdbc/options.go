@@ -1,4 +1,4 @@
-//go:build cgo && libfdbc
+//go:build cgo && (libfdbc || libfdbc_backend)
 
 package libfdbc
 

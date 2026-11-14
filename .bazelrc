@@ -11,10 +11,9 @@ test --test_summary=terse
 # Read by cmd/test-report to generate HTML reports from JUnit XML.
 test --build_event_json_file=.bazel-bep.jsonl
 
-# Verbose test output for report generation. Per-test timing in test.log.
-# This IS part of the Bazel action fingerprint — invalidates cache once
-# on first run after adding, then stays stable.
-test --test_arg="-test.v"
+# Go-only verbose output: rules_go passes -test.v=test2json (per-test XML cases, ^V-framed
+# status lines that cmd/fuzzrun strips) to Go test binaries, never to Rust tests.
+test --test_env=GO_TEST_WRAP_TESTV=1
 
 # ...which makes a large suite's output exceed Bazel's default 1 MiB console
 # budget, and Bazel DISCARDS an over-budget stream rather than truncating it:

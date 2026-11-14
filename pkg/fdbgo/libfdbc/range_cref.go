@@ -1,4 +1,4 @@
-//go:build cgo && libfdbc
+//go:build cgo && (libfdbc || libfdbc_backend)
 
 // This file is the libfdb_c (raw cgo) REFERENCE side of the range BATCH DIVISION
 // differential, and it exists because Apple's Go binding cannot answer the question.

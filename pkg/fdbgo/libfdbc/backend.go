@@ -1,4 +1,7 @@
-//go:build cgo && libfdbc
+//go:build cgo && (libfdbc || libfdbc_backend)
+
+// libfdbc_backend compiles this backend without selecting it: pkg/internal/fdbclient
+// keys on libfdbc alone, so the Record Layer stays on the pure-Go client.
 
 // Package libfdbc is the config-selectable libfdb_c (Apple CGo) backend for the
 // record layer — RFC-109's escape hatch. It implements the fdb client interfaces
