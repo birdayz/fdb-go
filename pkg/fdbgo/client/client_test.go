@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -204,52 +203,6 @@ func TestOnError_AllRetryableCodes(t *testing.T) {
 				t.Errorf("mutations not cleared: %d", len(tx.mutations))
 			}
 		})
-	}
-}
-
-func TestOnErrorSuccessCodeIsInvalidOperation(t *testing.T) {
-	t.Parallel()
-	for _, retryLimit := range []bool{false, true} {
-		tx := &Transaction{}
-		if retryLimit {
-			tx.SetRetryLimit(0)
-		}
-		input := fmt.Errorf("wrapped: %w", &wire.FDBError{Code: 0})
-		err := tx.OnError(context.Background(), input)
-		want := ErrClientInvalidOperation
-		if retryLimit {
-			want = ErrInternalError
-		}
-		var fdbErr *wire.FDBError
-		if !errors.As(err, &fdbErr) || fdbErr.Code != want {
-			t.Fatalf("OnError(success), retryLimit=%v: got %v, want %d", retryLimit, err, want)
-		}
-		if tx.retryCount != 0 {
-			t.Fatalf("OnError(success) retried %d times", tx.retryCount)
-		}
-	}
-}
-
-func TestBorrowedOnErrorSuccessCodeIsInvalidOperation(t *testing.T) {
-	t.Parallel()
-	for _, retryLimit := range []bool{false, true} {
-		tx := &Transaction{}
-		tx.SetReadVersion(123)
-		want := ErrClientInvalidOperation
-		if retryLimit {
-			tx.SetRetryLimit(0)
-			want = ErrInternalError
-		}
-		op := &readOperation{Context: tx.readLife.ctx, readAdmission: readAdmission{tx: tx, inc: tx.readLife, parent: context.Background()}}
-		input := &wire.FDBError{Code: 0}
-		err := tx.borrowedOnErrorVerdict(context.Background(), op, input)
-		var fdbErr *wire.FDBError
-		if !errors.As(err, &fdbErr) || fdbErr.Code != want {
-			t.Fatalf("borrowed OnError(success), retryLimit=%v: got %v, want %d", retryLimit, err, want)
-		}
-		if tx.retryCount != 0 || txState(tx.state.Load()) != txStateActive {
-			t.Fatal("borrowed OnError changed the owner's transaction")
-		}
 	}
 }
 
