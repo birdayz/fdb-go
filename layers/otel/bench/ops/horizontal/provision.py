@@ -727,7 +727,7 @@ def _transfer_timeout(nbytes, rate):
 def sealed_assets(plan):
     if plan.get('schema') != 'otel_native_paired_v1':
         return SEALED_ASSETS
-    return tuple((name, name) for name in sorted(plan['assets']))
+    return tuple((name, 'libfdb_c.so' if name == 'libfdb_c' else name) for name in sorted(plan['assets']))
 
 
 def _asset_source(plan, key):
@@ -1550,7 +1550,9 @@ for entry in pathlib.Path('/proc').iterdir():
     if entry.name.isdigit():
         value = proc(int(entry.name))
         if value and (value['exe'].removesuffix(' (deleted)') in request['binaries']
-                      or value['args'] and value['args'][0] in request['binaries']):
+                      or value['args'] and value['args'][0] in request['binaries']
+                      or any(value['exe'].removesuffix(' (deleted)').startswith(root) or value['args'] and value['args'][0].startswith(root)
+                             for root in request.get('binary_roots', []))):
             residual.append(value)
 print(json.dumps(dict(units=units, historical=historical, owned_residual=residual)))
 '''
@@ -1706,6 +1708,8 @@ def stop_owned_arm(plan, out, nodes, layout, *, scopes=(), runner=None, clock=ti
                 if plan['schema'] == 'otel_native_paired_v1':
                     binaries += [root+'/bin/'+name for name in ('control_pure_binary', 'control_native_binary', 'rust_binary') if name in plan['assets']]
                 request = dict(units=specs[role], historical=list(historical[role]), binaries=binaries)
+                if plan['schema'] == 'otel_native_paired_v1':
+                    request['binary_roots'] = [root+'/bin/'+name+'.bundle/' for name in ('control_pure_binary', 'control_native_binary', 'rust_binary') if name in plan['assets']]
                 timed_out = False
                 try:
                     rc, stdout, stderr = run_on_node(plan, out, nodes[role],

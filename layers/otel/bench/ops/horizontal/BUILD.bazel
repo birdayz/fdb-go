@@ -5,12 +5,19 @@ _HORIZONTAL_TEST_DATA = [
     "driver.py",
     "policy.py",
     "paired.py",
+    "paired_builds.py",
+    "paired_build_receipt.py",
     "paired_cost.py",
     "paired_native.py",
     "paired_reports.py",
     "paired_rows.py",
     "paired-job-v1.schema.json",
+    "paired-build-receipt-v1.schema.json",
+    "build-receipt-examples/control_pure_binary.json",
+    "build-receipt-examples/control_native_binary.json",
+    "build-receipt-examples/rust_binary.json",
     "test_paired.py",
+    "test_paired_builds.py",
     "test_paired_cost.py",
     "test_paired_native.py",
     "test_paired_rows.py",
@@ -38,6 +45,13 @@ sh_test(
     name = "native_paired_test",
     srcs = ["test.sh"],
     args = ["test_paired"],
+    data = _HORIZONTAL_TEST_DATA,
+)
+
+sh_test(
+    name = "native_paired_builds_test",
+    srcs = ["test.sh"],
+    args = ["test_paired_builds"],
     data = _HORIZONTAL_TEST_DATA,
 )
 

@@ -3,10 +3,12 @@
 import base64
 import copy
 import hashlib
+import io
 import json
 import stat
 from pathlib import Path
 import subprocess
+import tarfile
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -111,18 +113,55 @@ class ProvisionAdapterTests(NativeFixture):
         self.assertEqual(len(self.backend.ledger["hosts"]), 2)
 
     def test_transfer_extracts_verified_zstd_receipts_for_every_host_asset(self):
+        # A valid large manifest must travel as a file, not exceed SSH argv limits.
+        name = "control_native_binary"
+        built = q.builds.read_receipt(self.plan, name)
+        bundle_ref = self.plan["assets"][q.builds.deployment_asset(name)]
+        archive = Path(bundle_ref["path"])
+        with tarfile.open(archive) as source:
+            payloads = {item.name: (source.extractfile(item).read(), item.mode) for item in source if item.isfile()}
+        for index in range(1000):
+            payloads["bin/control_native_binary.runfiles/_main/large-manifest/entry-%04d.txt" % index] = (b"fixture", 0o644)
+        with tarfile.open(archive, "w") as target:
+            for path, (payload, mode) in sorted(payloads.items()):
+                item = tarfile.TarInfo(path); item.size = len(payload); item.mode = mode
+                target.addfile(item, io.BytesIO(payload))
+        bundle_ref["sha256"] = n.sha(archive)
+        built.update(deployment_sha256=bundle_ref["sha256"], files=q.builds.archive_manifest(archive))
+        receipt_path = Path(self.plan["assets"][name]["build_receipt"]["path"])
+        receipt_path.write_text(json.dumps(built, sort_keys=True) + "\n")
+        self.plan["assets"][name]["build_receipt"]["sha256"] = n.sha(receipt_path)
+        self.backend.plan = copy.deepcopy(self.plan)
+        with mock.patch.object(q.builds, "readelf_dynamic", return_value=q.builds.fake_readelf(name)):
+            q.builds.validate(self.plan, name)
         state = self.backend.provision_out / "provision"
         state.mkdir(parents=True, mode=0o700)
-        packed = {name: {"sha256": value["sha256"], "transfer_sha256": "c" * 64, "bytes": 7}
+        packed = {name: {"name": "libfdb_c.so" if name == "libfdb_c" else name, "sha256": value["sha256"], "transfer_sha256": "c" * 64, "bytes": 7}
                   for name, value in self.plan["assets"].items()}
         d.write(state / "asset-transfer.json", {"assets": packed})
         for index, (role, node) in enumerate(self.backend.nodes.items()):
             for name, value in packed.items():
                 receipt = {"node_id": node["id"], "returncode": 0, "timed_out": False,
-                    "stdout": json.dumps({"dest": self.backend.remote_assets(self.plan)[name], "sha256": value["sha256"],
+                    "stdout": json.dumps({"dest": "/srv/otel-horizontal/" + self.plan["campaign"] + "/bin/" + ("libfdb_c.so" if name == "libfdb_c" else name), "sha256": value["sha256"],
                                            "bytes": 7, "src_sha256": "c" * 64})}
-                d.write(state / (role + "-asset-" + name + ("-install.json" if index == 0 else "-fetch.json")), receipt)
+                d.write(state / (role + "-asset-" + value["name"] + ("-install.json" if index == 0 else "-fetch.json")), receipt)
+        requests = {}
+        def copy_request(node, local, remote):
+            requests[(node["id"], remote)] = (d.read(local), n.sha(local))
+        def installed(node, args):
+            self.assertEqual(args[:2], ["python3", "-c"])
+            self.assertEqual(args[2], q.builds.INSTALL_SCRIPT)
+            self.assertLess(len(" ".join(args).encode()), 128 * 1024)
+            request, expected = requests[(node["id"], args[3])]
+            self.assertEqual(args[4], expected)
+            return json.dumps({"schema": "otel_paired_deployment_receipt_v1", **request})
+        self.backend._copy = mock.Mock(side_effect=copy_request)
+        self.backend.command = mock.Mock(side_effect=installed)
         result = self.backend.transfer_assets(self.plan, self.backend.nodes)
+        self.assertEqual(self.backend.command.call_count, 6)
+        self.assertEqual(self.backend._copy.call_count, 6)
+        self.assertTrue(any(len(json.dumps(request).encode()) > 128 * 1024 for request, _ in requests.values()))
+        self.assertTrue(all(len(value["deployments"]) == 3 for value in result.values()))
         q.validate_transfers(self.plan, self.backend.nodes, result)
         self.assertEqual(set(result), set(self.backend.nodes))
         self.assertTrue(all(set(x["assets"]) == set(self.plan["assets"]) for x in result.values()))
@@ -445,6 +484,42 @@ class DrainAndCleanupTests(NativeFixture):
 
 
 class RemoteBoundaryTests(NativeFixture):
+    def test_composed_launcher_is_minimal_and_only_native_go_gets_sealed_loader_path(self):
+        for arm in q.ARMS:
+            for mode in ("ingest", "verify"):
+                path, grant = self.grant(arm, mode)
+                ready = n.ready_receipt(grant)
+                release = {"job_sha256": grant["job_sha256"], "release_id": "a" * 64, "controller_ns": 1}
+                def read(path, *args):
+                    return ready if str(path).endswith("-ready.json") else release
+                with mock.patch.object(n, "load_grant", return_value=grant), mock.patch.object(n, "read", side_effect=read), \
+                        mock.patch.object(n, "write"), mock.patch.object(n.time, "time", return_value=self.epoch), \
+                        mock.patch.dict(n.os.environ, {"LD_LIBRARY_PATH": "/home/ambient", "FDB_NETWORK_OPTION_TRACE_ENABLE": "ambient"}), \
+                        mock.patch.object(n.subprocess, "Popen", side_effect=RuntimeError("captured before launch")) as popen, \
+                        self.assertRaisesRegex(RuntimeError, "captured before launch"):
+                    n.run_job(path)
+                args = popen.call_args.args[0]
+                self.assertEqual(args[-2:], grant["argv"])
+                self.assertIn("-i", args)
+                environment = n.launch_environment(grant["job"])
+                self.assertEqual(popen.call_args.kwargs["env"], {"PATH": "/usr/bin:/bin", "HOME": "/root"})
+                self.assertFalse(any("FDB_NETWORK_OPTION_" in value or "/home/ambient" in value for value in args))
+                native = arm == "go_native" and mode == "ingest"
+                self.assertEqual("LD_LIBRARY_PATH" in environment, native)
+                self.assertEqual(any(value.startswith("LD_LIBRARY_PATH=") for value in args), native)
+                if native:
+                    directory = str(Path(grant["job"]["client_library"]).parent)
+                    self.assertEqual(environment["LD_LIBRARY_PATH"], directory)
+                    self.assertIn("LD_LIBRARY_PATH=" + directory, args)
+                    self.assertIn("control_native_binary.bundle/", directory)
+
+    def test_native_loader_refuses_wrong_filename_or_colon_directory(self):
+        _, original = self.grant("go_native")
+        for library in ("/srv/client/libfdb_c-copy.so", "/srv/client:other/libfdb_c.so"):
+            job = dict(original["job"], client_library=library)
+            with self.subTest(path=library), self.assertRaisesRegex(ValueError, "LD_LIBRARY_PATH"):
+                n.launch_environment(job)
+
     def grant(self, arm="go_pure", mode="ingest"):
         ns, job = self.job(arm)
         if mode != "ingest":
@@ -460,8 +535,10 @@ class RemoteBoundaryTests(NativeFixture):
         for key in ("cluster", "corpus", "layout"):
             inputs[job[key + "_file"]] = job[key + "_sha256"]
         seal = q.job_seal(job)
+        binary = q.ARM_EXECUTABLES[arm] if mode == "ingest" else "control_pure_binary"
+        deployment = q.deployment(self.plan, binary, "/srv/otel-horizontal/" + self.plan["campaign"] + "/bin")
         return root + "/" + mode + "-grant.json", {"schema": "otel_paired_grant_v1", "node_id": 2, "namespace": ns,
-            "job": job, "job_sha256": seal, "argv": argv, "inputs": inputs,
+            "job": job, "job_sha256": seal, "argv": argv, "inputs": inputs, "deployment": deployment,
             "active_deadline": self.epoch + 100, "hard_deadline": self.epoch + 500,
             "limits": self.plan["native_geometry"]["client_slice"], "scope": "otel-paired-" + seal[:24] + ".scope"}
 

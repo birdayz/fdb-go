@@ -644,7 +644,14 @@ Source/binary seals remain per arm. Three executable assets have distinct paths
 and hashes: `assets.control_pure_binary` for `go_pure` ingest AND every corpus,
 setup and verify invocation; `assets.control_native_binary` for `go_native` ingest
 only; `assets.rust_binary` for `rust_native` ingest only. Each asset carries its
-own `path` and `sha256`; jobs/reports retain the existing `binary_sha256` field.
+own `path` and `sha256`, plus a sealed `build_receipt:{path,sha256}` and its
+`<executable_asset>_deployment` binary/runfiles archive; jobs/reports retain the
+existing `binary_sha256` field. [BUILD-PROVENANCE.md](BUILD-PROVENANCE.md) specifies
+the versioned receipt/manifest schema, literal examples and exact build/package
+commands. Measured artifacts require no-home-rc build provenance and live readelf
+checks; the ordinary correctness-test lane's rc configuration is unchanged.
+Native Go runs from its verified deployment with an explicit minimal loader
+search path to the receipt-bound `libfdb_c.so`; pure and Rust inherit no loader path.
 The pure executable and `sources.go_pure` verifier identity are required even
 when pure ingest is not selected. Go executable variants share collector source
 seals, not executable seals. Per-arm builders, invocation/grant checks, preflight,

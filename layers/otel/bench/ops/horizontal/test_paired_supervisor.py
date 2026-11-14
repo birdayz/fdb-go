@@ -302,6 +302,27 @@ class PairedPilotSupervisorTests(PairedSupervisorFixture):
         self.assertTrue(all(argv[:5] == ["/usr/bin/systemctl", "--user", "set-property", "--runtime", self.unit]
                             for argv in self.manager.mutations))
 
+    def test_bound_and_watch_cleanup_do_not_depend_on_external_build_receipts(self):
+        self.live()
+        for name in paired.builds.EXECUTABLES:
+            Path(self.plan["assets"][name]["build_receipt"]["path"]).unlink()
+        self.assertEqual(s.load_bundle(self.plan, check_source=False)[1], self.watch_root)
+        self.set_command(300, [*self.watch_argv[:3], "bound", *self.watch_argv[4:]])
+        with mock.patch.object(os, "getpid", return_value=300), mock.patch.object(s.time, "monotonic_ns", return_value=1000000000):
+            value = s.bound(self.watch_root, runner=self.manager, proc_root=self.proc.root, clock=self.clock)
+        self.assertEqual(value["deadline_epoch"], self.plan["deadline_epoch"])
+        self.set_command(300, self.watch_argv)
+        self.registration()
+        (provision._state(self.out) / "baseline").mkdir(mode=0o700, parents=True)
+        calls = []
+        def cleanup(plan, out, *, clock, sleep):
+            calls.append((plan, Path(out)))
+            return {"passed": True, "within_deadline": True}
+        self.clock.epoch = 1000 + self.cleanup_seconds - 1
+        self.assertEqual(self.watch(teardown=cleanup), 0)
+        self.assertEqual(calls, [(self.plan, self.out)])
+        self.assertTrue(json.loads((self.watch_root / "exit.json").read_text())["passed"])
+
     def test_original_cleanup_epoch_fires_while_controller_is_live(self):
         self.live()
         self.registration()

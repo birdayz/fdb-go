@@ -13,6 +13,7 @@ import time
 
 import driver as d
 import policy as p
+import paired_builds as builds
 import paired_cost as cost
 import paired_reports as reports
 import paired_rows as rows
@@ -191,12 +192,18 @@ def validate_plan(plan, *, check_assets=True):
               and end - first == (3600 if plan["stage_profile"] == "pilot" else 7200), "one original fixed lease")
     p.require(plan.get("cleanup_mode") == "independent_watch", "paired campaigns require independent cleanup admission")
     assets = plan.get("assets")
-    required = BASE_ASSETS | {ARM_EXECUTABLES[x] for x in plan["arms"]}
+    required_executables = {"control_pure_binary"} | {ARM_EXECUTABLES[x] for x in plan["arms"]}
+    required = BASE_ASSETS | required_executables | {builds.deployment_asset(name) for name in required_executables}
     if any(x.endswith("native") for x in plan["arms"]):
         required.add("libfdb_c")
     p.require(type(assets) is dict and set(assets) == required, "complete exact paired asset set")
-    for item in assets.values():
-        asset(item, check_assets=check_assets)
+    for name, item in assets.items():
+        if name in required_executables:
+            p.require(type(item) is dict and set(item) == {"path", "sha256", "build_receipt"}, "executable requires sealed build receipt")
+            asset(item["build_receipt"], check_assets=check_assets)
+            asset({key: item[key] for key in ("path", "sha256")}, check_assets=check_assets)
+        else:
+            asset(item, check_assets=check_assets)
     executables = {"control_pure_binary"} | {ARM_EXECUTABLES[x] for x in plan["arms"]}
     p.require(len({assets[key]["sha256"] for key in executables}) == len(executables)
               and len({assets[key]["path"] for key in executables}) == len(executables), "distinct executable identity per arm and pure control required")
@@ -214,6 +221,9 @@ def validate_plan(plan, *, check_assets=True):
     if "go_native" in plan["arms"]:
         p.require(all(sources["go_pure"][key] == sources["go_native"][key] for key in ("revision", "manifest_sha256")),
                   "Go pure/native executables must share the same collector source, not the same binary")
+    if check_assets:
+        for name in required_executables:
+            builds.validate(plan, name, inspect_elf=not plan.get("fake_provider", False))
     p.require(p.hexstr(plan.get("pricing_seal_sha256")) and type(plan.get("pricing")) is dict,
               "sealed admission pricing required")
     p.require(type(plan.get("prior_cost_upper_eur")) is str and re.fullmatch(r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,18})?", plan["prior_cost_upper_eur"])
@@ -279,18 +289,40 @@ def namespace(plan, hosts, arm, phase, client, repeat=1):
     return "/".join((plan["campaign"], arm_id(hosts, arm, repeat), phase, "client" + str(client)))
 
 
+def deployment(plan, name, remote_bin):
+    receipt = builds.read_receipt(plan, name)
+    root = remote_bin + "/" + name + ".bundle"
+    return {"asset": name, "root": root, "executable_relative_path": receipt["executable_relative_path"],
+            "client_library_relative_path": receipt["client_library_relative_path"]}
+
+
+def deployed_assets(plan, remote_bin):
+    values = {name: remote_bin + "/" + ("libfdb_c.so" if name == "libfdb_c" else name) for name in plan["assets"]}
+    for name in builds.EXECUTABLES:
+        if name in plan["assets"]:
+            info = deployment(plan, name, remote_bin)
+            values[name] = info["root"] + "/" + info["executable_relative_path"]
+    return values
+
+
 def _job(plan, arm, hosts, phase, client, layout, cluster, remote_assets, output, *, repeat=1):
     count = 100000 if phase == "prerequisite" else 375000
     ns = namespace(plan, hosts, arm, phase, client, repeat)
     source = plan["sources"][arm]
     binary = ARM_EXECUTABLES[arm]
+    library = None if arm == "go_pure" else remote_assets["libfdb_c"]
+    if arm == "go_native":
+        receipt = builds.read_receipt(plan, binary)
+        suffix = "/" + receipt["executable_relative_path"]
+        p.require(remote_assets[binary].endswith(suffix), "preserved deployment layout required")
+        library = remote_assets[binary][:-len(suffix)] + "/" + receipt["client_library_relative_path"]
     p.require(type(output) is str and Path(output).is_absolute() and "/" + ns + "/" in output,
               "immutable implementation-specific output path")
     for key in ("path", "sha256"):
         p.require(key in layout and key in cluster, "sealed dynamic cluster/layout required")
     return {"schema": "otel_paired_job_v1", "arm": arm,
             "client_backend": "pure_go" if arm == "go_pure" else "native_c",
-            "client_library": None if arm == "go_pure" else remote_assets["libfdb_c"],
+            "client_library": library,
             "client_library_sha256": None if arm == "go_pure" else plan["assets"]["libfdb_c"]["sha256"],
             "cluster_file": cluster["path"], "cluster_sha256": cluster["sha256"],
             "layout_file": layout["path"], "layout_sha256": layout["sha256"],
@@ -631,6 +663,14 @@ def validate_transfers(plan, resources, receipts):
         receipt = receipts[role]
         p.require(type(receipt) is dict and receipt.get("node_id") == node["id"] and type(receipt.get("assets")) is dict
                   and set(receipt["assets"]) == set(plan["assets"]), "exact asset receipt host/population binding")
+        expected = {name for name in builds.EXECUTABLES if name in plan["assets"]}
+        p.require(type(receipt.get("deployments")) is dict and set(receipt["deployments"]) == expected, "per-host executable deployments required")
+        for name in expected:
+            built = builds.read_receipt(plan, name)
+            deployed = receipt["deployments"][name]
+            p.require(type(deployed) is dict and deployed.get("schema") == "otel_paired_deployment_receipt_v1"
+                      and deployed.get("sha256") == built["deployment_sha256"] and deployed.get("files") == built["files"],
+                      "complete executable/runfiles deployment proof required")
         for name, sealed in plan["assets"].items():
             entry = receipt["assets"][name]
             p.require(type(entry) is dict and entry.get("sha256") == sealed["sha256"]
@@ -665,12 +705,15 @@ class FakeBackend:
         return copy.deepcopy(self.nodes)
 
     def remote_assets(self, plan):
-        return {key: "/srv/otel-paired/" + plan["campaign"] + "/assets/" + key for key in plan["assets"]}
+        return deployed_assets(plan, "/srv/otel-paired/" + plan["campaign"] + "/assets")
 
     def transfer_assets(self, plan, resources):
         return {role: {"node_id": node["id"], "assets": {name: {"sha256": value["sha256"],
                         "transfer_sha256": digest({"synthetic": value["sha256"]}), "bytes": Path(value["path"]).stat().st_size}
-                        for name, value in plan["assets"].items()}} for role, node in resources.items()}
+                        for name, value in plan["assets"].items()}, "deployments": {
+                    name: {"schema": "otel_paired_deployment_receipt_v1", "sha256": builds.read_receipt(plan, name)["deployment_sha256"],
+                           "files": builds.read_receipt(plan, name)["files"]} for name in builds.EXECUTABLES if name in plan["assets"]}}
+                for role, node in resources.items()}
 
     def quiet(self, plan, resources):
         self.events.append("quiet")
@@ -734,6 +777,10 @@ def fake_plan(root, *, profile="scaling", arms=ARMS, kind="writer_direct"):
         path.write_text("synthetic asset " + key + "\n")
         path.chmod(0o600)
         assets[key] = {"path": str(path), "sha256": p.sha(path)}
+    source_identity = {"revision": "a" * 40, "root": str(root), "manifest": str(manifest), "manifest_sha256": p.sha(manifest)}
+    for name in builds.EXECUTABLES:
+        if name in assets:
+            assets.update(builds.fake_artifacts(name, assets[name], source_identity, assets["libfdb_c"]))
     ledger = root / "rows.jsonl"
     rows.init(str(ledger))
     first = int(time.time())

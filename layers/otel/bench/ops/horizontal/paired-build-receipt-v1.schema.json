@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:fdb-go:otel-paired-build-receipt:v1",
+  "$comment": "Controller also verifies current file hashes, source identity, effective rc files, live readelf output and the complete bounded tar manifest. This is NOT a benchmark report or permission to execute.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "executable_asset", "binary_sha256", "source_revision", "source_manifest_sha256", "build_command", "developer_home", "rc_set", "build_exit_code", "readelf_command", "readelf_output", "readelf_exit_code", "deployment_asset", "deployment_sha256", "executable_relative_path", "client_library_relative_path", "files"],
+  "properties": {
+    "schema": {"const": "otel_paired_build_receipt_v1"},
+    "executable_asset": {"enum": ["control_pure_binary", "control_native_binary", "rust_binary"]},
+    "binary_sha256": {"$ref": "#/$defs/sha256"},
+    "source_revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "source_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "build_command": {"type": "array", "minItems": 4, "maxItems": 256, "items": {"type": "string", "minLength": 1}},
+    "developer_home": {"type": "string", "pattern": "^/", "minLength": 2},
+    "rc_set": {"type": "array", "maxItems": 1000, "items": {"$ref": "#/$defs/sealed_file"}},
+    "build_exit_code": {"const": 0},
+    "readelf_command": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "string", "minLength": 1}},
+    "readelf_output": {"type": "string", "minLength": 1, "maxLength": 1048576},
+    "readelf_exit_code": {"const": 0},
+    "deployment_asset": {"enum": ["control_pure_binary_deployment", "control_native_binary_deployment", "rust_binary_deployment"]},
+    "deployment_sha256": {"$ref": "#/$defs/sha256"},
+    "executable_relative_path": {"$ref": "#/$defs/relative_path"},
+    "client_library_relative_path": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/relative_path"}]},
+    "files": {"type": "array", "minItems": 1, "maxItems": 10000, "items": {"$ref": "#/$defs/deployment_file"}}
+  },
+  "allOf": [
+    {"if": {"properties": {"executable_asset": {"const": "control_pure_binary"}}}, "then": {"properties": {"deployment_asset": {"const": "control_pure_binary_deployment"}, "client_library_relative_path": {"type": "null"}}}},
+    {"if": {"properties": {"executable_asset": {"const": "control_native_binary"}}}, "then": {"properties": {"deployment_asset": {"const": "control_native_binary_deployment"}, "client_library_relative_path": {"allOf": [{"$ref": "#/$defs/relative_path"}, {"pattern": "(^|/)libfdb_c\\.so$"}]}}}},
+    {"if": {"properties": {"executable_asset": {"const": "rust_binary"}}}, "then": {"properties": {"deployment_asset": {"const": "rust_binary_deployment"}, "client_library_relative_path": {"type": "null"}}}}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "relative_path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*//)(?!.*\\u0000).+$"},
+    "sealed_file": {"type": "object", "additionalProperties": false, "required": ["path", "sha256"], "properties": {"path": {"type": "string", "pattern": "^/"}, "sha256": {"$ref": "#/$defs/sha256"}}},
+    "deployment_receipt": {"type": "object", "additionalProperties": false, "required": ["schema", "archive", "sha256", "destination", "files"], "properties": {"schema": {"const": "otel_paired_deployment_receipt_v1"}, "archive": {"type": "string", "pattern": "^/"}, "sha256": {"$ref": "#/$defs/sha256"}, "destination": {"type": "string", "pattern": "^/"}, "files": {"type": "array", "minItems": 1, "maxItems": 10000, "items": {"$ref": "#/$defs/deployment_file"}}}},
+    "deployment_file": {"type": "object", "additionalProperties": false, "required": ["path", "sha256", "bytes", "mode"], "properties": {"path": {"$ref": "#/$defs/relative_path"}, "sha256": {"$ref": "#/$defs/sha256"}, "bytes": {"type": "integer", "minimum": 0, "maximum": 536870912}, "mode": {"enum": [420, 493]}}}
+  }
+}

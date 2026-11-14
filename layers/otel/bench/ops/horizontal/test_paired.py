@@ -168,6 +168,10 @@ class PlanTests(Fixture):
             bad = copy.deepcopy(subset); del bad[field][key]
             with self.assertRaises(ValueError):
                 q.validate_plan(bad)
+        for name in q.builds.EXECUTABLES:
+            bad = copy.deepcopy(self.plan); del bad["assets"][name]["build_receipt"]
+            with self.assertRaisesRegex(ValueError, "build receipt"):
+                q.validate_plan(bad)
         bad = copy.deepcopy(self.plan)
         bad["assets"]["control_native_binary"] = copy.deepcopy(bad["assets"]["control_pure_binary"])
         with self.assertRaisesRegex(ValueError, "distinct executable"):
@@ -201,7 +205,8 @@ class PlanTests(Fixture):
                 files[name] = {"path": str(path), "sha256": q.p.sha(path)}
             proofs[arm] = files
         value["preflight_verifications"] = proofs
-        with mock.patch.object(q, "NATIVE_SHA256", value["assets"]["libfdb_c"]["sha256"]):
+        with mock.patch.object(q, "NATIVE_SHA256", value["assets"]["libfdb_c"]["sha256"]), \
+                mock.patch.object(q.builds, "readelf_dynamic", side_effect=lambda path: q.builds.fake_readelf(Path(path).name)):
             q.validate_plan(value)
             missing = copy.deepcopy(value); del missing["preflight_verifications"]["rust_native"]
             with self.assertRaisesRegex(ValueError, "every selected arm"):
@@ -383,8 +388,11 @@ class ProducerTests(Fixture):
             self.assertEqual(job["writer_workers"], 1)
             self.assertIs(job["bulk_index_conflicts"], False)
             self.assertIsNone(job["client_library"] if arm == "go_pure" else None)
-            if arm != "go_pure":
+            if arm == "rust_native":
                 self.assertEqual(job["client_library"], self.assets["libfdb_c"])
+            elif arm == "go_native":
+                self.assertIn("control_native_binary.bundle/", job["client_library"])
+                self.assertEqual(Path(job["client_library"]).name, "libfdb_c.so")
             q.envelope(job, r.fake_ingest(job))
         with self.assertRaises(ValueError):
             q.rust_job(self.plan, "go_native")

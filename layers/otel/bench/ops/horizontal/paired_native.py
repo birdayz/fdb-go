@@ -27,7 +27,7 @@ import urllib.request
 MAX_ARTIFACT = 256 * 1024 ** 2
 MAX_LOG = 16 * 1024 ** 2
 GRANT_KEYS = {"schema", "node_id", "namespace", "job", "job_sha256", "argv", "inputs",
-              "active_deadline", "hard_deadline", "limits", "scope"}
+              "active_deadline", "hard_deadline", "limits", "scope", "deployment"}
 
 
 def require(condition, message):
@@ -129,7 +129,21 @@ def load_grant(path, *, active=True, check_inputs=True):
     require(type(inputs) is dict and inputs and inputs.get(g["argv"][0]) == job.get("binary_sha256"), "sealed executable required")
     base = "/srv/otel-horizontal/" + g["namespace"].split("/")[0] + "/bin/"
     executable = {"go_pure": "control_pure_binary", "go_native": "control_native_binary", "rust_native": "rust_binary"}[job["arm"]] if mode == "ingest" else "control_pure_binary"
-    require(g["argv"][0] == base + executable, "exact arm executable or pure Go control required")
+    deployment = g["deployment"]
+    require(type(deployment) is dict and set(deployment) == {"asset", "root", "executable_relative_path", "client_library_relative_path"}
+            and deployment["asset"] == executable and deployment["root"] == base + executable + ".bundle", "exact arm executable or pure Go control required")
+    relative = deployment["executable_relative_path"]
+    require(type(relative) is str and relative and not relative.startswith("/") and str(Path(relative)) == relative
+            and ".." not in Path(relative).parts and ":" not in relative and "\\x00" not in relative
+            and g["argv"][0] == deployment["root"] + "/" + relative, "exact arm executable or pure Go control required with preserved runfiles layout")
+    if mode == "ingest" and job["arm"] == "go_native":
+        library = deployment["client_library_relative_path"]
+        require(type(library) is str and library and not library.startswith("/") and str(Path(library)) == library
+                and ".." not in Path(library).parts and job["client_library"] == deployment["root"] + "/" + library,
+                "native client must be the sealed deployment runfile")
+        launch_environment(job)
+    else:
+        require(deployment["client_library_relative_path"] is None, "pure/Rust deployment must not select a prelinked client")
     for prefix in ("cluster", "corpus") + (("layout",) if mode != "setup" else ()):
         require(inputs.get(job.get(prefix + "_file")) == job.get(prefix + "_sha256"), "missing input seal: " + prefix)
     if job.get("client_library") is not None:
@@ -209,6 +223,17 @@ def stop_scope(g):
     return {"passed": True, "quiescent": True, "before": before, "after": after}
 
 
+def launch_environment(job):
+    environment = {"PATH": "/usr/bin:/bin", "HOME": "/root", "GOMAXPROCS": "4"}
+    if job["mode"] == "ingest" and job["arm"] == "go_native":
+        library = clean(job["client_library"])
+        directory = str(library.parent)
+        require(library.name == "libfdb_c.so" and directory != "/" and ":" not in directory,
+                "control-native needs one sealed libfdb_c.so directory in LD_LIBRARY_PATH")
+        environment["LD_LIBRARY_PATH"] = directory
+    return environment
+
+
 def run_job(path):
     g = load_grant(path)
     work, mode = Path(path).parent, g["job"]["mode"]
@@ -221,7 +246,7 @@ def run_job(path):
     limits = g["limits"]
     args = ["systemd-run", "--scope", "--quiet", "--collect", "--unit=" + g["scope"], "--slice=horizontal-client.slice",
             "--property=CPUQuota=400%", "--property=AllowedCPUs=0-3", "--property=MemoryMax=" + str(limits["memory_max_mib"] * 1024 ** 2),
-            "--property=MemorySwapMax=0", "env", "-i", "PATH=/usr/bin:/bin", "HOME=/root", "GOMAXPROCS=4", *g["argv"]]
+            "--property=MemorySwapMax=0", "env", "-i", *[key + "=" + value for key, value in launch_environment(g["job"]).items()], *g["argv"]]
     write(work / (mode + "-command.json"), {"argv": args, "job_sha256": g["job_sha256"]})
     child, usage, code = None, None, None
     started = time.monotonic_ns()
@@ -517,26 +542,41 @@ class NativeBackend:
         state = self.provision_out / "provision"
         packed = self.d.read(state / "asset-transfer.json")["assets"]
         result = {}
+        remote_bin = "/srv/otel-horizontal/" + plan["campaign"] + "/bin"
+        flat_assets = {name: remote_bin + "/" + ("libfdb_c.so" if name == "libfdb_c" else name) for name in plan["assets"]}
         for role, node in resources.items():
-            assets = {}
+            assets, deployments = {}, {}
             for name, sealed in plan["assets"].items():
                 item = packed[name]
-                require(item["sha256"] == sealed["sha256"], "packed source seal changed")
+                require(item["sha256"] == sealed["sha256"] and item["name"] == Path(flat_assets[name]).name, "packed source seal/name changed")
                 op = "install" if role == next(iter(resources)) else "fetch"
-                receipt = self.d.read(state / (role + "-asset-" + name + "-" + op + ".json"))
+                receipt = self.d.read(state / (role + "-asset-" + item["name"] + "-" + op + ".json"))
                 require(receipt["node_id"] == node["id"] and receipt["returncode"] == 0 and receipt["timed_out"] is False,
                         "missing per-host verified transfer")
                 remote = loads(receipt["stdout"].strip().splitlines()[-1])
-                require(remote == {"dest": self.remote_assets(plan)[name], "sha256": sealed["sha256"],
+                require(remote == {"dest": flat_assets[name], "sha256": sealed["sha256"],
                                    "bytes": item["bytes"], "src_sha256": item["transfer_sha256"]}, "transfer receipt mismatch")
                 assets[name] = {"sha256": remote["sha256"], "transfer_sha256": remote["src_sha256"], "bytes": remote["bytes"]}
-            result[role] = {"node_id": node["id"], "assets": assets}
+            for name in self.q.builds.EXECUTABLES:
+                if name not in plan["assets"]:
+                    continue
+                built = self.q.builds.read_receipt(plan, name)
+                request = {"archive": flat_assets[self.q.builds.deployment_asset(name)], "sha256": built["deployment_sha256"],
+                           "destination": self.q.deployment(plan, name, remote_bin)["root"], "files": built["files"]}
+                local_request = self.output / "native" / "deployments" / role / (name + "-request.json")
+                self.d.write(local_request, request)
+                remote_request = remote_bin + "/" + name + "-deployment-request.json"
+                self._copy(node, local_request, remote_request)
+                deployed = loads(self.command(node, ["python3", "-c", self.q.builds.INSTALL_SCRIPT, remote_request, sha(local_request)]))
+                require(deployed == {"schema": "otel_paired_deployment_receipt_v1", **request}, "verified executable/runfiles deployment required")
+                deployments[name] = deployed
+            result[role] = {"node_id": node["id"], "assets": assets, "deployments": deployments}
         self.q.validate_transfers(plan, resources, result)
         return result
 
     def remote_assets(self, plan):
         self._same(plan)
-        return {name: "/srv/otel-horizontal/" + plan["campaign"] + "/bin/" + name for name in plan["assets"]}
+        return self.q.deployed_assets(plan, "/srv/otel-horizontal/" + plan["campaign"] + "/bin")
 
     def quiet(self, plan, resources):
         self._same(plan)
@@ -609,12 +649,16 @@ class NativeBackend:
             self.command(node, ["mkdir", "-m", "0700", root])
         mode = job["mode"]
         path = root + "/" + mode + "-grant.json"
+        binary = self.q.ARM_EXECUTABLES[job["arm"]] if mode == "ingest" else "control_pure_binary"
+        deployment = self.q.deployment(self.plan, binary, "/srv/otel-horizontal/" + self.plan["campaign"] + "/bin")
         inputs = {remote: self.plan["assets"][name]["sha256"] for name, remote in self.remote_assets(self.plan).items()}
         for key in ("cluster", "corpus") + (("layout",) if mode != "setup" else ()):
             inputs[job[key + "_file"]] = job[key + "_sha256"]
+        if job.get("client_library") is not None:
+            inputs[job["client_library"]] = job["client_library_sha256"]
         geometry = self.q.native_geometry(self.plan["native_geometry"])
         grant = {"schema": "otel_paired_grant_v1", "node_id": node["id"], "namespace": ns, "job": copy.deepcopy(job),
-                 "job_sha256": self.q.job_seal(job), "argv": argv, "inputs": inputs,
+                 "job_sha256": self.q.job_seal(job), "argv": argv, "inputs": inputs, "deployment": deployment,
                  "active_deadline": self.plan["deadline_epoch"] - (900 if self.plan["stage_profile"] == "pilot" else 1200),
                  "hard_deadline": self.plan["deadline_epoch"], "limits": geometry["client_slice"],
                  "scope": "otel-paired-" + self.q.job_seal(job)[:24] + ".scope"}
