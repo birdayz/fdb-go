@@ -45,6 +45,13 @@ Each campaign's reports live in a folder named after the campaign.
   reads are at most 0.63x and its ingest 0.68x the CPU. Round 1's 1.32x CPU figure is
   superseded. Also covers SQL and direct-scan query latency and the relational
   fixes the comparison found.
+- [OTel span ingest on Kubernetes: Go own client, Go C client, Rust](otel-ingest-k8s-lean-campaigns.md):
+  the same stack with the committed runner
+  ([`layers/otel/bench/ops/k8s`](../../layers/otel/bench/ops/k8s/README.md)): 1 to 3 database nodes with separate
+  client hosts, a one-node ladder, six nodes with the generators on the database nodes, the per-thread CPU of the Rust
+  process (its `libfdb_c` network thread at 0.87 core at 32 in flight) and the first database-layout result (12 storage
+  processes per node; the resolver-count test did not run). One run per row; acknowledged versus durable rates, verified
+  by full read-back.
 - [GenAI/OTel collector ingest 1x/2x/3x on Kubernetes + Cilium](otel-genai-collector-ingest-k8s-scaling.md):
   the same six-host setup running a sustained 10-minute custom in-process
   Collector-model queue/exporter experiment, not an upstream Collector pipeline
