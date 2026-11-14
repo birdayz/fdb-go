@@ -89,16 +89,20 @@ rust_binary(
 rust_test(
     name = "unit_test",
     size = "small",
+    aliases = aliases(normal = True, normal_dev = True),
     compile_data = [":compatibility_fixtures"],
     crate = ":fdb_otel_rust",
+    deps = all_crate_deps(normal_dev = True),
     rustc_flags = ["-Dwarnings"],
 )
 
 rust_test(
     name = "driver_test",
     size = "small",
+    aliases = aliases(normal = True, normal_dev = True),
     compile_data = [":compatibility_fixtures"],
     crate = ":otel-rust",
+    deps = all_crate_deps(normal_dev = True),
     rustc_flags = ["-Dwarnings"],
 )
 
@@ -107,13 +111,13 @@ rust_test(
         name = name + "_test",
         size = "small",
         srcs = ["tests/" + name + ".rs"],
-        aliases = aliases(),
+        aliases = aliases(normal = True, normal_dev = True),
         compile_data = [":compatibility_fixtures"],
         crate_root = "tests/" + name + ".rs",
         edition = "2024",
         proc_macro_deps = all_crate_deps(proc_macro = True),
         rustc_flags = ["-Dwarnings"],
-        deps = [":fdb_otel_rust"] + all_crate_deps(normal = True),
+        deps = [":fdb_otel_rust"] + all_crate_deps(normal = True, normal_dev = True),
     )
     for name in [
         "compatibility",

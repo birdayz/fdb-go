@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"math"
+	"math/rand"
+	"strings"
 
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
@@ -24,9 +27,19 @@ type wireMalformed struct {
 	Input []byte `json:"input_otlp"`
 }
 
+type wireFuzzCase struct {
+	Name        string   `json:"name"`
+	Input       []byte   `json:"input_otlp"`
+	Outputs     []vector `json:"outputs"`
+	DecodeError *string  `json:"decode_error"`
+}
+
 type wireFixture struct {
-	Cases     []wireCase      `json:"cases"`
-	Malformed []wireMalformed `json:"malformed"`
+	Cases              []wireCase      `json:"cases"`
+	Malformed          []wireMalformed `json:"malformed"`
+	FuzzCases          []wireFuzzCase  `json:"fuzz_cases"`
+	FuzzCandidateCount int             `json:"fuzz_candidate_count"`
+	FuzzFilteredCount  int             `json:"fuzz_filtered_count"`
 }
 
 type wireInput struct {
@@ -106,7 +119,138 @@ func wireFixtures(compute func(string, *tracepb.ResourceSpans, *tracepb.ScopeSpa
 		}
 		wf.Malformed = append(wf.Malformed, m)
 	}
+	for _, in := range wireFuzzInputs() {
+		wf.FuzzCandidateCount++
+		c := wireFuzzCase{Name: in.name, Input: in.input, Outputs: []vector{}}
+		rs := &tracepb.ResourceSpans{}
+		if err := proto.Unmarshal(in.input, rs); err != nil {
+			message := goDecodeError(err)
+			c.DecodeError = &message
+		} else {
+			if !fuzzAdmissible(rs) {
+				wf.FuzzFilteredCount++
+				continue
+			}
+			singles, err := split(rs)
+			if err != nil {
+				return wf, fmt.Errorf("%s split: %w", in.name, err)
+			}
+			for i, s := range singles {
+				v, err := compute(fmt.Sprintf("%s/%d", in.name, i), rs, s.ss, s.sp, s.wire)
+				if err != nil {
+					return wf, fmt.Errorf("%s row: %w", in.name, err)
+				}
+				c.Outputs = append(c.Outputs, v)
+			}
+		}
+		wf.FuzzCases = append(wf.FuzzCases, c)
+	}
 	return wf, nil
+}
+
+// protobuf-go randomizes only its prefix's space between U+0020 and U+00A0.
+func goDecodeError(err error) string {
+	message := err.Error()
+	if suffix, ok := strings.CutPrefix(message, "proto:\u00a0"); ok {
+		return "proto: " + suffix
+	}
+	return message
+}
+
+const (
+	wireFuzzMutationCount = 64
+	wireFuzzShapeCount    = 12
+)
+
+// The fixed controls make success, decode rejection and every filter non-vacuous.
+func wireFuzzInputs() []wireInput {
+	valid := field(2, field(2, rawSpan(0x70)))
+	out := []wireInput{
+		{name: "control_valid", input: valid},
+		{name: "control_decode_error", input: cat(valid, []byte{0, 1})},
+		{name: "filter_identity", input: field(2, field(2, rawSpan(0x71, field(2, make([]byte, 8)))))},
+		{name: "filter_start", input: field(2, field(2, rawSpan(0x72, fixed64(7, 1<<63))))},
+		{name: "filter_duplicate", input: field(2, field(2, rawSpan(0x73)), field(2, rawSpan(0x73)))},
+		{name: "filter_empty", input: []byte{}},
+	}
+	rng := rand.New(rand.NewSource(283))
+	bases := rawCases()[:7] // The seven original, small raw-wire cases.
+	for i := range wireFuzzMutationCount {
+		base := bases[i%len(bases)]
+		wire := append([]byte(nil), base.input...)
+		pos := rng.Intn(len(wire))
+		switch i % 4 {
+		case 0:
+			wire[pos] ^= byte(1 << rng.Intn(8))
+		case 1:
+			wire = append(wire[:pos], wire[pos+1:]...)
+		case 2:
+			wire = append(wire, 0)
+			copy(wire[pos+1:], wire[pos:])
+			wire[pos] = byte(rng.Intn(256))
+		case 3:
+			wire = wire[:pos]
+		}
+		out = append(out, wireInput{name: fmt.Sprintf("mutation_%02d_%s", i, base.name), input: wire})
+	}
+	for i := range wireFuzzShapeCount {
+		var attrs []byte
+		for j := 0; j <= i%4; j++ {
+			attrs = append(attrs, field(9, kv(fmt.Sprintf("attr-%d", j), fuzzValue(rng, (i+j)%8)))...)
+		}
+		resource := field(1, field(1, kv("service.name", sval(fmt.Sprintf("svc-%d", rng.Intn(4))))), field(3, text(2, "service"), text(3, "service.name")))
+		scope := field(1, text(1, fmt.Sprintf("scope-%d", rng.Intn(4))), text(2, "1"))
+		span := rawSpan(byte(0x90+i), text(5, fmt.Sprintf("span-%d", rng.Intn(100))), uvarint(6, uint64(rng.Intn(6))),
+			fixed32(16, rng.Uint32()), field(15, text(2, "status"), uvarint(3, uint64(rng.Intn(3)))), attrs)
+		wire := cat(field(2, scope, field(2, span), text(3, "scope-schema")), resource, text(3, "resource-schema"))
+		out = append(out, wireInput{name: fmt.Sprintf("shape_%02d", i), input: wire})
+	}
+	return out
+}
+
+func fuzzValue(rng *rand.Rand, kind int) []byte {
+	switch kind {
+	case 0:
+		return sval(fmt.Sprintf("value-%x", rng.Uint32()))
+	case 1:
+		return uvarint(2, uint64(rng.Intn(3)))
+	case 2:
+		return uvarint(3, rng.Uint64())
+	case 3:
+		return fixed64(4, rng.Uint64())
+	case 4:
+		return field(5, field(1, sval("nested")), field(1, uvarint(3, rng.Uint64())))
+	case 5:
+		return field(6, field(1, kv("nested", uvarint(2, uint64(rng.Intn(3))))))
+	case 6:
+		return field(7, []byte{byte(rng.Uint32()), 0, 0xff})
+	default:
+		return uvarint(8, uint64(rng.Uint32()))
+	}
+}
+
+// This corpus targets decode and row fidelity, not the full admission rejection set.
+// Valid decodes with no span, invalid IDs/start, or duplicate identities are omitted.
+func fuzzAdmissible(rs *tracepb.ResourceSpans) bool {
+	var zeroTrace [16]byte
+	var zeroSpan [8]byte
+	seen := map[string]bool{}
+	for _, ss := range rs.ScopeSpans {
+		for _, sp := range ss.GetSpans() {
+			if sp == nil {
+				continue
+			}
+			if len(sp.TraceId) != 16 || bytes.Equal(sp.TraceId, zeroTrace[:]) || len(sp.SpanId) != 8 || bytes.Equal(sp.SpanId, zeroSpan[:]) || sp.StartTimeUnixNano > math.MaxInt64 {
+				return false
+			}
+			key := string(sp.TraceId) + string(sp.SpanId)
+			if seen[key] {
+				return false
+			}
+			seen[key] = true
+		}
+	}
+	return len(seen) > 0
 }
 
 // overlong appends v as a varint one byte longer than minimal.
@@ -209,7 +353,156 @@ func rawCases() []wireInput {
 		{name: "raw_oneof_switch_drops_other_arms", input: switches},
 		{name: "raw_repeated_resource_merges", input: repeated},
 		{name: "raw_status_merges", input: status},
+		{name: "raw_nonminimal_unknown_tags", input: nonminimalTagsCase()},
+		{name: "raw_negative_enums_and_oneof_zeroes", input: negativeAndZeroCase()},
+		{name: "raw_v111_known_fields", input: v111Case()},
+		{name: "raw_message_depth_10000", input: messageDepthFrame(10000)},
+		{name: "raw_unknown_group_depth_10001", input: groupDepthFrame(10001)},
+		{name: "raw_large_field_number_inside_group", input: cat(field(2, field(2, rawSpan(24))), nestedGroups(1, uvarint(1<<29, 7)))},
 	}
+}
+
+// wrongWireFields puts each declared field in a wire type its coder does not accept.
+func wrongWireFields(md protoreflect.MessageDescriptor) []byte {
+	var out []byte
+	fields := md.Fields()
+	for i := 0; i < fields.Len(); i++ {
+		fd := fields.Get(i)
+		switch fd.Kind() {
+		case protoreflect.StringKind, protoreflect.BytesKind, protoreflect.MessageKind:
+			out = append(out, overlong(protowire.AppendTag(nil, fd.Number(), protowire.VarintType), 7)...)
+		default:
+			out = append(out, field(fd.Number(), []byte{0xff})...)
+		}
+	}
+	return out
+}
+
+func wrongWireCase() *tracepb.ResourceSpans {
+	rs := objectCase()
+	for _, ss := range rs.ScopeSpans {
+		for _, sp := range ss.Spans {
+			sp.SpanId = bytes.Repeat([]byte{sp.SpanId[0] + 0x10}, 8)
+		}
+	}
+	pending := []protoreflect.Message{rs.ProtoReflect()}
+	for len(pending) > 0 {
+		m := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		m.SetUnknown(wrongWireFields(m.Descriptor()))
+		m.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
+			if fd.Message() != nil && fd.IsList() {
+				for i := 0; i < v.List().Len(); i++ {
+					pending = append(pending, v.List().Get(i).Message())
+				}
+			} else if fd.Message() != nil {
+				pending = append(pending, v.Message())
+			}
+			return true
+		})
+	}
+	return rs
+}
+
+func nonminimalUnknown(id uint64) []byte {
+	return cat(overlong(nil, 100<<3), overlong(nil, id),
+		overlong(nil, 101<<3|2), overlong(nil, 3), []byte{0xff, 0xfe, 0})
+}
+
+func nonminimalTagsCase() []byte {
+	resource := field(1, uvarint(2, 2), nonminimalUnknown(1))
+	scope := field(1, text(1, "scope"), nonminimalUnknown(2))
+	span := field(2, rawSpan(20, nonminimalUnknown(3)))
+	return cat(resource, field(2, scope, span, nonminimalUnknown(4)), nonminimalUnknown(5))
+}
+
+func negativeAndZeroCase() []byte {
+	return field(2, field(2, rawSpan(21,
+		uvarint(6, 1<<32-7), field(15, uvarint(3, 1<<32-2)), fixed32(16, 0x80000101),
+		field(9, kv("negative_zero", fixed64(4, 1<<63))),
+		field(9, kv("positive_zero", fixed64(4, 0))),
+		field(9, kv("int_zero", uvarint(3, 0))),
+		field(9, kv("bool_false", uvarint(2, 0))),
+		field(9, kv("empty_string", text(1, ""))),
+		field(9, kv("empty_bytes", field(7))))))
+}
+
+func v111Case() []byte {
+	entity := cat(text(1, "entity-schema"), text(2, "service"), text(3, "service.name"), text(3, ""), text(4, "description"), text(4, "owner"))
+	resource := field(1, field(3, entity), field(3, text(2, "host")))
+	attribute := cat(kv("interned", uvarint(8, 1<<32-3)), uvarint(3, 1<<32-7))
+	return cat(resource, field(2, field(2, rawSpan(22, field(9, attribute)))))
+}
+
+// deepAnyValue emits a single path alternating arrays and kvlists. The first
+// AnyValue is level 5: ResourceSpans, ScopeSpans, Span, KeyValue precede it.
+func deepAnyValue(depth int) []byte {
+	const (
+		anyNode = iota
+		arrayNode
+		listNode
+		pairNode
+	)
+	kind, array := anyNode, true
+	fields := make([]protowire.Number, 0, depth-5)
+	for level := 5; level < depth; level++ {
+		switch kind {
+		case anyNode:
+			if array {
+				fields = append(fields, 5)
+				kind = arrayNode
+			} else {
+				fields = append(fields, 6)
+				kind = listNode
+			}
+			array = !array
+		case arrayNode:
+			fields = append(fields, 1)
+			kind = anyNode
+		case listNode:
+			fields = append(fields, 1)
+			kind = pairNode
+		case pairNode:
+			fields = append(fields, 2)
+			kind = anyNode
+		}
+	}
+	var leaf []byte
+	if kind == anyNode || kind == pairNode {
+		leaf = text(1, "leaf")
+	}
+	lengths := make([]int, len(fields))
+	size := len(leaf)
+	for i := len(fields) - 1; i >= 0; i-- {
+		lengths[i] = size
+		size = protowire.SizeTag(fields[i]) + protowire.SizeBytes(size)
+	}
+	out := make([]byte, 0, size)
+	for i, num := range fields {
+		out = protowire.AppendTag(out, num, protowire.BytesType)
+		out = protowire.AppendVarint(out, uint64(lengths[i]))
+	}
+	return append(out, leaf...)
+}
+
+func messageDepthFrame(depth int) []byte {
+	return field(2, field(2, rawSpan(23, field(9, kv("depth", deepAnyValue(depth))))))
+}
+
+func nestedGroups(depth int, body []byte) []byte {
+	var out []byte
+	for range depth {
+		out = protowire.AppendTag(out, 100, protowire.StartGroupType)
+	}
+	out = append(out, body...)
+	for range depth {
+		out = protowire.AppendTag(out, 100, protowire.EndGroupType)
+	}
+	return out
+}
+
+func groupDepthFrame(depth int) []byte {
+	return cat(field(2, field(2, rawSpan(25))), nestedGroups(depth, nil))
 }
 
 // objectCase sets a distinct suffix on every message node, plus whole fixed, bytes and group records.
@@ -299,15 +592,24 @@ func objectCase() *tracepb.ResourceSpans {
 }
 
 func wireInputs() ([]wireInput, error) {
-	rs := objectCase()
-	wire, err := proto.MarshalOptions{Deterministic: true}.Marshal(rs)
-	if err != nil {
-		return nil, err
+	var out []wireInput
+	for _, c := range []struct {
+		name   string
+		source *tracepb.ResourceSpans
+	}{
+		{"object_unknowns_at_every_node", objectCase()},
+		{"object_wrong_wire_at_every_node", wrongWireCase()},
+	} {
+		wire, err := proto.MarshalOptions{Deterministic: true}.Marshal(c.source)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, wireInput{name: c.name, input: wire, source: c.source})
 	}
-	return append([]wireInput{{name: "object_unknowns_at_every_node", input: wire, source: rs}}, rawCases()...), nil
+	return append(out, rawCases()...), nil
 }
 
-// malformedInputs are rejected by Go's proto.Unmarshal; each follows one valid span.
+// malformedInputs must be rejected by Go's default proto.Unmarshal.
 func malformedInputs() []wireMalformed {
 	valid := field(2, field(2, rawSpan(9)))
 	tag := func(num protowire.Number, typ protowire.Type) []byte { return protowire.AppendTag(nil, num, typ) }
@@ -322,5 +624,8 @@ func malformedInputs() []wireMalformed {
 		{Name: "truncated_length", Input: cat(valid, []byte{0x0a, 0x05, 0x0a, 0x03})},
 		{Name: "truncated_unknown_varint", Input: cat(valid, []byte{0xa8, 0x06, 0x80})},
 		{Name: "unterminated_group", Input: cat(valid, tag(102, protowire.StartGroupType))},
+		{Name: "message_depth_10001", Input: messageDepthFrame(10001)},
+		{Name: "unknown_group_depth_10002", Input: groupDepthFrame(10002)},
+		{Name: "large_field_number_at_message_level", Input: cat(valid, uvarint(1<<29, 7))},
 	}
 }

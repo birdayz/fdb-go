@@ -1,5 +1,5 @@
 {
-  "checksum": "2c747580b5ead3629de42157cdb4ad47042bb205f5abcef70a7560bdefc25453",
+  "checksum": "321c1667d5351266fd56328667db7088406e139637b03e4db56b2a10851f646f",
   "crates": {
     "adler2 2.0.1": {
       "name": "adler2",
@@ -653,10 +653,6 @@
               "target": "prost"
             },
             {
-              "id": "prost-reflect 0.16.5",
-              "target": "prost_reflect"
-            },
-            {
               "id": "serde 1.0.228",
               "target": "serde"
             },
@@ -667,6 +663,15 @@
             {
               "id": "sha2 0.10.9",
               "target": "sha2"
+            }
+          ],
+          "selects": {}
+        },
+        "deps_dev": {
+          "common": [
+            {
+              "id": "prost-reflect 0.16.5",
+              "target": "prost_reflect"
             }
           ],
           "selects": {}
@@ -2412,11 +2417,12 @@
     "hex 0.4.3",
     "libloading 0.8.9",
     "prost 0.14.4",
-    "prost-reflect 0.16.5",
     "serde 1.0.228",
     "serde_json 1.0.150",
     "sha2 0.10.9"
   ],
-  "direct_dev_deps": [],
+  "direct_dev_deps": [
+    "prost-reflect 0.16.5"
+  ],
   "unused_patches": []
 }

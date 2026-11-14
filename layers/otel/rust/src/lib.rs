@@ -2,11 +2,15 @@
 //! an OTLP network receiver. Persisted rows use the repository's full descriptors.
 pub mod collector;
 pub mod native;
+mod otlp;
+mod records;
 pub mod row;
 pub mod storage;
 pub mod tuple;
-mod wire;
 pub mod writer;
+
+#[cfg(test)]
+mod codec_tests;
 
 use std::fmt;
 

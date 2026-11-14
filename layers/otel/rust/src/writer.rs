@@ -411,7 +411,7 @@ impl<D: Database> Writer<D> {
         prefix: &[u8],
         expected_pk: &[u8],
         old: &KeyValues,
-    ) -> Result<Option<prost_reflect::DynamicMessage>> {
+    ) -> Result<Option<crate::records::Spans>> {
         if old.is_empty() {
             return Ok(None);
         }
@@ -433,12 +433,8 @@ impl<D: Database> Writer<D> {
             stored.extend_from_slice(value);
         }
         let row = self.schema.decode_row(&storage::decode(&stored)?)?;
-        use prost_reflect::Value;
-        let trace = row.get_field_by_name("TRACE_ID").unwrap();
-        let span = row.get_field_by_name("SPAN_ID").unwrap();
-        let (Value::Bytes(trace), Value::Bytes(span)) = (trace.as_ref(), span.as_ref()) else {
-            return Err(corrupt());
-        };
+        let trace = row.trace_id.as_deref().unwrap_or_default();
+        let span = row.span_id.as_deref().unwrap_or_default();
         if tuple::pack(&[Element::Int(0), Element::Bytes(trace), Element::Bytes(span)])
             != expected_pk
         {

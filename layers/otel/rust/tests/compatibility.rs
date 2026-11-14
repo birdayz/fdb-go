@@ -123,9 +123,20 @@ struct Malformed {
 }
 
 #[derive(Deserialize)]
+struct FuzzCase {
+    name: String,
+    input_otlp: String,
+    outputs: Vec<Vector>,
+    decode_error: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct WireFixture {
     cases: Vec<WireCase>,
     malformed: Vec<Malformed>,
+    fuzz_cases: Vec<FuzzCase>,
+    fuzz_candidate_count: usize,
+    fuzz_filtered_count: usize,
 }
 
 fn wire_fixture() -> WireFixture {
@@ -154,6 +165,14 @@ fn assert_outputs(name: &str, prepared: &[fdb_otel_rust::row::PreparedSpan], out
             .map(|(n, e)| (n.clone(), e.iter().map(hex::encode).collect::<Vec<_>>()))
             .collect();
         assert_eq!(keys, v.keys, "{} index keys", v.name);
+        let schema = Schema::pinned().unwrap();
+        let stored = schema.decode_row(&item.row).unwrap();
+        assert_eq!(
+            schema.index_entries(&stored),
+            item.indexes,
+            "{} stored row indexes",
+            v.name
+        );
     }
 }
 
@@ -162,7 +181,7 @@ fn go_unknown_fields_survive_prepare_admit_and_reprepare() {
     use prost::Message;
     use prost_reflect::{DescriptorPool, DynamicMessage};
     let fixture = wire_fixture();
-    assert_eq!(fixture.cases.len(), 8, "empty or changed wire fixture");
+    assert_eq!(fixture.cases.len(), 15, "empty or changed wire fixture");
     let schema = Schema::pinned().unwrap();
     let pool =
         DescriptorPool::decode(include_bytes!("../testdata/descriptors.pb").as_slice()).unwrap();
@@ -177,8 +196,11 @@ fn go_unknown_fields_survive_prepare_admit_and_reprepare() {
             .iter()
             .map(|v| STANDARD.decode(&v.otlp).unwrap())
             .collect();
-        for otlp in &expected {
-            // Plain decode/encode sorts unknowns and minimizes varints, so it must not match Go.
+        for otlp in expected
+            .iter()
+            .filter(|_| case.name == "object_unknowns_at_every_node")
+        {
+            // The original raw-unknown case needs more than prost's unknown representation.
             let reencoded = DynamicMessage::decode(rs_desc.clone(), otlp.as_slice())
                 .unwrap()
                 .encode_to_vec();
@@ -208,7 +230,7 @@ fn go_unknown_fields_survive_prepare_admit_and_reprepare() {
         all_inputs.push(input[0].clone());
         all_outputs.extend(case.outputs.iter().cloned());
     }
-    assert_eq!(all_outputs.len(), 12);
+    assert_eq!(all_outputs.len(), 22);
     assert_outputs(
         "all cases in one call",
         &schema.prepare(&all_inputs).unwrap(),
@@ -221,7 +243,7 @@ fn go_rejected_wire_is_admission_for_prepare_admit_and_validate() {
     let fixture = wire_fixture();
     assert_eq!(
         fixture.malformed.len(),
-        10,
+        13,
         "empty or changed malformed fixture"
     );
     let schema = Schema::pinned().unwrap();
@@ -247,4 +269,67 @@ fn go_rejected_wire_is_admission_for_prepare_admit_and_validate() {
             );
         }
     }
+}
+
+#[test]
+fn seeded_mutations_and_shapes_match_go_outputs_and_decode_errors() {
+    let fixture = wire_fixture();
+    assert_eq!(fixture.fuzz_candidate_count, 82);
+    assert!(fixture.fuzz_filtered_count >= 4);
+    assert_eq!(fixture.fuzz_cases.len() + fixture.fuzz_filtered_count, 82);
+    let schema = Schema::pinned().unwrap();
+    let (mut accepted, mut rejected) = (0, 0);
+    for case in fixture.fuzz_cases {
+        let wire = STANDARD.decode(&case.input_otlp).unwrap();
+        let input = std::slice::from_ref(&wire);
+        if let Some(error) = case.decode_error {
+            assert!(!error.is_empty());
+            assert!(case.outputs.is_empty());
+            assert_eq!(
+                schema.prepare(input).unwrap_err().kind,
+                ErrorKind::Admission,
+                "{}",
+                case.name
+            );
+            assert_eq!(
+                schema.admit(input).unwrap_err().kind,
+                ErrorKind::Admission,
+                "{}",
+                case.name
+            );
+            assert_eq!(
+                schema.validate(input).unwrap_err().kind,
+                ErrorKind::Admission,
+                "{}",
+                case.name
+            );
+            rejected += 1;
+        } else {
+            assert!(!case.outputs.is_empty());
+            assert_outputs(&case.name, &schema.prepare(input).unwrap(), &case.outputs);
+            let expected: Vec<_> = case
+                .outputs
+                .iter()
+                .map(|v| STANDARD.decode(&v.otlp).unwrap())
+                .collect();
+            let admitted = schema.admit(input).unwrap();
+            assert_eq!(admitted, expected, "{} admit", case.name);
+            assert_eq!(
+                schema.validate(input).unwrap(),
+                expected.len(),
+                "{} validate",
+                case.name
+            );
+            assert_outputs(
+                &case.name,
+                &schema.prepare(&admitted).unwrap(),
+                &case.outputs,
+            );
+            accepted += 1;
+        }
+    }
+    assert!(
+        accepted >= 13 && rejected > 0,
+        "accepted={accepted} rejected={rejected}"
+    );
 }

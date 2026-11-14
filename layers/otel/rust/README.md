@@ -7,10 +7,13 @@ replacement. There are no measured performance or economics results yet.
 
 ## Implemented source surface
 
-- The full pinned OTLP and OTEL_V1 protobuf descriptors are generated from the
-  Go dependencies and compiled schema, not handwritten reduced OTLP structs.
-  Reflection preserves unknown fields, open enums, original attributes and
-  Resource/Scope wrappers in each span's stored single-span `ResourceSpans`.
+- A static codec covers all 13 messages of the pinned OTLP v1.11 graph, with
+  typed SPANS records checked against the full Go-generated descriptors in tests.
+  It replaces reflection: canonical known fields and canonical unknown tags with
+  raw unknown values preserve Go's open enums, presence, attributes and wrappers
+  in every stored single-span `ResourceSpans`. A flat arena and iterative decode,
+  size, encode and JSON walks accept Go's 10,000-message depth without recursive
+  ownership, cloning or dropping; wrong-wire known fields remain unknown.
 - `row::Schema` builds the compiled SPANS row representation, canonicalizes
   last-value-wins projected attributes within the same caps, and builds the
   eight standard span VALUE index entry shapes. Message decomposition is off.
@@ -108,11 +111,15 @@ database, network listener, Docker container or service.
 keys, not a second handwritten Go index model. `fixture_test.go` checks the
 committed vectors/descriptors for drift in the whole `just test` lane. Generate
 into a fresh directory with the Bazel-built `otelrust-fixture` and inspect/copy
-both outputs; it has no database access.
+the generated artifacts; it has no database access.
 
 The vectors include fixture V2 and unknown tag 536870911 on wrappers, resource,
 scope and span, open enums, duplicate/empty/NUL/long/capped attributes, NaN and
 negative zero, non-string attributes, events/links and uint64 end timestamps.
+Wire fixtures additionally pin merging, all-node wrong-wire and unknown retention,
+nonminimal tags and values, v1.11 fields, depth boundaries and Go-derived seeded
+mutations. Protobuf-valid fuzz candidates with invalid admission identities/start,
+duplicates or no spans are counted and excluded; this is not full admission fuzz.
 Transaction and queue tests are deterministic fakes testing the state machines;
 **they do not establish live FDB, native ABI, conflict, durability, cancellation
 or Go/Java cross-read conformance**. Native FDB integration and independent Go
