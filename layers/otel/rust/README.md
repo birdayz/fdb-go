@@ -87,8 +87,20 @@ replacement. There are no measured performance or economics results yet.
 
 A layout manifest is an immutable control-plane description of an **exclusively
 owned** tenant: record/index prefixes, exact expected header/layout/catalog
-values, empty index-state ranges and descriptor digest. Each transaction checks
-these. The writer does not resolve, create, upgrade or adopt relational catalogs.
+values, empty index-state ranges and descriptor digest. The full check runs **once,
+when a `Writer` is constructed**, in one read transaction; a mismatch is an Ownership
+error and the Writer is not created. Every later write attempt, retries included,
+re-reads only what Go's writer reads: the tenant store header (compared byte for
+byte) and the whole index-state range (which must be empty), both inside the writing
+transaction; a mismatch is the same Ownership error and nothing is written. These two
+are derived from `record_prefix` (the tenant store root plus tuple 1), which must
+therefore end in `15 01`, and must be among the manifest's checks and ranges.
+**No longer detected while the Writer runs**: a rewritten tenant name-to-location
+mapping, edits to the catalog rows, the layout record or its index, and the other
+manifest-only ranges, unless the same change also alters the store header or the
+index state (a properly versioned schema change does, and is refused). The Go
+`SpanWriter` has the same boundary: it keeps the prefix and metadata it resolved at
+startup. The writer does not resolve, create, upgrade or adopt relational catalogs.
 A forthcoming Go adapter must derive and validate this manifest from real
 OTEL_V1 metadata, outside measurement; it must never perform Rust ingestion.
 Concurrent schema/catalog evolution is not supported by this experiment.

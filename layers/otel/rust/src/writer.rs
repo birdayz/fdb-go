@@ -67,7 +67,9 @@ pub struct ExpectedValue {
 }
 
 /// An immutable, exclusively owned tenant resolved by the Go control plane.
-/// Prefixes are hex; every expected value is read in every write transaction.
+/// Prefixes are hex. Every expected value is read once, when a Writer is constructed;
+/// each write attempt re-reads only the tenant store header and the index-state range,
+/// which are derived from `record_prefix` and must be among `checks` and `empty_ranges`.
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Layout {
@@ -86,6 +88,10 @@ struct BoundLayout {
     indexes: BTreeMap<String, Vec<u8>>,
     checks: Vec<(Vec<u8>, Option<Vec<u8>>)>,
     empty_ranges: Vec<(Vec<u8>, Vec<u8>)>,
+    /// The tenant store header key and its expected bytes: compared exactly in every attempt.
+    header: (Vec<u8>, Vec<u8>),
+    /// The tenant's whole index-state range, which must be empty in every attempt.
+    state: (Vec<u8>, Vec<u8>),
 }
 
 impl Layout {
@@ -144,11 +150,36 @@ impl Layout {
         {
             return Err(bad());
         }
+        // The per-attempt reads are chosen by meaning, not position: the record prefix is
+        // the tenant store root plus tuple 1 (record space); the store header is root plus
+        // tuple 0 and the index-state space is root plus tuple 5.
+        let root = records
+            .strip_suffix(tuple::pack(&[Element::Int(1)]).as_slice())
+            .ok_or_else(bad)?;
+        let space = |n: i64, tail: u8| {
+            let mut key = root.to_vec();
+            key.extend(tuple::pack(&[Element::Int(n)]));
+            key.push(tail);
+            key
+        };
+        let header_key = tuple::pack(&[Element::Int(0)]);
+        let header_key = [root, header_key.as_slice()].concat();
+        let state = (space(5, 0x00), space(5, 0xff));
+        let header_value = checks
+            .iter()
+            .find(|(key, _)| *key == header_key)
+            .and_then(|(_, value)| value.clone())
+            .ok_or_else(bad)?;
+        if !empty_ranges.contains(&state) {
+            return Err(bad());
+        }
         Ok(BoundLayout {
             records,
             indexes,
             checks,
             empty_ranges,
+            header: (header_key, header_value),
+            state,
         })
     }
 }
@@ -225,7 +256,7 @@ impl<D: Database> Writer<D> {
         if !(1..=64).contains(&batch_size) {
             return Err(Error::new(ErrorKind::Config, "batch size must be 1..64"));
         }
-        Ok(Self {
+        let writer = Self {
             db,
             schema: Schema::pinned()?,
             layout: layout.bind()?,
@@ -233,7 +264,45 @@ impl<D: Database> Writer<D> {
             compression,
             diagnostics,
             probe: Probe::default(),
-        })
+        };
+        writer.verify_ownership()?;
+        Ok(writer)
+    }
+
+    /// The full ownership check, once per Writer: every expected value and empty range of
+    /// the manifest, read serializably in one transaction that is then abandoned. Later
+    /// write attempts re-read only the store header and the index-state range.
+    fn verify_ownership(&self) -> Result<()> {
+        let ctx = Context::default();
+        let mut tx = self.db.transaction()?;
+        loop {
+            match self.verify_ownership_once(tx.as_mut(), &ctx) {
+                Err(err) if err.fdb_code.is_some() => tx.on_error(err.fdb_code.unwrap(), &ctx)?,
+                result => return result,
+            }
+        }
+    }
+
+    fn verify_ownership_once(&self, tx: &mut dyn Transaction, ctx: &Context) -> Result<()> {
+        for (key, expected) in &self.layout.checks {
+            if tx.get(key, ctx)? != *expected {
+                return Err(Error::new(
+                    ErrorKind::Ownership,
+                    "tenant header/layout/catalog seal changed",
+                ));
+            }
+        }
+        if tx
+            .ranges(&self.layout.empty_ranges, ctx)?
+            .iter()
+            .any(|r| !r.is_empty())
+        {
+            return Err(Error::new(
+                ErrorKind::Ownership,
+                "tenant index state changed",
+            ));
+        }
+        Ok(())
     }
 
     /// Failure keeps earlier committed batches in the returned progress, never
@@ -334,44 +403,39 @@ impl<D: Database> Writer<D> {
         ctx: &Context,
         spans: &[PreparedSpan],
     ) -> Result<()> {
-        for (key, expected) in &self.layout.checks {
-            if tx.get(key, ctx)? != *expected {
-                return Err(Error::new(
-                    ErrorKind::Ownership,
-                    "tenant header/layout/catalog seal changed",
-                ));
-            }
-        }
-        if tx
-            .ranges(&self.layout.empty_ranges, ctx)?
-            .iter()
-            .any(|r| !r.is_empty())
-        {
+        // Per attempt, as Go reads: the tenant store header and the whole index-state range,
+        // compared exactly here in the writing transaction, then every prior image.
+        if tx.get(&self.layout.header.0, ctx)?.as_deref() != Some(self.layout.header.1.as_slice()) {
             return Err(Error::new(
                 ErrorKind::Ownership,
-                "tenant index state changed",
+                "tenant store header changed",
             ));
         }
-        let ranges = spans
-            .iter()
-            .map(|s| {
-                let mut prefix = self.layout.records.clone();
-                prefix.extend_from_slice(&s.primary_key);
-                let mut begin = prefix.clone();
-                begin.push(0);
-                let mut end = prefix;
-                end.push(0xff);
-                (begin, end)
-            })
-            .collect::<Vec<_>>();
-        let prior = tx.ranges(&ranges, ctx)?;
-        if prior.len() != spans.len() {
+        let mut ranges = vec![self.layout.state.clone()];
+        ranges.extend(spans.iter().map(|s| {
+            let mut prefix = self.layout.records.clone();
+            prefix.extend_from_slice(&s.primary_key);
+            let mut begin = prefix.clone();
+            begin.push(0);
+            let mut end = prefix;
+            end.push(0xff);
+            (begin, end)
+        }));
+        let mut prior = tx.ranges(&ranges, ctx)?;
+        if prior.len() != ranges.len() {
             return Err(Error::new(
                 ErrorKind::Operation,
                 "incomplete prior-image read",
             ));
         }
-        for (span, old) in spans.iter().zip(prior) {
+        let images = prior.split_off(1);
+        if !prior[0].is_empty() {
+            return Err(Error::new(
+                ErrorKind::Ownership,
+                "tenant index state changed",
+            ));
+        }
+        for (span, old) in spans.iter().zip(images) {
             ctx.check()?;
             let mut record_prefix = self.layout.records.clone();
             record_prefix.extend_from_slice(&span.primary_key);
@@ -560,17 +624,20 @@ mod tests {
             descriptor_sha256: hex::encode(Sha256::digest(include_bytes!(
                 "../testdata/descriptors.pb"
             ))),
-            record_prefix: "01".into(),
+            record_prefix: "011501".into(),
             index_prefixes: INDEXES
                 .iter()
                 .enumerate()
                 .map(|(i, n)| ((*n).into(), format!("02{:02x}", i)))
                 .collect(),
             checks: vec![ExpectedValue {
-                key: "00".into(),
+                key: "0114".into(),
                 value: Some("0102".into()),
             }],
-            empty_ranges: vec![("03".into(), "04".into())],
+            empty_ranges: vec![
+                ("03".into(), "04".into()),
+                ("01150500".into(), "011505ff".into()),
+            ],
             messages: "none".into(),
         }
     }
@@ -596,7 +663,7 @@ mod tests {
         let db = Memory::default();
         {
             let mut state = db.0.lock().unwrap();
-            state.data.insert(vec![0], vec![1, 2]);
+            state.data.insert(vec![1, 0x14], vec![1, 2]);
             state.conflicts = conflicts;
             state.fail_at = fail_at;
         }
@@ -650,8 +717,9 @@ mod tests {
             assert!(off.transaction_spans.is_empty());
             assert_eq!(off.logical_otlp_bytes, 0);
         }
-        let default =
-            Writer::new(Memory::default(), &layout(), 3, RecordCompression::None).unwrap();
+        let db = Memory::default();
+        db.0.lock().unwrap().data.insert(vec![1, 0x14], vec![1, 2]);
+        let default = Writer::new(db, &layout(), 3, RecordCompression::None).unwrap();
         assert_eq!(default.diagnostics, Diagnostics::Enabled);
     }
 
@@ -663,7 +731,7 @@ mod tests {
         // Acceptance decodes and checks; it builds no single-span wire.
         assert!(accepted.iter().all(|s| s.encodes() == 0));
         let db = Memory::default();
-        db.0.lock().unwrap().data.insert(vec![0], vec![1, 2]);
+        db.0.lock().unwrap().data.insert(vec![1, 0x14], vec![1, 2]);
         let writer = Writer::new(db.clone(), &layout(), 3, RecordCompression::None).unwrap();
         let (stats, result) = writer.write_admitted(&Context::default(), &accepted);
         result.unwrap();
@@ -697,7 +765,7 @@ mod tests {
     fn a_queued_span_is_decoded_at_acceptance_and_encoded_once_by_its_consumer() {
         use crate::collector::{Collector, Config};
         let db = Memory::default();
-        db.0.lock().unwrap().data.insert(vec![0], vec![1, 2]);
+        db.0.lock().unwrap().data.insert(vec![1, 0x14], vec![1, 2]);
         // One native retry: the whole export is prepared once, not once per attempt.
         db.0.lock().unwrap().conflicts = 1;
         let sink = Arc::new(Observe {

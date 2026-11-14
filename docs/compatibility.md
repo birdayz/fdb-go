@@ -517,8 +517,12 @@ replacement, split records and version-1 raw/zlib serialization. It dynamically
 loads only an explicit SHA256-matched native C client 7.3.77 (API 730), not the
 production pure-Go client. An immutable, exclusively owned tenant manifest must
 seal the exact descriptor, prefixes, header, catalog values and empty state
-ranges; Rust checks those guards but cannot create, resolve, upgrade or adopt a
-catalog. Concurrent schema evolution is unsupported. The queued collector is
+ranges; Rust checks all of them once, when its Writer is constructed, and then in
+every write attempt (retries included) only the tenant store header and the
+index-state range, as the Go writer reads. A tenant name-to-location mapping
+rewritten, or a catalog-only edit made, while the Rust writer runs is therefore no
+longer detected (the Go writer, which caches its resolved prefix and metadata, has
+the same boundary). Rust cannot create, resolve, upgrade or adopt a catalog. Concurrent schema evolution is unsupported. The queued collector is
 in-process only, and its admission is not a durable ACK. Source fixtures and
 fake transaction/queue tests are not live native-ABI, FDB durability or Go/Java
 cross-read conformance. Those integrations, the independent record/index census

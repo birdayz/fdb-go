@@ -149,17 +149,20 @@ fn layout() -> Layout {
         descriptor_sha256: hex::encode(Sha256::digest(include_bytes!(
             "../testdata/descriptors.pb"
         ))),
-        record_prefix: "01".into(),
+        record_prefix: "011501".into(),
         index_prefixes: fdb_otel_rust::row::INDEXES
             .iter()
             .enumerate()
             .map(|(i, n)| ((*n).into(), format!("02{:02x}", i)))
             .collect(),
         checks: vec![ExpectedValue {
-            key: "00".into(),
+            key: "0114".into(),
             value: Some("0102".into()),
         }],
-        empty_ranges: vec![("03".into(), "04".into())],
+        empty_ranges: vec![
+            ("03".into(), "04".into()),
+            ("01150500".into(), "011505ff".into()),
+        ],
         messages: "none".into(),
     }
 }
@@ -182,7 +185,7 @@ fn inputs() -> Vec<Vec<u8>> {
         .collect()
 }
 fn expected_physical(layout: &Layout, fixtures: &[&Vector]) -> BTreeMap<Vec<u8>, Vec<u8>> {
-    let mut data = BTreeMap::from([(vec![0], vec![1, 2])]);
+    let mut data = BTreeMap::from([(vec![1, 0x14], vec![1, 2])]);
     for fixture in fixtures {
         let mut key = hex::decode(&layout.record_prefix).unwrap();
         key.extend(hex::decode(&fixture.pk).unwrap());
@@ -209,9 +212,21 @@ fn expected_physical(layout: &Layout, fixtures: &[&Vector]) -> BTreeMap<Vec<u8>,
     }
     data
 }
+/// A Writer over `db` whose construction-time ownership check is already done: the
+/// transaction counter then counts only what writes use.
+fn new_writer(
+    db: &Fake,
+    layout: &Layout,
+    batch: usize,
+    compression: RecordCompression,
+) -> Writer<Fake> {
+    let writer = Writer::new(db.clone(), layout, batch, compression).unwrap();
+    db.0.lock().unwrap().transactions = 0;
+    writer
+}
 fn database() -> Fake {
     let db = Fake::default();
-    db.0.lock().unwrap().data.insert(vec![0], vec![1, 2]);
+    db.0.lock().unwrap().data.insert(vec![1, 0x14], vec![1, 2]);
     db
 }
 
@@ -250,7 +265,7 @@ fn minimal_span(id: u8, start: u64, name_bytes: usize, padding: usize) -> Vec<u8
 fn exact_census_replay_replacement_and_clears() {
     let db = database();
     let layout = layout();
-    let writer = Writer::new(db.clone(), &layout, 64, RecordCompression::None).unwrap();
+    let writer = new_writer(&db, &layout, 64, RecordCompression::None);
     let source = inputs();
     let (stats, result) = writer.write(&Context::default(), &source);
     result.unwrap();
@@ -302,7 +317,7 @@ fn admission_cancel_ownership_corruption_and_guard_rollback() {
     let layout = layout();
     for case in ["admission", "canceled", "ownership", "guard"] {
         let db = database();
-        let writer = Writer::new(db.clone(), &layout, 64, RecordCompression::Zlib1).unwrap();
+        let writer = new_writer(&db, &layout, 64, RecordCompression::Zlib1);
         let ctx = Context::default();
         let mut in_call = vec![source[0].clone()];
         let kind = match case {
@@ -315,7 +330,7 @@ fn admission_cancel_ownership_corruption_and_guard_rollback() {
                 ErrorKind::Canceled
             }
             "ownership" => {
-                db.0.lock().unwrap().data.insert(vec![0], vec![9]);
+                db.0.lock().unwrap().data.insert(vec![1, 0x14], vec![9]);
                 ErrorKind::Ownership
             }
             _ => {
@@ -330,14 +345,14 @@ fn admission_cancel_ownership_corruption_and_guard_rollback() {
         assert_eq!(db.0.lock().unwrap().data, before, "{case} must roll back");
     }
     let db = database();
-    let writer = Writer::new(db.clone(), &layout, 64, RecordCompression::None).unwrap();
+    let writer = new_writer(&db, &layout, 64, RecordCompression::None);
     writer.write(&Context::default(), &source[..1]).1.unwrap();
     let record =
         db.0.lock()
             .unwrap()
             .data
             .keys()
-            .find(|k| k[0] == 1)
+            .find(|k| k.starts_with(&[1, 0x15, 1]))
             .unwrap()
             .clone();
     db.0.lock().unwrap().data.insert(record, vec![10, 2, 0]);
@@ -359,7 +374,7 @@ fn transient_retry_terminal_error_and_partial_progress() {
     let layout = layout();
     let source = inputs();
     db.0.lock().unwrap().outcomes = VecDeque::from([Some(1020), None, Some(2004)]);
-    let writer = Writer::new(db.clone(), &layout, 1, RecordCompression::Zlib1).unwrap();
+    let writer = new_writer(&db, &layout, 1, RecordCompression::Zlib1);
     let (stats, result) = writer.write(&Context::default(), &source);
     assert_eq!(result.unwrap_err().fdb_code, Some(2004));
     assert_eq!(stats.committed_spans, 1);
@@ -424,7 +439,16 @@ fn constructor_rejects_each_manifest_arm_and_batch_bounds() {
         ("03".into(), "03".into()));
     invalid!("reversed range", |l: &mut Layout| l.empty_ranges[0] =
         ("04".into(), "03".into()));
-    assert_eq!(cases.len(), 19);
+    invalid!("record prefix is not a record space", |l: &mut Layout| l
+        .record_prefix =
+        "011502".into());
+    invalid!("no header check", |l: &mut Layout| l.checks[0].key =
+        "0115".into());
+    invalid!("absent header", |l: &mut Layout| l.checks[0].value = None);
+    invalid!("no state range", |l: &mut Layout| {
+        l.empty_ranges.remove(1);
+    });
+    assert_eq!(cases.len(), 23);
     for (name, layout) in cases {
         let db = database();
         let before = db.0.lock().unwrap().data.clone();
@@ -447,9 +471,9 @@ fn constructor_rejects_each_manifest_arm_and_batch_bounds() {
     }
 }
 
+/// Every construction-time negative still refuses, before any write transaction.
 #[test]
-fn expected_absence_and_half_open_state_range_are_enforced() {
-    let source = inputs();
+fn expected_absence_and_half_open_ranges_are_enforced_at_construction() {
     let mut layout = layout();
     layout.checks.push(ExpectedValue {
         key: "05".into(),
@@ -460,64 +484,114 @@ fn expected_absence_and_half_open_state_range_are_enforced() {
         (vec![3, 0], true),
         (vec![4], false),
         (vec![5], true),
+        // The header's own space: present state entries refuse, the range end is exclusive.
+        (vec![1, 0x15, 5, 2, b'x', 0], true),
+        (vec![1, 0x15, 5, 0xff], false),
+        (vec![1, 0x15, 4, 0xff], false),
     ] {
         let db = database();
         db.0.lock().unwrap().data.insert(key.clone(), vec![]);
         let before = db.0.lock().unwrap().data.clone();
-        let writer = Writer::new(db.clone(), &layout, 64, RecordCompression::None).unwrap();
-        let (stats, result) = writer.write(&Context::default(), &source[..1]);
+        let result = Writer::new(db.clone(), &layout, 64, RecordCompression::None);
+        let state = db.0.lock().unwrap();
+        assert_eq!(state.transactions, 1, "{key:?}: one construction check");
+        assert_eq!(state.attempts, 0);
+        assert_eq!(state.data, before, "{key:?}: nothing written");
+        drop(state);
         if reject {
-            assert_eq!(result.unwrap_err().kind, ErrorKind::Ownership, "{key:?}");
-            assert_eq!(stats.committed_spans, 0);
-            assert_eq!(db.0.lock().unwrap().attempts, 0);
-            assert_eq!(db.0.lock().unwrap().data, before);
+            assert_eq!(result.err().unwrap().kind, ErrorKind::Ownership, "{key:?}");
         } else {
-            result.unwrap();
-            assert_eq!(
-                stats.committed_spans, 1,
-                "range end is exclusive and absent key5 is valid"
-            );
+            result.unwrap_or_else(|e| panic!("{key:?}: range end is exclusive: {e}"));
         }
+    }
+    // A wrong or missing header refuses at construction too.
+    for header in [Some(vec![9]), None] {
+        let db = database();
+        match header {
+            Some(value) => db.0.lock().unwrap().data.insert(vec![1, 0x14], value),
+            None => db.0.lock().unwrap().data.remove(&vec![1, 0x14]),
+        };
+        let result = Writer::new(db, &layout, 64, RecordCompression::None);
+        assert_eq!(result.err().unwrap().kind, ErrorKind::Ownership);
     }
 }
 
+/// After construction every write attempt, retries included, reads only the store header
+/// and the index-state range: a change to either refuses with nothing committed.
 #[test]
-fn ownership_and_index_state_seals_are_rechecked_after_on_error() {
+fn header_and_index_state_are_rechecked_every_attempt_and_after_on_error() {
     let source = inputs();
-    for mutation in [
-        (vec![0], Some(vec![9])),
-        (vec![0], None),
-        (vec![3], Some(vec![])),
-        (vec![5], Some(vec![])),
+    let state_entry = vec![1, 0x15, 5, 2, b'x', 0];
+    for (during_retry, mutation) in [
+        (false, (vec![1, 0x14], Some(vec![9]))),
+        (false, (vec![1, 0x14], None)),
+        (false, (state_entry.clone(), Some(vec![]))),
+        (true, (vec![1, 0x14], Some(vec![9]))),
+        (true, (vec![1, 0x14], None)),
+        (true, (state_entry.clone(), Some(vec![]))),
     ] {
         let db = database();
-        let mut layout = layout();
-        layout.checks.push(ExpectedValue {
-            key: "05".into(),
-            value: None,
-        });
+        let layout = layout();
+        let writer = new_writer(&db, &layout, 64, RecordCompression::None);
         {
             let mut state = db.0.lock().unwrap();
-            state.outcomes.push_back(Some(1020));
-            state.after_retry = Some(mutation.clone());
+            if during_retry {
+                state.outcomes.push_back(Some(1020));
+                state.after_retry = Some(mutation.clone());
+            } else if let Some(value) = &mutation.1 {
+                state.data.insert(mutation.0.clone(), value.clone());
+            } else {
+                state.data.remove(&mutation.0);
+            }
         }
-        let writer = Writer::new(db.clone(), &layout, 64, RecordCompression::None).unwrap();
         let (stats, result) = writer.write(&Context::default(), &source[..1]);
         assert_eq!(result.unwrap_err().kind, ErrorKind::Ownership);
         assert_eq!(stats.committed_spans, 0);
-        assert_eq!(stats.retries, 1);
+        assert_eq!(stats.retries, u64::from(during_retry));
         let state = db.0.lock().unwrap();
-        assert_eq!(state.attempts, 1, "no second commit under changed seal");
+        assert_eq!(
+            state.attempts,
+            usize::from(during_retry),
+            "no commit under a changed check"
+        );
         assert_eq!(state.transactions, 1, "OnError must reuse the transaction");
         assert!(state.committed_records.is_empty());
-        let mut expected = BTreeMap::from([(vec![0], vec![1, 2])]);
+        let mut expected = BTreeMap::from([(vec![1, 0x14], vec![1, 2])]);
         if let Some(value) = mutation.1 {
             expected.insert(mutation.0, value);
         } else {
             expected.remove(&mutation.0);
         }
-        assert_eq!(state.data, expected);
+        assert_eq!(state.data, expected, "nothing was written");
     }
+}
+
+/// What the per-write check no longer sees: the rest of the construction-time manifest
+/// (catalog rows, layout rows, name mappings, other state spaces). Go behaves the same.
+#[test]
+fn catalog_only_changes_after_construction_are_not_detected_per_write() {
+    let source = inputs();
+    let mut layout = layout();
+    layout.checks.push(ExpectedValue {
+        key: "05".into(),
+        value: Some("07".into()),
+    });
+    let db = database();
+    db.0.lock().unwrap().data.insert(vec![5], vec![7]);
+    let writer = new_writer(&db, &layout, 64, RecordCompression::None);
+    {
+        let mut state = db.0.lock().unwrap();
+        state.data.insert(vec![5], vec![8]); // a checked catalog-style row changes
+        state.data.insert(vec![3], vec![]); // an empty startup-only range fills
+        state.data.insert(vec![1, 0x15, 4, 0], vec![]); // another state-adjacent space
+    }
+    let (stats, result) = writer.write(&Context::default(), &source[..1]);
+    result.unwrap();
+    assert_eq!(stats.committed_spans, 1);
+    // Per attempt: header, then one range read of state plus prior image: no more.
+    let state = db.0.lock().unwrap();
+    assert_eq!(state.transactions, 1);
+    assert_eq!(state.committed_records, vec![1]);
 }
 
 #[test]
@@ -527,11 +601,20 @@ fn physical_record_key_accepts_exact_limit_and_rejects_one_byte_over() {
         .unwrap()
         .len();
     for (limit, reject) in [(10_000, false), (10_001, true)] {
-        let db = database();
-        let before = db.0.lock().unwrap().data.clone();
+        // A tenant root whose record keys are exactly `limit` bytes long.
+        let root = vec![0xaa; limit - pk_len - 1 - 2];
+        let at = |tail: &[u8]| hex::encode([root.as_slice(), tail].concat());
         let mut layout = layout();
-        layout.record_prefix = hex::encode(vec![0xaa; limit - pk_len - 1]);
-        let writer = Writer::new(db.clone(), &layout, 64, RecordCompression::None).unwrap();
+        layout.record_prefix = at(&[0x15, 1]);
+        layout.checks[0].key = at(&[0x14]);
+        layout.empty_ranges[1] = (at(&[0x15, 5, 0]), at(&[0x15, 5, 0xff]));
+        let db = Fake::default();
+        db.0.lock()
+            .unwrap()
+            .data
+            .insert([root.as_slice(), &[0x14]].concat(), vec![1, 2]);
+        let before = db.0.lock().unwrap().data.clone();
+        let writer = new_writer(&db, &layout, 64, RecordCompression::None);
         let (stats, result) = writer.write(&Context::default(), &source[..1]);
         if reject {
             assert_eq!(result.unwrap_err().kind, ErrorKind::Admission);
@@ -557,7 +640,7 @@ fn actual_size_equal_guard_commits_and_combined_oversize_replans_halves() {
     let source = inputs();
     let db = database();
     db.0.lock().unwrap().size_override = Some(500_000);
-    let writer = Writer::new(db.clone(), &layout(), 64, RecordCompression::None).unwrap();
+    let writer = new_writer(&db, &layout(), 64, RecordCompression::None);
     let (stats, result) = writer.write(&Context::default(), &source[..1]);
     result.unwrap();
     assert_eq!(stats.committed_spans, 1);
@@ -569,7 +652,7 @@ fn actual_size_equal_guard_commits_and_combined_oversize_replans_halves() {
 
     let db = database();
     db.0.lock().unwrap().max_records_per_transaction = Some(2);
-    let writer = Writer::new(db.clone(), &layout(), 64, RecordCompression::None).unwrap();
+    let writer = new_writer(&db, &layout(), 64, RecordCompression::None);
     let (stats, result) = writer.write(&Context::default(), &source[..6]);
     result.unwrap();
     assert_eq!(stats.committed_spans, 6);
@@ -596,7 +679,7 @@ fn count_limit_and_cumulative_estimate_partition_at_inclusive_boundaries() {
     assert_eq!(prepared.len(), 65, "identities must not collapse");
     assert!(prepared.iter().map(|s| s.estimate).sum::<usize>() < 300_000);
     let db = database();
-    let writer = Writer::new(db.clone(), &layout(), 64, RecordCompression::None).unwrap();
+    let writer = new_writer(&db, &layout(), 64, RecordCompression::None);
     let (stats, result) = writer.write(&Context::default(), &source);
     result.unwrap();
     assert_eq!(stats.committed_spans, 65);
@@ -622,7 +705,7 @@ fn count_limit_and_cumulative_estimate_partition_at_inclusive_boundaries() {
         assert_eq!(prepared[1].estimate, 150_000 + extra);
         assert_eq!(prepared[2].estimate, 2_137);
         let db = database();
-        let writer = Writer::new(db.clone(), &layout(), 64, RecordCompression::None).unwrap();
+        let writer = new_writer(&db, &layout(), 64, RecordCompression::None);
         let (stats, result) = writer.write(&Context::default(), &source);
         result.unwrap();
         assert_eq!(stats.committed_spans, 3);
@@ -638,7 +721,7 @@ fn count_limit_and_cumulative_estimate_partition_at_inclusive_boundaries() {
 fn split_unsplit_replacements_remove_every_stale_record_and_index_key() {
     let schema = Schema::pinned().unwrap();
     let db = database();
-    let writer = Writer::new(db.clone(), &layout(), 64, RecordCompression::None).unwrap();
+    let writer = new_writer(&db, &layout(), 64, RecordCompression::None);
     let small = minimal_span(1, 1, 10, 0);
     let large = minimal_span(1, 2, 110_000, 0);
     let mut first_small = None;
@@ -653,12 +736,12 @@ fn split_unsplit_replacements_remove_every_stale_record_and_index_key() {
         let records = state
             .data
             .iter()
-            .filter(|(k, _)| k[0] == 1)
+            .filter(|(k, _)| k.starts_with(&[1, 0x15, 1]))
             .collect::<Vec<_>>();
         assert_eq!(records.len(), record_count);
         let mut stored = Vec::new();
         for (i, (key, value)) in records.iter().enumerate() {
-            let mut expected_key = vec![1];
+            let mut expected_key = vec![1, 0x15, 1];
             expected_key.extend(&expected[0].primary_key);
             expected_key.extend(tuple::pack(&[Element::Int(if record_count == 1 {
                 0
@@ -694,7 +777,7 @@ fn corrupt_prior_split_shapes_fail_without_any_ack_or_mutation() {
     let source = minimal_span(1, 1, 110_000, 0);
     let schema = Schema::pinned().unwrap();
     let prepared = schema.prepare(std::slice::from_ref(&source)).unwrap();
-    let mut prefix = vec![1];
+    let mut prefix = vec![1, 0x15, 1];
     prefix.extend(&prepared[0].primary_key);
     let key = |suffix| [prefix.clone(), tuple::pack(&[Element::Int(suffix)])].concat();
     for case in [
@@ -709,13 +792,20 @@ fn corrupt_prior_split_shapes_fail_without_any_ack_or_mutation() {
         "primary-key disagreement",
     ] {
         let db = database();
-        let writer = Writer::new(db.clone(), &layout(), 64, RecordCompression::None).unwrap();
+        let writer = new_writer(&db, &layout(), 64, RecordCompression::None);
         writer
             .write(&Context::default(), std::slice::from_ref(&source))
             .1
             .unwrap();
         let mut state = db.0.lock().unwrap();
-        assert_eq!(state.data.keys().filter(|k| k[0] == 1).count(), 3);
+        assert_eq!(
+            state
+                .data
+                .keys()
+                .filter(|k| k.starts_with(&[1, 0x15, 1]))
+                .count(),
+            3
+        );
         match case {
             "missing first" => {
                 state.data.remove(&key(1));
@@ -747,7 +837,7 @@ fn corrupt_prior_split_shapes_fail_without_any_ack_or_mutation() {
                 }
             }
             _ => {
-                state.data.retain(|k, _| k[0] != 1);
+                state.data.retain(|k, _| !k.starts_with(&[1, 0x15, 1]));
                 state.data.insert(
                     key(0),
                     if case == "malformed row" {
@@ -779,7 +869,7 @@ fn replanning_retains_first_half_ack_when_second_half_fails() {
         state.max_records_per_transaction = Some(2);
         state.outcomes = VecDeque::from([None, Some(2004)]);
     }
-    let writer = Writer::new(db.clone(), &layout(), 64, RecordCompression::None).unwrap();
+    let writer = new_writer(&db, &layout(), 64, RecordCompression::None);
     let (stats, result) = writer.write(&Context::default(), &inputs()[..4]);
     assert_eq!(result.unwrap_err().fdb_code, Some(2004));
     assert_eq!(stats.committed_spans, 2);
@@ -842,14 +932,21 @@ fn repeated_resources_scopes_and_spans_split_into_their_own_wrappers() {
     ];
     assert_eq!(schema.validate(&inputs).unwrap(), 5);
     let db = database();
-    let writer = Writer::new(db.clone(), &layout(), 64, RecordCompression::None).unwrap();
+    let writer = new_writer(&db, &layout(), 64, RecordCompression::None);
     let (stats, result) = writer.write(&Context::default(), &inputs);
     result.unwrap();
     assert_eq!(stats.committed_spans, 5);
     let pool =
         DescriptorPool::decode(include_bytes!("../testdata/descriptors.pb").as_slice()).unwrap();
     let state = db.0.lock().unwrap();
-    assert_eq!(state.data.keys().filter(|k| k[0] == 1).count(), 5);
+    assert_eq!(
+        state
+            .data
+            .keys()
+            .filter(|k| k.starts_with(&[1, 0x15, 1]))
+            .count(),
+        5
+    );
     for (id, resource, scope) in [
         (1, "res-a", "a1"),
         (2, "res-a", "a1"),
@@ -857,8 +954,8 @@ fn repeated_resources_scopes_and_spans_split_into_their_own_wrappers() {
         (4, "res-b", "b1"),
         (5, "res-b", "b1"),
     ] {
-        // Literal FDB tuple (0, trace, span) under record prefix 01, unsplit suffix 0x14.
-        let mut key = vec![0x01, 0x14, 0x01];
+        // Literal FDB tuple (0, trace, span) under record prefix 011501, unsplit suffix 0x14.
+        let mut key = vec![0x01, 0x15, 0x01, 0x14, 0x01];
         key.extend([0x11; 16]);
         key.extend([0x00, 0x01]);
         key.extend([id; 8]);
@@ -942,7 +1039,7 @@ fn identity_and_start_boundaries_through_validate_and_writer_write() {
             "{name}"
         );
         let db = database();
-        let writer = Writer::new(db.clone(), &layout(), 64, RecordCompression::None).unwrap();
+        let writer = new_writer(&db, &layout(), 64, RecordCompression::None);
         let (stats, result) = writer.write(&Context::default(), &[input]);
         result.unwrap();
         assert_eq!(stats.committed_spans, 1, "{name}");
@@ -977,7 +1074,7 @@ fn identity_and_start_boundaries_through_validate_and_writer_write() {
                 "{name}"
             );
             let db = database();
-            let writer = Writer::new(db.clone(), &layout(), 64, RecordCompression::None).unwrap();
+            let writer = new_writer(&db, &layout(), 64, RecordCompression::None);
             let (stats, result) = writer.write(&Context::default(), &inputs);
             assert_eq!(result.unwrap_err().kind, ErrorKind::Admission, "{name}");
             assert_eq!(stats.committed_spans, 0, "{name}");
@@ -985,7 +1082,7 @@ fn identity_and_start_boundaries_through_validate_and_writer_write() {
             assert_eq!(state.transactions, 0, "{name}");
             assert_eq!(
                 state.data,
-                BTreeMap::from([(vec![0], vec![1, 2])]),
+                BTreeMap::from([(vec![1, 0x14], vec![1, 2])]),
                 "{name}"
             );
         }
@@ -1027,7 +1124,7 @@ fn go_unknown_field_rows_and_keys_reach_the_physical_map() {
     for case in &fixture.cases {
         let input = STANDARD.decode(&case.input_otlp).unwrap();
         let db = database();
-        let writer = Writer::new(db.clone(), &layout, 64, RecordCompression::None).unwrap();
+        let writer = new_writer(&db, &layout, 64, RecordCompression::None);
         let (stats, result) = writer.write(&Context::default(), std::slice::from_ref(&input));
         result.unwrap();
         let outputs: Vec<&Vector> = case.outputs.iter().collect();
@@ -1048,7 +1145,7 @@ fn go_unknown_field_rows_and_keys_reach_the_physical_map() {
     }
     let outputs: Vec<&Vector> = fixture.cases.iter().flat_map(|c| &c.outputs).collect();
     let db = database();
-    let writer = Writer::new(db.clone(), &layout, 64, RecordCompression::None).unwrap();
+    let writer = new_writer(&db, &layout, 64, RecordCompression::None);
     let (stats, result) = writer.write(&Context::default(), &inputs);
     result.unwrap();
     assert_eq!(stats.committed_spans, 22);
@@ -1062,7 +1159,7 @@ fn go_unknown_field_rows_and_keys_reach_the_physical_map() {
         let mut call = inputs.clone();
         call.push(STANDARD.decode(&m.input_otlp).unwrap());
         let db = database();
-        let writer = Writer::new(db.clone(), &layout, 64, RecordCompression::None).unwrap();
+        let writer = new_writer(&db, &layout, 64, RecordCompression::None);
         let (stats, result) = writer.write(&Context::default(), &call);
         assert_eq!(result.unwrap_err().kind, ErrorKind::Admission, "{}", m.name);
         assert_eq!(stats.committed_spans, 0, "{}", m.name);
@@ -1070,7 +1167,7 @@ fn go_unknown_field_rows_and_keys_reach_the_physical_map() {
         assert_eq!(state.transactions, 0, "{}", m.name);
         assert_eq!(
             state.data,
-            BTreeMap::from([(vec![0], vec![1, 2])]),
+            BTreeMap::from([(vec![1, 0x14], vec![1, 2])]),
             "{}",
             m.name
         );
@@ -1122,7 +1219,7 @@ fn collector_retries_a_partially_committed_writer_call_as_a_whole() {
     let db = database();
     // Writer batches of 2: the call's first transaction commits, its second gets 1031.
     db.0.lock().unwrap().outcomes = VecDeque::from([None, Some(1031)]);
-    let writer = Writer::new(db.clone(), &layout(), 2, RecordCompression::None).unwrap();
+    let writer = new_writer(&db, &layout(), 2, RecordCompression::None);
     let collector = Collector::start(Arc::new(writer), queue(4, 1)).unwrap();
     collector.consume(&bounded(), &otlp(&four)).unwrap();
     collector.flush(&bounded()).unwrap();
@@ -1159,7 +1256,7 @@ fn collector_counts_writer_dedup_and_native_on_error_retries() {
     let request = named(&fixtures, &["v2_0", "v2_1", "fidelity"]);
     let db = database();
     db.0.lock().unwrap().outcomes = VecDeque::from([Some(1020)]);
-    let writer = Writer::new(db.clone(), &layout(), 64, RecordCompression::None).unwrap();
+    let writer = new_writer(&db, &layout(), 64, RecordCompression::None);
     let collector = Collector::start(Arc::new(writer), queue(3, 1)).unwrap();
     collector.consume(&bounded(), &otlp(&request)).unwrap();
     collector.shutdown(&bounded()).unwrap();
@@ -1193,7 +1290,7 @@ fn permanent_merged_failure_isolates_requests_after_partial_commits() {
     // terminal); isolation replays A (two commits) and B fails alone.
     db.0.lock().unwrap().outcomes =
         VecDeque::from([None, None, Some(2004), None, None, Some(2004)]);
-    let writer = Writer::new(db.clone(), &layout(), 1, RecordCompression::None).unwrap();
+    let writer = new_writer(&db, &layout(), 1, RecordCompression::None);
     let collector = Collector::start(Arc::new(writer), queue(3, 1)).unwrap();
     collector.consume(&bounded(), &otlp(&a)).unwrap();
     collector.consume(&bounded(), &otlp(&b)).unwrap();
@@ -1234,7 +1331,7 @@ fn canceled_whole_call_retry_keeps_partial_commits_and_a_replay_completes() {
     let four = named(&fixtures, &["v2_0", "v2_1", "v2_2", "v2_3"]);
     let db = database();
     db.0.lock().unwrap().outcomes = VecDeque::from([None, Some(1031)]);
-    let writer = Writer::new(db.clone(), &layout(), 2, RecordCompression::None).unwrap();
+    let writer = new_writer(&db, &layout(), 2, RecordCompression::None);
     // A one-minute backoff: cancellation, not the retry, ends the call.
     let collector = Collector::start(Arc::new(writer), queue(4, 60_000)).unwrap();
     collector.consume(&bounded(), &otlp(&four)).unwrap();
@@ -1262,7 +1359,7 @@ fn canceled_whole_call_retry_keeps_partial_commits_and_a_replay_completes() {
         expected_physical(&layout(), &four[..2])
     );
     // Replaying the whole call later is idempotent and completes the population.
-    let writer = Writer::new(db.clone(), &layout(), 2, RecordCompression::None).unwrap();
+    let writer = new_writer(&db, &layout(), 2, RecordCompression::None);
     let replay = Collector::start(Arc::new(writer), queue(4, 1)).unwrap();
     replay.consume(&bounded(), &otlp(&four)).unwrap();
     replay.shutdown(&bounded()).unwrap();
@@ -1332,6 +1429,7 @@ fn queued(
         diagnostics,
     )
     .unwrap();
+    db.0.lock().unwrap().transactions = 0; // construction's ownership check is not a write
     let collector =
         Collector::start_with_diagnostics(Arc::new(writer), queue(queue_batch, 1), diagnostics)
             .unwrap();
@@ -1452,6 +1550,7 @@ fn disabled_diagnostics_keep_partial_progress_through_cancellation() {
             diagnostics,
         )
         .unwrap();
+        db.0.lock().unwrap().transactions = 0; // construction's ownership check is not a write
         // A one-minute backoff: cancellation, not the retry, ends the call.
         let collector =
             Collector::start_with_diagnostics(Arc::new(writer), queue(4, 60_000), diagnostics)

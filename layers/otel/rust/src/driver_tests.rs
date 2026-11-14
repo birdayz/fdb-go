@@ -136,17 +136,20 @@ impl Files {
         let layout = Layout {
             version: 1,
             descriptor_sha256: sha256(include_bytes!("../testdata/descriptors.pb")),
-            record_prefix: "01".into(),
+            record_prefix: "011501".into(),
             index_prefixes: INDEXES
                 .iter()
                 .enumerate()
                 .map(|(i, name)| ((*name).into(), format!("02{i:02x}")))
                 .collect(),
             checks: vec![ExpectedValue {
-                key: "00".into(),
+                key: "0114".into(),
                 value: Some("0102".into()),
             }],
-            empty_ranges: vec![("03".into(), "04".into())],
+            empty_ranges: vec![
+                ("03".into(), "04".into()),
+                ("01150500".into(), "011505ff".into()),
+            ],
             messages: "none".into(),
         };
         fs::write(
@@ -572,9 +575,9 @@ fn framed(frames: &[Vec<u8>]) -> Vec<u8> {
 /// The fake's complete map holding exactly v2_i for each index: header, records, keys.
 fn expected_physical(indices: &[usize]) -> BTreeMap<Vec<u8>, Vec<u8>> {
     let vectors = vectors();
-    let mut data = BTreeMap::from([(vec![0], vec![1, 2])]);
+    let mut data = BTreeMap::from([(vec![1, 0x14], vec![1, 2])]);
     for v in indices.iter().map(|&i| &vectors[i]) {
-        let mut key = vec![0x01];
+        let mut key = vec![0x01, 0x15, 0x01];
         key.extend(hex::decode(v["pk"].as_str().unwrap()).unwrap());
         key.push(0x14); // FDB tuple integer zero: unsplit suffix.
         let row = STANDARD.decode(v["row"].as_str().unwrap()).unwrap();
@@ -617,7 +620,7 @@ fn queue(producers: usize, consumers: usize, batch_min: usize, batch_max: usize)
 }
 fn unchanged(db: &Fake) -> bool {
     let state = db.0.lock().unwrap();
-    state.transactions == 0 && state.data == BTreeMap::from([(vec![0], vec![1, 2])])
+    state.transactions == 0 && state.data == BTreeMap::from([(vec![1, 0x14], vec![1, 2])])
 }
 
 #[derive(Clone, Copy, Default)]
@@ -632,7 +635,10 @@ enum Mode {
 #[derive(Default)]
 struct State {
     data: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// Write transactions: the Writer's own construction-time ownership check, always the
+    /// first transaction, is counted apart in `constructed`.
     transactions: usize,
+    constructed: bool,
     attempts: usize,
     committed: usize,
     mode: Mode,
@@ -644,7 +650,7 @@ struct Fake(Arc<Mutex<State>>);
 impl Fake {
     fn new(mode: Mode) -> Self {
         Self(Arc::new(Mutex::new(State {
-            data: BTreeMap::from([(vec![0], vec![1, 2])]),
+            data: BTreeMap::from([(vec![1, 0x14], vec![1, 2])]),
             mode,
             ..State::default()
         })))
@@ -656,7 +662,13 @@ struct Tx {
 }
 impl Database for Fake {
     fn transaction(&self) -> Result<Box<dyn Transaction + '_>> {
-        self.0.lock().unwrap().transactions += 1;
+        let mut state = self.0.lock().unwrap();
+        if state.constructed {
+            state.transactions += 1;
+        } else {
+            state.constructed = true;
+        }
+        drop(state);
         Ok(Box::new(Tx {
             db: self.clone(),
             changes: BTreeMap::new(),
@@ -1491,7 +1503,7 @@ fn job_deadline_cancels_the_commit_without_ack_or_followup() {
     assert_eq!(r["samples"].as_array().unwrap().len(), 1);
     let state = db.0.lock().unwrap();
     assert_eq!(state.attempts, 1);
-    assert_eq!(state.data, BTreeMap::from([(vec![0], vec![1, 2])]));
+    assert_eq!(state.data, BTreeMap::from([(vec![1, 0x14], vec![1, 2])]));
 }
 
 #[test]
@@ -1842,7 +1854,7 @@ fn collector_deadline_settles_every_admitted_request_exactly_once() {
             (state.transactions, state.attempts, state.committed),
             (1, 1, 0)
         );
-        assert_eq!(state.data, BTreeMap::from([(vec![0], vec![1, 2])]));
+        assert_eq!(state.data, BTreeMap::from([(vec![1, 0x14], vec![1, 2])]));
         (state.transactions, state.attempts, state.data.clone())
     };
     // Every consumer was joined before run returned: nothing can commit afterwards.

@@ -37,8 +37,16 @@ fn applied_commit_unknown_result() {
     // This open's own mapped-client proof, taken before the database moves into the Writer.
     let mapping = db.mapping_proof();
     let writer = Writer::new(db, &layout, 64, RecordCompression::None).unwrap();
+    // Construction ran the full ownership check in one read-only transaction of its own:
+    // two native options, no commit, no OnError. The counters below are the write call's.
+    let before = native::fault::counters();
+    assert_eq!(before.created.len(), 1, "construction check transaction");
+    assert_eq!(before.options.len(), 2);
+    assert!(before.commits.is_empty() && before.on_errors.is_empty());
     let (stats, result) = writer.write(&Context::default(), &[wire]);
-    let c = native::fault::counters();
+    let mut c = native::fault::counters();
+    c.created.drain(..before.created.len());
+    c.options.drain(..before.options.len());
     let handle = c.created.first().copied();
     let same_handle = handle.is_some()
         && c.commits
