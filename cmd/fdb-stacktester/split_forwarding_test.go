@@ -17,7 +17,7 @@ import (
 	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
-// Record SplitRange after real writes, using the container's plaintext 12-byte frame header.
+// Record attempted SplitRange writes before sending, using the plaintext 12-byte frame header.
 // Framing matches client/wire_recorder_test.go's recordingConn.
 type splitRequestRecorder struct {
 	mu       sync.Mutex
@@ -50,9 +50,10 @@ func (r *splitRequestRecorder) snapshot() ([]types.SplitRangeRequest, []error) {
 func (c *splitRecordingConn) Write(p []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	n, err := c.Conn.Write(p)
-	c.observe(p[:n])
-	return n, err
+	// A fast reply may be consumed before Conn.Write returns. Publish first so
+	// the operation cannot complete ahead of its request observation.
+	c.observe(p)
+	return c.Conn.Write(p)
 }
 
 // Caller holds c.mu; the parser-only unit test has no concurrent caller.
@@ -102,6 +103,40 @@ func (c *splitRecordingConn) observe(p []byte) {
 			}
 		}
 		c.buf = c.buf[12+size:]
+	}
+}
+
+type splitWriteObserverConn struct {
+	net.Conn
+	write func([]byte) (int, error)
+}
+
+func (c splitWriteObserverConn) Write(p []byte) (int, error) { return c.write(p) }
+
+func TestSplitRequestRecorderPublishesBeforeRawWrite(t *testing.T) {
+	t.Parallel()
+	r := &splitRequestRecorder{}
+	request := &types.SplitRangeRequest{Keys: types.KeyRangeRef{Begin: []byte("a"), End: []byte("z")}, ChunkSize: 131072}
+	var frame bytes.Buffer
+	if err := transport.WriteFrame(&frame, transport.UID{First: 1}, request.MarshalFDB(), false); err != nil {
+		t.Fatal(err)
+	}
+	writes := 0
+	c := &splitRecordingConn{connected: true, recorder: r, Conn: splitWriteObserverConn{write: func(p []byte) (int, error) {
+		writes++
+		// A peer may reply as soon as this write becomes visible, before return.
+		requests, problems := r.snapshot()
+		if len(problems) != 0 || len(requests) != 1 || requests[0].ChunkSize != 131072 || !bytes.Equal(requests[0].Keys.Begin, []byte("a")) || !bytes.Equal(requests[0].Keys.End, []byte("z")) {
+			t.Errorf("raw write preceded request publication: requests=%v problems=%v", requests, problems)
+		}
+		if !bytes.Equal(p, frame.Bytes()) {
+			t.Error("recorder changed raw write bytes")
+		}
+		return len(p), nil
+	}}}
+	n, err := c.Write(frame.Bytes())
+	if err != nil || n != frame.Len() || writes != 1 {
+		t.Fatalf("write=%d,%v calls=%d", n, err, writes)
 	}
 }
 

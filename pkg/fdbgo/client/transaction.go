@@ -2781,8 +2781,8 @@ func (tx *Transaction) stateSetReadVersion(version int64) {
 	}
 	tx.readVersionMu.Lock()
 	defer tx.readVersionMu.Unlock()
-	// readVersionMu orders setter poison with GRV admission; publication uses
-	// atomic deferredErr directly and acquires no further state lock.
+	// Only setter rejection also gates GRV admission under readVersionMu;
+	// unrelated deferred poison preserves the operation's captured admission.
 	if tx.deferredErr.Load() != nil {
 		return
 	}
@@ -2792,14 +2792,20 @@ func (tx *Transaction) stateSetReadVersion(version int64) {
 		if tx.beforeReadVersionReject != nil {
 			tx.beforeReadVersionReject()
 		}
-		tx.deferredErr.CompareAndSwap(nil, &wire.FDBError{Code: 2010})
+		err := &wire.FDBError{Code: 2010}
+		if tx.deferredErr.CompareAndSwap(nil, err) {
+			tx.setterRejection = err
+		}
 		return
 	}
 	if version <= 0 {
 		if tx.beforeReadVersionReject != nil {
 			tx.beforeReadVersionReject()
 		}
-		tx.deferredErr.CompareAndSwap(nil, &wire.FDBError{Code: 2011})
+		err := &wire.FDBError{Code: 2011}
+		if tx.deferredErr.CompareAndSwap(nil, err) {
+			tx.setterRejection = err
+		}
 		return
 	}
 	tx.readVersion = version

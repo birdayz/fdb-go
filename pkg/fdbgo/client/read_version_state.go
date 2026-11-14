@@ -17,6 +17,7 @@ type readVersionState struct {
 	readVersion        int64
 	hasReadVersion     bool
 	userSetReadVersion bool
+	setterRejection    *wire.FDBError
 	pendingReadVersion *pendingReadVersion
 	inlinePending      pendingReadVersion
 	inlinePendingUsed  bool
@@ -79,18 +80,15 @@ func (tx *Transaction) cachedOrFetchReadVersion(ctx context.Context, extraFlags 
 	return tx.readVersionState.cachedOrFetchReadVersion(ctx, nil, extraFlags, tx)
 }
 
-// owner supplies public admission-error mapping, span initialization and, when
-// request is nil, the request options, read only once a fetch starts. Detached
-// native work passes its captured request and a nil owner, and observes its own
-// context instead.
+// Public GRV admission observes setter rejection under readVersionMu, but keeps
+// captured admission for other poison; detached native work uses its own context.
 func (state *readVersionState) cachedOrFetchReadVersion(ctx context.Context, request *readVersionRequest, extraFlags uint32, owner *Transaction) (int64, bool, error) {
 	for {
 		state.readVersionMu.Lock()
-		if owner != nil {
-			if poison := owner.deferredErr.Load(); poison != nil {
-				state.readVersionMu.Unlock()
-				return 0, false, poison
-			}
+		if owner != nil && state.setterRejection != nil {
+			err := state.setterRejection
+			state.readVersionMu.Unlock()
+			return 0, false, err
 		}
 		if err := readVersionEntryError(ctx, owner); err != nil {
 			state.readVersionMu.Unlock()

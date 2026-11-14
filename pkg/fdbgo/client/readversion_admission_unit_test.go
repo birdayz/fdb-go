@@ -190,3 +190,34 @@ func TestReadVersionConcurrentRejectedSetterLoop(t *testing.T) {
 		tx.Cancel()
 	}
 }
+
+func TestReadVersionAdmissionKeepsNestedLeaseDeferredEntry(t *testing.T) {
+	t.Parallel()
+	for _, reacquire := range []bool{false, true} {
+		name := "borrow"
+		if reacquire {
+			name = "reacquire"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			tx := &Transaction{}
+			defer tx.Cancel()
+			tx.SetReadVersion(42)
+			ctx, release := tx.opContext(context.Background())
+			defer release()
+			if reacquire {
+				tx.readOperation(ctx).lease.release()
+			}
+			// The admitted operation was clean. A later void-operation error
+			// gates the next operation, not nested work of the admitted one.
+			tx.Atomic(MutationType(1), []byte(t.Name()), []byte("value"))
+			version, err := tx.GetReadVersion(ctx)
+			if err != nil || version != 42 {
+				t.Errorf("late poison rewrote admitted read: version=%d error=%v, want 42/nil", version, err)
+			}
+			if _, err := tx.GetReadVersion(context.Background()); admissionErrorCode(err) != 2018 {
+				t.Fatalf("new operation did not observe deferred error: %v, want 2018", err)
+			}
+		})
+	}
+}
