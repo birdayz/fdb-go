@@ -198,47 +198,42 @@ func TestDedupCursorRestoredBytes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			pack := func(v int) []byte { return []byte{byte(v)} }
+			packCalls, unpackCalls := 0, 0
+			pack := func(v int) []byte {
+				packCalls++
+				return []byte{byte(v)}
+			}
 			if tc.omit {
 				pack = nil
 			}
-			cursor := Dedup(func([]byte) RecordCursor[int] { return FromListWithContinuation([]int{2}, nil) },
+			inner := newOOBStopCursor([]int{1, 1}, ScanLimitReached, NewBytesContinuation([]byte{8}))
+			cursor := Dedup(func([]byte) RecordCursor[int] { return inner },
 				intEqual, pack, func(b []byte) (int, bool) {
-					if len(b) > 0 {
-						b[0] = 0xff
+					unpackCalls++
+					if !bytes.Equal(b, tc.raw) || (b == nil) != (tc.raw == nil) {
+						t.Fatalf("unpack received %x (nil=%t), want %x (nil=%t)", b, b == nil, tc.raw, tc.raw == nil)
 					}
 					return 1, true
 				}, raw)
 			defer cursor.Close()
-			old, err := cursor.(*dedupCursor[int]).wrapContinuation(&BytesContinuation{bytes: []byte{1}})
+			stopped, err := cursor.OnNext(context.Background())
+			if err != nil || stopped.HasNext() || stopped.GetNoNextReason() != ScanLimitReached || stopped.GetContinuation().IsEnd() {
+				t.Fatalf("duplicate-only stop: result=%+v, err=%v", stopped, err)
+			}
+			if inner.pos != 2 || unpackCalls != 1 {
+				t.Fatalf("consumed %d duplicates, unpack calls=%d; want 2 and 1", inner.pos, unpackCalls)
+			}
+			encoded, err := stopped.GetContinuation().ToBytes()
 			if err != nil {
 				t.Fatal(err)
 			}
-			check := func(cont RecordCursorContinuation, want []byte) {
-				t.Helper()
-				encoded, err := cont.ToBytes()
-				if err != nil {
-					t.Fatal(err)
-				}
-				var decoded gen.DedupContinuation
-				if err := decoded.UnmarshalVT(encoded); err != nil {
-					t.Fatal(err)
-				}
-				if !bytes.Equal(decoded.LastValue, want) || (decoded.LastValue == nil) != (want == nil) {
-					t.Fatalf("lastValue=%x (nil=%t), want %x (nil=%t)", decoded.LastValue, decoded.LastValue == nil, want, want == nil)
-				}
-			}
-			wantOld, wantNew := tc.raw, []byte{2}
+			want, wantPackCalls := []byte{0x0a, 1, 8, 0x12, 1, 1}, 1
 			if tc.omit {
-				wantOld, wantNew = nil, nil
+				want, wantPackCalls = []byte{0x0a, 1, 8}, 0
 			}
-			check(old, wantOld)
-			next, err := cursor.OnNext(context.Background())
-			if err != nil || !next.HasNext() || next.GetValue() != 2 {
-				t.Fatalf("distinct replacement: result=%+v, err=%v", next, err)
+			if !bytes.Equal(encoded, want) || packCalls != wantPackCalls {
+				t.Fatalf("continuation=%x, pack calls=%d; want %x and %d", encoded, packCalls, want, wantPackCalls)
 			}
-			check(next.GetContinuation(), wantNew)
-			check(old, wantOld)
 		})
 	}
 }

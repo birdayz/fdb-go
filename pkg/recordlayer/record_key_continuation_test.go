@@ -1520,6 +1520,90 @@ var _ = Describe("Record-key scan argument boundaries", func() {
 	})
 })
 
+func TestRecordKeyDedupRestoredTupleBytes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		raw  []byte
+		omit bool
+	}{
+		{name: "noncanonical", raw: []byte{0x16, 0, 1}},
+		{name: "present empty", raw: []byte{}},
+		{name: "nil pack", raw: []byte{0x16, 0, 1}, omit: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			restored, err := tuple.UnpackStrict(tc.raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := (&gen.DedupContinuation{InnerContinuation: []byte{}, LastValue: tc.raw}).MarshalVT()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pack := func(pk tuple.Tuple) []byte { return pk.Pack() }
+			if tc.omit {
+				pack = nil
+			}
+			makeCursor := func(items []tuple.Tuple, continuation []byte) RecordCursor[tuple.Tuple] {
+				return newDedupCursor(func([]byte) RecordCursor[tuple.Tuple] {
+					return newOOBStopCursor(items, ScanLimitReached, NewBytesContinuation([]byte{8}))
+				}, tuplesEqual, pack, func(b []byte) (tuple.Tuple, bool) {
+					pk, err := tuple.UnpackStrict(b)
+					if len(b) > 0 {
+						b[0] = 0xff
+					}
+					return pk, err == nil
+				}, continuation, true)
+			}
+			cursor := makeCursor([]tuple.Tuple{restored, restored}, raw)
+			defer cursor.Close()
+			stopped, err := cursor.OnNext(context.Background())
+			if err != nil || stopped.HasNext() || stopped.GetNoNextReason() != ScanLimitReached || stopped.GetContinuation().IsEnd() {
+				t.Fatalf("duplicate-only stop: result=%+v, err=%v", stopped, err)
+			}
+			check := func(cont RecordCursorContinuation, want []byte) {
+				t.Helper()
+				encoded, err := cont.ToBytes()
+				if err != nil {
+					t.Fatal(err)
+				}
+				var decoded gen.DedupContinuation
+				if err := decoded.UnmarshalVT(encoded); err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(decoded.LastValue, want) || (decoded.LastValue == nil) != (want == nil) {
+					t.Fatalf("lastValue=%x (nil=%t), want %x (nil=%t)", decoded.LastValue, decoded.LastValue == nil, want, want == nil)
+				}
+			}
+			wantOld, wantNew := tc.raw, []byte{0x15, 2}
+			if tc.omit {
+				wantOld, wantNew = nil, nil
+			}
+			old := stopped.GetContinuation()
+			check(old, wantOld)
+			resume, err := old.ToBytes()
+			if err != nil {
+				t.Fatal(err)
+			}
+			resumed := makeCursor([]tuple.Tuple{{int64(2)}}, resume)
+			defer resumed.Close()
+			beforeReplacement, err := resumed.(*dedupCursor[tuple.Tuple]).wrapContinuation(NewBytesContinuation([]byte{8}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			check(beforeReplacement, wantOld)
+			next, err := resumed.OnNext(context.Background())
+			if err != nil || !next.HasNext() || !tuplesEqual(next.GetValue(), tuple.Tuple{int64(2)}) {
+				t.Fatalf("distinct replacement: result=%+v, err=%v", next, err)
+			}
+			check(next.GetContinuation(), wantNew)
+			check(beforeReplacement, wantOld)
+			check(old, wantOld)
+		})
+	}
+}
+
 func TestRecordKeyContinuationInvalid(t *testing.T) {
 	t.Parallel()
 	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)

@@ -42,7 +42,7 @@ type dedupCursor[T any] struct {
 
 // Dedup creates a cursor that removes adjacent duplicate elements.
 // equal compares two elements; pack/unpack serialize the last value for continuations.
-// If pack is nil, continuation will not include lastValue.
+// Restored values are serialized by pack too; if pack is nil, lastValue is omitted.
 // Matches Java's DedupCursor.
 func Dedup[T any](
 	innerFactory CursorFactory[T],
@@ -50,6 +50,18 @@ func Dedup[T any](
 	pack func(T) []byte,
 	unpack func([]byte) (T, bool),
 	continuation []byte,
+) RecordCursor[T] {
+	return newDedupCursor(innerFactory, equal, pack, unpack, continuation, false)
+}
+
+// preserveRestoredTupleBytes is only for ScanRecordKeys: Go tuples lack Java Tuple's packed-byte cache.
+func newDedupCursor[T any](
+	innerFactory CursorFactory[T],
+	equal func(a, b T) bool,
+	pack func(T) []byte,
+	unpack func([]byte) (T, bool),
+	continuation []byte,
+	preserveRestoredTupleBytes bool,
 ) RecordCursor[T] {
 	c := &dedupCursor[T]{
 		innerFactory: innerFactory,
@@ -80,8 +92,9 @@ func Dedup[T any](
 			if unpack == nil {
 				return &errorCursor[T]{err: fmt.Errorf("dedup continuation carries lastValue but no unpack function was provided")}
 			}
-			// Java's restored Tuple retains its bytes until a distinct value replaces it.
-			c.lastPacked = bytes.Clone(lv)
+			if preserveRestoredTupleBytes {
+				c.lastPacked = bytes.Clone(lv)
+			}
 			val, ok := unpack(lv)
 			if !ok {
 				return &errorCursor[T]{err: fmt.Errorf("dedup continuation: unpack lastValue failed (raw_bytes=%x)", lv)}
