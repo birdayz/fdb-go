@@ -166,9 +166,14 @@ class ProvisionAdapterTests(NativeFixture):
         self.assertEqual(set(result), set(self.backend.nodes))
         self.assertTrue(all(set(x["assets"]) == set(self.plan["assets"]) for x in result.values()))
         missing = next(state.glob("client1-asset-*-fetch.json"))
-        missing.unlink()
+        original = missing.read_bytes(); missing.unlink()
         with self.assertRaises(FileNotFoundError):
             self.backend.transfer_assets(self.plan, self.backend.nodes)
+        self.assertEqual(self.backend._copy.call_count, 6)
+        missing.write_bytes(original)
+        with self.assertRaises(FileExistsError):
+            self.backend.transfer_assets(self.plan, self.backend.nodes)
+        self.assertEqual(self.backend._copy.call_count, 6)
 
 
 class PricingTests(NativeFixture):

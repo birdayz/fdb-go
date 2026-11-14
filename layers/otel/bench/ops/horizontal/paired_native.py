@@ -545,7 +545,7 @@ class NativeBackend:
         remote_bin = "/srv/otel-horizontal/" + plan["campaign"] + "/bin"
         flat_assets = {name: remote_bin + "/" + ("libfdb_c.so" if name == "libfdb_c" else name) for name in plan["assets"]}
         for role, node in resources.items():
-            assets, deployments = {}, {}
+            assets = {}
             for name, sealed in plan["assets"].items():
                 item = packed[name]
                 require(item["sha256"] == sealed["sha256"] and item["name"] == Path(flat_assets[name]).name, "packed source seal/name changed")
@@ -557,6 +557,9 @@ class NativeBackend:
                 require(remote == {"dest": flat_assets[name], "sha256": sealed["sha256"],
                                    "bytes": item["bytes"], "src_sha256": item["transfer_sha256"]}, "transfer receipt mismatch")
                 assets[name] = {"sha256": remote["sha256"], "transfer_sha256": remote["src_sha256"], "bytes": remote["bytes"]}
+            result[role] = {"node_id": node["id"], "assets": assets, "deployments": {}}
+        # Do not publish any executable tree until every held host's upload is proved.
+        for role, node in resources.items():
             for name in self.q.builds.EXECUTABLES:
                 if name not in plan["assets"]:
                     continue
@@ -569,8 +572,7 @@ class NativeBackend:
                 self._copy(node, local_request, remote_request)
                 deployed = loads(self.command(node, ["python3", "-c", self.q.builds.INSTALL_SCRIPT, remote_request, sha(local_request)]))
                 require(deployed == {"schema": "otel_paired_deployment_receipt_v1", **request}, "verified executable/runfiles deployment required")
-                deployments[name] = deployed
-            result[role] = {"node_id": node["id"], "assets": assets, "deployments": deployments}
+                result[role]["deployments"][name] = deployed
         self.q.validate_transfers(plan, resources, result)
         return result
 
