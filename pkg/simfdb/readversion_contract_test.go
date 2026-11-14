@@ -304,21 +304,109 @@ func TestDeferredReadVersionErrorConstructionPrecedence(t *testing.T) {
 
 func TestOnErrorTerminalAndDeferredLifetime(t *testing.T) {
 	t.Parallel()
-	for _, code := range []int{1031, 1235, 1242} {
-		tx := New(nil).newTxn()
-		tx.SetReadVersion(0)
-		if got := readVersionCode(t, tx.OnError(fdb.Error{Code: code}).Get()); got != code {
-			t.Fatalf("OnError(%d) = %d", code, got)
+	for _, tc := range []struct {
+		name   string
+		code   int
+		limit  int64
+		cancel bool
+		want   int
+	}{
+		{"timeout", 1031, -1, false, 1031},
+		{"hot_shard", 1235, -1, false, 1235},
+		{"range_locked", 1242, -1, false, 1242},
+		{"non_retryable", 2101, -1, false, 2101},
+		{"exhausted", 1020, 0, false, 1020},
+		{"success_unlimited", 0, -1, false, 2000},
+		{"success_exhausted", 0, 0, false, 4100},
+		{"cancelled", 1020, -1, true, 1025},
+	} {
+		for _, poison := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/poison=%t", tc.name, poison), func(t *testing.T) {
+				t.Parallel()
+				tx := New(nil).newTxn()
+				if err := tx.Options().SetRetryLimit(tc.limit); err != nil {
+					t.Fatal(err)
+				}
+				tx.Set(k("x"), []byte("pending"))
+				if poison {
+					tx.SetReadVersion(0)
+				}
+				if tc.cancel {
+					tx.Cancel()
+				}
+				if got := readVersionCode(t, tx.OnError(fdb.Error{Code: tc.code}).Get()); got != tc.want {
+					t.Fatalf("terminal OnError(%d) = %d, want %d", tc.code, got, tc.want)
+				}
+				if err := tx.Options().SetRetryLimit(-1); err != nil {
+					t.Fatal(err)
+				}
+				for _, code := range []int{1020, 0} {
+					if got := readVersionCode(t, tx.OnError(fdb.Error{Code: code}).Get()); got != 1025 {
+						t.Fatalf("later OnError(%d) = %d, want 1025", code, got)
+					}
+				}
+				want := 1025
+				if poison {
+					want = 2011
+				}
+				for _, op := range []struct {
+					name string
+					run  func() error
+				}{
+					{"Get", func() error { _, err := tx.Get(k("x")).Get(); return err }},
+					{"GetKey", func() error { _, err := tx.GetKey(fdb.FirstGreaterOrEqual(k("x"))).Get(); return err }},
+					{"range", func() error { _, err := tx.GetRange(allRange(), fdb.RangeOptions{}).GetSliceWithError(); return err }},
+					{"snapshot", func() error { _, err := tx.Snapshot().Get(k("x")).Get(); return err }},
+					{"GRV", func() error { _, err := tx.GetReadVersion().Get(); return err }},
+					{"metric", func() error { _, err := tx.GetEstimatedRangeSizeBytes(allRange()).Get(); return err }},
+					{"split_points", func() error { _, err := tx.GetRangeSplitPoints(allRange(), 100).Get(); return err }},
+					{"versionstamp", func() error { _, err := tx.GetVersionstamp().Get(); return err }},
+					{"commit", func() error { return tx.Commit().Get() }},
+				} {
+					if got := readVersionCode(t, op.run()); got != want {
+						t.Fatalf("%s = %d, want %d", op.name, got, want)
+					}
+				}
+				size, err := tx.GetApproximateSize().Get()
+				if poison {
+					if code := readVersionCode(t, err); code != 2011 {
+						t.Fatalf("poisoned size = %d, want 2011", code)
+					}
+				} else if err != nil || size <= 0 {
+					t.Fatalf("cancelled size = %d, %v; want positive, nil", size, err)
+				}
+				tx.Reset()
+				if err := tx.OnError(fdb.Error{Code: 1020}).Get(); err != nil {
+					t.Fatalf("Reset did not restore retry: %v", err)
+				}
+				tx.SetReadVersion(123)
+				if got, err := tx.GetReadVersion().Get(); err != nil || got != 123 {
+					t.Fatalf("Reset did not clear poison: %d, %v", got, err)
+				}
+				if got := tx.Get(k("x")).MustGet(); got != nil {
+					t.Fatalf("Reset retained pending write: %q", got)
+				}
+				tx.Set(k("y"), []byte("restored"))
+				if err := tx.Commit().Get(); err != nil {
+					t.Fatalf("Reset did not restore commit: %v", err)
+				}
+			})
 		}
-		if _, err := tx.GetReadVersion().Get(); readVersionCode(t, err) != 2011 {
-			t.Fatalf("terminal OnError cleared poison: %v", err)
-		}
-		if err := tx.OnError(fdb.Error{Code: 1020}).Get(); err != nil {
-			t.Fatal(err)
-		}
-		tx.SetReadVersion(123)
-		if got, err := tx.GetReadVersion().Get(); err != nil || got != 123 {
-			t.Fatalf("retry did not clear poison: %d, %v", got, err)
-		}
+	}
+}
+
+func TestSetterCannotReviveTerminalOnError(t *testing.T) {
+	t.Parallel()
+	tx := New(nil).newTxn()
+	if code := readVersionCode(t, tx.OnError(fdb.Error{Code: 2101}).Get()); code != 2101 {
+		t.Fatalf("OnError = %d, want 2101", code)
+	}
+	tx.SetReadVersion(123)
+	if _, err := tx.GetReadVersion().Get(); readVersionCode(t, err) != 1025 {
+		t.Fatalf("valid setter revived transaction: %v", err)
+	}
+	tx.SetReadVersion(0)
+	if _, err := tx.GetReadVersion().Get(); readVersionCode(t, err) != 2010 {
+		t.Fatalf("setter poison lost precedence: %v", err)
 	}
 }

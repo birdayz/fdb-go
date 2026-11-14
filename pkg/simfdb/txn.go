@@ -1438,24 +1438,29 @@ func maybeCommitted(code int) bool {
 // writer landing after the retry's read version aborts it. Without the promotion that retry
 // has an empty read-conflict set and overwrites the concurrent write — a lost update SimFDB
 // would certify and a real client would not.
+// A failed OnError retires the handle until Reset, matching FDB API >=610.
 func (tx *simTxn) OnError(e fdb.Error) fdb.FutureNil {
 	// SimFDB models cancellation, not delivered transaction timeouts.
 	if tx.cancelled.Load() {
 		return newReadyNil(fdb.Error{Code: 1025})
 	}
 	if e.Code == 1031 {
+		tx.Cancel()
 		return newReadyNil(e)
 	}
 	if tx.hasRetryLimit && tx.retryCount >= tx.retryLimit {
+		tx.Cancel()
 		if e.Code == 0 {
 			return newReadyNil(fdb.Error{Code: 4100})
 		}
 		return newReadyNil(e)
 	}
 	if e.Code == 0 {
+		tx.Cancel()
 		return newReadyNil(fdb.Error{Code: 2000})
 	}
 	if !fdb.IsOnErrorRetryable(e.Code) {
+		tx.Cancel()
 		return newReadyNil(e)
 	}
 	tx.retryCount++
