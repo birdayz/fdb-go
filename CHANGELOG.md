@@ -22,6 +22,11 @@ the release archives (`RELEASE.md`).
 below; neither publication nor readiness is asserted.
 
 ### Added
+- `fdb.WrapDatabaseContext` wraps a pure-Go database with an inherited context
+  for facade reads, retry loops and snapshots; explicit `*Ctx` calls override it.
+- Hourly hosted Go client BindingTester workflow (minute 17, also manually
+  dispatchable), with bounded regression replay, five-mode exploration and
+  per-case evidence; Go client coverage only, not Record Layer or SQL.
 - `layers/otel/otelsql` OTEL_V1 template API (`TemplateDDL`, `CreateTemplate`,
   `CreateTenant`) for Java-readable tenant spans, logs and message tables, and
   for writers of those stores: `EnsureTenant` (creates or verifies the
@@ -120,6 +125,11 @@ below; neither publication nor readiness is asserted.
   12.0 or later (`allow_loading_unsigned_plugins`).
 
 ### Changed / fixed
+- **Pure-Go client / SimFDB (#1045):** `OnError(0)` returns 2000, or 4100 when
+  the retry limit is exhausted. Codes 1235/1242 are terminal under the pinned
+  native 7.3.77 contract, not retried by `OnError` / `IsOnErrorRetryable`.
+  SimFDB mirrors these contracts, retires a transaction after terminal `OnError`
+  until `Reset`, and starts versions at 1 (first commit 2).
 - `ScanRecordKeys` composes a physical key scan, adjacent-primary-key deduplication
   and an outer row limit for suffixed layouts, matching Java 4.14.2.0's cursor
   structure. Resource-limited duplicate-only pages retain progress, and an exact
@@ -211,6 +221,15 @@ below; neither publication nor readiness is asserted.
   checks; explicit failed commits release their transaction handles.
 
 ### Breaking changes / compatibility
+- **Read-version pins (#1045):** pure-Go `SetReadVersion` matches native 7.3.77:
+  a cached, pending or already-failed read-version request on this incarnation
+  defers 2010 before checking the value; otherwise a value <= 0 defers 2011.
+  Setter errors are sticky until `Reset`; callers that re-pin must reset or use
+  a fresh transaction. An accepted explicit pin is returned by `GetReadVersion`
+  without validation; storage-facing reads and commits retain fast validation.
+  SimFDB mirrors setter precedence (its GRV is synchronous). No persisted-format,
+  SQL or dependency-pin change; getter reuse after failed GRVs remains an open gap
+  in `TODO.md`.
 - **Go toolchain:** require **Go 1.27.4** or newer for the GO-2026-6859
   (`net/http` MaxBytesReader header race) security fix. CI, release builds and
   runner provisioning use 1.27.4; no application API, SQL or persisted-format change.
