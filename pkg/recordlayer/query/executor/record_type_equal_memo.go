@@ -21,12 +21,21 @@ const recordTypeEqualMemoEntries = 4096
 // no identity short-circuit, so a cyclic record type fails at its first
 // comparison (values/proto_type_test.go, DIVERGENCES.md).
 var recordTypeEqualMemo struct {
-	pairs atomic.Pointer[sync.Map] // recordTypePair → struct{}
-	size  atomic.Int64
+	current atomic.Pointer[memoGeneration]
+	mu      sync.Mutex // serializes miss inserts and generation rollover
+}
+
+type memoGeneration struct {
+	pairs sync.Map     // recordTypePair → struct{}
+	size  atomic.Int64 // exact entry count in pairs; mutated only under mu
 }
 
 type recordTypePair struct {
 	a, b weak.Pointer[values.RecordType]
+}
+
+func init() {
+	recordTypeEqualMemo.current.Store(&memoGeneration{})
 }
 
 // recordTypesEqual is a.Equals(b) for a record type b, memoised by object
@@ -35,25 +44,31 @@ func recordTypesEqual(a *values.RecordType, b *values.RecordType) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	pairs := recordTypeEqualMemo.pairs.Load()
-	if pairs == nil {
-		pairs = &sync.Map{}
-		if !recordTypeEqualMemo.pairs.CompareAndSwap(nil, pairs) {
-			pairs = recordTypeEqualMemo.pairs.Load()
-		}
-	}
+	gen := recordTypeEqualMemo.current.Load()
 	key := recordTypePair{weak.Make(a), weak.Make(b)}
-	if _, ok := pairs.Load(key); ok {
+	if _, ok := gen.pairs.Load(key); ok {
 		return true
 	}
 	if !a.Equals(b) {
 		return false
 	}
-	if recordTypeEqualMemo.size.Add(1) > recordTypeEqualMemoEntries {
-		recordTypeEqualMemo.pairs.Store(&sync.Map{})
-		recordTypeEqualMemo.size.Store(0)
+	recordTypeEqualMemo.mu.Lock()
+	defer recordTypeEqualMemo.mu.Unlock()
+	gen = recordTypeEqualMemo.current.Load()
+	if _, ok := gen.pairs.Load(key); ok {
 		return true
 	}
-	pairs.Store(key, struct{}{})
+	if gen.size.Load() >= recordTypeEqualMemoEntries {
+		// Populate the replacement generation before publishing so old
+		// generations stay immutable at cap and concurrent readers never see
+		// an out-of-sync counter reset.
+		next := &memoGeneration{}
+		next.pairs.Store(key, struct{}{})
+		next.size.Store(1)
+		recordTypeEqualMemo.current.Store(next)
+		return true
+	}
+	gen.pairs.Store(key, struct{}{})
+	gen.size.Add(1)
 	return true
 }
