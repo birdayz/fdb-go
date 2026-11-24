@@ -39,19 +39,95 @@ const (
 	StatsName = "__STATS"
 )
 
+// Option configures a RelationalKeyspace instance.
+type Option func(*RelationalKeyspace)
+
+// WithDomains configures instance-scoped domain registration on a
+// RelationalKeyspace, isolating it from the process-global domain registry.
+// Passing no names yields an isolated keyspace with zero user domains.
+func WithDomains(names ...string) Option {
+	return func(k *RelationalKeyspace) {
+		k.instanceScoped = true
+		for _, name := range names {
+			k.registerDomainLocked(name)
+		}
+	}
+}
+
 // RelationalKeyspace provides FDB subspace resolution for the relational layer.
 // Construct one with a root subspace (e.g. the empty subspace or a tenant-specific
 // prefix), then call CatalogSubspace / SchemaSubspace to get per-object subspaces.
 type RelationalKeyspace struct {
-	root subspace.Subspace
+	root           subspace.Subspace
+	mu             sync.RWMutex
+	instanceScoped bool
+	domains        []string
 	// resolved caches committed schema resolutions: an interned name never
 	// changes its value (Java's directory cache relies on the same).
 	resolved sync.Map // dbPath "\x00" schema -> subspace.Subspace
 }
 
-// New returns a RelationalKeyspace rooted at root.
+// New returns a RelationalKeyspace rooted at root using the process-global
+// domain registry unless RegisterDomain is called on the instance.
 func New(root subspace.Subspace) *RelationalKeyspace {
 	return &RelationalKeyspace{root: root}
+}
+
+// NewRelationalKeyspace returns an instance-scoped RelationalKeyspace rooted at
+// root, isolated from the process-global domain registry.
+func NewRelationalKeyspace(root subspace.Subspace, opts ...Option) *RelationalKeyspace {
+	k := &RelationalKeyspace{
+		root:           root,
+		instanceScoped: true,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(k)
+		}
+	}
+	return k
+}
+
+// RegisterDomain adds a domain to this keyspace instance idempotently and marks
+// the keyspace as instance-scoped, isolating it from process-global domains.
+func (k *RelationalKeyspace) RegisterDomain(name string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.instanceScoped = true
+	k.registerDomainLocked(name)
+}
+
+func (k *RelationalKeyspace) registerDomainLocked(name string) {
+	if name == "" {
+		return
+	}
+	for _, n := range k.domains {
+		if n == name {
+			return
+		}
+	}
+	k.domains = append(k.domains, name)
+}
+
+// RegisteredDomains returns the domains visible to this keyspace in
+// registration order.
+func (k *RelationalKeyspace) RegisteredDomains() []string {
+	k.mu.RLock()
+	scoped := k.instanceScoped
+	var out []string
+	if scoped {
+		out = append([]string(nil), k.domains...)
+	}
+	k.mu.RUnlock()
+	if scoped {
+		return out
+	}
+	return RegisteredDomains()
+}
+
+// ToDatabasePath resolves uri against this keyspace's registered domains.
+func (k *RelationalKeyspace) ToDatabasePath(uri string) (DatabasePath, error) {
+	return toDatabasePathWithDomains(uri, k.RegisteredDomains())
 }
 
 // CatalogSubspace returns the subspace for the system catalog record store:
@@ -78,7 +154,7 @@ func (k *RelationalKeyspace) SchemaSubspace(rctx *recordlayer.FDBRecordContext, 
 	// Java resolves a schema's store through toDatabasePath(dbUri).schemaPath
 	// (create/drop schema, every store open), so a database outside the
 	// registered domains is INVALID_PATH there.
-	path, err := ToDatabasePath(dbPath)
+	path, err := k.ToDatabasePath(dbPath)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +196,7 @@ func (k *RelationalKeyspace) LookupSchemaSubspace(ctx context.Context, db Runner
 	if ss, ok := k.resolved.Load(dbPath + "\x00" + schemaName); ok {
 		return ss.(subspace.Subspace), nil
 	}
-	path, err := ToDatabasePath(dbPath)
+	path, err := k.ToDatabasePath(dbPath)
 	if err != nil {
 		return nil, err
 	}

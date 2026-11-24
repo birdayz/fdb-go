@@ -77,10 +77,10 @@ type ksDirectory struct {
 	children       []*ksDirectory
 }
 
-// keySpaceRoot builds the root's directories: __SYS, then each domain in
+// keySpaceRootFor builds the root's directories: __SYS, then each domain in
 // registration order (RelationalKeyspaceProvider's constructor and
 // registerDomainIfNotExists).
-func keySpaceRoot() []*ksDirectory {
+func keySpaceRootFor(domainNames []string) []*ksDirectory {
 	interned := func() *ksDirectory {
 		return &ksDirectory{name: InterningLayer, keyType: keyString, constant: InterningLayerValue}
 	}
@@ -93,7 +93,7 @@ func keySpaceRoot() []*ksDirectory {
 			interned(),
 		},
 	}}
-	for _, d := range RegisteredDomains() {
+	for _, d := range domainNames {
 		root = append(root, &ksDirectory{
 			name: d, keyType: keyLong, directoryLayer: true, constant: d,
 			children: []*ksDirectory{
@@ -116,11 +116,16 @@ type DatabasePath struct {
 	Database string
 }
 
-// ToDatabasePath resolves a database URI path against the keyspace, Java's
-// RelationalKeyspaceProvider.toDatabasePath over KeySpaceUtils.toKeySpacePath:
-// the path must be /__SYS or /DOMAIN/DATABASE under a registered domain, and
-// anything else is INVALID_PATH "<path> is an invalid database path".
+// ToDatabasePath resolves a database URI path against the process-global
+// keyspace, Java's RelationalKeyspaceProvider.toDatabasePath over
+// KeySpaceUtils.toKeySpacePath: the path must be /__SYS or /DOMAIN/DATABASE
+// under a registered domain, and anything else is INVALID_PATH "<path> is an
+// invalid database path".
 func ToDatabasePath(uri string) (DatabasePath, error) {
+	return toDatabasePathWithDomains(uri, RegisteredDomains())
+}
+
+func toDatabasePathWithDomains(uri string, domainNames []string) (DatabasePath, error) {
 	invalid := api.NewErrorf(api.ErrCodeInvalidPath, "<%s> is an invalid database path", uri)
 	path := uri
 	if len(path) < 1 {
@@ -135,7 +140,7 @@ func ToDatabasePath(uri string) (DatabasePath, error) {
 	if strings.HasSuffix(path, "/") {
 		elems = append(elems, "")
 	}
-	matched, values, err := matchSubdirectories(keySpaceRoot(), uri, elems, 0)
+	matched, values, err := matchSubdirectories(keySpaceRootFor(domainNames), uri, elems, 0)
 	if err != nil {
 		return DatabasePath{}, err
 	}
