@@ -47,6 +47,63 @@ type ConcurrentConfig struct {
 func RunConcurrent(t testing.TB, realDB fdb.Database, metadata *recordlayer.RecordMetaData, cfg ConcurrentConfig) {
 	t.Helper()
 
+	cfg = applyConcurrentDefaults(cfg)
+
+	db := recordlayer.NewFDBDatabase(realDB)
+	sub := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
+	// Bounded for the same reason scenario.go bounds its ops: TransactCtx retries
+	// unbounded by default, so a shared container dying mid-suite HANGS this
+	// rather than failing it, and the package alarm is what finally reports --
+	// naming an arbitrary test instead of the container. RunConcurrent bypasses
+	// NewScenario entirely, so it needs its own bound.
+	ctx, cancelRun := chaosRunContext(cfg.Duration)
+	defer cancelRun()
+
+	initConcurrentStore(ctx, t, db, metadata, sub)
+
+	// Track total operations and violations.
+	var totalOps atomic.Int64
+	// Run makes at most ten attempts, as Java's runner does, so a hot key's
+	// conflicts can outlast them. Such an operation applied wholly or not at
+	// all, which the snapshot invariants hold either way, so it is counted
+	// rather than failed; any other error is a bug.
+	var exhaustedOps atomic.Int64
+	var violationsMu sync.Mutex
+	var allViolations []Violation
+
+	// Signal workers to stop.
+	deadline := time.Now().Add(cfg.Duration)
+
+	// Worker goroutines.
+	var wg sync.WaitGroup
+	for w := 0; w < cfg.Workers; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			runConcurrentWorker(ctx, t, workerID, cfg, deadline, db, metadata, sub, &totalOps, &exhaustedOps)
+		}(w)
+	}
+
+	// Validator goroutine — periodically snapshot-validates the store.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		runConcurrentValidator(ctx, cfg, deadline, db, metadata, sub, &violationsMu, &allViolations)
+	}()
+
+	wg.Wait()
+
+	// Final validation after all workers stop.
+	finalViolations := validateSnapshot(ctx, db, metadata, sub)
+
+	violationsMu.Lock()
+	allViolations = append(allViolations, finalViolations...)
+	violationsMu.Unlock()
+
+	reportConcurrentOutcome(t, cfg, allViolations, totalOps.Load(), exhaustedOps.Load())
+}
+
+func applyConcurrentDefaults(cfg ConcurrentConfig) ConcurrentConfig {
 	// Apply defaults.
 	if cfg.Workers <= 0 {
 		cfg.Workers = 4
@@ -60,17 +117,11 @@ func RunConcurrent(t testing.TB, realDB fdb.Database, metadata *recordlayer.Reco
 	if cfg.ValidateEvery <= 0 {
 		cfg.ValidateEvery = 1 * time.Second
 	}
+	return cfg
+}
 
-	db := recordlayer.NewFDBDatabase(realDB)
-	sub := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
-	// Bounded for the same reason scenario.go bounds its ops: TransactCtx retries
-	// unbounded by default, so a shared container dying mid-suite HANGS this
-	// rather than failing it, and the package alarm is what finally reports --
-	// naming an arbitrary test instead of the container. RunConcurrent bypasses
-	// NewScenario entirely, so it needs its own bound.
-	ctx, cancelRun := chaosRunContext(cfg.Duration)
-	defer cancelRun()
-
+func initConcurrentStore(ctx context.Context, t testing.TB, db *recordlayer.FDBDatabase, metadata *recordlayer.RecordMetaData, sub subspace.Subspace) {
+	t.Helper()
 	// Create the store once to initialize the header.
 	_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		return recordlayer.NewStoreBuilder().
@@ -82,135 +133,129 @@ func RunConcurrent(t testing.TB, realDB fdb.Database, metadata *recordlayer.Reco
 	if err != nil {
 		t.Fatalf("concurrent: failed to initialize store: %v", err)
 	}
+}
 
-	// Track total operations and violations.
-	var totalOps atomic.Int64
-	// Run makes at most ten attempts, as Java's runner does, so a hot key's
-	// conflicts can outlast them. Such an operation applied wholly or not at
-	// all, which the snapshot invariants hold either way, so it is counted
-	// rather than failed; any other error is a bug.
-	var exhaustedOps atomic.Int64
-	exhausted := func(err error) bool {
-		if err == nil {
-			return true
-		}
-		var fe fdb.Error
-		if errors.As(err, &fe) && fdb.IsRetryable(fe.Code) {
-			exhaustedOps.Add(1)
-			return true
-		}
-		return false
+func recordRetryableExhaustion(err error, exhaustedOps *atomic.Int64) bool {
+	if err == nil {
+		return true
 	}
-	var violationsMu sync.Mutex
-	var allViolations []Violation
+	var fe fdb.Error
+	if errors.As(err, &fe) && fdb.IsRetryable(fe.Code) {
+		exhaustedOps.Add(1)
+		return true
+	}
+	return false
+}
 
-	// Signal workers to stop.
-	deadline := time.Now().Add(cfg.Duration)
+func runConcurrentWorker(
+	ctx context.Context,
+	t testing.TB,
+	workerID int,
+	cfg ConcurrentConfig,
+	deadline time.Time,
+	db *recordlayer.FDBDatabase,
+	metadata *recordlayer.RecordMetaData,
+	sub subspace.Subspace,
+	totalOps *atomic.Int64,
+	exhaustedOps *atomic.Int64,
+) {
+	t.Helper()
+	rng := rand.New(rand.NewPCG(cfg.Seed+uint64(workerID), 0))
 
-	// Worker goroutines.
-	var wg sync.WaitGroup
-	for w := 0; w < cfg.Workers; w++ {
-		wg.Add(1)
-		go func(workerID int) {
-			defer wg.Done()
-			rng := rand.New(rand.NewPCG(cfg.Seed+uint64(workerID), 0))
+	for time.Now().Before(deadline) {
+		pk := rng.Int64N(cfg.MaxPKs)
+		r := rng.Float64()
 
-			for time.Now().Before(deadline) {
-				pk := rng.Int64N(cfg.MaxPKs)
-				r := rng.Float64()
-
-				switch {
-				case r < 0.6:
-					// 60% saves
-					price := rng.Int32N(10000)
-					qty := rng.Int32N(100)
-					_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-						store, err := openStore(rtx, metadata, sub)
-						if err != nil {
-							return nil, err
-						}
-						return store.SaveRecord(&demopb.Order{
-							OrderId:  proto.Int64(pk),
-							Price:    proto.Int32(price),
-							Quantity: proto.Int32(qty),
-						})
-					})
-					if !exhausted(err) {
-						t.Errorf("concurrent: worker %d save error: %v", workerID, err)
-					}
-
-				case r < 0.9:
-					// 30% deletes
-					_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-						store, err := openStore(rtx, metadata, sub)
-						if err != nil {
-							return nil, err
-						}
-						return store.DeleteRecord(tuple.Tuple{pk})
-					})
-					if !exhausted(err) {
-						t.Errorf("concurrent: worker %d delete error: %v", workerID, err)
-					}
-
-				default:
-					// 10% delete all
-					_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-						store, err := openStore(rtx, metadata, sub)
-						if err != nil {
-							return nil, err
-						}
-						return nil, store.DeleteAllRecords()
-					})
-					if !exhausted(err) {
-						t.Errorf("concurrent: worker %d delete-all error: %v", workerID, err)
-					}
+		switch {
+		case r < 0.6:
+			// 60% saves
+			price := rng.Int32N(10000)
+			qty := rng.Int32N(100)
+			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, err := openStore(rtx, metadata, sub)
+				if err != nil {
+					return nil, err
 				}
-
-				totalOps.Add(1)
+				return store.SaveRecord(&demopb.Order{
+					OrderId:  proto.Int64(pk),
+					Price:    proto.Int32(price),
+					Quantity: proto.Int32(qty),
+				})
+			})
+			if !recordRetryableExhaustion(err, exhaustedOps) {
+				t.Errorf("concurrent: worker %d save error: %v", workerID, err)
 			}
-		}(w)
-	}
 
-	// Validator goroutine — periodically snapshot-validates the store.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		ticker := time.NewTicker(cfg.ValidateEvery)
-		defer ticker.Stop()
+		case r < 0.9:
+			// 30% deletes
+			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, err := openStore(rtx, metadata, sub)
+				if err != nil {
+					return nil, err
+				}
+				return store.DeleteRecord(tuple.Tuple{pk})
+			})
+			if !recordRetryableExhaustion(err, exhaustedOps) {
+				t.Errorf("concurrent: worker %d delete error: %v", workerID, err)
+			}
 
-		for {
-			select {
-			case <-ticker.C:
-				if time.Now().After(deadline) {
-					return
+		default:
+			// 10% delete all
+			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, err := openStore(rtx, metadata, sub)
+				if err != nil {
+					return nil, err
 				}
-				violations := validateSnapshot(ctx, db, metadata, sub)
-				if len(violations) > 0 {
-					violationsMu.Lock()
-					allViolations = append(allViolations, violations...)
-					violationsMu.Unlock()
-				}
-			default:
-				if time.Now().After(deadline) {
-					return
-				}
-				time.Sleep(10 * time.Millisecond)
+				return nil, store.DeleteAllRecords()
+			})
+			if !recordRetryableExhaustion(err, exhaustedOps) {
+				t.Errorf("concurrent: worker %d delete-all error: %v", workerID, err)
 			}
 		}
-	}()
 
-	wg.Wait()
+		totalOps.Add(1)
+	}
+}
 
-	// Final validation after all workers stop.
-	finalViolations := validateSnapshot(ctx, db, metadata, sub)
+func runConcurrentValidator(
+	ctx context.Context,
+	cfg ConcurrentConfig,
+	deadline time.Time,
+	db *recordlayer.FDBDatabase,
+	metadata *recordlayer.RecordMetaData,
+	sub subspace.Subspace,
+	violationsMu *sync.Mutex,
+	allViolations *[]Violation,
+) {
+	ticker := time.NewTicker(cfg.ValidateEvery)
+	defer ticker.Stop()
 
-	violationsMu.Lock()
-	allViolations = append(allViolations, finalViolations...)
-	violationsMu.Unlock()
+	for {
+		select {
+		case <-ticker.C:
+			if time.Now().After(deadline) {
+				return
+			}
+			violations := validateSnapshot(ctx, db, metadata, sub)
+			if len(violations) > 0 {
+				violationsMu.Lock()
+				*allViolations = append(*allViolations, violations...)
+				violationsMu.Unlock()
+			}
+		default:
+			if time.Now().After(deadline) {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
 
+func reportConcurrentOutcome(t testing.TB, cfg ConcurrentConfig, allViolations []Violation, ops, exhausted int64) {
+	t.Helper()
 	if len(allViolations) > 0 {
 		msg := fmt.Sprintf("concurrent: %d violation(s) (seed=%d, workers=%d, ops=%d):\n",
-			len(allViolations), cfg.Seed, cfg.Workers, totalOps.Load())
+			len(allViolations), cfg.Seed, cfg.Workers, ops)
 		for _, v := range allViolations {
 			msg += fmt.Sprintf("  - %s\n", v)
 		}
@@ -218,11 +263,11 @@ func RunConcurrent(t testing.TB, realDB fdb.Database, metadata *recordlayer.Reco
 	}
 
 	// The ceiling: exhaustion is a contention outcome, not the common case.
-	if n, ops := exhaustedOps.Load(), totalOps.Load(); n*20 > ops {
-		t.Fatalf("concurrent: %d of %d operations exhausted their attempts, above the 5%% ceiling", n, ops)
+	if exhausted*20 > ops {
+		t.Fatalf("concurrent: %d of %d operations exhausted their attempts, above the 5%% ceiling", exhausted, ops)
 	}
 	t.Logf("concurrent: completed %d ops across %d workers (seed=%d, duration=%s, exhausted=%d)",
-		totalOps.Load(), cfg.Workers, cfg.Seed, cfg.Duration, exhaustedOps.Load())
+		ops, cfg.Workers, cfg.Seed, cfg.Duration, exhausted)
 }
 
 // validateSnapshot takes a snapshot-consistent read and verifies derived state.

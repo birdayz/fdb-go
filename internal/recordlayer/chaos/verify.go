@@ -47,87 +47,15 @@ func Verify(store *recordlayer.FDBRecordStore, model *StoreModel) []Violation {
 	var violations []Violation
 
 	// 1. Record count (if counting is enabled in metadata)
-	if model.metadata.GetRecordCountKey() != nil {
-		actualCount, err := store.GetRecordCount()
-		if err != nil {
-			violations = append(violations, Violation{
-				Invariant: "record_count_error",
-				Expected:  "no error",
-				Actual:    err.Error(),
-			})
-		} else {
-			expectedCount := model.Count()
-			if actualCount != expectedCount {
-				violations = append(violations, Violation{
-					Invariant: "record_count",
-					Expected:  expectedCount,
-					Actual:    actualCount,
-				})
-			}
-		}
-	}
+	violations = append(violations, verifyRecordCount(store, model)...)
 
 	// 2. Every model record must exist in the store
-	for _, rec := range model.Records {
-		loaded, err := store.LoadRecord(rec.PrimaryKey)
-		if err != nil {
-			violations = append(violations, Violation{
-				Invariant:  "record_load_error",
-				PrimaryKey: rec.PrimaryKey,
-				Expected:   "loadable",
-				Actual:     err.Error(),
-			})
-		} else if loaded == nil {
-			violations = append(violations, Violation{
-				Invariant:  "record_missing",
-				PrimaryKey: rec.PrimaryKey,
-				Expected:   "exists",
-				Actual:     "nil",
-			})
-		}
-	}
+	violations = append(violations, verifyModelRecordsExist(store, model)...)
 
 	// 3. No orphan records (every store record must exist in model)
 	ctx, cancel := chaosOpContext()
 	defer cancel()
-	cursor := store.ScanRecords(nil, recordlayer.ForwardScan())
-	defer func() { _ = cursor.Close() }()
-
-	storeCount := 0
-	for {
-		result, err := cursor.OnNext(ctx)
-		if err != nil {
-			violations = append(violations, Violation{
-				Invariant: "scan_error",
-				Expected:  "no error",
-				Actual:    err.Error(),
-			})
-			break
-		}
-		if !result.HasNext() {
-			break
-		}
-		rec := result.GetValue()
-		storeCount++
-		if !model.Has(rec.PrimaryKey) {
-			violations = append(violations, Violation{
-				Invariant:  "record_orphan",
-				PrimaryKey: rec.PrimaryKey,
-				Expected:   "not in store",
-				Actual:     "exists in store but not in model",
-			})
-		}
-	}
-
-	// Cross-check: scan count should match model count
-	// (catches scan bugs independent of the COUNT index)
-	if int64(storeCount) != model.Count() {
-		violations = append(violations, Violation{
-			Invariant: "scan_count_mismatch",
-			Expected:  model.Count(),
-			Actual:    int64(storeCount),
-		})
-	}
+	violations = append(violations, verifyNoOrphanRecords(ctx, store, model)...)
 
 	// 4. VALUE index entry verification
 	violations = append(violations, verifyValueIndexes(ctx, store, model)...)
@@ -167,6 +95,101 @@ func Verify(store *recordlayer.FDBRecordStore, model *StoreModel) []Violation {
 	return violations
 }
 
+func verifyRecordCount(store *recordlayer.FDBRecordStore, model *StoreModel) []Violation {
+	var violations []Violation
+	if model.metadata.GetRecordCountKey() != nil {
+		actualCount, err := store.GetRecordCount()
+		if err != nil {
+			violations = append(violations, Violation{
+				Invariant: "record_count_error",
+				Expected:  "no error",
+				Actual:    err.Error(),
+			})
+		} else {
+			expectedCount := model.Count()
+			if actualCount != expectedCount {
+				violations = append(violations, Violation{
+					Invariant: "record_count",
+					Expected:  expectedCount,
+					Actual:    actualCount,
+				})
+			}
+		}
+	}
+	return violations
+}
+
+func verifyModelRecordsExist(store *recordlayer.FDBRecordStore, model *StoreModel) []Violation {
+	var violations []Violation
+	for _, rec := range model.Records {
+		loaded, err := store.LoadRecord(rec.PrimaryKey)
+		if err != nil {
+			violations = append(violations, Violation{
+				Invariant:  "record_load_error",
+				PrimaryKey: rec.PrimaryKey,
+				Expected:   "loadable",
+				Actual:     err.Error(),
+			})
+		} else if loaded == nil {
+			violations = append(violations, Violation{
+				Invariant:  "record_missing",
+				PrimaryKey: rec.PrimaryKey,
+				Expected:   "exists",
+				Actual:     "nil",
+			})
+		}
+	}
+	return violations
+}
+
+func verifyNoOrphanRecords(ctx context.Context, store *recordlayer.FDBRecordStore, model *StoreModel) []Violation {
+	var violations []Violation
+	cursor := store.ScanRecords(nil, recordlayer.ForwardScan())
+	defer func() { _ = cursor.Close() }()
+
+	storeCount := 0
+	for {
+		result, err := cursor.OnNext(ctx)
+		if err != nil {
+			violations = append(violations, Violation{
+				Invariant: "scan_error",
+				Expected:  "no error",
+				Actual:    err.Error(),
+			})
+			break
+		}
+		if !result.HasNext() {
+			break
+		}
+		rec := result.GetValue()
+		storeCount++
+		if !model.Has(rec.PrimaryKey) {
+			violations = append(violations, Violation{
+				Invariant:  "record_orphan",
+				PrimaryKey: rec.PrimaryKey,
+				Expected:   "not in store",
+				Actual:     "exists in store but not in model",
+			})
+		}
+	}
+
+	// Cross-check: scan count should match model count
+	// (catches scan bugs independent of the COUNT index)
+	if int64(storeCount) != model.Count() {
+		violations = append(violations, Violation{
+			Invariant: "scan_count_mismatch",
+			Expected:  model.Count(),
+			Actual:    int64(storeCount),
+		})
+	}
+	return violations
+}
+
+type valueIndexEntry struct {
+	key   tuple.Tuple // [keyColumns..., trimmedPK...]
+	value tuple.Tuple // non-nil for covering indexes
+}
+
 // verifyValueIndexes checks that every VALUE index contains exactly the entries
 // predicted by the model. For each VALUE index:
 //   - Compute expected entries from model records (evaluate index expression + trim PK)
@@ -185,146 +208,167 @@ func verifyValueIndexes(ctx context.Context, store *recordlayer.FDBRecordStore, 
 		// Detect covering index (KeyWithValueExpression).
 		kwv, isCovering := idx.RootExpression.(*recordlayer.KeyWithValueExpression)
 
-		// Build expected entries from model records.
-		type expectedEntry struct {
-			key   tuple.Tuple // [keyColumns..., trimmedPK...]
-			value tuple.Tuple // non-nil for covering indexes
-		}
-		expected := make(map[string]*expectedEntry)
+		expected, evalViolations := buildExpectedValueEntries(model, md, idx, kwv, isCovering)
+		violations = append(violations, evalViolations...)
 
-		for _, rec := range model.Records {
-			// Check if this index applies to this record type.
-			if !model.indexAppliesToType(idx, rec.TypeName) {
-				continue
-			}
+		actual, scanViolations := scanActualValueEntries(ctx, store, idx)
+		violations = append(violations, scanViolations...)
 
-			// Evaluate the index expression against this record.
-			storedRec := &recordlayer.FDBStoredRecord[proto.Message]{
-				PrimaryKey: rec.PrimaryKey,
-				RecordType: md.GetRecordType(rec.TypeName),
-				Record:     rec.Message,
-			}
+		violations = append(violations, diffValueEntries(idx, expected, actual, isCovering)...)
+	}
 
-			tuples, err := idx.RootExpression.Evaluate(storedRec, rec.Message)
-			if err != nil {
-				violations = append(violations, Violation{
-					Invariant:  "index_eval_error",
-					PrimaryKey: rec.PrimaryKey,
-					Expected:   fmt.Sprintf("index %q evaluable", idx.Name),
-					Actual:     err.Error(),
-				})
-				continue
-			}
+	return violations
+}
 
-			trimmedPK, err := idx.TrimPrimaryKey(rec.PrimaryKey)
-			if err != nil {
-				violations = append(violations, Violation{
-					Invariant:  "index_trim_pk_error",
-					PrimaryKey: rec.PrimaryKey,
-					Expected:   fmt.Sprintf("index %q pk trimmable", idx.Name),
-					Actual:     err.Error(),
-				})
-				continue
-			}
+func buildExpectedValueEntries(
+	model *StoreModel,
+	md *recordlayer.RecordMetaData,
+	idx *recordlayer.Index,
+	kwv *recordlayer.KeyWithValueExpression,
+	isCovering bool,
+) (map[string]*valueIndexEntry, []Violation) {
+	var violations []Violation
+	// Build expected entries from model records.
+	expected := make(map[string]*valueIndexEntry)
 
-			for _, values := range tuples {
-				var keyColumns []any
-				var valueTuple tuple.Tuple
-
-				if isCovering {
-					// Split: key columns [0, splitPoint), value columns [splitPoint, end).
-					keyPart, valuePart := kwv.SplitEvaluatedKey(values)
-					keyColumns = keyPart
-					valueTuple = make(tuple.Tuple, len(valuePart))
-					for j, v := range valuePart {
-						valueTuple[j] = v
-					}
-				} else {
-					keyColumns = values
-				}
-
-				entryKey := make(tuple.Tuple, 0, len(keyColumns)+len(trimmedPK))
-				for _, v := range keyColumns {
-					entryKey = append(entryKey, v)
-				}
-				entryKey = append(entryKey, trimmedPK...)
-				expected[string(entryKey.Pack())] = &expectedEntry{key: entryKey, value: valueTuple}
-			}
+	for _, rec := range model.Records {
+		// Check if this index applies to this record type.
+		if !model.indexAppliesToType(idx, rec.TypeName) {
+			continue
 		}
 
-		// Scan actual index entries.
-		type actualEntry struct {
-			key   tuple.Tuple
-			value tuple.Tuple
-		}
-		actual := make(map[string]*actualEntry)
-		idxCursor := store.ScanIndex(idx, recordlayer.TupleRangeAll, nil, recordlayer.ForwardScan())
-
-		for {
-			result, err := idxCursor.OnNext(ctx)
-			if err != nil {
-				violations = append(violations, Violation{
-					Invariant: "index_scan_error",
-					Expected:  fmt.Sprintf("index %q scannable", idx.Name),
-					Actual:    err.Error(),
-				})
-				break
-			}
-			if !result.HasNext() {
-				break
-			}
-			entry := result.GetValue()
-			actual[string(entry.Key.Pack())] = &actualEntry{key: entry.Key, value: entry.Value}
-		}
-		_ = idxCursor.Close()
-
-		// Diff: missing entries (in model but not in store)
-		for key, exp := range expected {
-			if _, ok := actual[key]; !ok {
-				violations = append(violations, Violation{
-					Invariant: "index_entry_missing",
-					Expected:  fmt.Sprintf("index %q entry %v", idx.Name, exp.key),
-					Actual:    "not in store",
-				})
-			}
+		// Evaluate the index expression against this record.
+		storedRec := &recordlayer.FDBStoredRecord[proto.Message]{
+			PrimaryKey: rec.PrimaryKey,
+			RecordType: md.GetRecordType(rec.TypeName),
+			Record:     rec.Message,
 		}
 
-		// Diff: orphan entries (in store but not in model)
-		for key, act := range actual {
-			if _, ok := expected[key]; !ok {
-				violations = append(violations, Violation{
-					Invariant: "index_entry_orphan",
-					Expected:  fmt.Sprintf("index %q: no entry %v", idx.Name, act.key),
-					Actual:    "exists in store but not in model",
-				})
-			}
-		}
-
-		// For covering indexes, verify value portions match.
-		if isCovering {
-			for key, exp := range expected {
-				act, ok := actual[key]
-				if !ok {
-					continue // Already flagged as missing above.
-				}
-				if string(exp.value.Pack()) != string(act.value.Pack()) {
-					violations = append(violations, Violation{
-						Invariant: "index_entry_value_mismatch",
-						Expected:  fmt.Sprintf("index %q entry %v value %v", idx.Name, exp.key, exp.value),
-						Actual:    fmt.Sprintf("value %v", act.value),
-					})
-				}
-			}
-		}
-
-		// Count cross-check
-		if len(expected) != len(actual) {
+		tuples, err := idx.RootExpression.Evaluate(storedRec, rec.Message)
+		if err != nil {
 			violations = append(violations, Violation{
-				Invariant: "index_entry_count",
-				Expected:  fmt.Sprintf("index %q: %d entries", idx.Name, len(expected)),
-				Actual:    fmt.Sprintf("%d entries", len(actual)),
+				Invariant:  "index_eval_error",
+				PrimaryKey: rec.PrimaryKey,
+				Expected:   fmt.Sprintf("index %q evaluable", idx.Name),
+				Actual:     err.Error(),
+			})
+			continue
+		}
+
+		trimmedPK, err := idx.TrimPrimaryKey(rec.PrimaryKey)
+		if err != nil {
+			violations = append(violations, Violation{
+				Invariant:  "index_trim_pk_error",
+				PrimaryKey: rec.PrimaryKey,
+				Expected:   fmt.Sprintf("index %q pk trimmable", idx.Name),
+				Actual:     err.Error(),
+			})
+			continue
+		}
+
+		for _, values := range tuples {
+			var keyColumns []any
+			var valueTuple tuple.Tuple
+
+			if isCovering {
+				// Split: key columns [0, splitPoint), value columns [splitPoint, end).
+				keyPart, valuePart := kwv.SplitEvaluatedKey(values)
+				keyColumns = keyPart
+				valueTuple = make(tuple.Tuple, len(valuePart))
+				for j, v := range valuePart {
+					valueTuple[j] = v
+				}
+			} else {
+				keyColumns = values
+			}
+
+			entryKey := make(tuple.Tuple, 0, len(keyColumns)+len(trimmedPK))
+			for _, v := range keyColumns {
+				entryKey = append(entryKey, v)
+			}
+			entryKey = append(entryKey, trimmedPK...)
+			expected[string(entryKey.Pack())] = &valueIndexEntry{key: entryKey, value: valueTuple}
+		}
+	}
+
+	return expected, violations
+}
+
+func scanActualValueEntries(ctx context.Context, store *recordlayer.FDBRecordStore, idx *recordlayer.Index) (map[string]*valueIndexEntry, []Violation) {
+	var violations []Violation
+	// Scan actual index entries.
+	actual := make(map[string]*valueIndexEntry)
+	idxCursor := store.ScanIndex(idx, recordlayer.TupleRangeAll, nil, recordlayer.ForwardScan())
+
+	for {
+		result, err := idxCursor.OnNext(ctx)
+		if err != nil {
+			violations = append(violations, Violation{
+				Invariant: "index_scan_error",
+				Expected:  fmt.Sprintf("index %q scannable", idx.Name),
+				Actual:    err.Error(),
+			})
+			break
+		}
+		if !result.HasNext() {
+			break
+		}
+		entry := result.GetValue()
+		actual[string(entry.Key.Pack())] = &valueIndexEntry{key: entry.Key, value: entry.Value}
+	}
+	_ = idxCursor.Close()
+	return actual, violations
+}
+
+func diffValueEntries(idx *recordlayer.Index, expected, actual map[string]*valueIndexEntry, isCovering bool) []Violation {
+	var violations []Violation
+
+	// Diff: missing entries (in model but not in store)
+	for key, exp := range expected {
+		if _, ok := actual[key]; !ok {
+			violations = append(violations, Violation{
+				Invariant: "index_entry_missing",
+				Expected:  fmt.Sprintf("index %q entry %v", idx.Name, exp.key),
+				Actual:    "not in store",
 			})
 		}
+	}
+
+	// Diff: orphan entries (in store but not in model)
+	for key, act := range actual {
+		if _, ok := expected[key]; !ok {
+			violations = append(violations, Violation{
+				Invariant: "index_entry_orphan",
+				Expected:  fmt.Sprintf("index %q: no entry %v", idx.Name, act.key),
+				Actual:    "exists in store but not in model",
+			})
+		}
+	}
+
+	// For covering indexes, verify value portions match.
+	if isCovering {
+		for key, exp := range expected {
+			act, ok := actual[key]
+			if !ok {
+				continue // Already flagged as missing above.
+			}
+			if string(exp.value.Pack()) != string(act.value.Pack()) {
+				violations = append(violations, Violation{
+					Invariant: "index_entry_value_mismatch",
+					Expected:  fmt.Sprintf("index %q entry %v value %v", idx.Name, exp.key, exp.value),
+					Actual:    fmt.Sprintf("value %v", act.value),
+				})
+			}
+		}
+	}
+
+	// Count cross-check
+	if len(expected) != len(actual) {
+		violations = append(violations, Violation{
+			Invariant: "index_entry_count",
+			Expected:  fmt.Sprintf("index %q: %d entries", idx.Name, len(expected)),
+			Actual:    fmt.Sprintf("%d entries", len(actual)),
+		})
 	}
 
 	return violations

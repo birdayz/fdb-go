@@ -170,6 +170,24 @@ func verifyPermutedSecondary(ctx context.Context, store *recordlayer.FDBRecordSt
 	}
 	permutePosition := groupingCount - permutedSize
 
+	expected := buildExpectedPermutedEntries(model, idx, groupingCount, totalSize, permutePosition, isMax)
+
+	actual, scanViolations := scanActualPermutedEntries(ctx, store, idx)
+	violations = append(violations, scanViolations...)
+
+	violations = append(violations, diffPermutedSecondaryEntries(idx, expected, actual)...)
+
+	return violations
+}
+
+func buildExpectedPermutedEntries(
+	model *StoreModel,
+	idx *recordlayer.Index,
+	groupingCount int,
+	totalSize int,
+	permutePosition int,
+	isMax bool,
+) map[string]tuple.Tuple {
 	// Compute expected permuted entries from model records.
 	// Group records by grouping key, find the extremum value per group.
 	type groupEntry struct {
@@ -246,6 +264,11 @@ func verifyPermutedSecondary(ctx context.Context, store *recordlayer.FDBRecordSt
 		expected[string(permutedKey.Pack())] = permutedKey
 	}
 
+	return expected
+}
+
+func scanActualPermutedEntries(ctx context.Context, store *recordlayer.FDBRecordStore, idx *recordlayer.Index) (map[string]tuple.Tuple, []Violation) {
+	var violations []Violation
 	// Scan actual permuted entries via ScanIndexByType with IndexScanByGroup.
 	actual := make(map[string]tuple.Tuple)
 	permCursor := store.ScanIndexByType(idx, recordlayer.IndexScanByGroup,
@@ -268,6 +291,11 @@ func verifyPermutedSecondary(ctx context.Context, store *recordlayer.FDBRecordSt
 		actual[string(entry.Key.Pack())] = entry.Key
 	}
 	_ = permCursor.Close()
+	return actual, violations
+}
+
+func diffPermutedSecondaryEntries(idx *recordlayer.Index, expected, actual map[string]tuple.Tuple) []Violation {
+	var violations []Violation
 
 	// Diff: missing entries
 	for key, entryKey := range expected {
