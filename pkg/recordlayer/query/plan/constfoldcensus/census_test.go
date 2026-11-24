@@ -9,7 +9,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/constfoldcensus"
 )
 
-// assignment is the census of WS-E design 5.4(b): every site under pkg/ that
+// assignment is the census of WS-E design 5.4(b): every site under pkg/, internal/, recordlayer/, and relational/ that
 // simplifies a value or predicate, or evaluates a constant with no row, and why
 // it may. A new site fails TestConstantFoldCensus until it is assigned here;
 // the count is per (file, function, callee), so an unrelated edit does not

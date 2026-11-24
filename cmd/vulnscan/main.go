@@ -73,6 +73,21 @@ const govulncheckVersion = "v1.9.0"
 // scanned package.
 var scanPatterns = []string{"./pkg/...", "./internal/...", "./cmd/fdb/..."}
 
+// optionalTopLevelRoots are canonical top-level library roots introduced during
+// the Phase 4 path cutover; defaultScanPatterns appends each existing root so
+// govulncheck never silently drops moved library packages.
+var optionalTopLevelRoots = []string{"fdb", "recordlayer", "relational"}
+
+func defaultScanPatterns(repoDir string) []string {
+	out := append([]string(nil), scanPatterns...)
+	for _, root := range optionalTopLevelRoots {
+		if fi, err := os.Stat(filepath.Join(repoDir, root)); err == nil && fi.IsDir() {
+			out = append(out, "./"+root+"/...")
+		}
+	}
+	return out
+}
+
 // excludePrefixes covers non-shipped test, simulation, conformance, and
 // tooling/linter entrypoints across pkg/ and internal/.
 var excludePrefixes = []string{
@@ -88,6 +103,8 @@ var excludePrefixes = []string{
 	"fdb.dev/internal/relational/conformance",
 	"fdb.dev/internal/recordlayer/chaos",
 	"fdb.dev/internal/recordlayer/keystoretest",
+	"fdb.dev/tests",
+	"fdb.dev/bench",
 }
 
 func excluded(pkg string) bool {
@@ -106,7 +123,7 @@ func main() {
 		// Overridable so the gate itself can be aimed at a module with a known
 		// vulnerable dependency and observed to fail. A gate never exercised
 		// against a real finding is only known to be quiet.
-		patterns = flag.String("patterns", strings.Join(scanPatterns, ","), "comma-separated package patterns to scan")
+		patterns = flag.String("patterns", strings.Join(defaultScanPatterns("."), ","), "comma-separated package patterns to scan")
 	)
 	flag.Parse()
 
