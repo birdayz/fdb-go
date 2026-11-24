@@ -4,14 +4,41 @@ import (
 	"errors"
 	"testing"
 
-	"go.uber.org/mock/gomock"
-
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/api/apimock"
 	"fdb.dev/pkg/relational/core/metadata"
 )
+
+// stubSchemaTemplate and stubSchema override only the metadata fields read by
+// validateSchema so invalid-name and negative-version cases stay testable.
+type stubSchemaTemplate struct {
+	api.SchemaTemplate
+	name    string
+	version int
+}
+
+func (s stubSchemaTemplate) MetadataName() string { return s.name }
+func (s stubSchemaTemplate) Version() int         { return s.version }
+
+type stubSchema struct {
+	api.Schema
+	name     string
+	dbName   string
+	template api.SchemaTemplate
+}
+
+func (s stubSchema) MetadataName() string               { return s.name }
+func (s stubSchema) DatabaseName() string               { return s.dbName }
+func (s stubSchema) SchemaTemplate() api.SchemaTemplate { return s.template }
+
+// stubWrongTx satisfies api.Transaction while returning itself from Unwrap so
+// catalog code rejects the non-*InMemoryTransaction handle.
+type stubWrongTx struct {
+	api.Transaction
+}
+
+func (t *stubWrongTx) Unwrap() any { return t }
 
 // newSeededCatalog returns an empty store catalog with templateName
 // pre-registered in its template catalog — a convenience so test
@@ -160,23 +187,17 @@ func TestStoreCatalog_SaveSchemaValidation(t *testing.T) {
 	// Two of the five validation cases can't be reached through a
 	// concrete RecordLayerSchemaTemplate (MetadataName() is required
 	// at construction, Version() is non-negative by construction), so
-	// use gomock stubs for those two.
-	ctrl := gomock.NewController(t)
-	mockTmplEmpty := apimock.NewMockSchemaTemplate(ctrl)
-	mockTmplEmpty.EXPECT().MetadataName().Return("").AnyTimes()
-	mockTmplEmpty.EXPECT().Version().Return(0).AnyTimes()
-	schemaEmptyTmpl := apimock.NewMockSchema(ctrl)
-	schemaEmptyTmpl.EXPECT().MetadataName().Return("s1").AnyTimes()
-	schemaEmptyTmpl.EXPECT().DatabaseName().Return("/FRL/db").AnyTimes()
-	schemaEmptyTmpl.EXPECT().SchemaTemplate().Return(mockTmplEmpty).AnyTimes()
-
-	mockTmplNeg := apimock.NewMockSchemaTemplate(ctrl)
-	mockTmplNeg.EXPECT().MetadataName().Return("t").AnyTimes()
-	mockTmplNeg.EXPECT().Version().Return(-1).AnyTimes()
-	schemaNegVer := apimock.NewMockSchema(ctrl)
-	schemaNegVer.EXPECT().MetadataName().Return("s1").AnyTimes()
-	schemaNegVer.EXPECT().DatabaseName().Return("/FRL/db").AnyTimes()
-	schemaNegVer.EXPECT().SchemaTemplate().Return(mockTmplNeg).AnyTimes()
+	// use local stubs for those two.
+	schemaEmptyTmpl := stubSchema{
+		name:     "s1",
+		dbName:   "/FRL/db",
+		template: stubSchemaTemplate{name: "", version: 0},
+	}
+	schemaNegVer := stubSchema{
+		name:     "s1",
+		dbName:   "/FRL/db",
+		template: stubSchemaTemplate{name: "t", version: -1},
+	}
 
 	cases := []struct {
 		name   string
@@ -501,11 +522,9 @@ func TestStoreCatalog_WrongTransactionType(t *testing.T) {
 	// An ad-hoc Transaction impl whose Unwrap() does not yield an
 	// *InMemoryTransaction must be rejected with an internal error.
 	// Catches impl mismatches early instead of misbehaving silently.
-	ctrl := gomock.NewController(t)
-	wrongTx := apimock.NewMockTransaction(ctrl)
-	// The in-memory catalog calls Unwrap() first; return the mock itself
+	// The in-memory catalog calls Unwrap() first; return the stub itself
 	// so it can't possibly satisfy the *InMemoryTransaction assertion.
-	wrongTx.EXPECT().Unwrap().Return(wrongTx).AnyTimes()
+	wrongTx := &stubWrongTx{}
 	err := c.CreateDatabase(wrongTx, "/FRL/db")
 	if err == nil {
 		t.Fatal("CreateDatabase(wrong tx) succeeded")

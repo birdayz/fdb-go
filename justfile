@@ -31,10 +31,10 @@ ensure-buf:
     GOBIN="$PWD/$tmp" go install "github.com/bufbuild/buf/cmd/buf@v{{BUF_VERSION}}"
     mv -f "$tmp/buf" "$BUF"
 
-# Regenerate protobuf code + gomock mocks + ANTLR parser. All three are
-# committed to git (clean + regenerate, same pattern). CI re-runs
-# `just generate` and fails on any diff, so CI is the source of truth.
-generate: ensure-buf generate-mocks generate-parser generate-fdb generate-cli-example generate-unicode15
+# Regenerate protobuf code + ANTLR parser. Both are committed to git
+# (clean + regenerate, same pattern). CI re-runs `just generate` and
+# fails on any diff, so CI is the source of truth.
+generate: ensure-buf generate-parser generate-fdb generate-cli-example generate-unicode15
     rm -rf gen/
     .tools/buf generate
     bazelisk run //:gazelle
@@ -90,17 +90,6 @@ explain-baseline OUT:
 #   just explain-diff /tmp/before.txt /tmp/after.txt
 explain-diff OLD NEW:
     go run ./cmd/explain-differ diff {{OLD}} {{NEW}}
-
-# Regenerate gomock mocks for api.* interfaces. Cleans mocks_*.go
-# first so removed interfaces / renamed files don't leave stale
-# mocks behind. Output goes to the testonly apimock package so
-# production binaries never link gomock.
-generate-mocks:
-    find pkg/relational/api -name 'mocks_*.go' -delete
-    go generate ./pkg/relational/api/...
-    # go.uber.org/mock is a direct dep of the generated mocks; keep
-    # go.mod's direct/indirect tags accurate after each regen.
-    go mod tidy
 
 # Parse every statement of the vendored Java yamsql corpus
 # (third_party/apple/fdb-record-layer/yaml-tests). Part of `just test` too.
