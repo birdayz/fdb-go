@@ -20,7 +20,7 @@ func TestFDB_WrappedNativePoisonDoesNotBecomePersistentTimeoutError(t *testing.T
 				t.Parallel()
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
-				native, err := client.OpenDatabaseFromConfig(ctx, sharedClusterFile, client.WithAPIVersion(730))
+				native, err := client.OpenDatabaseFromConfig(ctx, sharedClientClusterFile, client.WithAPIVersion(730))
 				if err != nil {
 					t.Fatal(err)
 				}

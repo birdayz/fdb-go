@@ -288,7 +288,7 @@ func TestLibFDBC_RangeShardPairSoftLimit(t *testing.T) {
 						t.Fatalf("C more=%v rows=%v; Go more=%v rows=%v", cMore, cIndices, gMore, gIndices)
 					}
 					for i := range cRows {
-						mdCompareRangeRow(t, cRows[i], gRows[i])
+						mdCompareRangeRow(t, cRows[i], mdFromClientRow(gRows[i]))
 					}
 				})
 			}
@@ -363,7 +363,7 @@ func TestLibFDBC_RangeShardPairSoftLimit(t *testing.T) {
 							}
 							if len(cRows) == len(gRows) {
 								for i := range cRows {
-									mdCompareRangeRow(t, cRows[i], gRows[i])
+									mdCompareRangeRow(t, cRows[i], mdFromClientRow(gRows[i]))
 								}
 							}
 							cMore, gMore = more, gm

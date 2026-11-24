@@ -91,7 +91,12 @@ func runTests(m *testing.M) (code int) {
 	}
 
 	gofdb.MustAPIVersion(730)
-	goClient, err = gofdb.OpenDatabaseFromConfig(ctx, connectCF)
+	facadeCF := &gofdb.ClusterFile{
+		Description:  internalCF.Description,
+		ID:           internalCF.ID,
+		Coordinators: cf.Coordinators,
+	}
+	goClient, err = gofdb.OpenDatabaseFromConfig(ctx, facadeCF)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open go db: %v\n", err)
 		return 1

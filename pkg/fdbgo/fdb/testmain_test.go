@@ -16,8 +16,9 @@ import (
 
 // Shared FDB container for all tests in this package.
 var (
-	sharedContainer   *tcfdb.Container
-	sharedClusterFile *client.ClusterFile
+	sharedContainer         *tcfdb.Container
+	sharedClusterFile       *fdb.ClusterFile
+	sharedClientClusterFile *client.ClusterFile
 )
 
 func TestMain(m *testing.M) {
@@ -82,7 +83,12 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	connectCF := &client.ClusterFile{
+	connectCF := &fdb.ClusterFile{
+		Description:  internalCF.Description,
+		ID:           internalCF.ID,
+		Coordinators: cf.Coordinators,
+	}
+	clientConnectCF := &client.ClusterFile{
 		Description:  internalCF.Description,
 		ID:           internalCF.ID,
 		Coordinators: cf.Coordinators,
@@ -90,6 +96,7 @@ func TestMain(m *testing.M) {
 
 	sharedContainer = container
 	sharedClusterFile = connectCF
+	sharedClientClusterFile = clientConnectCF
 
 	code := m.Run()
 

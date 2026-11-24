@@ -417,7 +417,9 @@ func mdShardDrainGo(t *testing.T, ctx context.Context, tr *fdbclient.Transaction
 			t.Fatalf("direct Go cross-shard batch %d: %v", iteration, err)
 		}
 		batches = append(batches, mdBatch{iteration, remaining, len(batch), more})
-		rows = append(rows, batch...)
+		for _, row := range batch {
+			rows = append(rows, mdFromClientRow(row))
+		}
 		remaining -= len(batch)
 		if !more || len(batch) == 0 || remaining <= 0 {
 			return rows, batches
@@ -796,7 +798,7 @@ func TestLibFDBC_MappedRangeSkipAcrossShards(t *testing.T) {
 						t.Fatalf("skipped-secondary write changed population: C=%d/%v Go=%d/%v facade=%d", len(cRows), cMore, len(gRows), gMore, len(fRows))
 					}
 					for j := range cRows {
-						mdCompareRangeRow(t, cRows[j], gRows[j])
+						mdCompareRangeRow(t, cRows[j], mdFromClientRow(gRows[j]))
 						mdCompareRangeRow(t, cRows[j], fRows[j])
 					}
 				}
@@ -890,7 +892,7 @@ func mdShardReverseSkipFallbackAtBegin(t *testing.T, ctx context.Context, env md
 	if err != nil || len(gRows) != 1 || gMore {
 		t.Fatalf("cross-shard exact fallback: Go rows=%d more=%v err=%v; plain C witness=%d/%v", len(gRows), gMore, err, len(witness), witnessMore)
 	}
-	mdCompareRangeRow(t, witness[0], gRows[0])
+	mdCompareRangeRow(t, witness[0], mdFromClientRow(gRows[0]))
 	ft, err := env.facade.CreateTransaction()
 	if err != nil {
 		t.Fatal(err)

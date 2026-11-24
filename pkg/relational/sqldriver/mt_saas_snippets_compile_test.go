@@ -106,8 +106,9 @@ func retainClientDatabaseForMetrics(ctx context.Context, clusterFile string, mux
 	if err != nil {
 		return nil, err
 	}
-	mux.Handle("/metrics", fdbmetrics.Handler(cdb)) // Prometheus text exposition
-	return recordlayer.NewFDBDatabase(fdb.WrapDatabase(cdb)), nil
+	db := fdb.WrapDatabase(cdb)
+	mux.Handle("/metrics", fdbmetrics.Handler(db)) // Prometheus text exposition
+	return recordlayer.NewFDBDatabase(db), nil
 }
 
 // openTenantDB is the §2 DSN (with the security flag) plus the §3 pool caps.

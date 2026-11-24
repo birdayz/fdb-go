@@ -5,7 +5,7 @@ go_library(
     srcs = ["fdbmetrics.go"],
     importpath = "fdb.dev/pkg/fdbgo/fdbmetrics",
     visibility = ["//visibility:public"],
-    deps = ["//pkg/fdbgo/client"],
+    deps = ["//pkg/fdbgo/fdb"],
 )
 
 go_test(
@@ -15,5 +15,6 @@ go_test(
         "fdbmetrics_test.go",
     ],
     embed = [":fdbmetrics"],
-    deps = ["//pkg/fdbgo/client"],
+    embedsrcs = ["fdbmetrics.go"],
+    deps = ["//pkg/fdbgo/fdb"],
 )

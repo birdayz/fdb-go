@@ -27,7 +27,7 @@ func testWrappedDatabaseCreatorContext(t *testing.T, writable bool) {
 	gate := &grvHoldDialer{replyFileID: types.GetValueReplyFileID, heldCh: make(chan struct{}, 16)}
 	setupCtx, setupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer setupCancel()
-	db, err := client.OpenDatabaseFromConfig(setupCtx, sharedClusterFile, client.WithAPIVersion(730), client.WithDialFunc(gate.dial))
+	db, err := client.OpenDatabaseFromConfig(setupCtx, sharedClientClusterFile, client.WithAPIVersion(730), client.WithDialFunc(gate.dial))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestTenantPublicEntriesInheritWrappedDatabaseContext(t *testing.T) {
 	t.Parallel()
 	setupCtx, setupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer setupCancel()
-	db, err := client.OpenDatabaseFromConfig(setupCtx, sharedClusterFile, client.WithAPIVersion(730))
+	db, err := client.OpenDatabaseFromConfig(setupCtx, sharedClientClusterFile, client.WithAPIVersion(730))
 	if err != nil {
 		t.Fatal(err)
 	}

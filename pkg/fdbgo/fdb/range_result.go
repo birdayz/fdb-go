@@ -2,11 +2,35 @@ package fdb
 
 import (
 	"bytes"
+	"fmt"
 	"math"
 	"unsafe"
 
 	"fdb.dev/pkg/fdbgo/client"
 )
+
+// RangeMaterializationLimitError is returned by a GetRange that would materialize
+// more than the opt-in WithRangeByteCeiling cap (RFC-115 §2).
+type RangeMaterializationLimitError struct {
+	LimitBytes   int64
+	ReachedBytes int64
+	Cause        error
+}
+
+func (e *RangeMaterializationLimitError) Error() string {
+	msg := fmt.Sprintf("fdbgo: GetRange materialized %d bytes, exceeding the configured WithRangeByteCeiling of %d bytes; use Iterator() for large/unbounded scans",
+		e.ReachedBytes, e.LimitBytes)
+	if e.Cause != nil {
+		return msg + ": " + e.Cause.Error()
+	}
+	return msg
+}
+
+// Unwrap returns Cause so any wrapped error chain (e.g. context or joined
+// sentinels) remains inspectable via errors.Is and errors.As.
+func (e *RangeMaterializationLimitError) Unwrap() error {
+	return e.Cause
+}
 
 // RangeResult is the asynchronous result of a range read. It is an INTERFACE (RFC-109)
 // so a non-pure-Go backend (libfdb_c) can return its own implementation; the pure-Go

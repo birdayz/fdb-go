@@ -283,18 +283,20 @@ boundaries, callback restrictions, and the distinction between OTel and FDB wire
 **Metrics.** The low-level pure-Go client (`*client.Database`) carries `ClientMetrics` (the `libfdb_c`
 `DatabaseContext` transaction-metrics subset, RFC-097): commits started/completed, per-code retry
 counters (conflicts 1020, maybe-committed 1021, too-old 1007, future-version 1009, throttled, …),
-GRV cache hits, and latency sketches. Both `*client.Database` and the pure-Go
-`fdb.Database` facade expose `Metrics()` and satisfy `fdbmetrics.MetricsSource`.
-Keep either handle when wrapping `*recordlayer.FDBDatabase`, which does not
-expose client metrics:
+GRV cache hits, and latency sketches. The pure-Go `fdb.Database` facade exposes
+`Metrics()` (`fdb.MetricsSnapshot`) and satisfies `fdbmetrics.MetricsSource`.
+(`*client.Database.Metrics()` returns `client.ClientMetricsSnapshot`; wrap it
+with `fdb.WrapDatabase` first.) Keep the `fdb.Database` handle when wrapping
+`*recordlayer.FDBDatabase`, which does not expose client metrics:
 
 ```go
 cdb, _ := client.OpenDatabase(ctx, clusterFile, client.WithAPIVersion(730))
-http.Handle("/metrics", fdbmetrics.Handler(cdb))       // zero-dep Prometheus text exposition
-rdb := recordlayer.NewFDBDatabase(fdb.WrapDatabase(cdb))
+db := fdb.WrapDatabase(cdb)
+http.Handle("/metrics", fdbmetrics.Handler(db))       // zero-dep Prometheus text exposition
+rdb := recordlayer.NewFDBDatabase(db)
 ```
 
-`fdbmetrics.Handler` accepts any `MetricsSource` (`interface{ Metrics() client.ClientMetricsSnapshot }`).
+`fdbmetrics.Handler` accepts any `MetricsSource` (`interface{ Metrics() fdb.MetricsSnapshot }`).
 
 **Record-layer metrics.** One layer up, `StoreTimer` (the port of Java's `FDBStoreTimer`) counts
 record-layer operations — records saved/loaded/deleted, index scans, commit timings, key and value
@@ -314,8 +316,8 @@ tenant label by design — see [`mt-saas.md` §4](mt-saas.md#4-observability). `
 gives Java's `_count`/`_micros` log-key form for `KeyValueLogMessage`-style logging instead.
 
 **Logs.** Diagnostics route through the standard `log/slog`. Apps set their own handler with
-`slog.SetDefault(...)` (no record-layer logging API to learn), or pass a per-handle logger with the
-client's `WithLogger(...)` option. Serious (panic-recovery) events log at Error; per-code retry
+`slog.SetDefault(...)` (no record-layer logging API to learn), or pass a per-handle logger with
+`fdb.WithLogger(...)` (or `client.WithLogger(...)`). Serious (panic-recovery) events log at Error; per-code retry
 events at Debug, `commit_unknown_result` at Warn.
 
 **Online-index progress.** `OnlineIndexerBuilder.SetProgressLogIntervalMillis(...)` +

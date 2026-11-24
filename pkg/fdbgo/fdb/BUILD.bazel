@@ -37,6 +37,7 @@ go_test(
     name = "fdb_test",
     timeout = "long",
     srcs = [
+        "api_decoupling_test.go",
         "apiversion_internal_test.go",
         "approxsize_deferred_test.go",
         "body_error_chain_fdb_test.go",
@@ -106,6 +107,7 @@ go_test(
         "//pkg/fdbgo/wire/types",
         "//pkg/testcontainers/foundationdb",
         "@com_github_onsi_gomega//:gomega",
+        "@io_opentelemetry_go_otel_trace//:trace",
     ],
 )
 

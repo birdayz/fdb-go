@@ -130,17 +130,20 @@ handles. Managed helper cleanup must not cancel successfully committed watches.
 
 `(*client.Database).Metrics()` returns a monotonic snapshot of client counters
 and bounded latency sketches. `fdbmetrics.Handler` exports the snapshot in
-Prometheus text format. The pure-Go `fdb.Database` facade also forwards `Metrics()`
-and can be passed directly to that handler. Keep either handle when wrapping a
-record store: `*recordlayer.FDBDatabase` does not expose client metrics.
+Prometheus text format from `fdb.Database`: the pure-Go `fdb.Database` facade
+exposes `Metrics()` (returning `fdb.MetricsSnapshot`) and satisfies
+`fdbmetrics.MetricsSource`, so pass `fdb.Database` directly to that handler
+(wrapping `*client.Database` with `fdb.WrapDatabase` if needed). Keep the
+`fdb.Database` handle when wrapping a record store: `*recordlayer.FDBDatabase`
+does not expose client metrics.
 
 Record-layer `StoreTimer` measures record operations, index work, timings, and
 byte totals. `rlmetrics.Handler` exports it separately. Configure timers before
 opening contexts so those contexts inherit them. Neither client sketches nor
 record-layer timers are automatically translated into OTel instruments.
 
-Operational diagnostics use `log/slog`; `WithLogger` installs a per-client
-logger. Retry events and uncertain commit outcomes are diagnostics, not changes
+Operational diagnostics use `log/slog`; `fdb.WithLogger` (or `client.WithLogger`)
+installs a per-database logger. Retry events and uncertain commit outcomes are diagnostics, not changes
 to error or retry policy. See [the operations guide](operations.md#8-observability-hooks)
 for metrics and timer wiring, and [multi-tenant operations](mt-saas.md#4-observability)
 for cardinality boundaries.

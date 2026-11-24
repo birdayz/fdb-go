@@ -551,7 +551,6 @@ go_test(
         "//internal/recordlayer/textcmp",
         "//pkg/async/rtree",
         "//pkg/dst",
-        "//pkg/fdbgo/client",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",

@@ -81,3 +81,47 @@ func TestGetSliceWithErrorReusesOwnedRows(t *testing.T) {
 		t.Fatalf("ALLOC_RANGE_SLICE: GetSliceWithError = %v allocations, PendingRange.Get = %v; want equal", slice, get)
 	}
 }
+
+// Not parallel: AllocsPerRun counts process-wide allocations.
+func TestOwnedMappedKeyValuesDoesNotCopy(t *testing.T) {
+	rows := []client.MappedKeyValue{
+		{
+			Key:   []byte("idx/1"),
+			Value: []byte("v1"),
+			Kind:  client.MappedResultGetValue,
+			GetValue: client.MappedGetValue{
+				Key: []byte("rec/1"), Value: []byte("r1"), Present: true,
+			},
+		},
+		{
+			Key:   []byte("idx/2"),
+			Value: []byte("v2"),
+			Kind:  client.MappedResultGetRange,
+			GetRange: client.MappedGetRange{
+				Begin: client.KeySelector{Key: []byte("rec/2"), OrEqual: false, Offset: 1},
+				End:   client.KeySelector{Key: []byte("rec/3"), OrEqual: true, Offset: 1},
+				Rows:  []client.KeyValue{{Key: []byte("rec/2/0"), Value: []byte("chunk")}},
+				More:  true,
+			},
+		},
+	}
+	var got []MappedKeyValue
+	allocs := testing.AllocsPerRun(100, func() { got = ownedMappedKeyValues(rows) })
+	if allocs != 0 {
+		t.Fatalf("ownedMappedKeyValues: %v allocations, want 0", allocs)
+	}
+	if len(got) != 2 || cap(got) != 2 || unsafe.Pointer(&got[0]) != unsafe.Pointer(&rows[0]) {
+		t.Fatal("ownedMappedKeyValues copied or resized rows")
+	}
+	if got[0].Kind != MappedResultGetValue || !got[0].GetValue.Present || string(got[0].GetValue.Value) != "r1" {
+		t.Fatalf("reinterpreted GetValue arm = %+v", got[0])
+	}
+	if got[1].Kind != MappedResultGetRange || !got[1].GetRange.More || len(got[1].GetRange.Rows) != 1 ||
+		string(got[1].GetRange.Rows[0].Key) != "rec/2/0" || string(got[1].GetRange.Rows[0].Value) != "chunk" ||
+		got[1].GetRange.Begin.Offset != 1 || !got[1].GetRange.End.OrEqual {
+		t.Fatalf("reinterpreted GetRange arm = %+v", got[1])
+	}
+	if empty := ownedMappedKeyValues(nil); empty != nil {
+		t.Fatalf("ownedMappedKeyValues(nil) = %v, want nil", empty)
+	}
+}

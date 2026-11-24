@@ -365,7 +365,7 @@ func TestLibFDBC_MappedSkipEqualContinuation(t *testing.T) {
 				}
 				row := rows[0]
 				if !bytes.Equal(row.Key, cRows[0].Key) || !bytes.Equal(row.Value, cRows[0].Value) ||
-					row.Kind != fdbclient.MappedResultGetRange || len(row.GetRange.Rows) != 1 || row.GetRange.More ||
+					row.Kind != gofdb.MappedResultGetRange || len(row.GetRange.Rows) != 1 || row.GetRange.More ||
 					!bytes.Equal(row.GetRange.Begin.Key, cRows[0].RangeBeginKey) || !bytes.Equal(row.GetRange.End.Key, cRows[0].RangeEndKey) ||
 					!bytes.Equal(row.GetRange.Rows[0].Key, secondary) || string(row.GetRange.Rows[0].Value) != "secondary" {
 					t.Fatal("Go unlimited result differs from C and seeded primary/secondary")
@@ -374,8 +374,24 @@ func TestLibFDBC_MappedSkipEqualContinuation(t *testing.T) {
 			gt := db.CreateTransaction()
 			defer gt.Cancel()
 			gt.SetReadVersion(version)
-			rows, more, err := gt.GetMappedRangeWithByteTargetAndSkip(ctx, begin, end, mapper, 2, fdbclient.ByteLimitUnlimited, 1, reverse)
-			checkGo(rows, more, err)
+			cliRows, more, err := gt.GetMappedRangeWithByteTargetAndSkip(ctx, begin, end, mapper, 2, fdbclient.ByteLimitUnlimited, 1, reverse)
+			var convertedRows []gofdb.MappedKeyValue
+			for _, r := range cliRows {
+				sec := make([]gofdb.KeyValue, len(r.GetRange.Rows))
+				for i, kv := range r.GetRange.Rows {
+					sec[i] = gofdb.KeyValue{Key: gofdb.Key(kv.Key), Value: kv.Value}
+				}
+				convertedRows = append(convertedRows, gofdb.MappedKeyValue{
+					Key: r.Key, Value: r.Value, Kind: gofdb.MappedResultKind(r.Kind),
+					GetRange: gofdb.MappedGetRange{
+						Begin: gofdb.MappedKeySelector{Key: r.GetRange.Begin.Key, OrEqual: r.GetRange.Begin.OrEqual, Offset: r.GetRange.Begin.Offset},
+						End:   gofdb.MappedKeySelector{Key: r.GetRange.End.Key, OrEqual: r.GetRange.End.OrEqual, Offset: r.GetRange.End.Offset},
+						Rows:  sec,
+						More:  r.GetRange.More,
+					},
+				})
+			}
+			checkGo(convertedRows, more, err)
 			ft, err := facade.CreateTransaction()
 			if err != nil {
 				t.Fatal(err)
@@ -386,9 +402,9 @@ func TestLibFDBC_MappedSkipEqualContinuation(t *testing.T) {
 			if !ok {
 				t.Fatal("pure-Go facade lacks mapped Skip capability")
 			}
-			rows, err = reader.GetMappedRangeWithSkip(gofdb.KeyRange{Begin: gofdb.Key(begin), End: gofdb.Key(end)}, mapper,
+			fRows, err := reader.GetMappedRangeWithSkip(gofdb.KeyRange{Begin: gofdb.Key(begin), End: gofdb.Key(end)}, mapper,
 				gofdb.RangeOptions{Limit: 2, Mode: gofdb.StreamingModeExact, Reverse: reverse}, 1).GetSliceWithError()
-			checkGo(rows, false, err)
+			checkGo(fRows, false, err)
 		})
 	}
 }
