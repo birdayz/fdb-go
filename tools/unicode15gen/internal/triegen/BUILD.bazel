@@ -1,5 +1,7 @@
 load("@rules_go//go:def.bzl", "go_library")
 
+package(default_visibility = ["//tools/unicode15gen:__subpackages__"])
+
 go_library(
     name = "triegen",
     srcs = [
@@ -8,5 +10,5 @@ go_library(
         "triegen.go",
     ],
     importpath = "fdb.dev/tools/unicode15gen/internal/triegen",
-    visibility = ["//visibility:public"],
+    visibility = ["//tools/unicode15gen:__subpackages__"],
 )

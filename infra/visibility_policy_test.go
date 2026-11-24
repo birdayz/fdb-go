@@ -1,11 +1,13 @@
 package infra
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -19,7 +21,6 @@ type buildRule struct {
 type parsedBuildFile struct {
 	rel                      string
 	gazelleDefaultVisibility []string
-	hasGazelleIgnore         bool
 	pkgDefaultVisibility     []string
 	hasPkgDefaultVisibility  bool
 	publicVisibilityLines    []int
@@ -136,9 +137,7 @@ func parseBuildFile(rel, src string) parsedBuildFile {
 	for _, tok := range tokens {
 		if tok.kind == "comment" {
 			body := strings.TrimSpace(strings.TrimPrefix(tok.val, "#"))
-			if body == "gazelle:ignore" {
-				parsed.hasGazelleIgnore = true
-			} else if strings.HasPrefix(body, "gazelle:default_visibility") {
+			if strings.HasPrefix(body, "gazelle:default_visibility") {
 				rest := strings.TrimSpace(strings.TrimPrefix(body, "gazelle:default_visibility"))
 				for _, part := range strings.Split(rest, ",") {
 					if part = strings.TrimSpace(part); part != "" {
@@ -327,33 +326,65 @@ func visibilityAllows(vis []string, callerPkg, targetPkg string, pkgGroups map[s
 	return false
 }
 
-func visibilityRepoRoot(t *testing.T) string {
-	t.Helper()
+var (
+	repoBuildCacheOnce sync.Once
+	cachedRepoRoot     string
+	cachedBuildFiles   []parsedBuildFile
+	cachedBuildErr     error
+)
+
+func findVisibilityRepoRoot() (string, error) {
 	if sd, ws := os.Getenv("TEST_SRCDIR"), os.Getenv("TEST_WORKSPACE"); sd != "" && ws != "" {
 		if real, err := filepath.EvalSymlinks(filepath.Join(sd, ws, "MODULE.bazel")); err == nil {
-			return filepath.Dir(real)
+			return filepath.Dir(real), nil
 		}
 	}
 	dir, err := os.Getwd()
 	if err != nil {
-		t.Fatal(err)
+		return "", err
 	}
 	for {
 		if _, err := os.Stat(filepath.Join(dir, "MODULE.bazel")); err == nil {
-			return dir
+			return dir, nil
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			t.Fatal("MODULE.bazel not found")
+			return "", errors.New("MODULE.bazel not found")
 		}
 		dir = parent
 	}
 }
 
-func collectAllBuildFiles(t *testing.T, root string) []parsedBuildFile {
-	t.Helper()
+func readBazelIgnore(root string) ([]string, error) {
+	data, err := os.ReadFile(filepath.Join(root, ".bazelignore"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var prefixes []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "./")
+		line = strings.TrimSuffix(line, "/")
+		if line != "" {
+			prefixes = append(prefixes, line)
+		}
+	}
+	return prefixes, nil
+}
+
+func collectAllBuildFiles(root string) ([]parsedBuildFile, error) {
+	ignoredPrefixes, err := readBazelIgnore(root)
+	if err != nil {
+		return nil, err
+	}
 	var files []parsedBuildFile
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -363,8 +394,13 @@ func collectAllBuildFiles(t *testing.T, root string) []parsedBuildFile {
 				return relErr
 			}
 			rel = filepath.ToSlash(rel)
-			if rel == ".git" || rel == "fdb-record-layer" || rel == "layers/otel/grafana" || strings.HasPrefix(rel, "bazel-") {
+			if rel == ".git" || strings.HasPrefix(rel, "bazel-") {
 				return filepath.SkipDir
+			}
+			for _, ign := range ignoredPrefixes {
+				if rel == ign || strings.HasPrefix(rel, ign+"/") {
+					return filepath.SkipDir
+				}
 			}
 			return nil
 		}
@@ -384,22 +420,40 @@ func collectAllBuildFiles(t *testing.T, root string) []parsedBuildFile {
 		return nil
 	})
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
 	slices.SortFunc(files, func(a, b parsedBuildFile) int {
 		return strings.Compare(a.rel, b.rel)
 	})
-	return files
+	return files, nil
+}
+
+func loadRepoBuildFiles(t *testing.T) []parsedBuildFile {
+	t.Helper()
+	repoBuildCacheOnce.Do(func() {
+		cachedRepoRoot, cachedBuildErr = findVisibilityRepoRoot()
+		if cachedBuildErr != nil {
+			return
+		}
+		cachedBuildFiles, cachedBuildErr = collectAllBuildFiles(cachedRepoRoot)
+	})
+	if cachedBuildErr != nil {
+		t.Fatal(cachedBuildErr)
+	}
+	return cachedBuildFiles
 }
 
 func inRestrictedVisibilityScope(rel string) bool {
 	return strings.HasPrefix(rel, "internal/") ||
-		strings.HasPrefix(rel, "pkg/internal/") ||
-		(strings.HasPrefix(rel, "pkg/") && strings.Contains(rel, "/internal/")) ||
+		strings.Contains(rel, "/internal/") ||
 		strings.HasPrefix(rel, "pkg/testutil/") ||
 		strings.HasPrefix(rel, "pkg/simfdb/") ||
+		strings.HasPrefix(rel, "pkg/recordlayer/chaos/") ||
+		strings.HasPrefix(rel, "pkg/recordlayer/keystoretest/") ||
+		strings.HasPrefix(rel, "pkg/recordlayer/query/plan/constfoldcensus/") ||
 		strings.HasPrefix(rel, "pkg/relational/conformance/") ||
 		strings.HasPrefix(rel, "pkg/relational/sqltest/") ||
+		strings.HasPrefix(rel, "pkg/relational/txbudgetcensus/") ||
 		strings.HasPrefix(rel, "pkg/fdbgo/bench/") ||
 		strings.HasPrefix(rel, "pkg/fdbgo/bindingtest/") ||
 		strings.HasPrefix(rel, "pkg/fdbgo/conformance/") ||
@@ -410,17 +464,25 @@ var restrictedScopeRoots = []struct {
 	prefix      string
 	wantDefault []string
 }{
+	{"cmd/fdb/internal/", []string{"//cmd/fdb:__subpackages__"}},
 	{"internal/", []string{"//:__subpackages__"}},
 	{"internal/linters/", []string{"//:__pkg__"}},
+	{"layers/otel/otelsql/internal/", []string{"//layers/otel/otelsql:__subpackages__"}},
 	{"pkg/internal/", []string{"//pkg:__subpackages__"}},
 	{"pkg/fdbgo/internal/", []string{"//pkg/fdbgo:__subpackages__"}},
 	{"pkg/recordlayer/internal/", []string{"//pkg/recordlayer:__subpackages__"}},
 	{"pkg/recordlayer/query/plan/cascades/internal/", []string{"//pkg/recordlayer/query/plan/cascades:__subpackages__"}},
 	{"pkg/relational/internal/", []string{"//pkg/relational:__subpackages__"}},
+	{"tools/clientbench/internal/", []string{"//tools/clientbench:__subpackages__"}},
+	{"tools/unicode15gen/internal/", []string{"//tools/unicode15gen:__subpackages__"}},
 	{"pkg/testutil/", []string{"//pkg/recordlayer:__subpackages__", "//pkg/relational:__subpackages__"}},
 	{"pkg/simfdb/", []string{"//pkg/simfdb:__subpackages__"}},
+	{"pkg/recordlayer/chaos/", []string{"//pkg/relational/core/embedded:__pkg__", "//pkg/simfdb/hunt:__pkg__"}},
+	{"pkg/recordlayer/keystoretest/", []string{"//conformance:__pkg__", "//pkg/recordlayer:__pkg__", "//pkg/relational/conformance/javacorpus:__pkg__", "//pkg/relational/sqldriver:__pkg__"}},
+	{"pkg/recordlayer/query/plan/constfoldcensus/", []string{"//visibility:private"}},
 	{"pkg/relational/conformance/", []string{"//pkg/relational/conformance:__subpackages__"}},
 	{"pkg/relational/sqltest/", []string{"//pkg/relational:__subpackages__"}},
+	{"pkg/relational/txbudgetcensus/", []string{"//visibility:private"}},
 	{"pkg/fdbgo/bench/", []string{"//pkg/fdbgo:__subpackages__"}},
 	{"pkg/fdbgo/bindingtest/", []string{"//pkg/fdbgo:__subpackages__"}},
 	{"pkg/fdbgo/conformance/", []string{"//pkg/fdbgo:__subpackages__"}},
@@ -429,7 +491,7 @@ var restrictedScopeRoots = []struct {
 
 func TestNoBlanketPublicVisibilityInRestrictedScopes(t *testing.T) {
 	t.Parallel()
-	files := collectAllBuildFiles(t, visibilityRepoRoot(t))
+	files := loadRepoBuildFiles(t)
 	scopeCounts := map[string]int{}
 	totalChecked := 0
 
@@ -460,7 +522,7 @@ func TestNoBlanketPublicVisibilityInRestrictedScopes(t *testing.T) {
 
 func TestGazelleDefaultVisibilityConfigured(t *testing.T) {
 	t.Parallel()
-	files := collectAllBuildFiles(t, visibilityRepoRoot(t))
+	files := loadRepoBuildFiles(t)
 	byRel := make(map[string]parsedBuildFile, len(files))
 	for _, f := range files {
 		byRel[f.rel] = f
@@ -520,9 +582,13 @@ func TestGazelleDefaultVisibilityConfigured(t *testing.T) {
 	}
 }
 
+// TestRestrictedTargetsSatisfyAllRepoReverseDeps is a fast supplemental guard
+// that parses BUILD.bazel files directly to catch obvious reverse-dep visibility
+// drift without invoking Bazel. Bazel analysis remains the authoritative
+// visibility check.
 func TestRestrictedTargetsSatisfyAllRepoReverseDeps(t *testing.T) {
 	t.Parallel()
-	files := collectAllBuildFiles(t, visibilityRepoRoot(t))
+	files := loadRepoBuildFiles(t)
 	if len(files) < 200 {
 		t.Fatalf("found %d BUILD.bazel files, want >= 200", len(files))
 	}
@@ -593,7 +659,11 @@ func TestRestrictedTargetsSatisfyAllRepoReverseDeps(t *testing.T) {
 
 func TestCorePublicPackagesRemainPublic(t *testing.T) {
 	t.Parallel()
-	root := visibilityRepoRoot(t)
+	files := loadRepoBuildFiles(t)
+	byRel := make(map[string]parsedBuildFile, len(files))
+	for _, f := range files {
+		byRel[f.rel] = f
+	}
 	corePublic := []struct {
 		rel  string
 		name string
@@ -612,11 +682,10 @@ func TestCorePublicPackagesRemainPublic(t *testing.T) {
 	}
 
 	for _, tc := range corePublic {
-		data, err := os.ReadFile(filepath.Join(root, tc.rel))
-		if err != nil {
-			t.Fatalf("read %s: %v", tc.rel, err)
+		parsed, ok := byRel[tc.rel]
+		if !ok {
+			t.Fatalf("missing %s", tc.rel)
 		}
-		parsed := parseBuildFile(tc.rel, string(data))
 		found := false
 		for _, r := range parsed.rules {
 			if r.kind == "go_library" && r.name == tc.name {
@@ -685,6 +754,26 @@ go_library(
 	} {
 		if got := visibilityAllows(tc.vis, tc.caller, tc.target, groups); got != tc.want {
 			t.Errorf("visibilityAllows(%v, %q, %q) = %v, want %v", tc.vis, tc.caller, tc.target, got, tc.want)
+		}
+	}
+
+	for _, tc := range []struct {
+		rel  string
+		want bool
+	}{
+		{"internal/BUILD.bazel", true},
+		{"cmd/fdb/internal/cmd/BUILD.bazel", true},
+		{"layers/otel/otelsql/internal/otelddl/BUILD.bazel", true},
+		{"tools/clientbench/internal/bench/BUILD.bazel", true},
+		{"tools/unicode15gen/internal/gen/BUILD.bazel", true},
+		{"pkg/recordlayer/chaos/BUILD.bazel", true},
+		{"pkg/recordlayer/keystoretest/BUILD.bazel", true},
+		{"pkg/recordlayer/query/plan/constfoldcensus/BUILD.bazel", true},
+		{"pkg/relational/txbudgetcensus/BUILD.bazel", true},
+		{"pkg/fdbgo/fdb/BUILD.bazel", false},
+	} {
+		if got := inRestrictedVisibilityScope(tc.rel); got != tc.want {
+			t.Errorf("inRestrictedVisibilityScope(%q) = %v, want %v", tc.rel, got, tc.want)
 		}
 	}
 }

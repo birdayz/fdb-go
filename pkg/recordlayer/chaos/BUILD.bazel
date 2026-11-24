@@ -1,5 +1,12 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+# gazelle:default_visibility //pkg/relational/core/embedded:__pkg__,//pkg/simfdb/hunt:__pkg__
+
+package(default_visibility = [
+    "//pkg/relational/core/embedded:__pkg__",
+    "//pkg/simfdb/hunt:__pkg__",
+])
+
 go_library(
     name = "chaos",
     srcs = [
@@ -23,7 +30,10 @@ go_library(
         "verify_version.go",
     ],
     importpath = "fdb.dev/pkg/recordlayer/chaos",
-    visibility = ["//visibility:public"],
+    visibility = [
+        "//pkg/relational/core/embedded:__pkg__",
+        "//pkg/simfdb/hunt:__pkg__",
+    ],
     deps = [
         "//gen/demopb",
         "//pkg/fdbgo/fdb",

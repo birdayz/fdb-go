@@ -18,7 +18,7 @@ filegroup(
     ],
 )
 
-# keep: the census ratchet's committed baseline. Exported for the same reason.
+# keep: the census ratchet's committed baseline, kept private to this package.
 filegroup(
     name = "census_baseline",
     srcs = ["census_baseline.json"],

@@ -1,0 +1,3 @@
+# gazelle:default_visibility //tools/clientbench:__subpackages__
+
+package(default_visibility = ["//tools/clientbench:__subpackages__"])

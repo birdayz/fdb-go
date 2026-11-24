@@ -1,0 +1,3 @@
+# gazelle:default_visibility //cmd/fdb:__subpackages__
+
+package(default_visibility = ["//cmd/fdb:__subpackages__"])
