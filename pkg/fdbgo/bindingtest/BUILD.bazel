@@ -1,5 +1,9 @@
 load("@rules_go//go:def.bzl", "go_test")
 
+# gazelle:default_visibility //pkg/fdbgo:__subpackages__
+
+package(default_visibility = ["//pkg/fdbgo:__subpackages__"])
+
 # This regression needs the patched binding's private decoder, not a copy.
 # gazelle:ignore
 

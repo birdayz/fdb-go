@@ -1,5 +1,7 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+package(default_visibility = ["//pkg/relational/conformance:__subpackages__"])
+
 # keep: the ANSI-tagged yamsql corpus, exported so the cross-engine Java?-fact
 # verification (//conformance:java_facts_conformance_test) can stage it into
 # runfiles and walk the `ansi:`/`ansi_gap:` tags. (The yamsql_test below globs the
@@ -7,7 +9,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 filegroup(
     name = "testdata",
     srcs = glob(["testdata/**"]),
-    visibility = ["//visibility:public"],
+    visibility = [
+        "//conformance:__subpackages__",
+        "//pkg/relational/conformance:__subpackages__",
+    ],
 )
 
 go_library(
@@ -23,7 +28,15 @@ go_library(
         "yamsql.go",
     ],
     importpath = "fdb.dev/pkg/relational/conformance/yamsql",
-    visibility = ["//visibility:public"],
+    visibility = [
+        "//cmd/factory-migrate:__pkg__",
+        "//cmd/factory-rebless:__pkg__",
+        "//cmd/factory-run:__pkg__",
+        "//cmd/gen-feature-matrix:__pkg__",
+        "//cmd/gen-sql-coverage:__pkg__",
+        "//conformance:__subpackages__",
+        "//pkg/relational/conformance:__subpackages__",
+    ],
     deps = [
         "//pkg/relational/api",
         "//pkg/relational/core/embedded",

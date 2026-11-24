@@ -1,10 +1,12 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+package(default_visibility = ["//pkg/relational/conformance:__subpackages__"])
+
 go_library(
     name = "memoinvariant",
     srcs = ["doc.go"],
     importpath = "fdb.dev/pkg/relational/conformance/memoinvariant",
-    visibility = ["//visibility:public"],
+    visibility = ["//visibility:private"],
 )
 
 go_test(

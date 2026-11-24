@@ -1,3 +1,5 @@
+package(default_visibility = ["//:__subpackages__"])
+
 filegroup(
     name = "snapshot_inputs",
     srcs = [
@@ -6,5 +8,5 @@ filegroup(
         "SOURCE_SHA256SUMS",
         "snapshot.py",
     ],
-    visibility = ["//visibility:public"],
+    visibility = ["//tools/unicode15gen:__pkg__"],
 )

@@ -1,8 +1,10 @@
 load("@rules_go//go:def.bzl", "go_library")
 
+package(default_visibility = ["//pkg/relational/conformance:__subpackages__"])
+
 go_library(
     name = "coveringleaf",
     srcs = ["coveringleaf.go"],
     importpath = "fdb.dev/pkg/relational/conformance/coveringleaf",
-    visibility = ["//visibility:public"],
+    visibility = ["//pkg/relational:__subpackages__"],
 )

@@ -1,5 +1,7 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+package(default_visibility = ["//pkg/relational/conformance:__subpackages__"])
+
 go_library(
     name = "javacorpus",
     srcs = [
@@ -17,7 +19,10 @@ go_library(
         "testblock.go",
     ],
     importpath = "fdb.dev/pkg/relational/conformance/javacorpus",
-    visibility = ["//visibility:public"],
+    visibility = [
+        "//conformance:__subpackages__",
+        "//pkg/relational/conformance:__subpackages__",
+    ],
     deps = [
         "//gen",
         "//pkg/fdbgo/fdb",

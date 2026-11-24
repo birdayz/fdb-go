@@ -1,9 +1,11 @@
 load("@rules_go//go:def.bzl", "go_library")
 
+package(default_visibility = ["//:__subpackages__"])
+
 filegroup(
     name = "unicodepin_sources",
     srcs = glob(["*.go"]),
-    visibility = ["//visibility:public"],
+    visibility = ["//internal/unicode15:__pkg__"],
 )
 
 go_library(

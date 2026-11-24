@@ -1,5 +1,7 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+package(default_visibility = ["//pkg/simfdb:__subpackages__"])
+
 go_library(
     name = "metamorphic",
     srcs = [
@@ -7,7 +9,7 @@ go_library(
         "metamorphic.go",
     ],
     importpath = "fdb.dev/pkg/simfdb/hunt/metamorphic",
-    visibility = ["//visibility:public"],
+    visibility = ["//cmd/dst-generate:__pkg__"],
     deps = [
         "//pkg/dst",
         "//pkg/recordlayer",

@@ -3,6 +3,11 @@
 # whole-corpus census (./census) compiles them into one binary, and the
 # transaction-budget census reads them as data. A new package must be listed here;
 # //pkg/relational/sqltest/guard fails until it is.
+
+# gazelle:default_visibility //pkg/relational:__subpackages__
+
+package(default_visibility = ["//pkg/relational:__subpackages__"])
+
 filegroup(
     name = "corpus",
     srcs = [

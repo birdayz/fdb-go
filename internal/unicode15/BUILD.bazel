@@ -1,5 +1,7 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+package(default_visibility = ["//:__subpackages__"])
+
 go_library(
     name = "unicode15",
     srcs = [
@@ -7,7 +9,7 @@ go_library(
         "unicode.go",
     ],
     importpath = "fdb.dev/internal/unicode15",
-    visibility = ["//visibility:public"],
+    visibility = ["//internal:unicode15_consumers"],
 )
 
 go_test(
@@ -30,7 +32,7 @@ go_test(
 filegroup(
     name = "unicodepin_sources",
     srcs = glob(["*.go"]),
-    visibility = ["//visibility:public"],
+    visibility = ["//visibility:private"],
 )
 
 filegroup(
@@ -46,5 +48,8 @@ filegroup(
         "//internal/unicode15/text/transform:unicodepin_sources",
         "//internal/unicode15/text/unicode/norm:unicodepin_sources",
     ],
-    visibility = ["//visibility:public"],
+    visibility = [
+        "//internal/linters/unicodepin:__pkg__",
+        "//tools/unicode15gen:__pkg__",
+    ],
 )

@@ -72,3 +72,14 @@ go_test(
     env = {"EVIDENCE_TEST_REPORTER": "$(rootpath //cmd/test-report)"},
     deps = ["@in_gopkg_yaml_v3//:yaml_v3"],
 )
+
+# gazelle:exclude visibility_policy_test.go
+go_test(
+    name = "visibility_policy_test",
+    srcs = ["visibility_policy_test.go"],
+    # keep: MODULE.bazel's runfiles symlink leads the check to the real tree
+    # (it must see every BUILD.bazel under the policy roots, including newly
+    # added packages), and `external` keeps a cached pass from hiding drift.
+    data = ["//:MODULE.bazel"],
+    tags = ["external"],  # keep
+)

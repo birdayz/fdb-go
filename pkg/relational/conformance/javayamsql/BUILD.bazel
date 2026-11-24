@@ -1,5 +1,7 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+package(default_visibility = ["//pkg/relational/conformance:__subpackages__"])
+
 go_library(
     name = "javayamsql",
     srcs = [
@@ -16,7 +18,7 @@ go_library(
         "version.go",
     ],
     importpath = "fdb.dev/pkg/relational/conformance/javayamsql",
-    visibility = ["//visibility:public"],
+    visibility = ["//pkg/relational/conformance:__subpackages__"],
     deps = ["@in_gopkg_yaml_v3//:yaml_v3"],
 )
 
