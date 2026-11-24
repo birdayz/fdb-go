@@ -798,7 +798,7 @@ func TestLibFDBC_MappedRangeSkipAcrossShards(t *testing.T) {
 						t.Fatalf("skipped-secondary write changed population: C=%d/%v Go=%d/%v facade=%d", len(cRows), cMore, len(gRows), gMore, len(fRows))
 					}
 					for j := range cRows {
-						mdCompareRangeRow(t, cRows[j], gRows[j])
+						mdCompareRangeRow(t, cRows[j], mdFromClientRow(gRows[j]))
 						mdCompareRangeRow(t, cRows[j], fRows[j])
 					}
 				}
