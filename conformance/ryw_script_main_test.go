@@ -67,11 +67,36 @@ func (p *rywPopulation) snapshot() (scenarios, lines, pinned, conflicts, conflic
 	return p.Scenarios, p.Lines, p.Pinned, p.Conflicts, p.ConflictingReports, p.Reads
 }
 
+// require verifies the scenario and population counts for a single TestRYWScript_*
+// function. Because each test asserts its own slice of the 31 scenarios, 13
+// conflicts/conflicting reports (>= 10), and 311 reads (>= 150), population
+// non-vacuity holds regardless of Bazel shard_count and surfaces directly in
+// JUnit test.xml.
+func (p *rywPopulation) require(t *testing.T, wantScenarios, minConflicts, minConflictingReports, minReads int) {
+	t.Helper()
+	if t.Failed() {
+		return
+	}
+	scenarios, _, _, conflicts, conflictingReports, reads := p.snapshot()
+	if scenarios != wantScenarios {
+		t.Errorf("population: ran %d scenarios, want %d", scenarios, wantScenarios)
+	}
+	if conflicts < minConflicts {
+		t.Errorf("population: Conflicts = %d, want >= %d", conflicts, minConflicts)
+	}
+	if conflictingReports < minConflictingReports {
+		t.Errorf("population: ConflictingReports = %d, want >= %d", conflictingReports, minConflictingReports)
+	}
+	if reads < minReads {
+		t.Errorf("population: Reads = %d, want >= %d", reads, minReads)
+	}
+}
+
 func TestMain(m *testing.M) {
 	os.Exit(runRYWScriptMain(m))
 }
 
-func runRYWScriptMain(m *testing.M) int {
+func runRYWScriptMain(m *testing.M) (code int) {
 	suiteCtx := context.Background()
 	setupCtx, setupCancel := context.WithTimeout(suiteCtx, 2*time.Minute)
 	defer setupCancel()
@@ -95,7 +120,6 @@ func runRYWScriptMain(m *testing.M) int {
 		return 1
 	}
 
-	code := 0
 	defer func() {
 		// Shut down Java conformance servers before terminating FDB container,
 		// so they can perform graceful shutdown while FDB is still available.
@@ -131,7 +155,7 @@ func runRYWScriptMain(m *testing.M) int {
 	fmt.Fprintf(os.Stderr, "ryw script conformance: {Scenarios:%d Lines:%d Pinned:%d Conflicts:%d ConflictingReports:%d Reads:%d}\n",
 		scenarios, lines, pinned, conflicts, conflictingReports, reads)
 
-	if f := flag.Lookup("test.run"); f == nil || f.Value.String() == "" {
+	if code == 0 && (flag.Lookup("test.run") == nil || flag.Lookup("test.run").Value.String() == "") {
 		totalShards := 1
 		if s := os.Getenv("TEST_TOTAL_SHARDS"); s != "" {
 			if n, err := strconv.Atoi(s); err == nil && n > 1 {

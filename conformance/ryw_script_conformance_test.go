@@ -547,7 +547,7 @@ func rywReaderSteps() []rywStep {
 
 // runRYWScenario runs a single scenario script on the Go client and on libfdb_c,
 // verifies both transcripts match, and checks every pinned line in sc.want.
-func runRYWScenario(t *testing.T, sc rywScenario) {
+func runRYWScenario(t *testing.T, pop *rywPopulation, sc rywScenario) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -562,7 +562,9 @@ func runRYWScenario(t *testing.T, sc rywScenario) {
 		t.Fatalf("%s: setup Go tenant: %v", sc.name, err)
 	}
 	t.Cleanup(func() {
-		if err := goEnv.Cleanup(context.Background()); err != nil {
+		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanCancel()
+		if err := goEnv.Cleanup(cleanCtx); err != nil {
 			t.Errorf("%s: cleanup Go tenant: %v", sc.name, err)
 		}
 	})
@@ -571,7 +573,9 @@ func runRYWScenario(t *testing.T, sc rywScenario) {
 		t.Fatalf("%s: setup Java tenant: %v", sc.name, err)
 	}
 	t.Cleanup(func() {
-		if err := javaEnv.Cleanup(context.Background()); err != nil {
+		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanCancel()
+		if err := javaEnv.Cleanup(cleanCtx); err != nil {
 			t.Errorf("%s: cleanup Java tenant: %v", sc.name, err)
 		}
 	})
@@ -608,6 +612,9 @@ func runRYWScenario(t *testing.T, sc rywScenario) {
 			t.Errorf("%s: libfdb_c transcript lacks pinned line %q", sc.name, w)
 		}
 	}
+	if pop != nil {
+		pop.record(javaOut, len(sc.want))
+	}
 	rywPop.record(javaOut, len(sc.want))
 }
 
@@ -628,7 +635,9 @@ func TestRYWScript_ExplicitReadConflictsCoalesce(t *testing.T) {
 	sc.expect("a", "addReadConflictRange", 4, "err=2005")
 	sc.expect("a", "commit", 0, "err=1020")
 	sc.expect("a", "conflicting", 0, conflictingRanges("k2", "k6", "k8", "k8\x00"))
-	runRYWScenario(t, sc)
+	var pop rywPopulation
+	runRYWScenario(t, &pop, sc)
+	pop.require(t, 1, 1, 1, 0)
 }
 
 // Without RYW the native transaction keeps the ranges as added; the reported
@@ -649,12 +658,15 @@ func TestRYWScript_ReadConflictsWithoutRYW(t *testing.T) {
 	// Only the shipped ranges that conflict, uncoalesced: [k3,k6) holds k5, [k2,k4) nothing.
 	// With RYW the same adds coalesce first ("explicit read conflicts coalesce").
 	sc.expect("a", "conflicting", 0, conflictingRanges("k3", "k6", "k8", "k8\x00", "k9", "k9\x00"))
-	runRYWScenario(t, sc)
+	var pop rywPopulation
+	runRYWScenario(t, &pop, sc)
+	pop.require(t, 1, 1, 1, 4)
 }
 
 // AddReadConflictRange/Key skip what local independent writes satisfy
 // (updateConflictMap, ReadYourWrites.actor.cpp:335-351).
 func TestRYWScript_ReadConflictsFilteredByLocalWrites(t *testing.T) {
+	var pop rywPopulation
 	for _, writer := range [][]string{{"k3"}, {"k3", "k4"}, {"k2", "k5"}} {
 		w := writer
 		label := "b=" + strings.Join(w, ",")
@@ -681,14 +693,16 @@ func TestRYWScript_ReadConflictsFilteredByLocalWrites(t *testing.T) {
 				sc.expect("a", "commit", 0, "err=1020")
 				sc.expect("a", "conflicting", 0, conflictingRanges("k1", "k3"))
 			}
-			runRYWScenario(t, sc)
+			runRYWScenario(t, &pop, sc)
 		})
 	}
+	pop.require(t, 3, 2, 2, 0)
 }
 
 // Gets under local writes: a set or cleared key is served locally and adds no
 // conflict; a key with a pending atomic is read and conflicts (RYW:322-332).
 func TestRYWScript_GetsUnderLocalWrites(t *testing.T) {
+	var pop rywPopulation
 	for _, writer := range []string{"k2,k3,k7", "k4", "k5,k6", "k2,k4,k6"} {
 		w := writer
 		t.Run("b="+w, func(t *testing.T) {
@@ -722,14 +736,16 @@ func TestRYWScript_GetsUnderLocalWrites(t *testing.T) {
 				// k2 was served by the local set and adds no conflict.
 				sc.expect("a", "conflicting", 0, conflictingRanges("k4", "k4\x00", "k6", "k6\x00"))
 			}
-			runRYWScenario(t, sc)
+			runRYWScenario(t, &pop, sc)
 		})
 	}
+	pop.require(t, 4, 3, 3, 24)
 }
 
 // Selector reads lastLessOrEqual(k)..firstGreaterThan(k)+1, snapshot and
 // serializable, with and without local writes in the range.
 func TestRYWScript_SelectorReads(t *testing.T) {
+	var pop rywPopulation
 	for _, writer := range []string{"k5", "k4", "k3x", "k7"} {
 		w := writer
 		t.Run("b="+w, func(t *testing.T) {
@@ -758,13 +774,15 @@ func TestRYWScript_SelectorReads(t *testing.T) {
 			case "k7":
 				sc.expect("a", "conflicting", 0, conflictingRanges("k7", "k9"))
 			}
-			runRYWScenario(t, sc)
+			runRYWScenario(t, &pop, sc)
 		})
 	}
+	pop.require(t, 4, 3, 3, 16)
 }
 
 // (b) RYW read results over pending sets, clears, clear ranges and atomics.
 func TestRYWScript_RYWReadsOverPendingWrites(t *testing.T) {
+	var pop rywPopulation
 	letters := rywLetters()
 	seedKV := rywSeedKV()
 	pendingWrites := []rywStep{
@@ -817,14 +835,16 @@ func TestRYWScript_RYWReadsOverPendingWrites(t *testing.T) {
 			sc.expect("a", "getRange", 1, hkv("a", hx("\x00"), "b", hx("c")))
 			sc.expect("a", "get", 9, "null") // j: compareAndClear on an equal value
 			sc.expect("a", "commit", 0, "ok")
-			runRYWScenario(t, sc)
+			runRYWScenario(t, &pop, sc)
 		})
 	}
+	pop.require(t, 2, 0, 0, 104)
 }
 
 // Reads issued before later writes see the write map as at issue: the read's RYWIterator
 // is built before its first wait (ReadYourWrites.actor.cpp:382; WriteMap.h:158).
 func TestRYWScript_ReadsIssuedBeforeLaterWrites(t *testing.T) {
+	var pop rywPopulation
 	seedKV := rywSeedKV()
 	mKeys := digits("m", 10)
 	issueSeed := append([]string(nil), seedKV...)
@@ -885,9 +905,10 @@ func TestRYWScript_ReadsIssuedBeforeLaterWrites(t *testing.T) {
 			for i, m := range mKeys {
 				sc.expect("a", "await", 6+i, hx(m))
 			}
-			runRYWScenario(t, sc)
+			runRYWScenario(t, &pop, sc)
 		})
 	}
+	pop.require(t, 2, 0, 0, 42)
 }
 
 // (c) Write conflicts: explicit AddWriteConflictKey/Range interleaved with writes and
@@ -905,7 +926,9 @@ func TestRYWScript_WriteConflictsInterleavedWithWrites(t *testing.T) {
 	sc.expect("w", "commit", 0, "ok")
 	sc.expect("r", "commit", 0, "err=1020")
 	sc.expect("r", "conflicting", 0, conflictingRanges("k2", "k2\x00", "k5", "k5\x00", "k7", "k7\x00", "k8", "k8\x00"))
-	runRYWScenario(t, sc)
+	var pop rywPopulation
+	runRYWScenario(t, &pop, sc)
+	pop.require(t, 1, 1, 1, 10)
 }
 
 func TestRYWScript_WriteConflictsCoalesceOverAdjacentWrites(t *testing.T) {
@@ -917,7 +940,9 @@ func TestRYWScript_WriteConflictsCoalesceOverAdjacentWrites(t *testing.T) {
 	sc.expect("r", "commit", 0, "err=1020")
 	sc.expect("r", "conflicting", 0, conflictingRanges("k1", "k1\x00", "k2", "k2\x00", "k3", "k3\x00",
 		"k3a", "k3a\x00", "k6", "k6\x00", "k7", "k7\x00", "k9", "k9\x00"))
-	runRYWScenario(t, sc)
+	var pop rywPopulation
+	runRYWScenario(t, &pop, sc)
+	pop.require(t, 1, 1, 1, 10)
 }
 
 // Disabling RYW after any write is 2000 (ReadYourWrites.actor.cpp:2536-2540), deferred by set_option
@@ -931,7 +956,9 @@ func TestRYWScript_DisableRYWAfterConflictOnlyWrite(t *testing.T) {
 	sc.expect("a", "get", 0, "err=2000")
 	sc.expect("a", "commit", 0, "err=2000")
 	sc.expect("c", "commit", 0, "ok")
-	runRYWScenario(t, sc)
+	var pop rywPopulation
+	runRYWScenario(t, &pop, sc)
+	pop.require(t, 1, 0, 0, 1)
 }
 
 // (d) AppendIfFits over VALUE_SIZE_LIMIT keeps the value (Atomic.h:114-125); pending appends coalesce into
@@ -964,7 +991,9 @@ func TestRYWScript_AppendIfFitsSequences(t *testing.T) {
 	sc.expect("check", "get", 1, rywValue([]byte(rywBig('e', 100000))))
 	sc.expect("check", "get", 2, hx("xyz"))
 	sc.expect("check", "get", 3, hx("u"))
-	runRYWScenario(t, sc)
+	var pop rywPopulation
+	runRYWScenario(t, &pop, sc)
+	pop.require(t, 1, 0, 0, 10)
 }
 
 // An un-awaited read is in RYW's `reading` (ReadYourWrites.actor.cpp:1690-1691): commit waits
@@ -984,12 +1013,15 @@ func TestRYWScript_CommitWaitsForUnAwaitedReads(t *testing.T) {
 	sc.expect("b", "await", 0, hx("w"))
 	sc.expect("c", "commit", 0, "err=1007")
 	sc.expect("d", "commit", 0, "err=1007")
-	runRYWScenario(t, sc)
+	var pop rywPopulation
+	runRYWScenario(t, &pop, sc)
+	pop.require(t, 1, 0, 0, 4)
 }
 
 // Reset, Cancel and OnError with un-awaited reads that storage holds open (a version far ahead,
 // FUTURE_VERSION_DELAY raised by this target's knob), then the transaction's next read.
 func TestRYWScript_UnAwaitedReadsAcrossResetCancelOnError(t *testing.T) {
+	var pop rywPopulation
 	for _, end := range []string{"reset", "cancel", "onError"} {
 		for _, atomicKey := range []bool{false, true} {
 			e := end
@@ -1020,16 +1052,17 @@ func TestRYWScript_UnAwaitedReadsAcrossResetCancelOnError(t *testing.T) {
 				sc.expect("a", "await", 1, "err=1025")
 				if e == "cancel" {
 					sc.expect("a", "commit", 0, "err=1025")
-					runRYWScenario(t, sc)
+					runRYWScenario(t, &pop, sc)
 					return
 				}
 				sc.expect("a", "get", 2, hx("vk1"))
 				sc.expect("a", "get", 3, "null")
 				sc.expect("a", "commit", 0, "ok")
-				runRYWScenario(t, sc)
+				runRYWScenario(t, &pop, sc)
 			})
 		}
 	}
+	pop.require(t, 6, 0, 0, 24)
 }
 
 // Not compared yet: an option error such as SetAccessSystemKeys on a tenant transaction,
@@ -1046,12 +1079,15 @@ func TestRYWScript_ExplicitWriteConflictsKeepNextWriteOptionArmed(t *testing.T) 
 	sc.expect("w", "commit", 0, "ok")
 	sc.expect("r", "commit", 0, "err=1020")
 	sc.expect("r", "conflicting", 0, conflictingRanges("k1", "k1\x00", "k3", "k3\x00"))
-	runRYWScenario(t, sc)
+	var pop rywPopulation
+	runRYWScenario(t, &pop, sc)
+	pop.require(t, 1, 1, 1, 10)
 }
 
 // Illegal writes are the deferred error for later reads and commit (ThreadSafeTransaction.cpp:626-640);
 // clear checks the legal range before its empty return (ReadYourWrites.actor.cpp:2370-2372, 2396).
 func TestRYWScript_IllegalWritesAreDeferred(t *testing.T) {
+	var pop rywPopulation
 	sysKey := "\xff\x01" + rywBig('a', 35000)
 	for _, ryw := range []bool{true, false} {
 		ryw := ryw
@@ -1101,7 +1137,8 @@ func TestRYWScript_IllegalWritesAreDeferred(t *testing.T) {
 			pin("clear range end past \\xff", "err=2004")
 			pin("set oversized key", "err=2102")
 			pin("set value too large", "err=2103")
-			runRYWScenario(t, sc)
+			runRYWScenario(t, &pop, sc)
 		})
 	}
+	pop.require(t, 2, 0, 0, 52)
 }
