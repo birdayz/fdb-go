@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+func boolPtr(b bool) *bool { return &b }
+
 func TestTextWithMaxDistanceComparisonZeroDistanceEval(t *testing.T) {
 	t.Parallel()
 	// At distance zero Java retains every token after polling an empty queue;

@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"fdb.dev/internal/unicode15"
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -1313,7 +1314,7 @@ func evaluateOrdinalJoinRow(rc *values.RecordConstructorValue, mergedType *value
 		}
 		v, err := f.Value.Evaluate(evalCtx)
 		if err != nil {
-			return nil, err
+			return nil, recordlayer.TranslateTextCmpError(err)
 		}
 		row.Slots[i] = v
 	}
@@ -1342,7 +1343,7 @@ func evaluateOrdinalJoinBareRow(v values.Value, bindings values.CorrelationBinde
 	evalCtx := joinBuildRowContext(bindings, clock)
 	out, err := v.Evaluate(evalCtx)
 	if err != nil {
-		return nil, err
+		return nil, recordlayer.TranslateTextCmpError(err)
 	}
 	switch row := out.(type) {
 	case nil:

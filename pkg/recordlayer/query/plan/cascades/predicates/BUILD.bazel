@@ -33,7 +33,7 @@ go_library(
     importpath = "fdb.dev/pkg/recordlayer/query/plan/cascades/predicates",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/recordlayer",
+        "//internal/recordlayer/textcmp",
         "//pkg/recordlayer/query/plan/cascades/internal/fnv64",
         "//pkg/recordlayer/query/plan/cascades/values",
         "@org_golang_google_protobuf//proto",
@@ -85,7 +85,7 @@ go_test(
     ],
     embed = [":predicates"],
     deps = [
-        "//pkg/recordlayer",
+        "//internal/recordlayer/textcmp",
         "//pkg/recordlayer/query/plan/cascades/values",
     ],
 )

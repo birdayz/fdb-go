@@ -776,7 +776,7 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 		for i, f := range rc.Fields {
 			fv, ferr := f.Value.Evaluate(rowCtx)
 			if ferr != nil {
-				return QueryResult{}, ferr
+				return QueryResult{}, recordlayer.TranslateTextCmpError(ferr)
 			}
 			posSlots[i] = fv
 		}
@@ -791,7 +791,7 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 		// double-nest it (a 1-slot `_0` row whose slot holds the whole record).
 		computed, err := c.resultValue.Evaluate(rowCtx)
 		if err != nil {
-			return QueryResult{}, err
+			return QueryResult{}, recordlayer.TranslateTextCmpError(err)
 		}
 		if !isIdentityOuterRV(c.resultValue, c.outerAlias) && !isIdentityInnerRV(c.resultValue, c.innerAlias) {
 			if computedRow, isRow := computed.(*PositionalRow); isRow {

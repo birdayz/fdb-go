@@ -601,7 +601,7 @@ The concrete boundaries above can be checked in:
 - `pkg/recordlayer/metadata.go` and `metadata_proto.go` (metadata preservation);
 - `pkg/recordlayer/vectorindex/` and `pkg/relational/core/embedded/ddl.go`
   (vector options, engines and Go extensions);
-- `pkg/recordlayer/text_tokenizer.go` and `collate_function_key_expression.go`;
+- `internal/recordlayer/textcmp/tokenizer.go`, `pkg/recordlayer/text_tokenizer.go` and `collate_function_key_expression.go`;
 - `pkg/relational/core/embedded/cascades_generator.go` and the “SQL statement
   continuations are engine-private” section of [DIVERGENCES.md](../DIVERGENCES.md);
 - [CHANGELOG.md](../CHANGELOG.md), especially the v0.2.0 storage changes.

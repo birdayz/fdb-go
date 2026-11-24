@@ -1098,6 +1098,7 @@ var _ = Describe("TEXT query execution conformance", Ordered, ContinueOnFailure,
 			var goResults []string
 			for _, document := range documents {
 				result, err := comparison.EvalAgainst(document, comparand)
+				err = recordlayer.TranslateTextCmpError(err)
 				var argErr *recordlayer.RecordCoreArgumentError
 				switch {
 				case errors.As(err, &argErr):

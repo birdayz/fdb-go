@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+package(default_visibility = ["//:__subpackages__"])
+
+go_library(
+    name = "textcmp",
+    srcs = [
+        "errors.go",
+        "text_comparison.go",
+        "tokenizer.go",
+    ],
+    importpath = "fdb.dev/internal/recordlayer/textcmp",
+    visibility = [
+        "//internal/recordlayer:__subpackages__",
+        "//pkg/recordlayer:__subpackages__",
+    ],
+    deps = [
+        "//internal/unicode15",
+        "//internal/unicode15/text/unicode/norm",
+        "@com_github_rivo_uniseg//:uniseg",
+    ],
+)
+
+go_test(
+    name = "textcmp_test",
+    srcs = [
+        "text_comparison_test.go",
+        "tokenizer_test.go",
+    ],
+    embed = [":textcmp"],
+)

@@ -101,7 +101,8 @@ func pinnedPackage(pkg string) bool {
 
 func compatibilityCaller(pkg, filename string) bool {
 	switch pkg + "/" + path.Base(strings.ReplaceAll(filename, "\\", "/")) {
-	case "fdb.dev/pkg/recordlayer/text_tokenizer.go",
+	case "fdb.dev/internal/recordlayer/textcmp/tokenizer.go",
+		"fdb.dev/pkg/recordlayer/text_tokenizer.go",
 		"fdb.dev/pkg/recordlayer/text_index_maintainer.go",
 		"fdb.dev/pkg/recordlayer/collate_function_key_expression.go",
 		"fdb.dev/pkg/recordlayer/keystore_key_manager.go",

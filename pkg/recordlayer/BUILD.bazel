@@ -162,10 +162,10 @@ go_library(
     deps = [
         "//gen",
         "//internal/javahashmap",
+        "//internal/recordlayer/textcmp",
         "//internal/unicode15",
         "//internal/unicode15/text/collate",
         "//internal/unicode15/text/language",
-        "//internal/unicode15/text/unicode/norm",
         "//pkg/async/rtree",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/directory",
@@ -184,7 +184,6 @@ go_library(
         "//pkg/recordlayer/vectorcodec",
         "@com_github_andybalholm_brotli//:brotli",
         "@com_github_google_uuid//:uuid",
-        "@com_github_rivo_uniseg//:uniseg",
         "@org_golang_google_protobuf//encoding/protowire",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protodesc",
@@ -549,6 +548,7 @@ go_test(
     deps = [
         "//gen",
         "//gen/demopb",
+        "//internal/recordlayer/textcmp",
         "//pkg/async/rtree",
         "//pkg/dst",
         "//pkg/fdbgo/client",

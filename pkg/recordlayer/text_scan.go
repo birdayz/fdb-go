@@ -67,7 +67,7 @@ func (s *TextScan) tokenList(removeStopWords bool) ([]string, error) {
 			return nil, err
 		}
 		if tokens, err = tokenizer.TokenizeToList(comparand, version, TokenizerModeQuery); err != nil {
-			return nil, err
+			return nil, TranslateTextCmpError(err)
 		}
 	default:
 		return nil, &RecordCoreError{Message: fmt.Sprintf("Comparand for text query of incompatible type: %T", comparand), IndexName: s.Index.Name}

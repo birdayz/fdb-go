@@ -1694,7 +1694,7 @@ func executeFilter(
 			for _, pred := range preds {
 				res, err := pred.Eval(rowCtx)
 				if err != nil {
-					return false, err
+					return false, recordlayer.TranslateTextCmpError(err)
 				}
 				if res != predicates.TriTrue {
 					return false, nil
@@ -3645,7 +3645,7 @@ func passesJoinPredicatesLegs(combined QueryResult, preds []predicates.QueryPred
 	for _, pred := range preds {
 		res, err := pred.Eval(rowCtx)
 		if err != nil {
-			return false, err
+			return false, recordlayer.TranslateTextCmpError(err)
 		}
 		if res != predicates.TriTrue {
 			return false, nil
@@ -5053,7 +5053,7 @@ func resultFromValue(v values.Value, rowCtx *values.RowEvalContext) (QueryResult
 		for i, f := range rc.Fields {
 			fv, err := f.Value.Evaluate(rowCtx)
 			if err != nil {
-				return QueryResult{}, err
+				return QueryResult{}, recordlayer.TranslateTextCmpError(err)
 			}
 			slots[i] = fv
 		}
@@ -5061,7 +5061,7 @@ func resultFromValue(v values.Value, rowCtx *values.RowEvalContext) (QueryResult
 	}
 	val, err := v.Evaluate(rowCtx)
 	if err != nil {
-		return QueryResult{}, err
+		return QueryResult{}, recordlayer.TranslateTextCmpError(err)
 	}
 	return QueryResult{Positional: scalarPositionalRowOfType(val, v.Type())}, nil
 }
@@ -5113,7 +5113,7 @@ func executeValues(
 	for i, col := range cols {
 		v, err := col.Evaluate(evalCtx)
 		if err != nil {
-			return nil, err
+			return nil, recordlayer.TranslateTextCmpError(err)
 		}
 		slots[i] = v
 	}

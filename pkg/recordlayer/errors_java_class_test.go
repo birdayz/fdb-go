@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"fdb.dev/internal/recordlayer/textcmp"
 )
 
 // IsMetaDataException tests the outermost Java exception, as Java's
@@ -25,6 +27,9 @@ func TestIsMetaDataExceptionTestsTheOutermostJavaException(t *testing.T) {
 		// ProtoUtils.InvalidNameException extends MetaDataException; its Go
 		// type is protoname's, which this package aliases.
 		{"an invalid name", fmt.Errorf("column: %w", &InvalidNameError{Message: "name cannot be empty string"}), true},
+		{"a textcmp MetaDataError", fmt.Errorf("tokenizer: %w", &textcmp.MetaDataError{Message: "unrecognized text tokenizer"}), true},
+		{"a textcmp ArgumentError", &textcmp.ArgumentError{Message: "bad"}, false},
+		{"a textcmp MetaDataError as cause of RecordCoreError", &RecordCoreError{Message: "outer", Cause: &textcmp.MetaDataError{Message: "bad"}}, false},
 		{"the cause of a RecordCoreError", &RecordCoreError{Message: "outer", Cause: mde}, false},
 		{"a key-expression refusal", &KeyExpressionDeserializationError{Message: "k"}, false},
 		{"no Java exception", errors.New("plain"), false},

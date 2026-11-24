@@ -201,7 +201,7 @@ func filterSysRows(ctx context.Context, conn *EmbeddedConnection, rows [][]drive
 		evalCtx.Positional = systemOrdinalRow(row)
 		result, err := predicate.Eval(evalCtx)
 		if err != nil {
-			return nil, translateExecError(err)
+			return nil, translateExecError(recordlayer.TranslateTextCmpError(err))
 		}
 		if result == predicates.TriTrue {
 			out = append(out, row)

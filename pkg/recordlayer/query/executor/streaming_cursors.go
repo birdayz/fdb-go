@@ -595,7 +595,7 @@ func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error
 		}
 		v, err := k.Evaluate(arg)
 		if err != nil {
-			return "", nil, err
+			return "", nil, recordlayer.TranslateTextCmpError(err)
 		}
 		keyParts[i] = v
 	}
@@ -725,7 +725,7 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 		}
 		val, err := agg.Operand.Evaluate(arg)
 		if err != nil {
-			return err
+			return recordlayer.TranslateTextCmpError(err)
 		}
 		if agg.Function == expressions.AggArrayAgg {
 			if err := accumulateArrayAgg(gs, i, agg, val); err != nil {

@@ -282,7 +282,7 @@ func (f *scanKeyFilter) admits(key tuple.Tuple, offset int) (bool, error) {
 		for _, comparison := range component.comparisons {
 			result, err := comparison.Eval(value)
 			if err != nil {
-				return false, err
+				return false, recordlayer.TranslateTextCmpError(err)
 			}
 			if result != predicates.TriTrue {
 				return false, nil

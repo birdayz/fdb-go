@@ -12,14 +12,15 @@ import (
 	"fmt"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/recordlayer/textcmp"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 )
 
 // Defaults of ProbableIntersectionCursor (ProbableIntersectionCursor.java:85-89).
 const (
-	ProbableIntersectionDefaultExpectedResults         int64   = 500
-	ProbableIntersectionDefaultFalsePositivePercentage float64 = 0.01
+	ProbableIntersectionDefaultExpectedResults         int64   = textcmp.ProbableIntersectionDefaultExpectedResults
+	ProbableIntersectionDefaultFalsePositivePercentage float64 = textcmp.ProbableIntersectionDefaultFalsePositivePercentage
 )
 
 // probableChild remembers consumed comparison keys in a persisted Bloom filter
