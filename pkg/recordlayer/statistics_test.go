@@ -487,7 +487,8 @@ var _ = Describe("CollectStatistics", func() {
 			begin, end := recordsSub.FDBRangeKeys()
 			kvs, kErr := rtx.Transaction().GetRange(
 				fdb.KeyRange{Begin: fdb.Key(begin.FDBKey()), End: fdb.Key(end.FDBKey())},
-				fdb.RangeOptions{}).GetSliceWithError()
+				fdb.RangeOptions{},
+			).GetSliceWithError()
 			if kErr != nil {
 				return nil, kErr
 			}
@@ -562,7 +563,8 @@ var _ = Describe("CollectStatistics", func() {
 				begin, end := sub.FDBRangeKeys()
 				kvs, rErr := rtx.ReadTransaction(true).GetRange(
 					fdb.KeyRange{Begin: fdb.Key(begin.FDBKey()), End: fdb.Key(end.FDBKey())},
-					fdb.RangeOptions{}).GetSliceWithError()
+					fdb.RangeOptions{},
+				).GetSliceWithError()
 				if rErr != nil {
 					return nil, rErr
 				}
@@ -1067,7 +1069,7 @@ var _ = Describe("CollectStatistics", func() {
 
 		counter := &countingTransactor{inner: sharedDB.transactor}
 		steppingDB := NewFDBDatabaseWithTransactor(counter, sharedDB.db).
-			SetEnv(&dst.Env{Clock: &steppingClock{now: dst.Epoch, step: time.Second}})
+			SetEnv(&Env{Clock: &steppingClock{now: dst.Epoch, step: time.Second}})
 
 		report, err := CollectStatistics(ctx, steppingDB,
 			func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
@@ -1772,7 +1774,8 @@ var _ = Describe("CollectStatisticsIntegerKeys", func() {
 		// Sibling of the store subspace, never a child — the store keyspace is
 		// Java's (constants.go).
 		stats := NewStatisticsSubspace(subspace.FromBytes(
-			tuple.Tuple{"__stats__", CurrentSpecReport().FullText()}.Pack()))
+			tuple.Tuple{"__stats__", CurrentSpecReport().FullText()}.Pack(),
+		))
 		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))

@@ -21,7 +21,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/internal/unicode15"
-	"fdb.dev/pkg/dst"
 )
 
 // Java's TransformedRecordSerializerPrefix constants
@@ -307,7 +306,7 @@ type unionReader func(union []byte) (proto.Message, error)
 // validation samples, are drawn from it. read is the store's union reader,
 // through which the write-time serialization validation deserializes what it
 // reads back (RecordSerializer.validateSerialization).
-func (s *TransformedRecordSerializer) transformRead(union []byte, env *dst.Env, read unionReader) ([]byte, error) {
+func (s *TransformedRecordSerializer) transformRead(union []byte, env *Env, read unionReader) ([]byte, error) {
 	st := &transformState{data: union}
 	if s.compressWhenSerializing {
 		if err := s.compress(st); err != nil {
@@ -384,7 +383,7 @@ func validateReadBack(union, back []byte, read unionReader) error {
 // shouldIncludeInSample is Java's: always at a ratio of 1 or more, never at 0
 // or less, else with probability ratio. The coin comes from env, so a seeded
 // run validates the same writes.
-func shouldIncludeInSample(ratio float64, env *dst.Env) bool {
+func shouldIncludeInSample(ratio float64, env *Env) bool {
 	if ratio >= 1.0 {
 		return true
 	}
@@ -665,7 +664,7 @@ func decompressTransformed(st *transformState, lists *zlibFreeLists) error {
 
 // encrypt is TransformedRecordSerializerJCE.encrypt: the IV, then the cipher
 // text of the body under the key manager's serialization key.
-func (s *TransformedRecordSerializer) encrypt(st *transformState, env *dst.Env) error {
+func (s *TransformedRecordSerializer) encrypt(st *transformState, env *Env) error {
 	if !s.jce {
 		return serializationError("this serializer cannot encrypt")
 	}

@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
@@ -19,7 +20,7 @@ func simBackend(seed uint64) (*recordlayer.FDBDatabase, *simgate.Backend) {
 	env := dst.NewSim(seed)
 	env.Buggify = dst.DisabledBuggifier()
 	gate := simgate.New(simfdb.New(env))
-	return recordlayer.NewFDBDatabaseWithBackend(gate).SetEnv(env), gate
+	return recordlayer.NewFDBDatabaseWithBackend(gate).SetEnv(dstwire.Env(env)), gate
 }
 
 func connectorFor(t *testing.T, clusterFile string) *Connector {

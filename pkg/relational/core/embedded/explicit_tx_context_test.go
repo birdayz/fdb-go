@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
@@ -58,7 +59,7 @@ func (g *gatedSim) connect(t *testing.T, schema string) *EmbeddedConnection {
 }
 
 func (g *gatedSim) open(schema string) (*EmbeddedConnection, error) {
-	fdbDB := recordlayer.NewFDBDatabaseWithBackend(g.gate).SetEnv(g.env)
+	fdbDB := recordlayer.NewFDBDatabaseWithBackend(g.gate).SetEnv(dstwire.Env(g.env))
 	fdbDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 	ks := keyspace.New(subspace.Sub())
 	cat, err := catalog.NewRecordLayerStoreCatalog(ks.CatalogSubspace())

@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"math"
 
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -43,7 +42,7 @@ type guardiannListener interface {
 type guardiann struct {
 	ss        subspace.Subspace
 	config    guardiannConfig
-	env       *dst.Env
+	env       *recordlayer.Env
 	listener  guardiannListener
 	centroids *hnswGraph
 	codec     *guardiannVectorCodec
@@ -94,7 +93,7 @@ func (g *guardiann) neighbourFetchRefusal(operation string, width int, widthOpti
 	return nil
 }
 
-func newGuardiann(ss subspace.Subspace, config guardiannConfig, env *dst.Env, listener guardiannListener) *guardiann {
+func newGuardiann(ss subspace.Subspace, config guardiannConfig, env *recordlayer.Env, listener guardiannListener) *guardiann {
 	hc := DefaultHNSWConfig(config.numDimensions)
 	hc.Metric = config.metric
 	hc.EfRepair = 64
@@ -232,7 +231,8 @@ func clusterMetadataFromValue(id tuple.UUID, b []byte) (*guardiannClusterMetadat
 	}
 	if len(t) == 4 {
 		return nil, &recordlayer.RecordCoreError{Message: fmt.Sprintf(
-			"guardiann cluster metadata of cluster %v has 4 elements, want 5: it was written by a GuardiANN build that did not store the lifetime peak; rebuild the index", id)}
+			"guardiann cluster metadata of cluster %v has 4 elements, want 5: it was written by a GuardiANN build that did not store the lifetime peak; rebuild the index", id,
+		)}
 	}
 	var md guardiannClusterMetadata
 	md.id = id

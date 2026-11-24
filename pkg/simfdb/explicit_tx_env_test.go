@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -76,7 +77,7 @@ func TestExplicitTransactionIsDrivenByTheSimClock(t *testing.T) {
 	env.Buggify = dst.DisabledBuggifier()
 	env.Clock.(*dst.SimClock).Set(target)
 
-	db := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+	db := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
 	md := buildOrderMetadata(t)
 	sub := subspace.FromBytes(tuple.Tuple{"explicit-repro"}.Pack())
 

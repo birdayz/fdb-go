@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/recordlayer"
 	// registers the "fdbsql" driver + exposes RegisterBackend
@@ -106,7 +107,8 @@ func Check(s Scenario) ([]Violation, error) {
 			viols = append(viols, Violation{s.Name, g.Name, fmt.Sprintf(
 				"NOT equivalent (%s): q[%d] %q → %d rows; q[%d] %q → %d rows\n      base=%s\n      other=%s",
 				g.Reason, base, g.Queries[base], len(results[base]), i, g.Queries[i], len(results[i]),
-				sample(results[base]), sample(results[i]))})
+				sample(results[base]), sample(results[i]),
+			)})
 		}
 	}
 	return viols, nil
@@ -192,7 +194,7 @@ func setup(s Scenario) (*harness, error) {
 	ctx := context.Background()
 	env := dst.NewSim(s.Seed)
 	env.Buggify = dst.DisabledBuggifier()
-	simDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+	simDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 
 	key := fmt.Sprintf("sim://metamorphic/%s/%d", s.Name, keyCounter.Add(1))

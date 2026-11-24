@@ -10,6 +10,7 @@ import (
 	"io"
 	"testing"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
@@ -24,7 +25,7 @@ func newDuplicateGateConnection(t *testing.T, seed uint64) *EmbeddedConnection {
 	t.Helper()
 	env := dst.NewSim(seed)
 	env.Buggify = dst.DisabledBuggifier()
-	fdbDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+	fdbDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
 	fdbDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 	ks := keyspace.New(subspace.Sub())
 	cat, err := catalog.NewRecordLayerStoreCatalog(ks.CatalogSubspace())

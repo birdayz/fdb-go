@@ -35,6 +35,7 @@ go_test(
         "test-full",
     ],
     deps = [
+        "//internal/dstwire",
         "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",

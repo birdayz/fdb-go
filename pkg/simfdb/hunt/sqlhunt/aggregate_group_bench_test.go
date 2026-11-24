@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/sqldriver"
@@ -39,7 +40,7 @@ func aggBenchHarness(b *testing.B) *sql.DB {
 
 	env := dst.NewSim(uint64(aggBenchGroups))
 	env.Buggify = dst.DisabledBuggifier()
-	simDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+	simDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 
 	key := fmt.Sprintf("sim://aggbench/%d", aggKeyCounter.Add(1))

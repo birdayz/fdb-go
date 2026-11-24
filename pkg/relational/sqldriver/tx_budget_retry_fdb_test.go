@@ -66,7 +66,7 @@ func openLateClockDB(t *testing.T, clk dst.Clock, dbPath, tmpl string) *sql.DB {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	env := &dst.Env{Clock: clk}
+	env := &recordlayer.Env{Clock: clk}
 	rlDB := recordlayer.NewFDBDatabase(rawDB).SetEnv(env)
 	key := "lateclock://" + t.Name()
 	t.Cleanup(sqldriver.RegisterBackend(key, rlDB))

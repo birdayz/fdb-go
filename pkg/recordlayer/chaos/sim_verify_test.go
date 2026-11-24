@@ -8,6 +8,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -26,7 +27,7 @@ func TestSimFDB_RunRandomVerify(t *testing.T) {
 	const seed = 7
 	env := dst.NewSim(seed)
 	env.Buggify = dst.DisabledBuggifier() // clean run: proves correctness, not fault-tolerance
-	db := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+	db := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
 	md := buildMaxEverMetadata()
 	sub := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 	model := NewStoreModel(md)

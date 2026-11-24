@@ -13,7 +13,6 @@ import (
 
 	"fdb.dev/pkg/recordlayer/internal/tuplefast"
 
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -143,7 +142,8 @@ func deleteWhereBoundError(index *Index, prefix tuple.Tuple, bound int) error {
 		"%s index %q: deleteWhere prefix has %d columns but the index is keyed by %d; "+
 			"a longer prefix would clear some of its structures and miss others, leaving "+
 			"index data that answers for records that are gone",
-		index.Type, index.Name, len(prefix), bound)
+		index.Type, index.Name, len(prefix), bound,
+	)
 }
 
 // checkDeleteWhereBound is the shared CanDeleteWhere body: everything except the
@@ -198,12 +198,12 @@ type IndexStoreContext interface {
 	AcquireReadLock(key string)
 	ReleaseReadLock(key string)
 
-	// Env exposes the DST Tier-0 environment (Clock + Randomness + Buggify)
-	// inherited from the record context. Nil-safe: a nil *dst.Env means
-	// production, and the *dst.Env accessors fall back to wall clock / crypto/rand.
-	// Vector-index maintainers (HNSW, R-tree) draw node-ID and sample-key nonces
-	// through Env().Read so a simulation run reproduces the persisted bytes.
-	Env() *dst.Env
+	// Env exposes the simulation environment (Clock + Random) inherited from the
+	// record context. Nil-safe: a nil *Env means production, and the *Env
+	// accessors fall back to wall clock / crypto/rand. Vector-index maintainers
+	// (HNSW, R-tree) draw node-ID and sample-key nonces through Env().Read so a
+	// simulation run reproduces the persisted bytes.
+	Env() *Env
 
 	// indexMaintenanceFilter is the store's IndexMaintenanceFilter, Java's
 	// IndexMaintainerState.filter.

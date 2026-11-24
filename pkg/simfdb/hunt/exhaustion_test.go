@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
@@ -20,12 +21,12 @@ func exhaustionDriver(t *testing.T, wrap func(*simfdb.SimDB) fdb.Transactor) (*d
 	backend := simfdb.New(env)
 	var db *recordlayer.FDBDatabase
 	if wrap == nil {
-		db = recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(env)
+		db = recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(dstwire.Env(env))
 	} else {
-		db = recordlayer.NewFDBDatabaseWithTransactor(wrap(backend), fdb.Database{}).SetEnv(env)
+		db = recordlayer.NewFDBDatabaseWithTransactor(wrap(backend), fdb.Database{}).SetEnv(dstwire.Env(env))
 	}
 	cleanEnv := &dst.Env{Clock: env.Clock, Random: env.Random, Buggify: dst.DisabledBuggifier()}
-	cleanDB := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(cleanEnv)
+	cleanDB := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(dstwire.Env(cleanEnv))
 	d := newDriver(backend, db, cleanDB, KitchenSinkMetadata())
 	// The setup save goes through the clean view, so a wrapping transactor
 	// only sees the operation under test.

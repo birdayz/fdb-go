@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/conformance/factorycorpus"
@@ -33,7 +34,7 @@ func TestMain(m *testing.M) {
 	env := dst.NewSim(745)
 	env.Buggify = dst.DisabledBuggifier()
 	sim := simfdb.New(env)
-	backend := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(env)
+	backend := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(dstwire.Env(env))
 	clusterFilePath = "factorycorpus/full"
 	unregister := sqldriver.RegisterBackend(clusterFilePath, backend)
 	code := m.Run()

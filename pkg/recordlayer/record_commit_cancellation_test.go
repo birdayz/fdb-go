@@ -68,7 +68,7 @@ func TestRunCommitChecksRetainCallerCancellationAndFinalizeHandles(t *testing.T)
 			t.Parallel()
 			env := dst.NewSim(471)
 			b := &commitCancellationBackend{SimDB: simfdb.New(env)}
-			db := NewFDBDatabaseWithBackend(b).SetEnv(env)
+			db := NewFDBDatabaseWithBackend(b).SetEnv(simEnv(env))
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			checks, posts := 0, 0

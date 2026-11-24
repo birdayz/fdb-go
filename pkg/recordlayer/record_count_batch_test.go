@@ -77,7 +77,7 @@ func TestRecordCountRollupFetchesInBoundedBatches(t *testing.T) {
 		rec.prefix = sub.Sub(RecordCountKey).Bytes()
 
 		backend := &countRangeRecordingBackend{BackendDatabase: simfdb.New(env), rec: rec}
-		db := NewFDBDatabaseWithBackend(backend).SetEnv(env)
+		db := NewFDBDatabaseWithBackend(backend).SetEnv(simEnv(env))
 
 		// A GROUPED record-count key is what routes GetSnapshotRecordCount(empty)
 		// into the roll-up branch: an ungrouped one is answered by a single Get and

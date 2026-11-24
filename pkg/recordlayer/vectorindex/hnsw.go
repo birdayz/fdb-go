@@ -15,7 +15,6 @@ import (
 	"math/bits"
 	"sort"
 
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -1782,11 +1781,11 @@ type hnswStorage struct {
 	// existence probe) is deterministically reachable without a live FDB transaction.
 	get func(tx fdb.ReadTransaction, key fdb.Key) ([]byte, error)
 
-	// env is the DST Tier-0 environment routing sample-key nonce entropy. Nil
+	// env is the simulation environment routing sample-key nonce entropy. Nil
 	// means production (crypto/rand); the maintainer sets it from the record
-	// context so a simulation run mints reproducible SAMPLES keys. The *dst.Env
+	// context so a simulation run mints reproducible SAMPLES keys. The *recordlayer.Env
 	// accessors are nil-safe, so leaving it unset keeps production byte-identical.
-	env *dst.Env
+	env *recordlayer.Env
 }
 
 // scanIter opens a range iterator, honoring the test seam (s.scan) when set and

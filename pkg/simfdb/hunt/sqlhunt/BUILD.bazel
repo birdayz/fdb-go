@@ -13,6 +13,7 @@ go_library(
     importpath = "fdb.dev/pkg/simfdb/hunt/sqlhunt",
     visibility = ["//cmd/dst-hunt:__pkg__"],
     deps = [
+        "//internal/dstwire",
         "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/recordlayer",
@@ -39,6 +40,7 @@ go_test(
     ],
     embed = [":sqlhunt"],
     deps = [
+        "//internal/dstwire",
         "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/recordlayer",

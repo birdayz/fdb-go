@@ -19,7 +19,6 @@ import (
 
 	"fdb.dev/pkg/recordlayer/internal/tuplefast"
 
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -1668,7 +1667,8 @@ func (store *FDBRecordStore) newRegisteredIndexMaintainer(factory IndexMaintaine
 		return m, nil
 	}
 	return newSlidingWindowIndexMaintainer(
-		index, m, store.indexSlidingWindowSubspace(index), tx, store, store.context.Timer())
+		index, m, store.indexSlidingWindowSubspace(index), tx, store, store.context.Timer(),
+	)
 }
 
 func (store *FDBRecordStore) addUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple, existingKey tuple.Tuple) error {
@@ -1695,10 +1695,10 @@ func (store *FDBRecordStore) removeUniquenessViolations(index *Index, indexKey t
 	return nil
 }
 
-// Env exposes the record context's DST environment to index maintainers.
-// Nil-safe (a nil *dst.Env means production); index maintainers draw persisted
+// Env exposes the record context's simulation environment to index maintainers.
+// Nil-safe (a nil *Env means production); index maintainers draw persisted
 // nonces through it so a simulation run is byte-reproducible.
-func (store *FDBRecordStore) Env() *dst.Env { return store.context.Env() }
+func (store *FDBRecordStore) Env() *Env { return store.context.Env() }
 
 // lockRegistry delegation — matches Java's LockRegistry on FDBRecordContext.
 

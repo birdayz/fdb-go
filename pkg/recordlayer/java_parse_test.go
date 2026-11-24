@@ -309,7 +309,7 @@ func TestRandomRankHashReplaysUnderASeededEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, b := config.withEnv(dst.NewSim(42)), config.withEnv(dst.NewSim(42))
+	a, b := config.withEnv(simEnv(dst.NewSim(42))), config.withEnv(simEnv(dst.NewSim(42)))
 	for i := range 16 {
 		x, errX := a.HashFunction(nil)
 		y, errY := b.HashFunction(nil)
@@ -318,7 +318,7 @@ func TestRandomRankHashReplaysUnderASeededEnv(t *testing.T) {
 		}
 	}
 	// A pure hash is left as it is.
-	jdk := defaultRankedSetConfig.withEnv(dst.NewSim(42))
+	jdk := defaultRankedSetConfig.withEnv(simEnv(dst.NewSim(42)))
 	if h, err := jdk.HashFunction([]byte("hello")); err != nil || h != 127791473 {
 		t.Error("withEnv changed the JDK hash")
 	}
@@ -338,7 +338,7 @@ func TestRandomRankHashFailsTheWriteOnAFailedRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := &dst.Env{Random: failingRandomness{}}
+	env := &Env{Random: failingRandomness{}}
 	rs := newRankedSet(subspace.FromBytes([]byte("rs")), config.withEnv(env))
 	// A nil transaction: the draw comes before the first read or write, so an
 	// Add that goes on past a failed draw reaches the transaction and panics.

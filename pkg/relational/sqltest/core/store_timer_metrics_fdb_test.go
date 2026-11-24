@@ -88,7 +88,7 @@ func armTimer(t *testing.T, key string, armFirst bool, clock ...dst.Clock) *reco
 
 	db := recordlayer.NewFDBDatabaseWithBackend(sharedStoreTimerBackend(t))
 	if len(clock) == 1 {
-		db.SetEnv(&dst.Env{Clock: clock[0]})
+		db.SetEnv(&recordlayer.Env{Clock: clock[0]})
 	}
 	db.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 	t.Cleanup(sqldriver.RegisterBackend(key, db))

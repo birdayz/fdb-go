@@ -13,7 +13,6 @@ import (
 	"math"
 	"sort"
 
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/rabitq"
 	"fdb.dev/pkg/recordlayer"
@@ -385,7 +384,7 @@ type guardiannVectorMetadata struct {
 
 // Random identities (RandomHelpers.randomUuid): deterministic draws come from
 // the SplittableRandom, the rest are random v4 UUIDs through the DST seam.
-func guardiannRandomUUID(random *splittableRandom, deterministic bool, env *dst.Env) (tuple.UUID, error) {
+func guardiannRandomUUID(random *splittableRandom, deterministic bool, env *recordlayer.Env) (tuple.UUID, error) {
 	if deterministic {
 		return randomUUIDFrom(random), nil
 	}

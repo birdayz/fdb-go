@@ -170,7 +170,7 @@ func TestCompositeFanOutUnderAbsentParentWritesNoIndexEntry(t *testing.T) {
 	}
 	env := dst.NewSim(1035)
 	env.Buggify = dst.DisabledBuggifier()
-	db := NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+	db := NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(simEnv(env))
 	sub := subspace.FromBytes(tuple.Tuple{"absent_parent_fanout"}.Pack())
 
 	entries := func(t *testing.T, save ...proto.Message) []tuple.Tuple {
@@ -207,7 +207,8 @@ func TestCompositeFanOutUnderAbsentParentWritesNoIndexEntry(t *testing.T) {
 		return keys
 	}
 
-	if got := entries(t,
+	if got := entries(
+		t,
 		absentParentRec(fd, 1, false, nil, []string{"t0", "t1"}),
 		absentParentRec(fd, 2, false, nil, nil),
 	); len(got) != 0 {
@@ -339,7 +340,7 @@ func newIndexStateHarness(t *testing.T, fd protoreflect.FileDescriptor, seed uin
 	env := dst.NewSim(seed)
 	env.Buggify = dst.DisabledBuggifier()
 	return &indexStateHarness{
-		db:      NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env),
+		db:      NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(simEnv(env)),
 		md:      md,
 		sub:     subspace.FromBytes(tuple.Tuple{name}.Pack()),
 		indexes: indexes,
@@ -428,7 +429,8 @@ func psRec(fd protoreflect.FileDescriptor, id int64, elems ...any) *dynamicpb.Me
 func TestIndexUpdateSkipsEveryCommonEntry(t *testing.T) {
 	t.Parallel()
 	fd := absentParentFanOutFile(t)
-	h := newIndexStateHarness(t, fd, 1037, "fanout_update_common_entries",
+	h := newIndexStateHarness(
+		t, fd, 1037, "fanout_update_common_entries",
 		NewSumIndex("Rec$sum_n", Ungrouped(NestFanOut("ps", Field("n")))),
 		NewCountIndex("Rec$count_a", GroupAll(NestFanOut("ps", Field("a")))),
 		NewCountNotNullIndex("Rec$count_not_null_n", Ungrouped(NestFanOut("ps", Field("n")))),

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -87,7 +88,7 @@ func TestOracleHasTeethOverSimFDB(t *testing.T) {
 	env := dst.NewSim(1)
 	env.Buggify = dst.DisabledBuggifier()
 	backend := simfdb.New(env)
-	db := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(env)
+	db := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(dstwire.Env(env))
 	d := &driver{
 		db:      db,
 		cleanDB: db,

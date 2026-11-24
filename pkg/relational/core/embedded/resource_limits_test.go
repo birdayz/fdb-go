@@ -210,7 +210,7 @@ func TestPageBudgetAnchorsOnTheDatabaseEnvClock(t *testing.T) {
 	t.Parallel()
 
 	clock := dst.NewSimClock(dst.Epoch)
-	env := &dst.Env{Clock: clock}
+	env := &recordlayer.Env{Clock: clock}
 	conn := &EmbeddedConnection{sess: &session.Session{
 		DB: (&recordlayer.FDBDatabase{}).SetEnv(env),
 	}}

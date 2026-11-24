@@ -59,7 +59,7 @@ var _ = Describe("IndexingHeartbeat", func() {
 	It("recognizes a Java UUID heartbeat and the exact future skew boundary", func() {
 		for _, age := range []int64{-86_400_001, -86_400_000, -86_399_999, 0, 59_999, 60_000} {
 			ss := specSubspace().Sub(age)
-			env := &dst.Env{Clock: dst.NewSimClock(dst.Epoch), Random: dst.NewSeededRandomness(19)}
+			env := &Env{Clock: dst.NewSimClock(dst.Epoch), Random: dst.NewSeededRandomness(19)}
 			peer := NewIndexingHeartbeat("JAVA_PEER", 60_000, false, env)
 			self := NewIndexingHeartbeat("GO_SELF", 60_000, false, env)
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {

@@ -65,7 +65,6 @@ go_library(
     deps = [
         "//gen",
         "//internal/unicode15",
-        "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
@@ -615,6 +614,7 @@ go_test(
     deps = [
         "//gen",
         "//gen/demopb",
+        "//internal/dstwire",
         "//internal/unicode15",
         "//pkg/dst",
         "//pkg/fdbgo/fdb",

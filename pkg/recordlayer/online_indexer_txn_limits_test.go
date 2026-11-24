@@ -123,7 +123,7 @@ var _ = Describe("Online indexer transaction limits", func() {
 	It("commits a mutual chunk early once the transaction time limit is passed", func() {
 		root := specSubspace()
 		clock := dst.NewSimClock(dst.Epoch)
-		env := &dst.Env{Clock: clock, Random: dst.NewSeededRandomness(73)}
+		env := &Env{Clock: clock, Random: dst.NewSeededRandomness(73)}
 		db := NewFDBDatabase(sharedDB.db).SetEnv(env)
 		builder := baseBuilder()
 		index := NewIndex("by_price", Field("price"))

@@ -11,6 +11,7 @@ go_library(
     importpath = "fdb.dev/pkg/simfdb/hunt/metamorphic",
     visibility = ["//cmd/dst-generate:__pkg__"],
     deps = [
+        "//internal/dstwire",
         "//pkg/dst",
         "//pkg/recordlayer",
         "//pkg/relational/sqldriver",

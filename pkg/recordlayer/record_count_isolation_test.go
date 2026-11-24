@@ -106,7 +106,7 @@ func TestAggregateIndexScanHonorsIsolationLevel(t *testing.T) {
 			ctx := context.Background()
 			env := dst.NewSim(209)
 			env.Buggify = dst.DisabledBuggifier()
-			db := NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+			db := NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(simEnv(env))
 			sub := subspace.FromBytes(tuple.Tuple{"countiso", arm.name}.Pack())
 			md := buildMetaData(t)
 

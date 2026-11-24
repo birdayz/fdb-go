@@ -90,6 +90,7 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
@@ -181,7 +182,7 @@ func openSimSchemaOnClock(t *testing.T, seed uint64, clock dst.Clock, tableDDL s
 	env := dst.NewSim(seed)
 	env.Clock = clock
 	env.Buggify = dst.DisabledBuggifier()
-	simDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+	simDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 	key := "sim://" + t.Name()
 	fdbDBCache.Store(key, simDB)

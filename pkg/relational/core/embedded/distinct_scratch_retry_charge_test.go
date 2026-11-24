@@ -17,6 +17,7 @@ import (
 	"io"
 	"testing"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -59,7 +60,7 @@ func newChaosSimConnection(t *testing.T, seed uint64) (*EmbeddedConnection, *cha
 	faults := &chaos.FaultConfig{Rates: map[chaos.FaultType]float64{}}
 	transactor := chaos.NewChaosTransactor(sim, faults, seed)
 	backend := &chaosSimBackend{ChaosTransactor: transactor, standalone: sim}
-	fdbDB := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(env)
+	fdbDB := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(dstwire.Env(env))
 	fdbDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 
 	ks := keyspace.New(subspace.Sub())

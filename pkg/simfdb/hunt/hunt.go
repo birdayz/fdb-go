@@ -24,6 +24,7 @@ import (
 	"sort"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -169,12 +170,12 @@ func (rw recordWorkload) Run(seed uint64, cfg Config) *Report {
 	env := NewSimEnv(seed, cfg.FaultProb)
 	md := rw.metadata()
 	backend := simfdb.New(env)
-	db := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(env)
+	db := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(dstwire.Env(env))
 	// A fault-free view of the SAME backend for the oracle, so an injected fault can never
 	// perturb verification (mirrors chaos.Scenario's clean-DB split). Read-only verify draws
 	// nothing from the shared clock/randomness, so determinism is preserved.
 	cleanEnv := &dst.Env{Clock: env.Clock, Random: env.Random, Buggify: dst.DisabledBuggifier()}
-	cleanDB := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(cleanEnv)
+	cleanDB := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(dstwire.Env(cleanEnv))
 
 	d := newDriver(backend, db, cleanDB, md)
 	rng := rand.New(rand.NewPCG(seed, opStream))
@@ -526,7 +527,8 @@ func KitchenSinkMetadata() *recordlayer.RecordMetaData {
 	b.AddIndex("Order", recordlayer.NewIndex("hunt_covering",
 		recordlayer.KeyWithValue(
 			recordlayer.Concat(recordlayer.Field("price"), recordlayer.Nest("flower", recordlayer.Field("type"))),
-			1)))
+			1,
+		)))
 	md, err := b.Build()
 	if err != nil {
 		panic("hunt: failed to build kitchen-sink metadata: " + err.Error())

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
@@ -28,7 +29,7 @@ func injectSimFDBWithHandle(t *testing.T, seed uint64) (string, *simfdb.SimDB) {
 	env := dst.NewSim(seed)
 	env.Buggify = dst.DisabledBuggifier()
 	sim := simfdb.New(env)
-	simDB := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(env)
+	simDB := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(dstwire.Env(env))
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 	key := "sim://" + t.Name()
 	fdbDBCache.Store(key, simDB)

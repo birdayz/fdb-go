@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
@@ -223,7 +224,7 @@ func newHarness(seed uint64, faultProb float64) (*harness, error) {
 	env.Buggify = dst.DisabledBuggifier() // setup phase runs fault-free
 
 	backend := simfdb.New(env)
-	simDB := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(env)
+	simDB := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(dstwire.Env(env))
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 
 	key := fmt.Sprintf("sim://sqlhunt/%d/%d", seed, keyCounter.Add(1))

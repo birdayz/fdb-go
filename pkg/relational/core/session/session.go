@@ -31,13 +31,18 @@ import (
 	"sync"
 	"time"
 
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	apiddl "fdb.dev/pkg/relational/api/ddl"
 	"fdb.dev/pkg/relational/core/catalog"
 	"fdb.dev/pkg/relational/core/keyspace"
 )
+
+// Clock supplies the current time for statement-start timestamps.
+// Nil (the default) means the wall clock (time.Now).
+type Clock interface {
+	Now() time.Time
+}
 
 // Session carries the resource handles and session identifiers a SQL
 // engine needs to plan and run statements. Fields are exported so
@@ -99,10 +104,10 @@ type Session struct {
 
 	// Clock is the RFC-199 Tier-0 time seam for the statement-start
 	// timestamp. Nil (the default) means the wall clock — production
-	// behavior is unchanged. A simulation installs a dst.SimClock so
-	// the CURRENT_TIMESTAMP-family value captured by BeginStatement is
+	// behavior is unchanged. A simulation installs a Clock so the
+	// CURRENT_TIMESTAMP-family value captured by BeginStatement is
 	// deterministic and reproducible from the sim seed.
-	Clock dst.Clock
+	Clock Clock
 }
 
 // now returns the session's current time in UTC, routed through the

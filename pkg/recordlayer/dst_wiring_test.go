@@ -19,6 +19,13 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+func simEnv(env *dst.Env) *Env {
+	if env == nil {
+		return nil
+	}
+	return &Env{Clock: env, Random: env}
+}
+
 // TestStoreHeader_LastUpdateTimeSeamed proves the RFC-199 Tier-0 Clock seam on the
 // primary persisted-byte site: the store header's LastUpdateTime. Under a sim env it is a
 // deterministic function of the sim clock (Epoch), reproducible across runs; under
@@ -30,7 +37,7 @@ func TestStoreHeader_LastUpdateTimeSeamed(t *testing.T) {
 	epochMillis := uint64(dst.Epoch.UnixMilli())
 
 	// Sim env → the persisted timestamp is the sim clock (Epoch), not the wall clock.
-	h1 := createStoreHeaderAtFormat(1, nil, dst.NewSim(7), int32(formatVersionDefault))
+	h1 := createStoreHeaderAtFormat(1, nil, simEnv(dst.NewSim(7)), int32(formatVersionDefault))
 	if h1.LastUpdateTime == nil {
 		t.Fatal("LastUpdateTime unset")
 	}
@@ -39,7 +46,7 @@ func TestStoreHeader_LastUpdateTimeSeamed(t *testing.T) {
 	}
 
 	// Reproducible: a fresh sim at the same seed yields the identical persisted timestamp.
-	h2 := createStoreHeaderAtFormat(1, nil, dst.NewSim(7), int32(formatVersionDefault))
+	h2 := createStoreHeaderAtFormat(1, nil, simEnv(dst.NewSim(7)), int32(formatVersionDefault))
 	if *h2.LastUpdateTime != *h1.LastUpdateTime {
 		t.Fatalf("sim header not reproducible: %d vs %d", *h1.LastUpdateTime, *h2.LastUpdateTime)
 	}
@@ -74,7 +81,7 @@ func TestContextEnv_NilSafeAndInherited(t *testing.T) {
 	}
 
 	// Simulation database: SetEnv installs a seeded env that contexts inherit.
-	sim := (&FDBDatabase{}).SetEnv(dst.NewSim(3))
+	sim := (&FDBDatabase{}).SetEnv(simEnv(dst.NewSim(3)))
 	simCtx := &FDBRecordContext{env: sim.env}
 	if !simCtx.Env().Now().Equal(dst.Epoch) {
 		t.Fatalf("sim context Now() = %v, want Epoch %v", simCtx.Env().Now(), dst.Epoch)
@@ -123,7 +130,7 @@ func TestIndexBlockLeaseReadsTheEnvClock(t *testing.T) {
 			ctx := context.Background()
 			clock := dst.NewSimClock(dst.Epoch)
 			env := &dst.Env{Clock: clock, Random: dst.NewSeededRandomness(5)}
-			db := NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+			db := NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(simEnv(env))
 			sub := subspace.FromBytes(tuple.Tuple{"leaseseam", tc.name}.Pack())
 
 			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
@@ -247,7 +254,7 @@ func TestBuildIndexTimeLimitUsesTheEnvClock(t *testing.T) {
 		ctx := context.Background()
 		clock := dst.NewSimClock(dst.Epoch)
 		env := &dst.Env{Clock: clock, Random: dst.NewSeededRandomness(11)}
-		db := NewFDBDatabaseWithBackend(&elapsedBuildBackend{BackendDatabase: simfdb.New(env), clock: clock}).SetEnv(env)
+		db := NewFDBDatabaseWithBackend(&elapsedBuildBackend{BackendDatabase: simfdb.New(env), clock: clock}).SetEnv(simEnv(env))
 		sub := subspace.FromBytes(tuple.Tuple{"timelimitseam", name}.Pack())
 
 		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
@@ -354,7 +361,7 @@ func TestMutualFragmentOrderIsReproducible(t *testing.T) {
 	order := func(seed uint64) (first, step, count int) {
 		t.Helper()
 		env := dst.NewSim(seed)
-		db := NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+		db := NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(simEnv(env))
 		oi := &OnlineIndexer{
 			db:               db,
 			mutual:           true,
@@ -414,7 +421,7 @@ func TestScanTimeBudgetUsesTheEnvClock(t *testing.T) {
 		t.Helper()
 		ctx := context.Background()
 		env := &dst.Env{Clock: clock, Random: dst.NewSeededRandomness(13)}
-		db := NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+		db := NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(simEnv(env))
 		sub := subspace.FromBytes(tuple.Tuple{"scanbudget", name}.Pack())
 
 		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
@@ -439,7 +446,7 @@ func TestScanTimeBudgetUsesTheEnvClock(t *testing.T) {
 				}
 			}
 			props := ForwardScan()
-			props.ExecuteProperties = DefaultExecutePropertiesIn(env).WithTimeLimit(limit)
+			props.ExecuteProperties = DefaultExecutePropertiesIn(simEnv(env)).WithTimeLimit(limit)
 			cursor := store.ScanRecords(nil, props)
 			defer cursor.Close()
 			n := 0
@@ -507,7 +514,7 @@ func TestScanLimiterStateElapsedIsAnchoredToItsOwnClock(t *testing.T) {
 	t.Parallel()
 
 	clock := dst.NewSimClock(dst.Epoch)
-	simState := NewScanLimiterStateIn(&dst.Env{Clock: clock})
+	simState := NewScanLimiterStateIn(&Env{Clock: clock})
 	if got := simState.Elapsed(); got != 0 {
 		t.Fatalf("elapsed on a freshly minted sim state = %v, want 0", got)
 	}

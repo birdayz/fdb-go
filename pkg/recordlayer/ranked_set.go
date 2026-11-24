@@ -15,7 +15,6 @@ import (
 
 	"fdb.dev/pkg/recordlayer/internal/tuplefast"
 
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -133,7 +132,7 @@ func crcHash(key []byte) int32 {
 // seam: a nil env is production's crypto/rand, and a maintainer binds its
 // store's env (withEnv) so a seeded run replays. A failed read is returned:
 // a zero hash would put the key on every level.
-func randomHashFrom(env *dst.Env) rankedSetHashFunction {
+func randomHashFrom(env *Env) rankedSetHashFunction {
 	return func([]byte) (int32, error) {
 		var b [4]byte
 		if _, err := env.Read(b[:]); err != nil {
@@ -144,7 +143,7 @@ func randomHashFrom(env *dst.Env) rankedSetHashFunction {
 }
 
 // withEnv binds a RANDOM hash to env's randomness; other hashes are pure.
-func (c rankedSetConfig) withEnv(env *dst.Env) rankedSetConfig {
+func (c rankedSetConfig) withEnv(env *Env) rankedSetConfig {
 	if c.HashFunctionName == rankedSetHashRandom {
 		c.HashFunction = randomHashFrom(env)
 	}

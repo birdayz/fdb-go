@@ -8,6 +8,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/vectorcodec"
@@ -187,7 +188,7 @@ var _ = Describe("SPFresh lease exclusion + mint guard (300k fill bugs)", func()
 		// Simulation reproducibility: the nonce is drawn through the DST
 		// randomness seam, so two runs of one seed mint the same nonce — the
 		// byte-determinism the global crypto/rand nonce defeated.
-		Expect(spfreshProcessNonce(dst.NewSim(99))).To(Equal(spfreshProcessNonce(dst.NewSim(99))))
+		Expect(spfreshProcessNonce(dstwire.Env(dst.NewSim(99)))).To(Equal(spfreshProcessNonce(dstwire.Env(dst.NewSim(99)))))
 
 		storage := newSPFreshStorage(specSubspace().Sub("spfresh-lease").Sub("uniq"), 1)
 		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {

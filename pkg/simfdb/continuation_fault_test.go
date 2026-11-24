@@ -9,6 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -386,6 +387,6 @@ func newInjectableSim(name string) (*simfdb.SimDB, *recordlayer.FDBDatabase, sub
 	env := dst.NewSim(1)
 	env.Buggify = dst.DisabledBuggifier()
 	sim := simfdb.New(env)
-	db := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(env)
+	db := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(dstwire.Env(env))
 	return sim, db, subspace.FromBytes(tuple.Tuple{"cont-fault", name}.Pack())
 }

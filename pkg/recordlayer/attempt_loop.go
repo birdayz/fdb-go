@@ -15,7 +15,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 )
 
@@ -104,7 +103,7 @@ const SPFreshStalledSealBound = 100
 // A context that ends before the first attempt returns ctx.Err(); one that
 // ends later returns an error wrapping both ctx.Err() and the last attempt's
 // error. After the final attempt the last error is returned unchanged.
-func attemptLoop(ctx context.Context, env *dst.Env, observe AttemptObserver, policy attemptPolicy, route AttemptRoute, attempt func(call AttemptCall) (any, error)) (any, error) {
+func attemptLoop(ctx context.Context, env *Env, observe AttemptObserver, policy attemptPolicy, route AttemptRoute, attempt func(call AttemptCall) (any, error)) (any, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -148,7 +147,7 @@ func attemptLoop(ctx context.Context, env *dst.Env, observe AttemptObserver, pol
 
 // waitRetryDelay waits before retrying after last, timed as EventRetryDelay (simulated: recorded,
 // not waited). A ctx that ends first returns its error wrapping last.
-func waitRetryDelay(ctx context.Context, env *dst.Env, timer *StoreTimer, wait time.Duration, last error) error {
+func waitRetryDelay(ctx context.Context, env *Env, timer *StoreTimer, wait time.Duration, last error) error {
 	if env != nil {
 		timer.Record(EventRetryDelay, int64(wait))
 	} else {

@@ -19,7 +19,6 @@ import (
 
 	"fdb.dev/pkg/recordlayer/internal/tuplefast"
 
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -972,7 +971,7 @@ func (store *FDBRecordStore) recordCountStateIsReadable() bool {
 // created by an instance opening at an older format must be BORN at that
 // format, not created new and immediately upgraded past it -- Java threads the
 // builder's formatVersion into store creation the same way.
-func createStoreHeaderAtFormat(metaDataVersion int32, metaData *RecordMetaData, env *dst.Env, formatVersionIn int32) *gen.DataStoreInfo {
+func createStoreHeaderAtFormat(metaDataVersion int32, metaData *RecordMetaData, env *Env, formatVersionIn int32) *gen.DataStoreInfo {
 	formatVersion := formatVersionIn
 	userVersion := int32(0) // Default user version
 	lastUpdateTime := uint64(env.Now().UnixMilli())

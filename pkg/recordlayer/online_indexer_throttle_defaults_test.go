@@ -86,7 +86,7 @@ func TestOnlineIndexerBuilderRetryDefaults(t *testing.T) {
 		th.recordsScannedSinceForcedDelay = 10   // credit owed by the previous range
 		th.forcedDelayTimestamp = time.Now()
 		env := dst.NewSim(5)
-		oi := &OnlineIndexer{db: NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env), maxRetries: 5, recordsPerSecond: 10, throttle: th}
+		oi := &OnlineIndexer{db: NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(simEnv(env)), maxRetries: 5, recordsPerSecond: 10, throttle: th}
 
 		attempts := 0
 		n, hasMore, err := oi.buildRangeWithRetries(context.Background(),

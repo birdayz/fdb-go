@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/sqldriver"
@@ -189,7 +190,7 @@ func qcNewHarness(seed uint64) (*qcHarness, error) {
 	env := dst.NewSim(seed)
 	env.Buggify = dst.DisabledBuggifier() // faults OFF: hunting query answers, not fault idempotency
 
-	simDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+	simDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 
 	key := fmt.Sprintf("sim://sqlqueryhunt/%d/%d", seed, qcKeyCounter.Add(1))

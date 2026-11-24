@@ -29,7 +29,6 @@ import (
 	"github.com/antlr4-go/antlr/v4"
 
 	"fdb.dev/gen"
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -4139,7 +4138,8 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 	groupingCount := gke.GetGroupingCount()
 	groupedCount := gke.GetGroupedCount()
 	groupPaths, groupedPaths, err := cascades.DescribeAggregateIndexKey(
-		gke.ToKeyExpression().GetGrouping().GetWholeKey(), groupingCount)
+		gke.ToKeyExpression().GetGrouping().GetWholeKey(), groupingCount,
+	)
 	if err != nil || len(groupPaths) != groupingCount || len(groupedPaths) != groupedCount || groupedCount > 1 {
 		return nil
 	}
@@ -5549,7 +5549,7 @@ func rowsOrEmpty(rows driver.Rows) driver.Rows {
 // env returns the DST environment of the database this page reads from, or nil when the
 // connection has no session/database (a construction the resource-limit unit tests use). nil is
 // production: wall clock, unchanged behaviour.
-func (r *paginatingRows) env() *dst.Env {
+func (r *paginatingRows) env() *recordlayer.Env {
 	if r.conn == nil || r.conn.sess == nil || r.conn.sess.DB == nil {
 		return nil
 	}

@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"testing"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 )
@@ -43,13 +44,13 @@ func TestHNSWStorageEnv_DefaultsToProduction(t *testing.T) {
 		t.Fatal("nil-env sample nonces repeated — the crypto/rand fallback is not live")
 	}
 
-	s.env = dst.NewSim(9)
+	s.env = dstwire.Env(dst.NewSim(9))
 	var m1, m2 [16]byte
 	if _, err := s.env.Read(m1[:]); err != nil {
 		t.Fatalf("sim sample nonce: %v", err)
 	}
 	fresh := newHNSWStorage(subspace.Sub("h"), HNSWConfig{})
-	fresh.env = dst.NewSim(9)
+	fresh.env = dstwire.Env(dst.NewSim(9))
 	if _, err := fresh.env.Read(m2[:]); err != nil {
 		t.Fatalf("sim sample nonce: %v", err)
 	}
@@ -86,12 +87,12 @@ func TestSPFreshProcessNonce_SeamedBothDirections(t *testing.T) {
 		t.Fatal("the process nonce is a constant — two processes would mint the same lease owner")
 	}
 
-	s1 := spfreshProcessNonce(dst.NewSim(21))
-	s2 := spfreshProcessNonce(dst.NewSim(21))
+	s1 := spfreshProcessNonce(dstwire.Env(dst.NewSim(21)))
+	s2 := spfreshProcessNonce(dstwire.Env(dst.NewSim(21)))
 	if s1 != s2 {
 		t.Fatalf("sim process nonce not reproducible: %q vs %q", s1, s2)
 	}
-	if other := spfreshProcessNonce(dst.NewSim(22)); other == s1 {
+	if other := spfreshProcessNonce(dstwire.Env(dst.NewSim(22))); other == s1 {
 		t.Fatal("sim process nonce is seed-independent — a constant would pass the reproducibility check")
 	}
 

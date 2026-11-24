@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/sqldriver"
@@ -48,7 +49,7 @@ func TestLoadFixtureReplaysOnlyALostWindow(t *testing.T) {
 			env := dst.NewSim(7)
 			env.Buggify = dst.DisabledBuggifier()
 			sim := simfdb.New(env)
-			backend := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(env)
+			backend := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(dstwire.Env(env))
 			backend.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 			key := "sim://" + t.Name()
 			t.Cleanup(sqldriver.RegisterBackend(key, backend))

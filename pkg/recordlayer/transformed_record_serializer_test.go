@@ -26,7 +26,7 @@ import (
 
 // transform is transformRead with the reader of the unions these tests write
 // (unionOf: a message holding one bytes field, read as a BytesValue).
-func (s *TransformedRecordSerializer) transform(union []byte, env *dst.Env) ([]byte, error) {
+func (s *TransformedRecordSerializer) transform(union []byte, env *Env) ([]byte, error) {
 	return s.transformRead(union, env, func(b []byte) (proto.Message, error) {
 		m := &wrapperspb.BytesValue{}
 		if err := (proto.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(b, m); err != nil {
@@ -521,7 +521,7 @@ func TestTransformedSerializer_RandomnessIsSeamed(t *testing.T) {
 	s := mustSerializer(t, NewTransformedRecordSerializerJCEBuilder().
 		SetEncryptWhenSerializing(true).SetEncryptionKey(aesKey(t, 16)))
 	union := unionOf(sonnet108)
-	write := func(env *dst.Env) []byte {
+	write := func(env *Env) []byte {
 		t.Helper()
 		out, err := s.transform(union, env)
 		if err != nil {
@@ -529,10 +529,10 @@ func TestTransformedSerializer_RandomnessIsSeamed(t *testing.T) {
 		}
 		return out
 	}
-	if a, b := write(dst.NewSim(7)), write(dst.NewSim(7)); !bytes.Equal(a, b) {
+	if a, b := write(simEnv(dst.NewSim(7))), write(simEnv(dst.NewSim(7))); !bytes.Equal(a, b) {
 		t.Errorf("one seed stored different IVs: %x vs %x", a[1:17], b[1:17])
 	}
-	if a, c := write(dst.NewSim(7)), write(dst.NewSim(8)); bytes.Equal(a, c) {
+	if a, c := write(simEnv(dst.NewSim(7))), write(simEnv(dst.NewSim(8))); bytes.Equal(a, c) {
 		t.Error("two seeds stored the same IV: the IV does not come from the env")
 	}
 	if d, e := write(nil), write(nil); bytes.Equal(d, e) {
@@ -541,7 +541,7 @@ func TestTransformedSerializer_RandomnessIsSeamed(t *testing.T) {
 	// A random source the key manager sets is used as given.
 	fixed := mustSerializer(t, NewTransformedRecordSerializerJCEBuilder().SetEncryptWhenSerializing(true).
 		SetEncryptionKey(aesKey(t, 16)).SetRandom(bytes.NewReader(bytes.Repeat([]byte{0xab}, 64))))
-	out, err := fixed.transform(union, dst.NewSim(7))
+	out, err := fixed.transform(union, simEnv(dst.NewSim(7)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -550,7 +550,7 @@ func TestTransformedSerializer_RandomnessIsSeamed(t *testing.T) {
 	}
 
 	samples := func(seed uint64) int {
-		env, n := dst.NewSim(seed), 0
+		env, n := simEnv(dst.NewSim(seed)), 0
 		for range 256 {
 			if shouldIncludeInSample(0.5, env) {
 				n++

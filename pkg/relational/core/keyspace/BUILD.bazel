@@ -25,6 +25,7 @@ go_test(
     ],
     embed = [":keyspace"],
     deps = [
+        "//internal/dstwire",
         "//pkg/dst",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",

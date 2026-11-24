@@ -22,7 +22,6 @@ import (
 	"fdb.dev/pkg/recordlayer/internal/tuplefast"
 
 	"fdb.dev/gen"
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -510,12 +509,12 @@ func (oi *OnlineIndexer) buildsByIndex() bool {
 
 // newHeartbeat is a heartbeat under this indexer's one identity, minted from
 // env the first time it is needed.
-func (oi *OnlineIndexer) newHeartbeat(info string, allowMutual bool, env *dst.Env) *IndexingHeartbeat {
+func (oi *OnlineIndexer) newHeartbeat(info string, allowMutual bool, env *Env) *IndexingHeartbeat {
 	return newIndexingHeartbeatWithID(oi.ensureIndexerID(env), info, resolvedLeaseLengthMs(oi.leaseLengthMs), allowMutual, env)
 }
 
 // ensureIndexerID mints this indexer's one identity from env on first use.
-func (oi *OnlineIndexer) ensureIndexerID(env *dst.Env) uuid.UUID {
+func (oi *OnlineIndexer) ensureIndexerID(env *Env) uuid.UUID {
 	if oi.indexerID == uuid.Nil {
 		oi.indexerID = newIndexerID(env)
 	}
@@ -1704,7 +1703,8 @@ func (oi *OnlineIndexer) maybeLogBuildProgress(ctx context.Context, totalRecords
 	if !oi.shouldLogBuildProgress() {
 		return
 	}
-	logger.LogAttrs(ctx, slog.LevelInfo, "Indexer: Built Range",
+	logger.LogAttrs(
+		ctx, slog.LevelInfo, "Indexer: Built Range",
 		slog.String("index", oi.targetIndexNamesForLog()),
 		slog.Int64("records_scanned", totalRecords),
 		slog.Int64("range_records", rangeRecords),

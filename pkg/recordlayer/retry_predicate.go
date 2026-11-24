@@ -12,7 +12,6 @@ import (
 	"math/rand"
 	"time"
 
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 )
 
@@ -82,12 +81,12 @@ func isRetriableFirstCause(err error) bool {
 type exponentialDelay struct {
 	current, max time.Duration
 	next         time.Duration
-	env          *dst.Env
+	env          *Env
 }
 
 const exponentialDelayMinimum = 2 * time.Millisecond
 
-func newExponentialDelay(initial, max time.Duration, env *dst.Env) *exponentialDelay {
+func newExponentialDelay(initial, max time.Duration, env *Env) *exponentialDelay {
 	d := &exponentialDelay{current: initial, max: max, env: env}
 	d.next = d.draw()
 	return d
