@@ -42,7 +42,7 @@ func attachTimeoutObserverQueue(t *testing.T, db *Database) (*timeoutQueue, *ato
 	clock.Store(int64(time.Hour))
 	q := newTimeoutQueue()
 	for _, shard := range q.root.shards {
-		shard.now = clock.Load
+		shard.testHooks().now = clock.Load
 		shard.timer = timeoutObserverTimer{}
 	}
 	// No test transaction exists yet, so no arm can retain the original queue.

@@ -161,7 +161,7 @@ func TestReadIncarnation_CancelUnblocksHeldStorageReplies(t *testing.T) {
 
 			tx := db.CreateTransaction()
 			tx.SetReadVersion(rv)
-			tx.rpcTimeoutOverride = time.Hour
+			tx.testHooks().rpcTimeoutOverride = time.Hour
 			done := make(chan error, 1)
 			go func() { done <- tc.run(ctx, tx, key, secondKey) }()
 
@@ -192,12 +192,12 @@ func TestReadIncarnation_RetryReplacementTimeoutInterruptsHeldStorageReply(t *te
 
 	tx := db.CreateTransaction()
 	tx.SetTimeout(500)
-	tx.backoffJitter = func() float64 { return 0 }
+	tx.testHooks().backoffJitter = func() float64 { return 0 }
 	if err := tx.OnError(ctx, &wire.FDBError{Code: ErrNotCommitted}); err != nil {
 		t.Fatalf("create retry replacement: %v", err)
 	}
 	tx.SetReadVersion(rv)
-	tx.rpcTimeoutOverride = time.Hour
+	tx.testHooks().rpcTimeoutOverride = time.Hour
 
 	parked := make(chan struct{}, 1)
 	release, releaseIt := releaseGate(t)
@@ -257,7 +257,7 @@ func TestReadIncarnation_GRVHeldCancellationAndResetIsolation(t *testing.T) {
 
 			tx := db.CreateTransaction() // No SetReadVersion: the first read must wait on GRV.
 			tx.SetSkipGrvCache()
-			tx.rpcTimeoutOverride = time.Hour
+			tx.testHooks().rpcTimeoutOverride = time.Hour
 			oldDone := make(chan error, 1)
 			go func() {
 				_, err := tx.Get(ctx, key)
@@ -319,7 +319,7 @@ func TestTimeoutNoEarlierThanDeadline(t *testing.T) {
 	defer tx.Cancel()
 	tx.SetTimeout(0)
 	tx.SetSkipGrvCache()
-	tx.rpcTimeoutOverride = time.Hour
+	tx.testHooks().rpcTimeoutOverride = time.Hour
 	// Anchor the short budget when it is armed, after the GRV reply is held.
 	tx.creationTime = time.Time{}
 	type result struct {
@@ -452,7 +452,7 @@ func TestReadIncarnation_ResetBetweenPipelinedSendAndRegistration(t *testing.T) 
 	parked := make(chan struct{})
 	release, releaseIt := releaseGate(t)
 	defer releaseIt()
-	tx.afterPendingSend = func(*PendingGet) { close(parked); <-release }
+	tx.testHooks().afterPendingSend = func(*PendingGet) { close(parked); <-release }
 	type result struct {
 		value   []byte
 		pending *PendingGet
@@ -491,7 +491,7 @@ func TestReadIncarnation_ResetBetweenPipelinedSendAndRegistration(t *testing.T) 
 
 	// Clear the one-shot seam. The same handle now belongs to the fresh read
 	// incarnation and must support both a real commit and independent reads.
-	tx.afterPendingSend = nil
+	tx.testHooks().afterPendingSend = nil
 	releaseReplyIt()
 	sd.setIntercept(nil)
 	tx.Set(newKey, newValue)
@@ -549,7 +549,7 @@ func TestReadIncarnation_TerminationBeforePipelinedRegistrationRetiresResources(
 			captured := make(chan *PendingGet, 1)
 			releaseSend, releaseSendIt := releaseGate(t)
 			defer releaseSendIt()
-			tx.afterPendingSend = func(p *PendingGet) { captured <- p; <-releaseSend }
+			tx.testHooks().afterPendingSend = func(p *PendingGet) { captured <- p; <-releaseSend }
 			type result struct {
 				value   []byte
 				pending *PendingGet
@@ -650,7 +650,7 @@ func TestReadIncarnation_ReadVersionResultSurvivesReuse(t *testing.T) {
 	parked := make(chan struct{})
 	release, releaseIt := releaseGate(t)
 	defer releaseIt()
-	tx.afterReadVersion = func() { close(parked); <-release }
+	tx.testHooks().afterReadVersion = func() { close(parked); <-release }
 	type result struct {
 		version int64
 		err     error
@@ -670,7 +670,7 @@ func TestReadIncarnation_ReadVersionResultSurvivesReuse(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	tx.afterReadVersion = nil
+	tx.testHooks().afterReadVersion = nil
 	if got, err := tx.GetReadVersion(ctx); err != nil || got != want+100 {
 		t.Fatalf("new incarnation GRV=%d, %v; want independently set %d", got, err, want+100)
 	}
@@ -691,7 +691,7 @@ func TestReadIncarnation_ReadVersionCannotAcquireReplacement(t *testing.T) {
 	parked := make(chan struct{})
 	release, releaseIt := releaseGate(t)
 	defer releaseIt()
-	tx.beforeReadVersionLock = func() { close(parked); <-release }
+	tx.testHooks().beforeReadVersionLock = func() { close(parked); <-release }
 	done := make(chan error, 1)
 	go func() { _, err := tx.GetReadVersion(ctx); done <- err }()
 	waitReadParked(t, ctx, parked, "read-version acquisition")
@@ -700,7 +700,7 @@ func TestReadIncarnation_ReadVersionCannotAcquireReplacement(t *testing.T) {
 	waitReadParked(t, ctx, resetDone, "reset drain")
 	tx.SetReadVersion(rv + 100)
 	waitForFDB1025(t, done, "retired read-version acquisition")
-	tx.beforeReadVersionLock = nil
+	tx.testHooks().beforeReadVersionLock = nil
 	if got, err := tx.GetReadVersion(ctx); err != nil || got != rv+100 {
 		t.Fatalf("fresh read version=%d, %v; want %d", got, err, rv+100)
 	}
@@ -732,7 +732,7 @@ func TestReadIncarnation_ReadCannotUseReplacementWrites(t *testing.T) {
 			defer releaseIt()
 			park := func() { close(parked); <-release }
 			if !local {
-				tx.afterReadVersion = park
+				tx.testHooks().afterReadVersion = park
 			}
 			type result struct {
 				value []byte
@@ -764,7 +764,7 @@ func TestReadIncarnation_ReadCannotUseReplacementWrites(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
-			tx.afterReadVersion = nil
+			tx.testHooks().afterReadVersion = nil
 			if got, err := tx.Get(ctx, key); err != nil || string(got) != "replacement" {
 				t.Fatalf("new read=(%q, %v), want replacement", got, err)
 			}
@@ -822,7 +822,7 @@ func TestFDBOnErrorCannotEraseTerminalCauseAtTurnover(t *testing.T) {
 			tx.readErrMu.Unlock()
 			pause := &pausedCommit{reached: make(chan struct{}), release: make(chan struct{})}
 			defer pause.unblock()
-			tx.beforeTurnoverRetirement = func() {
+			tx.testHooks().beforeTurnoverRetirement = func() {
 				close(pause.reached)
 				<-pause.release
 			}
@@ -860,7 +860,7 @@ func TestFDBOnErrorCannotEraseTerminalCauseAtTurnover(t *testing.T) {
 
 			// Only an explicit Reset may revive this handle. It must discard
 			// old mutations rather than committing them during the next use.
-			tx.beforeTurnoverRetirement = nil
+			tx.testHooks().beforeTurnoverRetirement = nil
 			tx.Reset()
 			newKey := []byte(t.Name() + "/replacement")
 			tx.Set(newKey, []byte("new mutation"))
@@ -904,11 +904,11 @@ func TestFDBOnErrorReleasedCleanupCannotCancelReplacementWatch(t *testing.T) {
 	defer claim.unblock()
 	cleanup := &pausedCommit{reached: make(chan struct{}), release: make(chan struct{})}
 	defer cleanup.unblock()
-	tx.beforeTurnoverRetirement = func() {
+	tx.testHooks().beforeTurnoverRetirement = func() {
 		close(claim.reached)
 		<-claim.release
 	}
-	tx.beforeOnErrorWatchCleanup = func() {
+	tx.testHooks().beforeOnErrorWatchCleanup = func() {
 		close(cleanup.reached)
 		<-cleanup.release
 	}
@@ -1020,7 +1020,7 @@ func TestReadIncarnation_ElapsedTimeoutIsNoCauseUntilDelivered(t *testing.T) {
 					}
 					tx := db.CreateTransaction()
 					defer tx.Cancel()
-					tx.backoffJitter = func() float64 { return 0 }
+					tx.testHooks().backoffJitter = func() float64 { return 0 }
 					tx.SetTimeout(60000)
 					tx.readErrMu.Lock()
 					inc, node, armed := tx.readLife, tx.timeoutNode, tx.timeoutArmed

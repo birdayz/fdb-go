@@ -163,8 +163,8 @@ func TestDesignAdaptiveLingerBurstAndIdle(t *testing.T) {
 		t.Fatalf("precondition: expected D-NG adaptive=%v, got na=%v adaptive=%v", window, c.na, c.AdaptiveLinger())
 	}
 	c.lastWrite = baseTime
-	c.na.now = fakeNow
-	c.na.onAdaptiveYield = func() {
+	c.na.testHooks().now = fakeNow
+	c.na.testHooks().onAdaptiveYield = func() {
 		if yieldCalls.Add(1) >= 3 {
 			multOnce.Do(func() { close(reachedMultipleYields) })
 		}
@@ -229,7 +229,7 @@ func TestDesignAdaptiveLingerBurstAndIdle(t *testing.T) {
 	c2, counter2 := dialWriteCountedRaw(t, WithAdaptiveLinger(time.Hour))
 	enteredCloseLinger := make(chan struct{})
 	var closeOnce sync.Once
-	c2.na.onAdaptiveYield = func() {
+	c2.na.testHooks().onAdaptiveYield = func() {
 		closeOnce.Do(func() { close(enteredCloseLinger) })
 	}
 	beforeCloseWrites := len(counter2.snapshot())
@@ -260,7 +260,7 @@ func TestDesignCancelNeverUnqueues(t *testing.T) {
 	releaseWait := func() { releaseOnce.Do(func() { close(releaseCoalesce) }) }
 	c, frames := dialDesignArm(t, withNetDesign(designD), WithCoalesceDelay(time.Hour, time.Hour))
 	defer releaseWait()
-	c.na.onCoalesceWait = func() {
+	c.na.testHooks().onCoalesceWait = func() {
 		coalesceOnce.Do(func() { close(enteredCoalesce) })
 		<-releaseCoalesce
 	}
@@ -291,7 +291,7 @@ func TestDesignCancelNeverUnqueues(t *testing.T) {
 	for _, body := range [][]byte{frameBody(4), bytes.Repeat([]byte{'P'}, 5000)} {
 		reachedLock := make(chan struct{})
 		var reachedOnce sync.Once
-		c.na.beforeLock = func() {
+		c.na.testHooks().beforeLock = func() {
 			reachedOnce.Do(func() { close(reachedLock) })
 		}
 		c.na.mu.Lock()
@@ -312,7 +312,7 @@ func TestDesignCancelNeverUnqueues(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	c.na.beforeLock = nil
+	c.na.testHooks().beforeLock = nil
 	c.na.mu.Lock()
 	queuedAfterCancel := len(c.na.q)
 	c.na.mu.Unlock()
@@ -331,7 +331,7 @@ func TestDesignCancelNeverUnqueues(t *testing.T) {
 		cLock, _ := dialDesignArm(t, withNetDesign(designNG), WithCoalesceDelay(0, 0))
 		reachedLock := make(chan struct{})
 		var reachedOnce sync.Once
-		cLock.na.beforeLock = func() {
+		cLock.na.testHooks().beforeLock = func() {
 			reachedOnce.Do(func() { close(reachedLock) })
 		}
 		cLock.na.mu.Lock()
@@ -688,7 +688,7 @@ func TestDesignColdHeldOrderAndStartupPing(t *testing.T) {
 	var pingConn *Conn
 	pc, err := dialWith(ctx, "sim", pingSrv.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour), func(c *Conn) {
 		pingConn = c
-		c.beforeReadLoop = func() {
+		c.testHooks().beforeReadLoop = func() {
 			c.handlePing(BuildPingRequest(pingTok))
 		}
 	})
@@ -737,7 +737,7 @@ func TestDesignColdHeldOrderAndStartupPing(t *testing.T) {
 				<-releaseCtrl1
 			}
 		}}
-		c.beforeControlLock = func() {
+		c.testHooks().beforeControlLock = func() {
 			if armCtrl.Load() && ctrlCalls.Add(1) == 2 {
 				close(reachedCtrl2)
 			}

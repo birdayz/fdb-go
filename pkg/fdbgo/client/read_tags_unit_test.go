@@ -24,11 +24,11 @@ func TestSampleReadTags(t *testing.T) {
 		draws int
 	}{
 		{"zero value", readTagSampling{}, false, 0},
-		{"rate 0 never draws", readTagSampling{rate: 0, draw: scripted(0)}, false, 0},
-		{"negative rate never draws", readTagSampling{rate: -1, draw: scripted(0)}, false, 0},
-		{"rate 1 always", readTagSampling{rate: 1, draw: scripted(math.Nextafter(1, 0))}, true, 1},
-		{"at the rate", readTagSampling{rate: 0.01, draw: scripted(0.01)}, true, 1},
-		{"above the rate", readTagSampling{rate: 0.01, draw: scripted(math.Nextafter(0.01, 1))}, false, 1},
+		{"rate 0 never draws", readTagSampling{rate: 0, hooks: &readTagSamplingTestHooks{draw: scripted(0)}}, false, 0},
+		{"negative rate never draws", readTagSampling{rate: -1, hooks: &readTagSamplingTestHooks{draw: scripted(0)}}, false, 0},
+		{"rate 1 always", readTagSampling{rate: 1, hooks: &readTagSamplingTestHooks{draw: scripted(math.Nextafter(1, 0))}}, true, 1},
+		{"at the rate", readTagSampling{rate: 0.01, hooks: &readTagSamplingTestHooks{draw: scripted(0.01)}}, true, 1},
+		{"above the rate", readTagSampling{rate: 0.01, hooks: &readTagSamplingTestHooks{draw: scripted(math.Nextafter(0.01, 1))}}, false, 1},
 	} {
 		draws = 0
 		db := &database{readTags: tc.s}

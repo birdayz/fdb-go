@@ -42,6 +42,12 @@ type (
 		node     *timeoutNode
 		arm, seq uint64
 	}
+	timeoutQueueRootTestHooks struct {
+		afterFrontier func(now int64, frontier uint64)
+		beforeScan    func(*timeoutQueue)
+		afterScan     func(*timeoutQueue)
+		afterPop      func(*timeoutNode)
+	}
 	timeoutQueueRoot struct {
 		mu             sync.Mutex
 		running, again bool
@@ -51,10 +57,16 @@ type (
 		next           atomic.Uint64
 		shards         [16]*timeoutQueue
 		ready          []timeoutReady // single drainer; collect appends under the current shard lock
-		afterFrontier  func(now int64, frontier uint64)
-		beforeScan     func(*timeoutQueue)
-		afterScan      func(*timeoutQueue)
-		afterPop       func(*timeoutNode)
+		hooks          *timeoutQueueRootTestHooks
+	}
+	timeoutQueueTestHooks struct {
+		// Test seams: nil selects production defaults (monoNow / (*Transaction).fireTimeout).
+		// timeout_design.go:production() relies on nil meaning production.
+		compare             func()
+		now                 func() int64
+		deliver             func(*Transaction, uint64)
+		beforeDeliver       func(*timeoutNode)
+		beforeEagerSchedule func(*timeoutNode)
 	}
 	timeoutQueue struct {
 		root               *timeoutQueueRoot
@@ -62,14 +74,8 @@ type (
 		heap               []*timeoutNode
 		running, requested bool
 		reqAt              int64
-		compare            func()
 		timer              timeoutTimer
-		// Test seams: nil selects production defaults (monoNow / (*Transaction).fireTimeout).
-		// timeout_design.go:production() relies on nil meaning production.
-		now                 func() int64
-		deliver             func(*Transaction, uint64)
-		beforeDeliver       func(*timeoutNode)
-		beforeEagerSchedule func(*timeoutNode)
+		hooks              *timeoutQueueTestHooks
 	}
 )
 
@@ -97,24 +103,41 @@ func newTimeoutQueue() *timeoutQueue {
 	return root.shards[0]
 }
 
-// nowTime returns the current monotonic timestamp, delegating to q.now when overridden in tests.
+func (r *timeoutQueueRoot) testHooks() *timeoutQueueRootTestHooks {
+	if r.hooks == nil {
+		r.hooks = &timeoutQueueRootTestHooks{}
+	}
+	return r.hooks
+}
+
+func (q *timeoutQueue) testHooks() *timeoutQueueTestHooks {
+	if q.hooks == nil {
+		q.hooks = &timeoutQueueTestHooks{}
+	}
+	return q.hooks
+}
+
+// nowTime returns the current monotonic timestamp, delegating to q.hooks.now when overridden in tests.
 func (q *timeoutQueue) nowTime() int64 {
-	if q.now != nil {
-		return q.now()
+	if q.hooks != nil && q.hooks.now != nil {
+		return q.hooks.now()
 	}
 	return monoNow()
 }
 
-// deliverTimeout delivers a fired timeout, delegating to q.deliver when overridden in tests.
+// deliverTimeout delivers a fired timeout, delegating to q.hooks.deliver when overridden in tests.
 func (q *timeoutQueue) deliverTimeout(tx *Transaction, arm uint64) {
-	if q.deliver != nil {
-		q.deliver(tx, arm)
+	if q.hooks != nil && q.hooks.deliver != nil {
+		q.hooks.deliver(tx, arm)
 		return
 	}
 	tx.fireTimeout(arm)
 }
 
-var detachedTimeouts = newTimeoutQueue()
+// getDetachedTimeouts lazily creates the fallback queue for detached
+// transactions (tx.db == nil) when designTimeout is disabled, avoiding 49
+// package-init allocations on production binaries.
+var getDetachedTimeouts = sync.OnceValue(newTimeoutQueue)
 
 func (q *timeoutQueue) newNode(tx *Transaction) *timeoutNode {
 	root := q.root
@@ -139,8 +162,8 @@ func (q *timeoutQueue) schedule(n *timeoutNode, deadline int64) {
 		n.seq = q.root.seq.Add(1)
 		return
 	}
-	if q.beforeEagerSchedule != nil {
-		q.beforeEagerSchedule(n)
+	if q.hooks != nil && q.hooks.beforeEagerSchedule != nil {
+		q.hooks.beforeEagerSchedule(n)
 	}
 	q.mu.Lock()
 	n.seq = q.root.seq.Add(1)
@@ -206,16 +229,16 @@ func (root *timeoutQueueRoot) fire() {
 	for {
 		for {
 			now, frontier := root.shards[0].nowTime(), root.seq.Load()
-			if root.afterFrontier != nil {
-				root.afterFrontier(now, frontier)
+			if root.hooks != nil && root.hooks.afterFrontier != nil {
+				root.hooks.afterFrontier(now, frontier)
 			}
 			for _, q := range root.shards {
-				if root.beforeScan != nil {
-					root.beforeScan(q)
+				if root.hooks != nil && root.hooks.beforeScan != nil {
+					root.hooks.beforeScan(q)
 				}
 				q.collect(now)
-				if root.afterScan != nil {
-					root.afterScan(q)
+				if root.hooks != nil && root.hooks.afterScan != nil {
+					root.hooks.afterScan(q)
 				}
 			}
 			if len(root.ready) == 0 {
@@ -252,8 +275,8 @@ func (q *timeoutQueue) collect(now int64) {
 		n := q.heap[0]
 		q.removeAt(0)
 		q.mu.Unlock()
-		if q.root.afterPop != nil {
-			q.root.afterPop(n)
+		if q.root.hooks != nil && q.root.hooks.afterPop != nil {
+			q.root.hooks.afterPop(n)
 		}
 		tx := n.tx.Value()
 		if tx != nil {
@@ -311,8 +334,8 @@ func (root *timeoutQueueRoot) deliverReady(now int64, frontier uint64) {
 		} else {
 			q.mu.Unlock()
 			tx.readErrMu.Unlock()
-			if hook := root.shards[0].beforeDeliver; hook != nil {
-				hook(n)
+			if h := root.shards[0].hooks; h != nil && h.beforeDeliver != nil {
+				h.beforeDeliver(n)
 			}
 			// Synchronous cancellation fan-out can delay later entries in this batch.
 			root.shards[0].deliverTimeout(tx, r.arm)
@@ -340,8 +363,8 @@ func (q *timeoutQueue) requestLocked(wake, now int64) {
 }
 
 func (q *timeoutQueue) less(i, j int) bool {
-	if q.compare != nil {
-		q.compare()
+	if q.hooks != nil && q.hooks.compare != nil {
+		q.hooks.compare()
 	}
 	return q.heap[i].wake < q.heap[j].wake
 }

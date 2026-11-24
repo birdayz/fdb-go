@@ -75,7 +75,7 @@ func (tx *Transaction) getStorageMetricsRange(ctx context.Context, begin, end []
 			sizes, err = collectMetricsShards(ctx, locations, func(ctx context.Context, _ int, loc LocationResult) (int64, error) {
 				shardBegin, shardEnd := metricsShardBounds(begin, end, loc)
 				return tx.getStorageMetricsRange(ctx, shardBegin, shardEnd, minVersion, []LocationResult{loc})
-			}, tx.db.afterMetricsShardResult.Load())
+			}, tx.db.metricsShardResultHook())
 			for _, size := range sizes {
 				total += size
 			}
@@ -282,15 +282,19 @@ func (tx *Transaction) metricsSend(ctx context.Context, server ServerInfo, endpo
 	if tx.db.ctx != nil {
 		closed = tx.db.ctx.Done()
 	}
-	if hook := tx.db.beforeMetricsReplyWait.Load(); hook != nil {
-		(*hook)()
+	if h := tx.db.hooks.Load(); h != nil {
+		if hook := h.beforeMetricsReplyWait.Load(); hook != nil {
+			(*hook)()
+		}
 	}
 	var resp transport.Response
 	select {
 	case resp = <-replyCh:
 	case <-conn.Done():
-		if hook := tx.db.beforeMetricsDisconnectReply.Load(); hook != nil {
-			(*hook)()
+		if h := tx.db.hooks.Load(); h != nil {
+			if hook := h.beforeMetricsDisconnectReply.Load(); hook != nil {
+				(*hook)()
+			}
 		}
 		// A published reply wins over disconnect; otherwise do not wait for
 		// pending-reply failure delivery behind a blocked socket Close.
@@ -390,7 +394,7 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 				partEnd = end
 			}
 			return tx.sendSplitRange(ctx, partBegin, partEnd, chunkSize, loc.Servers)
-		}, tx.db.afterMetricsShardResult.Load())
+		}, tx.db.metricsShardResultHook())
 		if err != nil {
 			if isWrongShardServer(err) || isAllAlternativesFailed(err) {
 				tx.db.locCache.invalidateRange(begin, end, tx.tenantId)

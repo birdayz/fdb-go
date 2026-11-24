@@ -172,8 +172,10 @@ func (db *database) finishReadRPC(result hedgeResult) {
 // altFailureDelay is C++'s allAlternativesFailedDelay, jittered like delayJittered
 // (flow.h:1481-1484).
 func (db *database) altFailureDelay() time.Duration {
-	if db.altFailureDelayOverride > 0 {
-		return db.altFailureDelayOverride
+	if h := db.hooks.Load(); h != nil {
+		if d := time.Duration(h.altFailureDelayOverride.Load()); d > 0 {
+			return d
+		}
 	}
 	d := db.failMon.allAlternativesFailedDelay(nowSeconds())
 	return time.Duration(float64(d) * (0.9 + 0.2*rand.Float64()))
@@ -182,8 +184,10 @@ func (db *database) altFailureDelay() time.Duration {
 // awaitAlternative waits for one of its own replicas to become actually live,
 // as okFuture does; exclusion expiry only permits a probe, not a successful return.
 func (db *database) awaitAlternative(ctx context.Context, closed <-chan struct{}, servers []ServerInfo, recovered <-chan struct{}, wait time.Duration) error {
-	if hook := db.beforeAltFailureWait.Load(); hook != nil {
-		(*hook)()
+	if h := db.hooks.Load(); h != nil {
+		if hook := h.beforeAltFailureWait.Load(); hook != nil {
+			(*hook)()
+		}
 	}
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
@@ -278,8 +282,10 @@ func (db *database) hasLiveAlternative(servers []ServerInfo) bool {
 			break
 		}
 	}
-	if hook := db.afterAltRecoveryCheck.Load(); hook != nil {
-		(*hook)(live)
+	if h := db.hooks.Load(); h != nil {
+		if hook := h.afterAltRecoveryCheck.Load(); hook != nil {
+			(*hook)(live)
+		}
 	}
 	return live
 }

@@ -346,7 +346,7 @@ func TestOnError_RespectsContextCancellation(t *testing.T) {
 	tx := &Transaction{}
 	tx.backoff = 4 * time.Second
 	tx.maxRetryDelay = 4 * time.Second
-	tx.backoffJitter = func() float64 { return 1.0 }
+	tx.testHooks().backoffJitter = func() float64 { return 1.0 }
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancelAt := 20 * time.Millisecond

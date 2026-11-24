@@ -37,7 +37,7 @@ func TestMetricsReplyWaitObservesDatabaseOnlyCancellation(t *testing.T) {
 			}
 			waiting := make(chan struct{})
 			beforeWait := func() { close(waiting) }
-			db.beforeMetricsReplyWait.Store(&beforeWait)
+			db.testHooks().beforeMetricsReplyWait.Store(&beforeWait)
 			var opErr error
 			done := make(chan struct{})
 			go func() { defer close(done); opErr = arm.operation(ctx, tx, []byte("k"), []byte("l")) }()
@@ -118,7 +118,7 @@ func TestDatabaseCloseJoinsPendingSharedDial(t *testing.T) {
 	}
 	joinReached := make(chan struct{})
 	beforeJoin := func() { close(joinReached) }
-	db.beforeCloseJoin.Store(&beforeJoin)
+	db.testHooks().beforeCloseJoin.Store(&beforeJoin)
 	closeDone = make(chan error, 1)
 	go func() { closeDone <- (&Database{db: db}).Close() }()
 	select {
@@ -213,11 +213,11 @@ func TestMetricsPublishedReplyWinsDisconnect(t *testing.T) {
 				case <-ctx.Done():
 				}
 			}
-			db.beforeMetricsDisconnectReply.Store(&hook)
+			db.testHooks().beforeMetricsDisconnectReply.Store(&hook)
 			waiting := make(chan struct{})
 			var waitOnce sync.Once
 			beforeWait := func() { waitOnce.Do(func() { close(waiting) }) }
-			db.beforeMetricsReplyWait.Store(&beforeWait)
+			db.testHooks().beforeMetricsReplyWait.Store(&beforeWait)
 			var gateOnce, resumeOnce sync.Once
 			release := func() { gateOnce.Do(func() { close(gate.release) }); resumeOnce.Do(func() { close(resume) }) }
 			var got metricsShardResult
@@ -319,11 +319,11 @@ func TestMetricsReplyWaitEndsBeforeSocketClose(t *testing.T) {
 				first.client = gate
 				db, tx := armDatabase(dbCtx, first, backup)
 				db.cancel = stopDB
-				db.altFailureDelayOverride = 30 * time.Second
+				db.testHooks().altFailureDelayOverride.Store(int64(30 * time.Second))
 				waiting := make(chan struct{})
 				var waitOnce sync.Once
 				beforeWait := func() { waitOnce.Do(func() { close(waiting) }) }
-				db.beforeMetricsReplyWait.Store(&beforeWait)
+				db.testHooks().beforeMetricsReplyWait.Store(&beforeWait)
 				const backupAddr = "backup:4500"
 				primary, err := db.getOrDial(ctx, armAddr)
 				if err != nil {
@@ -456,7 +456,7 @@ func TestDatabaseCloseJoinsDetachedConnection(t *testing.T) {
 	}
 	joinReached := make(chan struct{})
 	beforeJoin := func() { close(joinReached) }
-	db.beforeCloseJoin.Store(&beforeJoin)
+	db.testHooks().beforeCloseJoin.Store(&beforeJoin)
 	shutdownStarted = true
 	go func() { done <- (&Database{db: db}).Close() }()
 	select {
@@ -511,7 +511,7 @@ func TestDialTeardownPublishesBeforeClose(t *testing.T) {
 				db.connPool = nil
 			} else {
 				hook := func() { stopDB() }
-				db.afterDialBeforePool.Store(&hook)
+				db.testHooks().afterDialBeforePool.Store(&hook)
 			}
 			var releaseOnce sync.Once
 			release := func() { releaseOnce.Do(func() { close(gate.release) }) }
@@ -548,7 +548,7 @@ func TestDialTeardownPublishesBeforeClose(t *testing.T) {
 			}
 			joinReached := make(chan struct{})
 			beforeJoin := func() { close(joinReached) }
-			db.beforeCloseJoin.Store(&beforeJoin)
+			db.testHooks().beforeCloseJoin.Store(&beforeJoin)
 			closeDone = make(chan error, 1)
 			go func() { closeDone <- (&Database{db: db}).Close() }()
 			select {
@@ -587,7 +587,7 @@ func TestSplitPointsRetryRestartsAllShards(t *testing.T) {
 					retainedOnce.Do(func() { close(oldRetained) })
 				}
 			}
-			db.afterMetricsShardResult.Store(&afterResult)
+			db.testHooks().afterMetricsShardResult.Store(&afterResult)
 			servers := []ServerInfo{{Address: armAddr, Token: armToken}}
 			db.locCache.entries = nil
 			for i := range 3 {

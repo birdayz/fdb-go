@@ -57,7 +57,7 @@ func TestCommit_RechecksInvalidAtomicPoison_SetDuringReadBarrier(t *testing.T) {
 
 	tx := db.CreateTransaction()
 	tx.SetReadVersion(rv)
-	tx.rpcTimeoutOverride = 400 * time.Millisecond // short: Resolve re-drives quickly on the dropped reply
+	tx.testHooks().rpcTimeoutOverride = 400 * time.Millisecond // short: Resolve re-drives quickly on the dropped reply
 
 	if _, _, err := tx.GetPipelined(ctx, key); err != nil {
 		t.Fatalf("GetPipelined: %v", err)

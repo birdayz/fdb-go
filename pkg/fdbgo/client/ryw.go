@@ -39,9 +39,7 @@ type rywCache struct {
 	// can update an unshared atomic stack in place.
 	nextVer uint64
 
-	// onPin and onClone are test seams (S4): every pin/unpin and every clone.
-	onPin   func(w *rywWrites, pin bool)
-	onClone func(from, to *rywWrites)
+	hooks *rywCacheTestHooks
 
 	// serverCache caches server-side state at the read version, avoiding
 	// redundant server round-trips for repeated reads of the same range.
@@ -50,6 +48,19 @@ type rywCache struct {
 
 	// arena holds what the write map keeps (keepLocked).
 	arena []byte
+}
+
+// onPin and onClone are test seams (S4): every pin/unpin and every clone.
+type rywCacheTestHooks struct {
+	onPin   func(w *rywWrites, pin bool)
+	onClone func(from, to *rywWrites)
+}
+
+func (c *rywCache) testHooks() *rywCacheTestHooks {
+	if c.hooks == nil {
+		c.hooks = &rywCacheTestHooks{}
+	}
+	return c.hooks
 }
 
 // rywEntry represents a pending write for a single key.

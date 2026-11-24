@@ -700,7 +700,7 @@ func TestCancel_StateVisibleBeforeIncarnationCancellation(t *testing.T) {
 	t.Parallel()
 	tx := newTestTx()
 	called := false
-	tx.beforeReadFailureDelivery = func(cause error) {
+	tx.testHooks().beforeReadFailureDelivery = func(cause error) {
 		called = true
 		if code := fdbCodeOf(cause); code != ErrTransactionCancelled {
 			t.Fatalf("delivered cause code=%d, want %d", code, ErrTransactionCancelled)

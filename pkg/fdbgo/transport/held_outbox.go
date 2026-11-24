@@ -325,8 +325,8 @@ func (c *Conn) tryEnqueueNAControl(request writeReq) (handled, accepted bool) {
 	if !c.coldOrderActive.Load() && !c.heldWaiters.Pending() {
 		return false, false
 	}
-	if c.beforeControlLock != nil {
-		c.beforeControlLock()
+	if h := c.hooks.Load(); h != nil && h.beforeControlLock != nil {
+		h.beforeControlLock()
 	}
 	c.controlMu.Lock()
 	defer c.controlMu.Unlock()

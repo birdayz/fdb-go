@@ -38,7 +38,7 @@ func TestGRVCache_EqualVersionRefreshKeepsTheCacheServing(t *testing.T) {
 
 	base := time.Now()
 	at := base
-	c := &grvCache{now: func() time.Time { return at }}
+	c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return at }}}
 
 	const sameVersion = 5000
 	c.updateFromGRV(c.token(), base, sameVersion)
@@ -75,7 +75,7 @@ func TestGRVCache_EqualVersionRefreshDoesNotMoveTheAnchor(t *testing.T) {
 
 	base := time.Now()
 	at := base
-	c := &grvCache{now: func() time.Time { return at }}
+	c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return at }}}
 
 	const sameVersion = 6000
 	c.updateFromGRV(c.token(), base, sameVersion)
@@ -115,7 +115,7 @@ func TestGRVCache_RefresherDoesNotPegAtTheFloor(t *testing.T) {
 
 	base := time.Now()
 	at := base
-	c := &grvCache{now: func() time.Time { return at }}
+	c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return at }}}
 
 	const sameVersion = 7000
 	c.updateFromGRV(c.token(), base, sameVersion)

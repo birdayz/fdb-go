@@ -106,7 +106,7 @@ func TestInvalidate_StaleReplyLosingItsCASCannotResurrectItsVersion(t *testing.T
 
 	for i := 0; i < attempts; i++ {
 		base := time.Now()
-		c := &grvCache{now: func() time.Time { return base }}
+		c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return base }}}
 		c.publish(c.token(), base, cachedVersion)
 
 		// The reply is validated under the CURRENT generation, as a real one
@@ -154,7 +154,7 @@ func TestInvalidate_InFlightReplyCannotRepopulate(t *testing.T) {
 
 	base := time.Now()
 	db := &database{}
-	db.grvCache.now = func() time.Time { return base }
+	db.grvCache.testHooks().now = func() time.Time { return base }
 	b := &grvBatcher{priority: grvPriorityDefault}
 
 	db.grvCache.publish(db.grvCache.token(), base, 5000)
@@ -186,7 +186,7 @@ func TestInvalidate_ReplyDispatchedAfterInvalidationPopulates(t *testing.T) {
 
 	base := time.Now()
 	db := &database{}
-	db.grvCache.now = func() time.Time { return base }
+	db.grvCache.testHooks().now = func() time.Time { return base }
 	b := &grvBatcher{priority: grvPriorityDefault}
 
 	db.grvCache.publish(db.grvCache.token(), base, 5000)

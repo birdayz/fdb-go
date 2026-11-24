@@ -32,16 +32,26 @@ type WireLog struct {
 	stopped bool // under mu: a stopped log writes nothing
 }
 
-// globalWireLog is loaded once per logged frame.
-var globalWireLog atomic.Pointer[WireLog]
+// wireLogRegistry encapsulates the fallback WireLog configured via
+// FDB_WIRE_LOG or CaptureWireLog. Connections without a per-connection WireLog
+// load this once per frame; nil when disabled.
+type wireLogRegistry struct {
+	active atomic.Pointer[WireLog]
+}
+
+var defaultWireLog wireLogRegistry
 
 func init() {
+	defaultWireLog.initFromEnv()
+}
+
+func (r *wireLogRegistry) initFromEnv() {
 	path := os.Getenv("FDB_WIRE_LOG")
 	if path == "" {
 		return
 	}
 	if path == "stderr" {
-		globalWireLog.Store(&WireLog{w: os.Stderr, binary: false})
+		r.active.Store(&WireLog{w: os.Stderr, binary: false})
 		return
 	}
 	f, err := os.Create(path)
@@ -49,7 +59,57 @@ func init() {
 		fmt.Fprintf(os.Stderr, "FDB_WIRE_LOG: cannot create %s: %v\n", path, err)
 		return
 	}
-	globalWireLog.Store(&WireLog{w: f, binary: true})
+	r.active.Store(&WireLog{w: f, binary: true})
+}
+
+func (r *wireLogRegistry) load() *WireLog {
+	return r.active.Load()
+}
+
+func (r *wireLogRegistry) capture(w io.Writer) (stop func()) {
+	wl := &WireLog{w: w, binary: true}
+	r.active.Store(wl)
+	return func() {
+		r.active.CompareAndSwap(wl, nil)
+		wl.mu.Lock()
+		wl.stopped = true
+		wl.mu.Unlock()
+	}
+}
+
+func (r *wireLogRegistry) log(dir byte, token UID, body []byte) {
+	if wl := r.active.Load(); wl != nil {
+		wl.log(dir, token, body)
+	}
+}
+
+// WithWireLog attaches a binary wire log to the dialed connection without
+// modifying process-global CaptureWireLog state.
+func WithWireLog(w io.Writer) DialOption {
+	return func(c *Conn) {
+		if w != nil {
+			c.wireLog = &WireLog{w: w, binary: true}
+		}
+	}
+}
+
+func (c *Conn) activeWireLog() *WireLog {
+	if c != nil && c.wireLog != nil {
+		return c.wireLog
+	}
+	return defaultWireLog.load()
+}
+
+func (c *Conn) logSend(token UID, body []byte) {
+	if wl := c.activeWireLog(); wl != nil {
+		wl.log('S', token, body)
+	}
+}
+
+func (c *Conn) logRecv(token UID, body []byte) {
+	if wl := c.activeWireLog(); wl != nil {
+		wl.log('R', token, body)
+	}
 }
 
 // CaptureWireLog writes the wire log to w in the binary format until the
@@ -57,28 +117,17 @@ func init() {
 // even by a frame logged concurrently, so w may then be read. It replaces any
 // log already set (FDB_WIRE_LOG); stop removes the capture, leaving none.
 func CaptureWireLog(w io.Writer) (stop func()) {
-	wl := &WireLog{w: w, binary: true}
-	globalWireLog.Store(wl)
-	return func() {
-		globalWireLog.CompareAndSwap(wl, nil)
-		wl.mu.Lock()
-		wl.stopped = true
-		wl.mu.Unlock()
-	}
+	return defaultWireLog.capture(w)
 }
 
 // LogSend records an outbound frame.
 func LogSend(token UID, body []byte) {
-	if wl := globalWireLog.Load(); wl != nil {
-		wl.log('S', token, body)
-	}
+	defaultWireLog.log('S', token, body)
 }
 
 // LogRecv records an inbound frame.
 func LogRecv(token UID, body []byte) {
-	if wl := globalWireLog.Load(); wl != nil {
-		wl.log('R', token, body)
-	}
+	defaultWireLog.log('R', token, body)
 }
 
 func (wl *WireLog) log(dir byte, token UID, body []byte) {

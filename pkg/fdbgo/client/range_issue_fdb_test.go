@@ -87,7 +87,7 @@ func TestStartGetRange_LocationLookupsOverlap(t *testing.T) {
 		inflight.Add(1)
 		<-held
 	}
-	cold.db.afterLocationSend.Store(&hook)
+	cold.db.testHooks().afterLocationSend.Store(&hook)
 	started := make(chan []*PendingRange, 1)
 	go func() {
 		reads := make([]*PendingRange, n)
@@ -155,7 +155,7 @@ func TestStartGetRange_PanicFailsTheRead(t *testing.T) {
 	prefix := []byte(t.Name())
 	tx := db.CreateTransaction()
 	defer tx.Cancel()
-	tx.afterRangeReply = func() { panic("injected") }
+	tx.testHooks().afterRangeReply = func() { panic("injected") }
 	before := db.Metrics().RecoveredPanics
 	_, _, err := tx.StartGetRange(ctx, prefix, append(bytes.Clone(prefix), 0xff), 0, ByteLimitUnlimited, false).Get()
 	if fdbCode(err) != ErrInternalError {
@@ -187,9 +187,9 @@ func TestStartGetRange_CommitWaitsForUnconsumedRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	held, release := releaseOnCleanup(t)
-	tx.afterRangeReply = func() { <-held }
+	tx.testHooks().afterRangeReply = func() { <-held }
 	waiting := make(chan int, 1)
-	tx.beforeIssuedReadWait = func(n int) {
+	tx.testHooks().beforeIssuedReadWait = func(n int) {
 		select {
 		case waiting <- n:
 		default:
@@ -244,9 +244,9 @@ func TestStartGetRange_IssueTimeWriteView(t *testing.T) {
 				tx.Set(rangeIssueKey(prefix, 1), []byte("local"))
 			}
 			held, release := releaseOnCleanup(t)
-			tx.afterRangeReply = func() { <-held }
+			tx.testHooks().afterRangeReply = func() { <-held }
 			p := tx.StartGetRange(ctx, prefix, end, 0, ByteLimitUnlimited, false)
-			tx.afterRangeReply = nil
+			tx.testHooks().afterRangeReply = nil
 			// Writes after the issue must not join it.
 			tx.Set(rangeIssueKey(prefix, 7), []byte("late"))
 			tx.Clear(rangeIssueKey(prefix, 0))
@@ -328,9 +328,9 @@ func TestStartGetRange_CallerRunsUnstartedRead(t *testing.T) {
 	tx := db.CreateTransaction()
 	defer tx.Cancel()
 	held, release := releaseOnCleanup(t)
-	tx.beforeRangeGoroutine = func() { <-held }
+	tx.testHooks().beforeRangeGoroutine = func() { <-held }
 	p := tx.StartGetRange(ctx, prefix, append(bytes.Clone(prefix), 0xff), 0, ByteLimitUnlimited, false)
-	tx.beforeRangeGoroutine = nil
+	tx.testHooks().beforeRangeGoroutine = nil
 	got := make(chan error, 1)
 	go func() {
 		kvs, _, err := p.Get()

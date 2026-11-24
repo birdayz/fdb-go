@@ -146,7 +146,7 @@ func TestFences_StaleEpochWithCurrentGenerationCannotClobber(t *testing.T) {
 	t.Parallel()
 
 	base := time.Now()
-	c := &grvCache{now: func() time.Time { return base }}
+	c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return base }}}
 
 	c.resetForNewCoordinators()     // the handle moves to cluster B
 	c.publish(c.token(), base, 500) // B caches normally
@@ -190,7 +190,7 @@ func TestFences_ResetIsAtomicAcrossBothHalves(t *testing.T) {
 	const attempts = 400
 	for i := 0; i < attempts; i++ {
 		base := time.Now()
-		c := &grvCache{now: func() time.Time { return base }}
+		c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return base }}}
 
 		// Cluster A has a good cached version, and a publisher is in flight
 		// against it.

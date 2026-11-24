@@ -114,7 +114,7 @@ func TestHedgeSenderDelay(t *testing.T) {
 					}
 					tx := &Transaction{db: db, readVersionState: &readVersionState{}, txOptions: txOptions{tenantId: NoTenantID}}
 					tx.readVersion = 1
-					tx.rpcTimeoutOverride = time.Minute
+					tx.testHooks().rpcTimeoutOverride = time.Minute
 					sentinel := q.startRequest(backupAddr)
 					withServer(q, primaryAddr, func(d *queueData) { d.latency = timing.primaryLatency })
 					withServer(q, backupAddr, func(d *queueData) {

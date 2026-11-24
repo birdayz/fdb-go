@@ -129,7 +129,7 @@ func TestReadPath_ReplyTimeout_SurfacesRetryable(t *testing.T) {
 			tx.SetReadVersion(rv)
 			// Small but irrelevant to the race — the reply never comes, so the
 			// timer always wins; this just keeps the bounded re-send fast.
-			tx.rpcTimeoutOverride = 20 * time.Millisecond
+			tx.testHooks().rpcTimeoutOverride = 20 * time.Millisecond
 			assertRetryableTooOld(t, tc.read(tx), tc.name)
 		})
 	}

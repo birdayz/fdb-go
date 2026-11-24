@@ -249,8 +249,8 @@ func (tx *Transaction) failCapturedIncarnation(inc *readIncarnation, cause error
 	pending := tx.detachPendingLocked(inc)
 	cause = inc.cause
 	tx.readErrMu.Unlock()
-	if tx.beforeReadFailureDelivery != nil {
-		tx.beforeReadFailureDelivery(cause)
+	if tx.hooks != nil && tx.hooks.beforeReadFailureDelivery != nil {
+		tx.hooks.beforeReadFailureDelivery(cause)
 	}
 	inc.cancel(cause)
 	retirePending(pending, false)
@@ -300,10 +300,17 @@ func (tx *Transaction) armTimeoutLocked() {
 	if inc := tx.readLife; inc != nil && inc.cause != nil {
 		return
 	}
-	q := tx.timeoutQueue()
+	var q *timeoutQueue
+	if tx.db != nil {
+		q = tx.db.timeouts
+	}
+	now := monoNow()
+	if q != nil {
+		now = q.nowTime()
+	}
 	// Convert before acquiring the queue lock: contention must not extend the budget.
 	delay := time.Until(tx.deadlineTime())
-	deadline := q.nowTime() + int64(delay)
+	deadline := now + int64(delay)
 	if delay <= 0 {
 		inc := tx.readLife
 		if inc == nil {
@@ -316,6 +323,10 @@ func (tx *Transaction) armTimeoutLocked() {
 	tx.timeoutArmed = true
 	if tx.designArmLocked(q, delay) {
 		return
+	}
+	if q == nil {
+		q = getDetachedTimeouts()
+		deadline = q.nowTime() + int64(delay)
 	}
 	n := tx.timeoutNode
 	if n == nil {
@@ -344,7 +355,7 @@ func (tx *Transaction) timeoutQueue() *timeoutQueue {
 	if tx.db != nil && tx.db.timeouts != nil {
 		return tx.db.timeouts
 	}
-	return detachedTimeouts
+	return getDetachedTimeouts()
 }
 
 // fireTimeout delivers the timeout armed as arm. Claim and record are one
@@ -365,8 +376,8 @@ func (tx *Transaction) fireTimeout(arm uint64) {
 	pending := tx.detachPendingLocked(inc)
 	cause := inc.cause
 	tx.readErrMu.Unlock()
-	if tx.afterTimeoutRecord != nil {
-		tx.afterTimeoutRecord()
+	if tx.hooks != nil && tx.hooks.afterTimeoutRecord != nil {
+		tx.hooks.afterTimeoutRecord()
 	}
 	inc.cancel(cause)
 	retirePending(pending, false)
@@ -535,8 +546,8 @@ func (tx *Transaction) readLifetimeError(ctx context.Context) error {
 // spans the lifetime check and append: a later retirement must clear these
 // conflicts before publishing the replacement incarnation. readErrMu stays a leaf.
 func (tx *Transaction) addReadConflictsFor(ctx context.Context, ranges [][2][]byte) error {
-	if hook := tx.beforeReadConflict; hook != nil {
-		hook()
+	if tx.hooks != nil && tx.hooks.beforeReadConflict != nil {
+		tx.hooks.beforeReadConflict()
 	}
 	tx.conflictMu.Lock()
 	defer tx.conflictMu.Unlock()
@@ -549,8 +560,8 @@ func (tx *Transaction) addReadConflictsFor(ctx context.Context, ranges [][2][]by
 
 // addReadConflictSpansFor is addReadConflictsFor for a read's filtered conflict spans.
 func (tx *Transaction) addReadConflictSpansFor(ctx context.Context, spans []conflictSpan) error {
-	if hook := tx.beforeReadConflict; hook != nil {
-		hook()
+	if tx.hooks != nil && tx.hooks.beforeReadConflict != nil {
+		tx.hooks.beforeReadConflict()
 	}
 	tx.conflictMu.Lock()
 	defer tx.conflictMu.Unlock()

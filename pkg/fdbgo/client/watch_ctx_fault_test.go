@@ -211,7 +211,7 @@ func TestGet_CancelUnblocksHeldReply(t *testing.T) {
 	sd.armAddr(storageAddr)
 	tx := db.CreateTransaction()
 	tx.SetReadVersion(rv)
-	tx.rpcTimeoutOverride = time.Hour // Only cancellation may end this held read.
+	tx.testHooks().rpcTimeoutOverride = time.Hour // Only cancellation may end this held read.
 	done := make(chan error, 1)
 	go func() {
 		_, err := tx.Get(ctx, key)

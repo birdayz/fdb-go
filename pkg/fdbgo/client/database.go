@@ -256,20 +256,7 @@ type database struct {
 	// anything this function can rely on, and tests already call it from a second
 	// goroutine while the monitor is live.
 	installMu sync.Mutex
-	// beforeCommitProxySelect runs at the top of Transaction.commit, immediately
-	// before it binds to a commit proxy. A deterministic seam for the
-	// handoff-inside-the-commit-window case, which is a few instructions wide and
-	// therefore untestable by racing. Always nil in production.
-	beforeCommitProxySelect atomic.Pointer[func()]
-	// duringProxyInstall runs inside installProxySet, immediately before the dbInfo
-	// publication. It exists so a test can hold an installer inside the critical
-	// section (see installMu) and observe the fence at publication. Always nil in
-	// production.
-	//
-	// IT RUNS UNDER installMu, which is not reentrant: a hook that calls back into
-	// installProxySet deadlocks the calling goroutine against itself. Hooks here
-	// may observe and block; they may not install.
-	duringProxyInstall atomic.Pointer[func()]
+	hooks     atomic.Pointer[dbTestHooks]
 	// Broadcast: closed when proxy list changes, then replaced with a fresh channel.
 	// Commit monitors this to detect mid-commit proxy changes (C++ onProxiesChanged).
 	proxiesChangedMu sync.Mutex
@@ -387,24 +374,7 @@ type database struct {
 	// DEFAULT_MAX_OUTSTANDING_WATCHES (10000, ClientKnobs.cpp:120) and is lowerable via the
 	// max_watches database option (SetMaxWatches). 0 means unlimited.
 	outstandingWatches atomic.Int64
-	// afterLocationSend observes a sent location query before its reply wait (test seam).
-	afterLocationSend atomic.Pointer[func()]
-	// beforeConnFailureMark runs in handleConnError just before it marks the address
-	// failed (test seam). Nil in production.
-	beforeConnFailureMark atomic.Pointer[func()]
-	// Test seams observe dial publication, shutdown joining and disconnect/reply races.
-	afterDialBeforePool          atomic.Pointer[func()]
-	beforeCloseJoin              atomic.Pointer[func()]
-	beforeMetricsDisconnectReply atomic.Pointer[func()]
-	beforeMetricsReplyWait       atomic.Pointer[func()]
-	afterMetricsShardResult      atomic.Pointer[func(int)]
-	// beforeAltFailureWait runs when a request starts waiting for an excluded replica (tests).
-	beforeAltFailureWait atomic.Pointer[func()]
-	// onReadBackoff observes Get/Watch retry accounting before the delay (tests).
-	onReadBackoff atomic.Pointer[func(attempts int, delay time.Duration)]
-	// Test seams: set the delay before dispatch; observe actual-live recovery checks.
-	altFailureDelayOverride time.Duration
-	afterAltRecoveryCheck   atomic.Pointer[func(bool)]
+
 	// rangeReadPanics is the RFC-110 backstop shared by this database's range reads.
 	rangeReadPanics panicBackstop
 	// resolveKeyPanics is the getRange fallback resolveKey goroutines' backstop.
@@ -423,6 +393,66 @@ type database struct {
 	// Close seals both paths before wg.Wait, including zero-count shutdown.
 	closeMu sync.Mutex
 	closed  bool
+}
+
+type dbTestHooks struct {
+	// beforeCommitProxySelect runs at the top of Transaction.commit, immediately
+	// before it binds to a commit proxy. A deterministic seam for the
+	// handoff-inside-the-commit-window case, which is a few instructions wide and
+	// therefore untestable by racing. Always nil in production.
+	beforeCommitProxySelect atomic.Pointer[func()]
+	// duringProxyInstall runs inside installProxySet, immediately before the dbInfo
+	// publication. It exists so a test can hold an installer inside the critical
+	// section (see installMu) and observe the fence at publication. Always nil in
+	// production.
+	//
+	// IT RUNS UNDER installMu, which is not reentrant: a hook that calls back into
+	// installProxySet deadlocks the calling goroutine against itself. Hooks here
+	// may observe and block; they may not install.
+	duringProxyInstall atomic.Pointer[func()]
+	// afterLocationSend observes a sent location query before its reply wait (test seam).
+	afterLocationSend atomic.Pointer[func()]
+	// beforeConnFailureMark runs in handleConnError just before it marks the address
+	// failed (test seam). Nil in production.
+	beforeConnFailureMark atomic.Pointer[func()]
+	// Test seams observe dial publication, shutdown joining and disconnect/reply races.
+	afterDialBeforePool          atomic.Pointer[func()]
+	beforeCloseJoin              atomic.Pointer[func()]
+	beforeMetricsDisconnectReply atomic.Pointer[func()]
+	beforeMetricsReplyWait       atomic.Pointer[func()]
+	afterMetricsShardResult      atomic.Pointer[func(int)]
+	// beforeAltFailureWait runs when a request starts waiting for an excluded replica (tests).
+	beforeAltFailureWait atomic.Pointer[func()]
+	// onReadBackoff observes Get/Watch retry accounting before the delay (tests).
+	onReadBackoff atomic.Pointer[func(attempts int, delay time.Duration)]
+	// Test seams: set the delay before dispatch; observe actual-live recovery checks.
+	altFailureDelayOverride atomic.Int64
+	afterAltRecoveryCheck   atomic.Pointer[func(bool)]
+}
+
+func (db *database) testHooks() *dbTestHooks {
+	if h := db.hooks.Load(); h != nil {
+		return h
+	}
+	h := &dbTestHooks{}
+	if db.hooks.CompareAndSwap(nil, h) {
+		return h
+	}
+	return db.hooks.Load()
+}
+
+func (db *database) readBackoffObserver() *func(attempts int, delay time.Duration) {
+	if h := db.hooks.Load(); h != nil {
+		return h.onReadBackoff.Load()
+	}
+	return nil
+}
+
+func (db *database) metricsShardResultHook() *func(int) {
+	if h := db.hooks.Load(); h != nil {
+		return h.afterMetricsShardResult.Load()
+	}
+	return nil
 }
 
 // defaultMaxOutstandingWatches mirrors CLIENT_KNOBS->DEFAULT_MAX_OUTSTANDING_WATCHES (ClientKnobs.cpp:120).
@@ -625,8 +655,10 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 	dialOpts = append(dialOpts, transport.WithSendOrder(&call.sends))
 	var dialErr error
 	c, dialErr = transport.Dial(dialCtx, addr, db.tlsConfig, db.dialFn, dialOpts...)
-	if hook := db.afterDialBeforePool.Load(); hook != nil {
-		(*hook)()
+	if h := db.hooks.Load(); h != nil {
+		if hook := h.afterDialBeforePool.Load(); hook != nil {
+			(*hook)()
+		}
 	}
 
 	discard := false
@@ -1268,8 +1300,10 @@ func (d *Database) Close() error {
 		for _, conn := range connections {
 			conn.Close()
 		}
-		if hook := d.db.beforeCloseJoin.Load(); hook != nil {
-			(*hook)()
+		if h := d.db.hooks.Load(); h != nil {
+			if hook := h.beforeCloseJoin.Load(); hook != nil {
+				(*hook)()
+			}
 		}
 		d.db.wg.Wait()
 	})

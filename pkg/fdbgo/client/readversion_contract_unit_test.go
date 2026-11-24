@@ -198,8 +198,8 @@ func TestGetReadVersionReturnsAcceptedPinWithoutDatabaseValidation(t *testing.T)
 			tx := &Transaction{db: db}
 			defer tx.Cancel()
 			before, after := 0, 0
-			tx.beforeReadVersionLock = func() { before++ }
-			tx.afterReadVersion = func() { after++ }
+			tx.testHooks().beforeReadVersionLock = func() { before++ }
+			tx.testHooks().afterReadVersion = func() { after++ }
 			tx.SetReadVersion(tc.pin)
 			got, err := tx.GetReadVersion(context.Background())
 			if err != nil || got != tc.pin {

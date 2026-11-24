@@ -27,7 +27,7 @@ func pauseTimeoutDelivery(t *testing.T, tx *Transaction, q *timeoutQueue, fire f
 	t.Cleanup(func() { tasks.finish(t) })
 	parked := make(chan struct{})
 	resume, release := tasks.barrier()
-	q.beforeDeliver = func(n *timeoutNode) {
+	q.testHooks().beforeDeliver = func(n *timeoutNode) {
 		if n == tx.timeoutNode {
 			close(parked)
 			waitTimeoutQueueTest(t, resume, "TIMEOUT_GENERATION_DELIVERY_RESUME: beforeDeliver release")
@@ -50,7 +50,7 @@ func TestTimeoutPopThenRearm(t *testing.T) {
 	if tx.readIncarnationCause(inc) != nil || !tx.timeoutArmed || tx.timeoutArm == arm || tx.timeoutNode != node {
 		t.Fatal("STALE_REARM: popped old arm fired or replaced the reusable node")
 	}
-	q.beforeDeliver = nil
+	q.testHooks().beforeDeliver = nil
 	fire()
 	requireTimeoutCode(t, context.Cause(inc.ctx), ErrTransactionTimedOut)
 }
@@ -84,7 +84,7 @@ func TestTimeoutPopThenReset(t *testing.T) {
 			if inc == nil || inc == old || inc.cause != nil || !tx.timeoutArmed || tx.timeoutArm == arm {
 				t.Fatal("STALE_PUBLISHED: popped old arm poisoned or disarmed the published successor")
 			}
-			q.beforeDeliver = nil
+			q.testHooks().beforeDeliver = nil
 			fire()
 			requireTimeoutCode(t, context.Cause(inc.ctx), ErrTransactionTimedOut)
 		})
@@ -100,7 +100,7 @@ func TestTimeoutRecordThenReset(t *testing.T) {
 	defer tasks.finish(t)
 	parked := make(chan struct{})
 	resume, release := tasks.barrier()
-	tx.afterTimeoutRecord = func() {
+	tx.testHooks().afterTimeoutRecord = func() {
 		close(parked)
 		waitTimeoutQueueTest(t, resume, "TIMEOUT_GENERATION_RECORD_RESUME: afterTimeoutRecord release")
 	}
@@ -314,7 +314,7 @@ func TestExpiredArmIsSynchronous(t *testing.T) {
 					// already expired, and that records 1031 synchronously (C3).
 					tx.creationTime = time.Now().Add(-3 * time.Hour)
 					tx.deadlineNs.Store(tx.creationTime.Add(tx.timeoutDur()).UnixNano())
-					tx.backoffJitter = func() float64 { return 0 }
+					tx.testHooks().backoffJitter = func() float64 { return 0 }
 					old := tx.readLife
 					if err := tx.OnError(context.Background(), &wire.FDBError{Code: 1020}); err != nil {
 						t.Fatalf("PENDING_ONERROR: OnError with an undelivered timeout = %v, want retry", err)

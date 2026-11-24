@@ -31,7 +31,11 @@ type keyRead struct {
 	local          bool // the walk finished at issue
 	key            []byte
 	err            error
-	afterReply     func() // test seam, captured at issue
+	hooks          *readIssueTestHooks // test seam, captured at issue (nil in production)
+}
+
+type readIssueTestHooks struct {
+	afterReply func()
 }
 
 // issueKey runs a getKey's synchronous part: entry checks, routing, the walk to its
@@ -77,7 +81,9 @@ func (tx *Transaction) issueKey(parent context.Context, sel KeySelector, snapsho
 		})
 		if !panicked {
 			panicked = backstop.run(func() {
-				r.walk.onRequest = tx.walkOnRequest
+				if tx.hooks != nil && tx.hooks.walkOnRequest != nil {
+					r.walk.testHooks().onRequest = tx.hooks.walkOnRequest
+				}
 				r.walk.start()
 				if r.walk.done() {
 					r.local = true
@@ -104,7 +110,9 @@ func (tx *Transaction) issueKey(parent context.Context, sel KeySelector, snapsho
 	if !counted && !r.local {
 		r.inc = tx.enterIssuedRead(ctx) // a borrowed operation's lease does not count
 	}
-	r.afterReply = tx.afterRangeReply
+	if tx.hooks != nil && tx.hooks.afterRangeReply != nil {
+		r.hooks = &readIssueTestHooks{afterReply: tx.hooks.afterRangeReply}
+	}
 	return r
 }
 
@@ -160,7 +168,10 @@ func (r *keyRead) read(clone bool) ([]byte, error) {
 	}
 	defer func() { r.walk.release(); r.walk = nil }() // the key is the cache's or the write map's, not the walk's
 	if !r.local {
-		storage := tx.nativeRange
+		var storage nativeRangeFunc
+		if tx.hooks != nil {
+			storage = tx.hooks.nativeRange
+		}
 		native := func(ctx context.Context, begin, end KeySelector, limits rangeLimits, reverse bool) (nativeRangeResult, error) {
 			var res nativeRangeResult
 			var err error
@@ -169,8 +180,8 @@ func (r *keyRead) read(clone bool) ([]byte, error) {
 			} else {
 				res, err = tx.nativeGetRange(ctx, begin, end, limits, true, reverse) // Snapshot::True (RYW:759, 1063)
 			}
-			if r.afterReply != nil {
-				r.afterReply()
+			if r.hooks != nil && r.hooks.afterReply != nil {
+				r.hooks.afterReply()
 			}
 			// resetPromise wins while the read is suspended (RYW:378-395). Reset
 			// retires this incarnation before waiting for our lease or resetting c.gen.
@@ -288,7 +299,10 @@ func (tx *Transaction) startKey(ctx context.Context, sel KeySelector, snapshot b
 		return p
 	}
 	p := &PendingKey{r: r, done: make(chan struct{})}
-	hook := tx.beforeRangeGoroutine
+	var hook func()
+	if tx.hooks != nil {
+		hook = tx.hooks.beforeRangeGoroutine
+	}
 	go func() {
 		if hook != nil {
 			hook()

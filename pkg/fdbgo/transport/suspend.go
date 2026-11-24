@@ -20,9 +20,18 @@ type SuspendSignal struct {
 	beforeWait func()
 }
 
-// suspendWatchers counts unfired signals, so with none live NotifySuspend is one
-// atomic load.
-var suspendWatchers atomic.Int32
+// suspendGate counts unfired signals, so with none live NotifySuspend is one
+// atomic load. Process-scoped because WithSuspendSignal attaches to an
+// arbitrary context.Context before any Conn or Database is selected.
+type suspendGate struct {
+	live atomic.Int32
+}
+
+func (g *suspendGate) enter()       { g.live.Add(1) }
+func (g *suspendGate) leave()       { g.live.Add(-1) }
+func (g *suspendGate) active() bool { return g.live.Load() != 0 }
+
+var defaultSuspendGate suspendGate
 
 type suspendKey struct{}
 
@@ -37,14 +46,14 @@ func WithSuspendSignal(ctx context.Context) (context.Context, *SuspendSignal) {
 // beforeWait optionally observes an unready gate, outside the signal's Once.
 func WithSuspendHandoff(ctx context.Context, resume <-chan struct{}, beforeWait func()) (context.Context, *SuspendSignal) {
 	s := &SuspendSignal{ch: make(chan struct{}), resume: resume, beforeWait: beforeWait}
-	suspendWatchers.Add(1)
+	defaultSuspendGate.enter()
 	return context.WithValue(ctx, suspendKey{}, s), s
 }
 
 // Fire closes Done once.
 func (s *SuspendSignal) Fire() {
 	s.once.Do(func() {
-		suspendWatchers.Add(-1)
+		defaultSuspendGate.leave()
 		close(s.ch)
 	})
 }
@@ -54,7 +63,7 @@ func (s *SuspendSignal) Done() <-chan struct{} { return s.ch }
 
 // NotifySuspend fires ctx's signal, if it carries one: the caller is about to wait.
 func NotifySuspend(ctx context.Context) {
-	if suspendWatchers.Load() == 0 {
+	if !defaultSuspendGate.active() {
 		return
 	}
 	if s, ok := ctx.Value(suspendKey{}).(*SuspendSignal); ok {

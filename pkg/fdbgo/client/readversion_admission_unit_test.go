@@ -38,7 +38,7 @@ func TestReadVersionAdmissionResamplesRejectedSetter(t *testing.T) {
 			var once sync.Once
 			unblock := func() { once.Do(func() { close(release) }) }
 			defer unblock()
-			tx.beforeReadVersionLock = func() { close(entered); <-release }
+			tx.testHooks().beforeReadVersionLock = func() { close(entered); <-release }
 			done := make(chan error, 1)
 			go func() { _, err := tx.GetReadVersion(ctx); done <- err }()
 			select {
@@ -73,7 +73,7 @@ func TestReadVersionRejectionPublishesUnderAdmissionLock(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		locked := make(chan bool, 1)
 		release := make(chan struct{})
-		tx.beforeReadVersionReject = func() {
+		tx.testHooks().beforeReadVersionReject = func() {
 			unlocked := tx.readVersionMu.TryLock()
 			if unlocked {
 				tx.readVersionMu.Unlock()

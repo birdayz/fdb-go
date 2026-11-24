@@ -151,7 +151,7 @@ func TestMappedSelectorReadsCapReplyTimeouts(t *testing.T) {
 		}},
 	} {
 		tx := db.CreateTransaction()
-		tx.rpcTimeoutOverride = 20 * time.Millisecond
+		tx.testHooks().rpcTimeoutOverride = 20 * time.Millisecond
 		rv, err := tx.GetReadVersion(ctx)
 		if err != nil {
 			t.Fatal(err)
@@ -194,7 +194,7 @@ func TestPipelinedGetReplyTimeoutSends(t *testing.T) {
 	key := []byte(prefix + "0000")
 	for _, pipelined := range []bool{false, true} {
 		tx := db.CreateTransaction()
-		tx.rpcTimeoutOverride = 20 * time.Millisecond
+		tx.testHooks().rpcTimeoutOverride = 20 * time.Millisecond
 		if _, err := tx.GetReadVersion(ctx); err != nil {
 			t.Fatal(err)
 		}

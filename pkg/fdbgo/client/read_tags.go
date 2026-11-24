@@ -5,14 +5,31 @@ import "math/rand/v2"
 // readTagSampleRate is CLIENT_KNOBS->READ_TAG_SAMPLE_RATE (ClientKnobs.cpp:294).
 const readTagSampleRate = 0.01
 
-// readTagSampling overrides the sample rate and its random source (tests only).
-type readTagSampling struct {
-	rate float64
+type readTagSamplingTestHooks struct {
 	draw func() float64 // nil: math/rand/v2
 }
 
+// readTagSampling overrides the sample rate and its random source (tests only).
+type readTagSampling struct {
+	rate  float64
+	hooks *readTagSamplingTestHooks
+}
+
+func (s *readTagSampling) testHooks() *readTagSamplingTestHooks {
+	if s.hooks == nil {
+		s.hooks = &readTagSamplingTestHooks{}
+	}
+	return s.hooks
+}
+
 func withReadTagSampling(rate float64, draw func() float64) Option {
-	return func(o *openOptions) { o.readTagSampling = &readTagSampling{rate: rate, draw: draw} }
+	return func(o *openOptions) {
+		s := &readTagSampling{rate: rate}
+		if draw != nil {
+			s.hooks = &readTagSamplingTestHooks{draw: draw}
+		}
+		o.readTagSampling = s
+	}
 }
 
 // sampleReadTags is DatabaseContext::sampleReadTags (NativeAPI.actor.cpp:2080-2083):
@@ -22,8 +39,8 @@ func (db *database) sampleReadTags() bool {
 	if s.rate <= 0 {
 		return false
 	}
-	if s.draw != nil {
-		return s.draw() <= s.rate
+	if s.hooks != nil && s.hooks.draw != nil {
+		return s.hooks.draw() <= s.rate
 	}
 	return rand.Float64() <= s.rate
 }

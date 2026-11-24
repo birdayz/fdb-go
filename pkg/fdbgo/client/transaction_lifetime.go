@@ -243,8 +243,8 @@ func (tx *Transaction) beginTurnover(expected *readIncarnation, released *execut
 		return turnoverToken{}, &wire.FDBError{Code: ErrClientInvalidOperation}
 	}
 	tx.resetMu.Lock()
-	if tx.beforeTurnoverRetirement != nil {
-		tx.beforeTurnoverRetirement()
+	if tx.hooks != nil && tx.hooks.beforeTurnoverRetirement != nil {
+		tx.hooks.beforeTurnoverRetirement()
 	}
 	tx.readErrMu.Lock()
 	old := tx.readIncarnationLocked()

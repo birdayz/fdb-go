@@ -27,7 +27,7 @@ func TestOnErrorObserverReentry(t *testing.T) {
 						caller, cancel := context.WithCancelCause(context.Background())
 						defer cancel(nil)
 						tx := &Transaction{db: &database{timeouts: newTimeoutQueue()}}
-						tx.backoffJitter = func() float64 { return 0 }
+						tx.testHooks().backoffJitter = func() float64 { return 0 }
 						defer tx.Cancel()
 						initial := tx.enterState()
 						inc := initial.inc
@@ -196,7 +196,7 @@ func retainedObserverWithoutOwner(t *testing.T, caller context.Context) (context
 	t.Helper()
 	var observed context.Context
 	tx := &Transaction{db: &database{logger: slog.New(&scopeObserver{enabled: func(ctx context.Context) bool { observed = ctx; return false }})}}
-	tx.backoffJitter = func() float64 { return 0 }
+	tx.testHooks().backoffJitter = func() float64 { return 0 }
 	if err := tx.OnError(caller, &wire.FDBError{Code: 1020}); err != nil {
 		t.Fatal(err)
 	}

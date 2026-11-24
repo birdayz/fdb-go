@@ -184,8 +184,8 @@ func TestFDBVersionstampWaitsForUncertaintyBarrier(t *testing.T) {
 			<-barrier.release
 		}
 	}
-	db.db.beforeCommitProxySelect.Store(&hook)
-	defer db.db.beforeCommitProxySelect.Store(nil)
+	db.db.testHooks().beforeCommitProxySelect.Store(&hook)
+	defer db.db.testHooks().beforeCommitProxySelect.Store(nil)
 	done := make(chan error, 1)
 	go func() { done <- tx.Commit(ctx) }()
 	waitCommitLifetimeGate(t, ctx, barrier.reached, "dummy synchronization commit")
@@ -278,7 +278,7 @@ func TestFDBVersionstampSynchronousGetterTurnover(t *testing.T) {
 				lease.release()
 				pause := &pausedCommit{reached: make(chan struct{}), release: make(chan struct{})}
 				defer pause.unblock()
-				tx.beforeVersionstampLookup = func() {
+				tx.testHooks().beforeVersionstampLookup = func() {
 					close(pause.reached)
 					<-pause.release
 				}
@@ -316,7 +316,7 @@ func TestFDBVersionstampSynchronousGetterTurnover(t *testing.T) {
 				requireCommitLifetimeCode(t, err, 1025, "captured retirement, never successor state")
 				awaitCommitLifetimeResult(t, ctx, turnover, "turnover after getter lease release")
 				defer tx.Cancel()
-				tx.beforeVersionstampLookup = nil
+				tx.testHooks().beforeVersionstampLookup = nil
 				stamp, err := tx.GetVersionstamp()
 				if mode == "reset" {
 					requireCommitLifetimeCode(t, err, 2015, "new incarnation after Reset")
@@ -447,8 +447,8 @@ func TestFDBVersionstampPanicCannotPublishSuccess(t *testing.T) {
 					panic(panicValue)
 				}
 			}
-			db.db.beforeCommitProxySelect.Store(&hook)
-			defer db.db.beforeCommitProxySelect.Store(nil)
+			db.db.testHooks().beforeCommitProxySelect.Store(&hook)
+			defer db.db.testHooks().beforeCommitProxySelect.Store(nil)
 			var caught any
 			func() {
 				defer func() { caught = recover() }()

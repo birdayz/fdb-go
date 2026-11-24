@@ -28,7 +28,7 @@ func TestNativeCommitCallBackstopAllocations(t *testing.T) {
 	// A panic still reaches the backstop and is reported to the caller.
 	db := &database{}
 	boom := func() { panic("boom") }
-	db.beforeCommitProxySelect.Store(&boom)
+	db.testHooks().beforeCommitProxySelect.Store(&boom)
 	if _, _, panicked := n.call(context.Background(), &commitInput{db: db}); panicked != "boom" {
 		t.Fatalf("panicking native commit reported %v, want boom", panicked)
 	}
@@ -159,7 +159,7 @@ func TestGRVBatchStorageReuse(t *testing.T) {
 	immBatcher := &grvBatcher{priority: grvPrioritySystemImmediate}
 	db.grvBatchers[grvBatcherSystemImmediate] = immBatcher
 	fixedNow := time.Now()
-	db.grvCache.now = func() time.Time { return fixedNow }
+	db.grvCache.testHooks().now = func() time.Time { return fixedNow }
 	db.grvCache.updateFromGRV(db.grvCache.token(), fixedNow, 42)
 	var state readVersionState
 	fetchReq := readVersionRequest{db: db, flags: grvPrioritySystemImmediate, useGrvCache: true}

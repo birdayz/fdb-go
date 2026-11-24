@@ -47,7 +47,7 @@ type selectorRangeRead struct {
 	kvs               []KeyValue
 	more              bool
 	err               error
-	afterReply        func() // test seam, captured at issue
+	hooks             *readIssueTestHooks // test seam, captured at issue (nil in production)
 }
 
 // selectorBoundary is a selector's key after removeOrEqual as a zero-alloc rywBoundary.
@@ -107,7 +107,9 @@ func (tx *Transaction) issueSelectorRangeInto(r *selectorRangeRead, parent conte
 	if !counted && !r.local {
 		r.inc = tx.enterIssuedRead(r.ctx) // a borrowed operation's lease does not count
 	}
-	r.afterReply = tx.afterRangeReply
+	if tx.hooks != nil && tx.hooks.afterRangeReply != nil {
+		r.hooks = &readIssueTestHooks{afterReply: tx.hooks.afterRangeReply}
+	}
 }
 
 func (r *selectorRangeRead) startWalk(begin, end KeySelector) (panicked bool) {
@@ -138,7 +140,9 @@ func (r *selectorRangeRead) startWalk(begin, end KeySelector) (panicked bool) {
 	}
 	panicked = backstop.run(func() {
 		w := r.walk
-		w.onRequest = tx.walkOnRequest
+		if tx.hooks != nil && tx.hooks.walkOnRequest != nil {
+			w.testHooks().onRequest = tx.hooks.walkOnRequest
+		}
 		w.start()
 		if w.done() {
 			r.local = true
@@ -232,7 +236,10 @@ func (r *selectorRangeRead) read(clone bool, dst []KeyValue) ([]KeyValue, bool, 
 	defer func() { r.walk.release(); r.walk = nil }()
 	tx, ctx := r.tx, r.ctx
 	if !r.local {
-		storage := tx.nativeRange
+		var storage nativeRangeFunc
+		if tx.hooks != nil {
+			storage = tx.hooks.nativeRange
+		}
 		native := func(ctx context.Context, begin, end KeySelector, limits rangeLimits, reverse bool) (nativeRangeResult, error) {
 			var res nativeRangeResult
 			var err error
@@ -241,8 +248,8 @@ func (r *selectorRangeRead) read(clone bool, dst []KeyValue) ([]KeyValue, bool, 
 			} else {
 				res, err = tx.nativeGetRange(ctx, begin, end, limits, true, reverse) // Snapshot::True (RYW:759, 1063)
 			}
-			if r.afterReply != nil {
-				r.afterReply()
+			if r.hooks != nil && r.hooks.afterReply != nil {
+				r.hooks.afterReply()
 			}
 			if r.reset() {
 				return nativeRangeResult{}, context.Canceled
@@ -310,8 +317,8 @@ func (r *selectorRangeRead) readThrough() ([]KeyValue, bool, error) {
 		}
 	}
 	res, err := tx.nativeGetRange(ctx, begin, end, r.limits, r.snapshot, r.reverse) // :201-202
-	if r.afterReply != nil {
-		r.afterReply()
+	if r.hooks != nil && r.hooks.afterReply != nil {
+		r.hooks.afterReply()
 	}
 	if r.reset() {
 		return nil, false, tx.trackReadOperation(ctx, context.Canceled)

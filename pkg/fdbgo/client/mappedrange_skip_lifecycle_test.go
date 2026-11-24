@@ -48,7 +48,7 @@ func TestMappedRangeConflictPublicationAfterReset(t *testing.T) {
 			release, resume := releaseGate(t)
 			defer resume()
 			var publications atomic.Int32
-			tx.beforeReadConflict = func() {
+			tx.testHooks().beforeReadConflict = func() {
 				if publications.Add(1) == 1 {
 					close(entered)
 					<-release
@@ -143,7 +143,7 @@ func TestMappedSkipPendingRetirementAcrossResolutionAndMappedRead(t *testing.T) 
 					if rv, err := tx.GetReadVersion(ctx); err != nil || rv <= 0 {
 						t.Fatalf("pin real read version: %d, %v", rv, err)
 					}
-					tx.rpcTimeoutOverride = time.Hour
+					tx.testHooks().rpcTimeoutOverride = time.Hour
 					oldMarker := []byte(t.Name() + "/discarded")
 					newMarker := []byte(t.Name() + "/replacement")
 					tx.Set(oldMarker, []byte("old-incarnation"))

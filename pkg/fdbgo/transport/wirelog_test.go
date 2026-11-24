@@ -99,7 +99,7 @@ func TestWireLogTextTruncation(t *testing.T) {
 func TestCaptureWireLogRetainedAfterStop(t *testing.T) {
 	var buf bytes.Buffer
 	stop := CaptureWireLog(&buf)
-	wl := globalWireLog.Load() // as a producer that loaded it before stop
+	wl := defaultWireLog.load() // as a producer that loaded it before stop
 	wl.log('S', UID{First: 1}, []byte("before"))
 	if buf.Len() == 0 {
 		t.Fatal("a write before stop was not captured")
@@ -110,7 +110,7 @@ func TestCaptureWireLogRetainedAfterStop(t *testing.T) {
 	if buf.Len() != n {
 		t.Fatalf("WIRELOG_AFTER_STOP: %d bytes written by a retained logger after stop", buf.Len()-n)
 	}
-	if globalWireLog.Load() != nil {
+	if defaultWireLog.load() != nil {
 		t.Fatal("stop left the capture installed")
 	}
 }
@@ -152,7 +152,7 @@ func TestCaptureWireLogStopWaitsForWrite(t *testing.T) {
 	stopped := make(chan struct{})
 	go func() { stop(); close(stopped) }()
 	deadline := time.Now().Add(5 * time.Second)
-	for globalWireLog.Load() != nil {
+	for defaultWireLog.load() != nil {
 		if time.Now().After(deadline) {
 			t.Fatal("stop did not start")
 		}
@@ -202,7 +202,26 @@ func TestCaptureWireLogStop(t *testing.T) {
 	if buf.Len() != n {
 		t.Fatalf("WIRELOG_AFTER_STOP: %d bytes written after stop", buf.Len()-n)
 	}
-	if globalWireLog.Load() != nil {
+	if defaultWireLog.load() != nil {
 		t.Fatal("stop left the capture installed")
+	}
+}
+
+func TestWithWireLogConnScoped(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	c := &Conn{}
+	WithWireLog(&buf)(c)
+	if defaultWireLog.load() != nil {
+		t.Fatal("WithWireLog mutated process-global defaultWireLog")
+	}
+	c.logSend(UID{First: 11, Second: 22}, []byte("req"))
+	c.logRecv(UID{First: 33, Second: 44}, []byte("resp"))
+	data := buf.Bytes()
+	if len(data) != (29+3)+(29+4) {
+		t.Fatalf("conn-scoped wirelog bytes = %d, want %d", len(data), (29+3)+(29+4))
+	}
+	if data[0] != 'S' || data[29+3] != 'R' {
+		t.Fatalf("unexpected directions: %q, %q", data[0], data[29+3])
 	}
 }

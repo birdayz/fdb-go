@@ -304,8 +304,8 @@ func (tx *Transaction) skGetRange(begin, end KeySelector, limits rangeLimits, re
 	// Serialize the synchronous routed read with reset, without joining Commit's reading barrier.
 	lease := tx.enterState()
 	defer lease.release()
-	if tx.beforeSpecialKeyRead != nil {
-		tx.beforeSpecialKeyRead()
+	if tx.hooks != nil && tx.hooks.beforeSpecialKeyRead != nil {
+		tx.hooks.beforeSpecialKeyRead()
 	}
 	if err := tx.specialKeyEntryError(); err != nil {
 		return nil, false, err

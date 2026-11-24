@@ -113,8 +113,8 @@ func TestNativeResolveKeyLocationPanic(t *testing.T) {
 		db.db.connMu.Unlock()
 		panic("resolver afterLocationSend")
 	}
-	db.db.afterLocationSend.Store(&hook)
-	defer db.db.afterLocationSend.Store(nil)
+	db.db.testHooks().afterLocationSend.Store(&hook)
+	defer db.db.testHooks().afterLocationSend.Store(nil)
 	done := make(chan error, 1)
 	go func() {
 		_, err := tx.nativeGetRangeFallback(ctx, KeySelector{Key: []byte("rfc262/resolver-panic"), Offset: 2}, firstGreaterOrEqual(allKeysEnd), newRangeLimits(1, -1), rv, false)
@@ -145,7 +145,7 @@ func TestNativeResolveKeyLocationPanic(t *testing.T) {
 	if pendingConn.IsClosed() {
 		t.Fatal("panic cleanup closed the shared connection")
 	}
-	db.db.afterLocationSend.Store(nil)
+	db.db.testHooks().afterLocationSend.Store(nil)
 	unblock()
 	loc, err := db.db.locCache.locate(db.db, ctx, []byte("rfc262/resolver-panic"), NoTenantID, types.SpanContext{}, false)
 	if err != nil || len(loc.Servers) == 0 {

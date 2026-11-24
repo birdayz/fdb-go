@@ -323,7 +323,7 @@ func TestTracerConcurrentStartAndRetirement(t *testing.T) {
 				})
 			}})
 			tx := db.CreateTransaction()
-			tx.beforeTraceWait = notifyTraceWait
+			tx.testHooks().beforeTraceWait = notifyTraceWait
 			defer tx.Cancel()
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -432,7 +432,7 @@ func TestTracerStartPanicReleasesWaiters(t *testing.T) {
 	tr := &panickingSpanTracer{Tracer: db.db.tracer, entered: make(chan struct{}), resume: make(chan struct{})}
 	db.db.tracer = tr
 	tx := db.CreateTransaction()
-	tx.beforeTraceWait = notifyTraceWait
+	tx.testHooks().beforeTraceWait = notifyTraceWait
 	defer tx.Cancel()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

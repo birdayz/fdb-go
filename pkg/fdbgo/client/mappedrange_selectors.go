@@ -123,7 +123,7 @@ func (tx *Transaction) getMappedRangeSelectors(ctx context.Context, begin, end K
 	var tags readTagSample
 	redraw := true
 	timeoutRetries := 0
-	lb := lbRetry{observe: tx.db.onReadBackoff.Load()}
+	lb := lbRetry{observe: tx.db.readBackoffObserver()}
 	for {
 		if bytes.Compare(begin.Key, end.Key) >= 0 {
 			return output, nil
@@ -173,7 +173,7 @@ func (tx *Transaction) getMappedRangeSelectors(ctx context.Context, begin, end K
 			}
 			return mappedRangeResult{}, err
 		}
-		lb = lbRetry{observe: tx.db.onReadBackoff.Load()} // the next request is a new loadBalance call
+		lb = lbRetry{observe: tx.db.readBackoffObserver()} // the next request is a new loadBalance call
 		if (more && len(rows) == 0) || (limits.rows != -1 && len(rows) > limits.rows) {
 			return mappedRangeResult{}, &wire.FDBError{Code: ErrInternalError}
 		}
@@ -250,7 +250,7 @@ func (tx *Transaction) getMappedRangeSelectorExact(ctx context.Context, begin, e
 	var tags readTagSample
 	redraw := true
 	timeoutRetries := 0
-	lb := lbRetry{observe: tx.db.onReadBackoff.Load()}
+	lb := lbRetry{observe: tx.db.readBackoffObserver()}
 	for {
 		locations, err := tx.mappedExactLocations(ctx, begin, end, reverse)
 		if err != nil {
@@ -295,7 +295,7 @@ func (tx *Transaction) getMappedRangeSelectorExact(ctx context.Context, begin, e
 				}
 				return mappedRangeResult{}, err
 			}
-			lb = lbRetry{observe: tx.db.onReadBackoff.Load()} // the next request is a new loadBalance call
+			lb = lbRetry{observe: tx.db.readBackoffObserver()} // the next request is a new loadBalance call
 			if (more && len(rows) == 0) || (limits.rows != -1 && len(rows) > limits.rows) {
 				return mappedRangeResult{}, &wire.FDBError{Code: ErrInternalError}
 			}

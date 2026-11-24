@@ -47,7 +47,7 @@ func TestTimeoutQueueBookkeepingAllocations(t *testing.T) {
 	a, b := &Transaction{}, &Transaction{}
 	na, nb := q.newNode(a), q.newNode(b)
 	deliveries := 0
-	q.deliver = func(*Transaction, uint64) { deliveries++ }
+	q.testHooks().deliver = func(*Transaction, uint64) { deliveries++ }
 	allocs := testing.AllocsPerRun(100, func() {
 		now := clock.Load()
 		scheduleTimeoutNode(na, 1, now+int64(30*time.Second))

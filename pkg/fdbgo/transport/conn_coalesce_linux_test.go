@@ -127,7 +127,7 @@ func TestDNGCoalesceDelaySharesOneWriteAndEndsOnClose(t *testing.T) {
 	}
 	enteredBatchWait := make(chan struct{})
 	var batchWaitOnce sync.Once
-	c.na.onCoalesceWait = func() {
+	c.na.testHooks().onCoalesceWait = func() {
 		batchWaitOnce.Do(func() { close(enteredBatchWait) })
 	}
 	handshake := len(counter.snapshot())
@@ -167,7 +167,7 @@ func TestDNGCoalesceDelaySharesOneWriteAndEndsOnClose(t *testing.T) {
 	// coalesceWait, then Close: Close must return promptly without writing.
 	enteredCoalesceWait := make(chan struct{})
 	var coalesceWaitOnce sync.Once
-	c.na.onCoalesceWait = func() {
+	c.na.testHooks().onCoalesceWait = func() {
 		coalesceWaitOnce.Do(func() { close(enteredCoalesceWait) })
 	}
 	beforeCloseWrites := len(counter.snapshot())

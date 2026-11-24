@@ -438,7 +438,7 @@ func TestFallbackReadyBeginStartsEndBeforeConsumingError(t *testing.T) {
 	ctx = context.WithValue(ctx, resolveKeyStartObserver{}, func() { close(beforeStartupWait) })
 	beginError := errors.New("begin is already an error")
 	tx := &Transaction{db: db}
-	tx.resolveKeyFn = func(ctx context.Context, selector KeySelector, _ int64) ([]byte, error) {
+	tx.testHooks().resolveKeyFn = func(ctx context.Context, selector KeySelector, _ int64) ([]byte, error) {
 		if string(selector.Key) == "begin" {
 			return nil, beginError
 		}
@@ -492,7 +492,7 @@ func TestFallbackReadyEndDoesNotWait(t *testing.T) {
 	ctx = context.WithValue(ctx, resolveKeyStartObserver{}, func() { observations.Add(1) })
 	failure := errors.New("begin error")
 	tx := &Transaction{}
-	tx.resolveKeyFn = func(context.Context, KeySelector, int64) ([]byte, error) { return nil, failure }
+	tx.testHooks().resolveKeyFn = func(context.Context, KeySelector, int64) ([]byte, error) { return nil, failure }
 	_, err := tx.nativeGetRangeFallback(ctx, sel("begin", false, 2), firstGreaterOrEqual([]byte("end")), newRangeLimits(1, -1), 1, false)
 	if !errors.Is(err, failure) || observations.Load() != 0 {
 		t.Fatalf("ready end startup: err=%v wait observations=%d", err, observations.Load())
@@ -508,7 +508,7 @@ func TestFallbackStartupCancellationAndEndPanic(t *testing.T) {
 			defer cancel()
 			entered, resumed := make(chan struct{}), make(chan struct{})
 			tx := &Transaction{}
-			tx.resolveKeyFn = func(ctx context.Context, selector KeySelector, _ int64) ([]byte, error) {
+			tx.testHooks().resolveKeyFn = func(ctx context.Context, selector KeySelector, _ int64) ([]byte, error) {
 				if string(selector.Key) == "begin" {
 					notifyParked(ctx)
 					close(resumed)

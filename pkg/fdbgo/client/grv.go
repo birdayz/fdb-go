@@ -31,12 +31,16 @@ const (
 //
 // C++ does NOT explicitly invalidate this cache on proxy change — it relies
 // on natural expiry via MAX_VERSION_CACHE_LAG (100ms). We match this behavior.
-type grvCache struct {
+type grvCacheTestHooks struct {
 	// now is the clock freshness is judged against. A seam, not a knob: the
 	// freshness window is 100ms, so a test that compares against the real
 	// wall clock is one GC pause away from failing on a CORRECT
 	// implementation. nil means time.Now.
 	now func() time.Time
+}
+
+type grvCache struct {
+	hooks *grvCacheTestHooks
 
 	// entry is the cached version plus its two instants, published as ONE
 	// value. The (version, anchor) half is a PAIR and must never be observed
@@ -679,7 +683,6 @@ type grvBatcher struct {
 	priority   uint32 // fixed priority bits for this batcher
 	extraFlags uint32 // immutable option bits; variants never share a queue
 	variants   map[uint32]*grvBatcher
-	yield      func() // nil: runtime.Gosched; test seam for broadcast cadence
 
 	// The batch window (RFC-259, grv_window.go). window is nil until the
 	// first window opens; newWindow (nil: newWindowLocked) and now (nil:
@@ -691,8 +694,7 @@ type grvBatcher struct {
 	windowDeadline time.Time
 	overlapped     bool
 	pendingIdle    bool
-	newWindow      func(*database) batchWindow
-	now            func() time.Time
+	hooks          *grvBatcherTestHooks
 
 	refreshOnce sync.Once
 	// refresherStarted is a deterministic test seam (RFC-104): true once the
@@ -706,6 +708,26 @@ type grvBatcher struct {
 	// flushes (UnixNano; atomic — a new batch can flush while an earlier flush's
 	// RPC is still in flight). RFC-110.
 	lastPanicLog atomic.Int64
+}
+
+type grvBatcherTestHooks struct {
+	yield     func() // nil: runtime.Gosched; test seam for broadcast cadence
+	newWindow func(*database) batchWindow
+	now       func() time.Time
+}
+
+func (c *grvCache) testHooks() *grvCacheTestHooks {
+	if c.hooks == nil {
+		c.hooks = &grvCacheTestHooks{}
+	}
+	return c.hooks
+}
+
+func (b *grvBatcher) testHooks() *grvBatcherTestHooks {
+	if b.hooks == nil {
+		b.hooks = &grvBatcherTestHooks{}
+	}
+	return b.hooks
 }
 
 type grvRequest struct {
@@ -916,8 +938,8 @@ func (b *grvBatcher) admit(db *database, req grvRequest) []grvRequest {
 	}
 	deadline := b.clock().Add(b.batchTime)
 	if b.window == nil {
-		if b.newWindow != nil {
-			b.window = b.newWindow(db)
+		if b.hooks != nil && b.hooks.newWindow != nil {
+			b.window = b.hooks.newWindow(db)
 		} else {
 			b.window = b.newWindowLocked(db)
 		}
@@ -977,8 +999,8 @@ func (b *grvBatcher) finishBatch() {
 }
 
 func (b *grvBatcher) clock() time.Time {
-	if b.now != nil {
-		return b.now()
+	if b.hooks != nil && b.hooks.now != nil {
+		return b.hooks.now()
 	}
 	return time.Now()
 }
@@ -1041,7 +1063,7 @@ func (b *grvBatcher) flushWithin(db *database, ctx context.Context, batch []grvR
 	tok := db.grvCache.token()
 	requestTime := time.Now()
 	sampleStart := requestTime
-	if b.now != nil {
+	if b.hooks != nil && b.hooks.now != nil {
 		sampleStart = b.clock()
 	}
 	version, locked, rkDefault, rkBatch, tagThrottleInfoEntries, _, attemptEpoch, err := b.sendGRVRequest(db, ctx, flags, uint32(len(batch)), batchGRVSpanContext(spans), aggregateBatchTags(batch))
@@ -1081,8 +1103,8 @@ func (b *grvBatcher) flushWithin(db *database, ctx context.Context, batch []grvR
 }
 
 func (b *grvBatcher) yieldReady() {
-	if b.yield != nil {
-		b.yield()
+	if b.hooks != nil && b.hooks.yield != nil {
+		b.hooks.yield()
 	} else {
 		runtime.Gosched()
 	}
@@ -1579,8 +1601,8 @@ func parseGetReadVersionReply(data []byte) (int64, bool, bool, bool, []types.Tra
 // the cache STORES always come from the caller, so an injected clock can never
 // fabricate an anchor.
 func (c *grvCache) clock() time.Time {
-	if c.now != nil {
-		return c.now()
+	if c.hooks != nil && c.hooks.now != nil {
+		return c.hooks.now()
 	}
 	return time.Now()
 }

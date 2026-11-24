@@ -264,7 +264,7 @@ func TestReadTagSamplingOneDrawPerRequest(t *testing.T) {
 			}{
 				// The primary's reply is lost, so the paid hedge to a second replica wins.
 				{"hedge", func(e *env) { duplicateServers(e.db, 2); setSecondBudget(e.db.db.queueModel, 1) }, nil, 1, []taggedRequest{tagged, tagged}},
-				{"reply-timeout", func(e *env) { e.tx.rpcTimeoutOverride = 300 * time.Millisecond }, nil, 1, []taggedRequest{tagged, tagged}},
+				{"reply-timeout", func(e *env) { e.tx.testHooks().rpcTimeoutOverride = 300 * time.Millisecond }, nil, 1, []taggedRequest{tagged, tagged}},
 				{"wrong-shard", func(*env) {}, wrongShard, 2, []taggedRequest{tagged, untagged}},
 			} {
 				t.Run(sc.name, func(t *testing.T) {
@@ -295,7 +295,7 @@ func TestReadTagSamplingOneDrawPerRequest(t *testing.T) {
 		e := setup(t)
 		duplicateServers(e.db, 3)
 		setSecondBudget(e.db.db.queueModel, 1)
-		e.tx.rpcTimeoutOverride = 300 * time.Millisecond
+		e.tx.testHooks().rpcTimeoutOverride = 300 * time.Millisecond
 		start(t, e, dropReply("GetValueRequest"), dropReply("GetValueRequest"))
 		if _, err := e.tx.getValue(ctx, key); err != nil {
 			t.Fatalf("getValue: %v", err)
@@ -318,7 +318,7 @@ func TestReadTagSamplingOneDrawPerRequest(t *testing.T) {
 			loc, _ := e.db.db.locCache.locate(e.db.db, ctx, key, NoTenantID, types.SpanContext{}, false)
 			setServers(e.db, []ServerInfo{deadEndpoint(e.addr), loc.Servers[0]})
 		}, nil, nil, 1, []taggedRequest{tagged, tagged}},
-		{"pipelined-reply-timeout", func(e *env) { e.tx.rpcTimeoutOverride = 300 * time.Millisecond }, []plannedReply{dropReply("GetValueRequest")}, nil, 1, []taggedRequest{tagged, tagged}},
+		{"pipelined-reply-timeout", func(e *env) { e.tx.testHooks().rpcTimeoutOverride = 300 * time.Millisecond }, []plannedReply{dropReply("GetValueRequest")}, nil, 1, []taggedRequest{tagged, tagged}},
 		// The read goes to the first replica, an alias of the storage server; its
 		// reply lost, that connection closes before Resolve flushes it, so the
 		// flush fails and the reply carries the connection's failure. The

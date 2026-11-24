@@ -27,7 +27,7 @@ func (c *fakeClock) advance(d time.Duration) { c.t = c.t.Add(d) }
 // testBatcher is a batcher on a fake window and clock: no timer ever fires.
 func testBatcher(inFlight int, batchTime time.Duration) (*grvBatcher, *fakeWindow, *fakeClock) {
 	w, c := &fakeWindow{}, &fakeClock{t: time.Unix(1000, 0)}
-	b := &grvBatcher{priority: grvPriorityDefault, inFlight: inFlight, batchTime: batchTime, window: w, now: c.now}
+	b := &grvBatcher{priority: grvPriorityDefault, inFlight: inFlight, batchTime: batchTime, window: w, hooks: &grvBatcherTestHooks{now: c.now}}
 	return b, w, c
 }
 
@@ -207,8 +207,8 @@ func TestGRVBatchWindowArmsTheRemainingTime(t *testing.T) {
 	t.Parallel()
 	c := &fakeClock{t: time.Unix(1000, 0)}
 	w := &fakeWindow{}
-	b := &grvBatcher{priority: grvPriorityDefault, inFlight: 1, batchTime: time.Millisecond, now: c.now}
-	b.newWindow = func(*database) batchWindow {
+	b := &grvBatcher{priority: grvPriorityDefault, inFlight: 1, batchTime: time.Millisecond, hooks: &grvBatcherTestHooks{now: c.now}}
+	b.testHooks().newWindow = func(*database) batchWindow {
 		c.advance(300 * time.Microsecond)
 		return w
 	}
@@ -351,7 +351,8 @@ func TestGRVBatchersSeparateFullFlags(t *testing.T) {
 	}
 	wg.Wait()
 	riskyClock := &fakeClock{t: rootClock.t}
-	risky.window, risky.now = &fakeWindow{}, riskyClock.now
+	risky.window = &fakeWindow{}
+	risky.testHooks().now = riskyClock.now
 	other.window = &fakeWindow{}
 	root.admit(nil, batchRequest())
 	if got := risky.admit(nil, batchRequest()); len(got) != 1 {

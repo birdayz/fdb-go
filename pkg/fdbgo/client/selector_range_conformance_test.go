@@ -356,7 +356,7 @@ func (env *selConfEnv) runGo(t *testing.T, ctx context.Context, q selConfQuery, 
 	tx := env.goDB.CreateTransaction()
 	defer tx.Cancel()
 	tx.SetTimeout(20000)
-	tx.resolveKeyWorkerObserver = func(KeySelector) { fallbacks.Add(1) }
+	tx.testHooks().resolveKeyWorkerObserver = func(KeySelector) { fallbacks.Add(1) }
 	if q.rywDisabled {
 		tx.SetReadYourWritesDisable()
 	}

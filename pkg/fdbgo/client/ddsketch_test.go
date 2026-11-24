@@ -162,7 +162,7 @@ func TestDDSketch_PointInTimeSnapshot(t *testing.T) {
 	t.Parallel()
 	var s latencySketch
 	s.addSampleAt(0, 10)
-	s.onStripeRead = func(i int) {
+	s.testHooks().onStripeRead = func(i int) {
 		if i == 0 && s.stripes[numSketchStripes-1].mu.TryLock() {
 			st := &s.stripes[numSketchStripes-1]
 			st.populationSize = 1

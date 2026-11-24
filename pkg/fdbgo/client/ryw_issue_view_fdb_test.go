@@ -39,7 +39,7 @@ func issueViewTx(db *Database, rv int64) *Transaction {
 	tx := db.CreateTransaction()
 	tx.SetTimeout(10000)
 	tx.SetReadVersion(rv)
-	tx.rpcTimeoutOverride = 30 * time.Second
+	tx.testHooks().rpcTimeoutOverride = 30 * time.Second
 	return tx
 }
 

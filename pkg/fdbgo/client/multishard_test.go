@@ -439,8 +439,8 @@ func testMultiShard_LocateRangeLimit(t *testing.T, ctx context.Context, env *mul
 	begin, end := []byte(env.prefix), append([]byte(env.prefix), 0xFF)
 	var sends atomic.Int32
 	hook := func() { sends.Add(1) }
-	db.afterLocationSend.Store(&hook)
-	defer db.afterLocationSend.Store(nil)
+	db.testHooks().afterLocationSend.Store(&hook)
+	defer db.testHooks().afterLocationSend.Store(nil)
 	bounds := func(locs []LocationResult) [][2]string {
 		out := make([][2]string, len(locs))
 		for i, loc := range locs {

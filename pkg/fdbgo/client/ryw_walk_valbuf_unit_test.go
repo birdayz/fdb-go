@@ -19,7 +19,7 @@ func TestPendingRangeKeepsAppendedValuesAcrossWalks(t *testing.T) {
 	ctx := context.Background()
 	for round := range 40 {
 		tx := &Transaction{}
-		tx.nativeRange = st.native
+		tx.testHooks().nativeRange = st.native
 		key := func(i int) []byte { return st.m.kvs[i].Key }
 		// Even keys' bases come from storage into the snapshot cache; odd keys
 		// stay unknown, so a read over a pair needs storage again.

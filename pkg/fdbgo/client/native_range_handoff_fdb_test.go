@@ -191,7 +191,7 @@ func checkFallbackContinuationHandoff(t *testing.T, mode string, forced bool) []
 	defer unblockEnd()
 	beginAtGate, firstFlush := make(chan struct{}), make(chan bool, 1)
 	var gateOnce sync.Once
-	tx.beforeResolveKeyResume = func(selector KeySelector) {
+	tx.testHooks().beforeResolveKeyResume = func(selector KeySelector) {
 		if string(selector.Key) == prefix+"a" {
 			gateOnce.Do(func() {
 				firstFlush <- handoffFlushWait()
@@ -207,7 +207,7 @@ func checkFallbackContinuationHandoff(t *testing.T, mode string, forced bool) []
 	defer unblockNotify()
 	if ready {
 		var once sync.Once
-		tx.beforeResolveKeyReplyWait = func(selector KeySelector, parked <-chan struct{}) {
+		tx.testHooks().beforeResolveKeyReplyWait = func(selector KeySelector, parked <-chan struct{}) {
 			if string(selector.Key) == prefix+"a" {
 				once.Do(func() {
 					beforeNotify <- parked
@@ -222,7 +222,7 @@ func checkFallbackContinuationHandoff(t *testing.T, mode string, forced bool) []
 	var pingCleanup replyGuard
 	defer pingCleanup.close()
 	var pingReply <-chan transport.Response
-	tx.resolveKeyWorkerObserver = func(selector KeySelector) {
+	tx.testHooks().resolveKeyWorkerObserver = func(selector KeySelector) {
 		if forced && string(selector.Key) == prefix+"a" {
 			endpoint := transport.WellKnownToken(1)
 			token, replies, handle := conn.PrepareReplyTo(endpoint)

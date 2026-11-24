@@ -59,6 +59,7 @@ type pingOwnerOptions struct {
 	panicInWait bool
 	gated       bool // the PING reply's release blocks until openGate
 	holdWait    bool // the monitor's wait blocks after recording until releaseWait
+	seriousLog  func(string, ...any)
 }
 
 type pingOwnerFixture struct {
@@ -109,18 +110,18 @@ func newPingOwnerFixture(t *testing.T, opts pingOwnerOptions) *pingOwnerFixture 
 	c.ctx = f.ctx
 
 	// Cleanups run last-in first-out: the seam is restored after the monitor joins.
-	orig := putReplyChannel
+	h := c.testHooks()
+	h.seriousLog = opts.seriousLog
 	var fired atomic.Bool
-	putReplyChannel = func(ch chan Response) {
+	h.putReplyChannel = func(ch chan Response) {
 		if ping := f.ctx.ping.Load(); ping != nil && ch == *ping && fired.CompareAndSwap(false, true) {
 			f.released <- c.IsClosed()
 			if f.gate != nil {
 				<-f.gate
 			}
 		}
-		orig(ch)
+		putReplyChannelImpl(ch)
 	}
-	t.Cleanup(func() { putReplyChannel = orig })
 
 	c.loopWG.Add(1)
 	go func() {
@@ -254,12 +255,12 @@ func TestMonitorPingOwner_FrozenPingReleasesBeforeTeardown(t *testing.T) {
 }
 
 func TestMonitorPingOwner_PanicReleasesBeforeTeardown(t *testing.T) {
-	orig := seriousLog
 	var logged atomic.Bool
-	seriousLog = func(string, ...any) { logged.Store(true) }
-	t.Cleanup(func() { seriousLog = orig })
-
-	f := newPingOwnerFixture(t, pingOwnerOptions{timeout: time.Minute, panicInWait: true})
+	f := newPingOwnerFixture(t, pingOwnerOptions{
+		timeout:     time.Minute,
+		panicInWait: true,
+		seriousLog:  func(string, ...any) { logged.Store(true) },
+	})
 	awaitReleaseBeforeTeardown(t, f, f.takePing(t))
 	if !f.ctx.panicked.Load() || !logged.Load() {
 		t.Fatal("positive control: the monitor's PING wait did not panic into recoverLoop")
@@ -281,7 +282,7 @@ func TestReleasePingPoolsPublishedReply(t *testing.T) {
 			if published { // failAllPending: send, then delete, under the shard lock
 				c.deliverPending(token, Response{Err: errConnClosed})
 			}
-			pooled := observePool(t)
+			pooled := observePool(t, c)
 			releasePing(h, false)
 			if len(*pooled) != 1 || (*pooled)[0] != ch {
 				t.Fatalf("releasePing pooled %d channels, want the PING's once", len(*pooled))

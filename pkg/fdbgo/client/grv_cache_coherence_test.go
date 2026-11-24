@@ -59,7 +59,7 @@ func TestGRVCache_PairIsNeverTorn(t *testing.T) {
 	c := &grvCache{}
 	// Freshness must never evict during the run: this test is about coherence,
 	// and a stale-miss would silently reduce the sample to nothing.
-	c.now = func() time.Time { return coherenceTimeFor(0) }
+	c.testHooks().now = func() time.Time { return coherenceTimeFor(0) }
 
 	var stop sync.WaitGroup
 	done := make(chan struct{})
