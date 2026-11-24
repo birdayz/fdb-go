@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/recordlayer/textcmp"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/protoname"
 )
@@ -173,6 +174,8 @@ func IsMetaDataException(err error) bool {
 		// (ProtoUtils.java:153); its Go type lives in protoname, which this
 		// package aliases as InvalidNameError.
 		return true
+	case *textcmp.MetaDataError:
+		return true
 	}
 	return false
 }
@@ -207,6 +210,7 @@ func OutermostJavaError(err error) error {
 var javaErrorPkgPaths = map[string]bool{
 	reflect.TypeOf(MetaDataError{}).PkgPath():              true,
 	reflect.TypeOf(protoname.InvalidNameError{}).PkgPath(): true,
+	reflect.TypeOf(textcmp.MetaDataError{}).PkgPath():      true,
 }
 
 // RecordCoreMessages is the message of every RecordCoreError in err's tree, in

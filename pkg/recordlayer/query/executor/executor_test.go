@@ -23,7 +23,6 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	functions "fdb.dev/pkg/relational/core/functions"
 )
 
 type unsupportedTestPlan struct{ plans.PlanExprBase }
@@ -2348,7 +2347,7 @@ func TestGoToProtoValue_Overflow(t *testing.T) {
 	})
 }
 
-func TestGoToProtoValue_ConsistentWithConvertToProtoValue(t *testing.T) {
+func TestGoToProtoValue_ScalarConversions(t *testing.T) {
 	t.Parallel()
 
 	orderDesc := (&demopb.Order{}).ProtoReflect().Descriptor()
@@ -2358,14 +2357,15 @@ func TestGoToProtoValue_ConsistentWithConvertToProtoValue(t *testing.T) {
 		name string
 		fd   protoreflect.FieldDescriptor
 		val  any
+		want protoreflect.Value
 	}{
-		{"int64_to_int32", orderDesc.Fields().ByName("price"), int64(42)},
-		{"int64_to_int64", orderDesc.Fields().ByName("order_id"), int64(42)},
-		{"float64_to_float", typedDesc.Fields().ByName("val_float"), float64(2.5)},
-		{"float64_to_double", typedDesc.Fields().ByName("val_double"), float64(3.14)},
-		{"string_to_string", typedDesc.Fields().ByName("val_string"), "hello"},
-		{"bool_to_bool", typedDesc.Fields().ByName("val_bool"), true},
-		{"bytes_to_bytes", typedDesc.Fields().ByName("val_bytes"), []byte{1, 2, 3}},
+		{"int64_to_int32", orderDesc.Fields().ByName("price"), int64(42), protoreflect.ValueOfInt32(42)},
+		{"int64_to_int64", orderDesc.Fields().ByName("order_id"), int64(42), protoreflect.ValueOfInt64(42)},
+		{"float64_to_float", typedDesc.Fields().ByName("val_float"), float64(2.5), protoreflect.ValueOfFloat32(2.5)},
+		{"float64_to_double", typedDesc.Fields().ByName("val_double"), float64(3.14), protoreflect.ValueOfFloat64(3.14)},
+		{"string_to_string", typedDesc.Fields().ByName("val_string"), "hello", protoreflect.ValueOfString("hello")},
+		{"bool_to_bool", typedDesc.Fields().ByName("val_bool"), true, protoreflect.ValueOfBool(true)},
+		{"bytes_to_bytes", typedDesc.Fields().ByName("val_bytes"), []byte{1, 2, 3}, protoreflect.ValueOfBytes([]byte{1, 2, 3})},
 	}
 
 	for _, tc := range cases {
@@ -2375,17 +2375,13 @@ func TestGoToProtoValue_ConsistentWithConvertToProtoValue(t *testing.T) {
 			if err != nil {
 				t.Fatalf("goToProtoValue: %v", err)
 			}
-			want, err2 := functions.ConvertToProtoValue(tc.fd, tc.val)
-			if err2 != nil {
-				t.Fatalf("ConvertToProtoValue: %v", err2)
-			}
 			// Bytes fields return []byte which is not comparable via !=; handle separately.
 			if tc.fd.Kind() == protoreflect.BytesKind {
-				if !bytes.Equal(got.Bytes(), want.Bytes()) {
-					t.Errorf("goToProtoValue = %v, ConvertToProtoValue = %v", got, want)
+				if !bytes.Equal(got.Bytes(), tc.want.Bytes()) {
+					t.Errorf("goToProtoValue = %v, want %v", got, tc.want)
 				}
-			} else if got.Interface() != want.Interface() {
-				t.Errorf("goToProtoValue = %v, ConvertToProtoValue = %v", got, want)
+			} else if got.Interface() != tc.want.Interface() {
+				t.Errorf("goToProtoValue = %v, want %v", got, tc.want)
 			}
 		})
 	}

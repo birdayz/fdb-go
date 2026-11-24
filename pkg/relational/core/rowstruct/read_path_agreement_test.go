@@ -1,4 +1,4 @@
-package executor
+package rowstruct
 
 import (
 	"fmt"
@@ -10,9 +10,35 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/executor"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/relational/core/rowstruct"
 )
+
+type readPathStubBinder map[values.CorrelationIdentifier]any
+
+func (b readPathStubBinder) GetCorrelationBinding(id values.CorrelationIdentifier) (any, bool) {
+	v, found := b[id]
+	return v, found
+}
+
+func mustReadPathQOV(t testing.TB, correlation values.CorrelationIdentifier, flowed values.Type) values.QuantifiedObjectValue {
+	t.Helper()
+	qov, err := values.NewQuantifiedObjectValue(correlation, flowed)
+	if err != nil {
+		t.Fatalf("NewQuantifiedObjectValue(%s): %v", correlation, err)
+	}
+	return qov
+}
+
+func mustReadPathFieldOrdinal(t testing.TB, child values.Value, ordinal int) values.Value {
+	t.Helper()
+	field, err := values.ResolveFieldOrdinals(child, []int{ordinal})
+	if err != nil {
+		t.Fatalf("ResolveFieldOrdinals(%d): %v", ordinal, err)
+	}
+	return field
+}
 
 // Java funnels EVERY proto field read through ONE helper,
 // MessageHelpers.getFieldOnMessage (MessageHelpers.java:124-143), whose FIRST
@@ -232,7 +258,7 @@ func TestReadPathAgreement_EmptyArrayAndAbsence(t *testing.T) {
 
 	// The positional row (path 1) is built once — it is a whole-message
 	// materialization, read below by ordinal.
-	posRow := protoToPositional(msg.Interface())
+	posRow := executor.FromStoredRecord(&recordlayer.FDBStoredRecord[proto.Message]{Record: msg.Interface()}).Positional
 	if posRow == nil {
 		t.Fatal("protoToPositional returned nil for a non-nil message")
 	}
@@ -241,7 +267,7 @@ func TestReadPathAgreement_EmptyArrayAndAbsence(t *testing.T) {
 	}
 
 	// The struct view (path 3) is likewise built once.
-	rs, err := rowstruct.New(msg)
+	rs, err := New(msg)
 	if err != nil {
 		t.Fatalf("rowstruct.New: %v", err)
 	}
@@ -277,10 +303,10 @@ func TestReadPathAgreement_EmptyArrayAndAbsence(t *testing.T) {
 			// descriptor-shaped QOV is bound to the message and the resolved
 			// ordinal reads through the same presence-aware proto authority.
 			corr := values.NamedCorrelationIdentifier("read_path_proto")
-			qov := mustTestQOV(t, corr, PositionalTypeForDescriptor(desc))
-			field := mustTestFieldOrdinal(t, qov, fd.Index())
+			qov := mustReadPathQOV(t, corr, executor.PositionalTypeForDescriptor(desc))
+			field := mustReadPathFieldOrdinal(t, qov, fd.Index())
 			raw2, err := field.Evaluate(&values.RowEvalContext{
-				Correlations: stubBinder{corr: msg.Interface()},
+				Correlations: readPathStubBinder{corr: msg.Interface()},
 			})
 			if err != nil {
 				t.Fatalf("values.FieldValue.Evaluate(%q): %v", tc.field, err)
@@ -399,17 +425,17 @@ func TestReadPathsMatchJavasQueryRead(t *testing.T) {
 			}
 			fd := desc.Fields().ByName(protoreflect.Name(c.field))
 
-			got1 := normalizeReadPathValue(protoToPositional(msg.Interface()).Slots[fd.Index()])
+			got1 := normalizeReadPathValue(executor.FromStoredRecord(&recordlayer.FDBStoredRecord[proto.Message]{Record: msg.Interface()}).Positional.Slots[fd.Index()])
 			corr := values.NamedCorrelationIdentifier("java_reads")
-			qov := mustTestQOV(t, corr, PositionalTypeForDescriptor(desc))
-			raw2, err := mustTestFieldOrdinal(t, qov, fd.Index()).Evaluate(&values.RowEvalContext{
-				Correlations: stubBinder{corr: msg.Interface()},
+			qov := mustReadPathQOV(t, corr, executor.PositionalTypeForDescriptor(desc))
+			raw2, err := mustReadPathFieldOrdinal(t, qov, fd.Index()).Evaluate(&values.RowEvalContext{
+				Correlations: readPathStubBinder{corr: msg.Interface()},
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
 			got2 := normalizeReadPathValue(raw2)
-			rs, err := rowstruct.New(msg)
+			rs, err := New(msg)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -7,7 +7,7 @@ package predicates
 import (
 	"fmt"
 
-	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/internal/recordlayer/textcmp"
 )
 
 // IsText reports whether the comparison is a full-text predicate.
@@ -27,29 +27,29 @@ func (e *TextComparisonError) Error() string { return e.Message }
 
 // recordLayerTextType maps a text ComparisonType to the Record Layer's
 // Comparisons.Type subset.
-func recordLayerTextType(t ComparisonType) (recordlayer.TextComparisonType, bool) {
+func recordLayerTextType(t ComparisonType) (textcmp.TextComparisonType, bool) {
 	switch t {
 	case ComparisonTextContainsAll:
-		return recordlayer.TextContainsAll, true
+		return textcmp.TextContainsAll, true
 	case ComparisonTextContainsAllWithin:
-		return recordlayer.TextContainsAllWithin, true
+		return textcmp.TextContainsAllWithin, true
 	case ComparisonTextContainsAny:
-		return recordlayer.TextContainsAny, true
+		return textcmp.TextContainsAny, true
 	case ComparisonTextContainsPhrase:
-		return recordlayer.TextContainsPhrase, true
+		return textcmp.TextContainsPhrase, true
 	case ComparisonTextContainsPrefix:
-		return recordlayer.TextContainsPrefix, true
+		return textcmp.TextContainsPrefix, true
 	case ComparisonTextContainsAllPrefixes:
-		return recordlayer.TextContainsAllPrefixes, true
+		return textcmp.TextContainsAllPrefixes, true
 	case ComparisonTextContainsAnyPrefix:
-		return recordlayer.TextContainsAnyPrefix, true
+		return textcmp.TextContainsAnyPrefix, true
 	}
 	return 0, false
 }
 
 // RecordLayerTextComparison is Java's Comparisons.TextComparison for an
 // evaluated comparand: a string to tokenize, or a token list; nil for NULL.
-func (c Comparison) RecordLayerTextComparison(comparand any) (*recordlayer.TextComparison, error) {
+func (c Comparison) RecordLayerTextComparison(comparand any) (*textcmp.TextComparison, error) {
 	typ, ok := recordLayerTextType(c.Type)
 	if !ok {
 		return nil, &TextComparisonError{Message: fmt.Sprintf("not a text comparison: %v", c.Type)}
@@ -78,28 +78,28 @@ func (c Comparison) RecordLayerTextComparison(comparand any) (*recordlayer.TextC
 	}
 	tokenizer, fallback := c.TextTokenizerName, c.TextAnalyzerName
 	switch typ {
-	case recordlayer.TextContainsAllWithin:
+	case textcmp.TextContainsAllWithin:
 		if isList {
-			return recordlayer.NewTextWithMaxDistanceComparisonTokens(tokens, c.TextMaxDistance, tokenizer, fallback), nil
+			return textcmp.NewTextWithMaxDistanceComparisonTokens(tokens, c.TextMaxDistance, tokenizer, fallback), nil
 		}
-		return recordlayer.NewTextWithMaxDistanceComparison(text, c.TextMaxDistance, tokenizer, fallback), nil
-	case recordlayer.TextContainsAllPrefixes:
+		return textcmp.NewTextWithMaxDistanceComparison(text, c.TextMaxDistance, tokenizer, fallback), nil
+	case textcmp.TextContainsAllPrefixes:
 		// Text.containsAllPrefixes(..., strict) uses the probable
 		// intersection's default sizing (Text.java:388-396).
-		expected, fpp := recordlayer.ProbableIntersectionDefaultExpectedResults, recordlayer.ProbableIntersectionDefaultFalsePositivePercentage
+		expected, fpp := textcmp.ProbableIntersectionDefaultExpectedResults, textcmp.ProbableIntersectionDefaultFalsePositivePercentage
 		if isList {
-			return recordlayer.NewTextContainsAllPrefixesComparisonTokens(tokens, c.TextStrictPrefix, expected, fpp, tokenizer, fallback), nil
+			return textcmp.NewTextContainsAllPrefixesComparisonTokens(tokens, c.TextStrictPrefix, expected, fpp, tokenizer, fallback), nil
 		}
-		return recordlayer.NewTextContainsAllPrefixesComparison(text, c.TextStrictPrefix, expected, fpp, tokenizer, fallback), nil
+		return textcmp.NewTextContainsAllPrefixesComparison(text, c.TextStrictPrefix, expected, fpp, tokenizer, fallback), nil
 	}
 	if isList {
-		return recordlayer.NewTextComparisonTokens(typ, tokens, tokenizer, fallback), nil
+		return textcmp.NewTextComparisonTokens(typ, tokens, tokenizer, fallback), nil
 	}
-	return recordlayer.NewTextComparison(typ, text, tokenizer, fallback), nil
+	return textcmp.NewTextComparison(typ, text, tokenizer, fallback), nil
 }
 
 // evalText is Comparisons.TextComparison.eval (Comparisons.java:2602-2619),
-// executed by recordlayer.TextComparison.Eval.
+// executed by textcmp.TextComparison.Eval.
 func (c Comparison) evalText(left, right any) (TriBool, error) {
 	if left == nil {
 		return TriUnknown, nil
@@ -111,7 +111,7 @@ func (c Comparison) evalText(left, right any) (TriBool, error) {
 	if comparison == nil {
 		// The value check precedes the null-comparand result.
 		if _, ok := left.(string); !ok {
-			return TriUnknown, &recordlayer.RecordCoreArgumentError{Message: fmt.Sprintf("Text comparison applied against non-string value: %v", left)}
+			return TriUnknown, &textcmp.ArgumentError{Message: fmt.Sprintf("Text comparison applied against non-string value: %v", left)}
 		}
 		return TriUnknown, nil
 	}

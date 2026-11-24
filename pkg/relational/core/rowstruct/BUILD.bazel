@@ -23,7 +23,19 @@ go_library(
 
 go_test(
     name = "rowstruct_test",
-    srcs = ["ordinal_test.go"],
+    srcs = [
+        "ordinal_test.go",
+        "read_path_agreement_test.go",
+    ],
     embed = [":rowstruct"],
-    deps = ["//pkg/recordlayer/query/plan/cascades/values"],
+    deps = [
+        "//pkg/recordlayer",
+        "//pkg/recordlayer/query/executor",
+        "//pkg/recordlayer/query/plan/cascades/values",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protodesc",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/descriptorpb",
+        "@org_golang_google_protobuf//types/dynamicpb",
+    ],
 )

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/internal/recordlayer/textcmp"
 )
 
 func TestTextComparisonEvaluation(t *testing.T) {
@@ -69,13 +69,13 @@ func TestTextComparisonRejectsInvalidInputs(t *testing.T) {
 		left, right any
 	}{{ComparisonTextContainsAll, 123, "one"}, {ComparisonTextContainsAll, 123, nil}, {ComparisonTextContainsPrefix, "one", []string{"one", "two"}}, {ComparisonTextContainsPrefix, "hello", ""}, {ComparisonTextContainsPrefix, "hello", []string{"", ""}}} {
 		_, err := (Comparison{Type: tc.typ}).EvalAgainst(tc.left, tc.right)
-		var argErr *recordlayer.RecordCoreArgumentError
+		var argErr *textcmp.ArgumentError
 		if !errors.As(err, &argErr) {
 			t.Fatalf("got %v for %#v", err, tc)
 		}
 	}
 	_, err := (Comparison{Type: ComparisonTextContainsAll, TextTokenizerName: "missing-tokenizer"}).EvalAgainst("one", "one")
-	var metadataErr *recordlayer.MetaDataError
+	var metadataErr *textcmp.MetaDataError
 	if !errors.As(err, &metadataErr) {
 		t.Fatalf("got %v", err)
 	}
