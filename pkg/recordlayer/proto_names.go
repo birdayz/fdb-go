@@ -31,9 +31,6 @@ func convertInvalidNameError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if ine, ok := err.(*protoname.InvalidNameError); ok {
-		return &InvalidNameError{Message: ine.Message}
-	}
 	var ine *protoname.InvalidNameError
 	if errors.As(err, &ine) {
 		return &boundaryWrappedError{

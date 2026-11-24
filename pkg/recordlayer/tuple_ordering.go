@@ -37,13 +37,6 @@ func (d OrderDirection) toInternal() tupleordering.Direction {
 	}
 }
 
-func orderDirectionFromInternal(d tupleordering.Direction) OrderDirection {
-	return OrderDirection{
-		Inverted:         d.Inverted,
-		CounterflowNulls: d.CounterflowNulls,
-	}
-}
-
 // tupleOrderingPack matches Java's TupleOrdering.pack(Tuple, Direction).
 // An incomplete versionstamp is a recoverable error, not a vanilla tuple-pack panic.
 func tupleOrderingPack(t tuple.Tuple, dir OrderDirection) ([]byte, error) {

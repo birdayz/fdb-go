@@ -32,19 +32,14 @@ type IllegalStateError struct {
 
 func (e *IllegalStateError) Error() string { return e.Message }
 
-// convertJavaNumError converts *javanum.IllegalArgumentError and
+// convertJavaNumError wraps *javanum.IllegalArgumentError and
 // *javanum.IllegalStateError returned by lower-level packages (such as
-// pkg/async/rtree) into *recordlayer.IllegalArgumentError and
-// *recordlayer.IllegalStateError at the recordlayer boundary.
+// pkg/async/rtree) with recordlayer's own defined error types at the package
+// boundary, while preserving the original error chain for callers matching
+// either type.
 func convertJavaNumError(err error) error {
 	if err == nil {
 		return nil
-	}
-	if iae, ok := err.(*javanum.IllegalArgumentError); ok {
-		return &IllegalArgumentError{Message: iae.Message, Cause: iae.Cause}
-	}
-	if ise, ok := err.(*javanum.IllegalStateError); ok {
-		return &IllegalStateError{Message: ise.Message}
 	}
 	var iae *javanum.IllegalArgumentError
 	if errors.As(err, &iae) {

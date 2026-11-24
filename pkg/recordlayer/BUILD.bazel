@@ -564,6 +564,7 @@ go_test(
         "//pkg/recordlayer/javanum",
         "//pkg/recordlayer/keyspace",
         "//pkg/recordlayer/keystoretest",
+        "//pkg/recordlayer/protoname",
         "//pkg/recordlayer/protoscope",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/tupleordering",

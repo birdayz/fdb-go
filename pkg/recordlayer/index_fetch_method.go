@@ -24,17 +24,10 @@ const (
 	IndexFetchUseRemoteFetchWithFallback
 )
 
+// String returns Java's IndexFetchMethod enum name (for example
+// "SCAN_AND_FETCH").
 func (m IndexFetchMethod) String() string {
-	switch m {
-	case IndexFetchScanAndFetch:
-		return "SCAN_AND_FETCH"
-	case IndexFetchUseRemoteFetch:
-		return "USE_REMOTE_FETCH"
-	case IndexFetchUseRemoteFetchWithFallback:
-		return "USE_REMOTE_FETCH_WITH_FALLBACK"
-	default:
-		return fmt.Sprintf("IndexFetchMethod(%d)", int(m))
-	}
+	return m.toInternal().String()
 }
 
 func (m IndexFetchMethod) toInternal() indexfetch.Method {
@@ -47,19 +40,6 @@ func (m IndexFetchMethod) toInternal() indexfetch.Method {
 		return indexfetch.UseRemoteFetchWithFallback
 	default:
 		return indexfetch.Method(m)
-	}
-}
-
-func indexFetchMethodFromInternal(m indexfetch.Method) IndexFetchMethod {
-	switch m {
-	case indexfetch.ScanAndFetch:
-		return IndexFetchScanAndFetch
-	case indexfetch.UseRemoteFetch:
-		return IndexFetchUseRemoteFetch
-	case indexfetch.UseRemoteFetchWithFallback:
-		return IndexFetchUseRemoteFetchWithFallback
-	default:
-		return IndexFetchMethod(m)
 	}
 }
 

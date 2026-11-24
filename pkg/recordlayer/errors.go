@@ -227,7 +227,9 @@ func OutermostJavaError(err error) error {
 }
 
 // javaErrorPkgPaths are the packages whose error types are Java exception
-// classes: this one, and protoname for leaf callers.
+// classes: this one (including IllegalArgumentError and IllegalStateError now
+// owned by recordlayer, matching Java exception hierarchy), and protoname for
+// leaf callers.
 var javaErrorPkgPaths = map[string]bool{
 	reflect.TypeOf(MetaDataError{}).PkgPath():              true,
 	reflect.TypeOf(protoname.InvalidNameError{}).PkgPath(): true,

@@ -1342,8 +1342,5 @@ func TestOrderDirectionInternalConversion(t *testing.T) {
 		if got := tc.dir.toInternal(); got != tc.internal {
 			t.Errorf("%+v.toInternal() = %+v, want %+v", tc.dir, got, tc.internal)
 		}
-		if got := orderDirectionFromInternal(tc.internal); got != tc.dir {
-			t.Errorf("orderDirectionFromInternal(%+v) = %+v, want %+v", tc.internal, got, tc.dir)
-		}
 	}
 }

@@ -37,9 +37,6 @@ func TestIndexFetchMethodOwnedType(t *testing.T) {
 		if got := tc.method.toInternal(); got != tc.internal {
 			t.Errorf("IndexFetchMethod(%d).toInternal() = %v, want %v", tc.method, got, tc.internal)
 		}
-		if got := indexFetchMethodFromInternal(tc.internal); got != tc.method {
-			t.Errorf("indexFetchMethodFromInternal(%v) = %v, want %v", tc.internal, got, tc.method)
-		}
 	}
 }
 
@@ -282,8 +279,7 @@ var _ = Describe("Index remote fetch", func() {
 		Entry("old version format with suffix", layout{format: 5}, "price"),
 	)
 
-	DescribeTable(
-		"preserves LoadRecord's inline-version size flag in remote records",
+	DescribeTable("preserves LoadRecord's inline-version size flag in remote records",
 		func(l layout) {
 			ks := specSubspace()
 			seed(ks, l, 1, func(id int) *demopb.Order {
