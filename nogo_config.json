@@ -28,7 +28,7 @@
       "\\.pb\\.go$": "generated protobuf code"
     }
   },
-  "recordlayerdeps": {
+  "archdeps": {
     "exclude_files": {
       "external/": "third-party dependencies"
     }

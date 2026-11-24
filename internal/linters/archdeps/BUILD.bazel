@@ -1,16 +1,16 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
-    name = "recordlayerdeps",
+    name = "archdeps",
     srcs = ["analyzer.go"],
-    importpath = "fdb.dev/internal/linters/recordlayerdeps",
+    importpath = "fdb.dev/internal/linters/archdeps",
     visibility = ["//:__pkg__"],
     deps = ["@org_golang_x_tools//go/analysis"],
 )
 
 go_test(
-    name = "recordlayerdeps_test",
+    name = "archdeps_test",
     srcs = ["analyzer_test.go"],
-    embed = [":recordlayerdeps"],
+    embed = [":archdeps"],
     deps = ["@org_golang_x_tools//go/analysis"],
 )
