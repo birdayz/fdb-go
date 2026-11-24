@@ -1,0 +1,1004 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "name": "double_gt_negative_literal",
+      "schema_template": "CREATE TABLE T_CMP11 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CMP11 VALUES (1, -1.5), (2, -0.25), (3, 0.0), (4, 1.5)"
+      ],
+      "query": "SELECT id FROM T_CMP11 WHERE v > -0.5 ORDER BY id"
+    },
+    {
+      "name": "bigint_gt_near_max",
+      "schema_template": "CREATE TABLE T_CMP12 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CMP12 VALUES (1, 1), (2, 9000000000000000001), (3, 9223372036854775807)"
+      ],
+      "query": "SELECT id FROM T_CMP12 WHERE v > 9000000000000000000 ORDER BY id"
+    },
+    {
+      "name": "is_distinct_from_col_vs_col",
+      "schema_template": "CREATE TABLE T_CMP13 (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CMP13 VALUES (1, 5, 5)",
+        "INSERT INTO T_CMP13 VALUES (2, 5, NULL)",
+        "INSERT INTO T_CMP13 VALUES (3, NULL, NULL)",
+        "INSERT INTO T_CMP13 VALUES (4, 7, 9)"
+      ],
+      "query": "SELECT id FROM T_CMP13 WHERE x IS DISTINCT FROM y ORDER BY id"
+    },
+    {
+      "name": "bytes_eq_multibyte",
+      "schema_template": "CREATE TABLE T_CMP14 (id BIGINT, b BYTES, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CMP14 VALUES (1, X'0102')",
+        "INSERT INTO T_CMP14 VALUES (2, X'AABBCC')",
+        "INSERT INTO T_CMP14 VALUES (3, X'AABBCD')"
+      ],
+      "query": "SELECT id FROM T_CMP14 WHERE b = X'AABBCC' ORDER BY id"
+    },
+    {
+      "name": "cross_type_bigint_eq_double_col",
+      "schema_template": "CREATE TABLE T_CMP15 (id BIGINT, a BIGINT, b DOUBLE, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CMP15 VALUES (1, 5, 5.0)",
+        "INSERT INTO T_CMP15 VALUES (2, 5, 5.5)",
+        "INSERT INTO T_CMP15 VALUES (3, 10, 10.0)"
+      ],
+      "query": "SELECT id FROM T_CMP15 WHERE a = b ORDER BY id"
+    },
+    {
+      "name": "composite_pk_both_eq_with_payload",
+      "schema_template": "CREATE TABLE T_CMP16 (a BIGINT, b BIGINT, val STRING, PRIMARY KEY (a, b))",
+      "setup_sqls": [
+        "INSERT INTO T_CMP16 VALUES (1, 1, 'one-one')",
+        "INSERT INTO T_CMP16 VALUES (1, 2, 'one-two')",
+        "INSERT INTO T_CMP16 VALUES (2, 1, 'two-one')"
+      ],
+      "query": "SELECT val FROM T_CMP16 WHERE a = 1 AND b = 2"
+    },
+    {
+      "name": "string_mixed_scripts_eq",
+      "schema_template": "CREATE TABLE T_SS1 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS1 VALUES (1, 'Hello Привет 你好')",
+        "INSERT INTO T_SS1 VALUES (2, 'plain')"
+      ],
+      "query": "SELECT id, s FROM T_SS1 WHERE s = 'Hello Привет 你好' ORDER BY id"
+    },
+    {
+      "name": "string_emoji_eq",
+      "schema_template": "CREATE TABLE T_SS2 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS2 VALUES (1, '🎉')",
+        "INSERT INTO T_SS2 VALUES (2, '🎉🎉')",
+        "INSERT INTO T_SS2 VALUES (3, 'plain')"
+      ],
+      "query": "SELECT id, s FROM T_SS2 WHERE s = '🎉' ORDER BY id"
+    },
+    {
+      "name": "string_long_1000_chars",
+      "schema_template": "CREATE TABLE T_SS3 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS3 VALUES (1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')"
+      ],
+      "query": "SELECT id, s FROM T_SS3 ORDER BY id"
+    },
+    {
+      "name": "string_embedded_backslash",
+      "schema_template": "CREATE TABLE T_SS4 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS4 VALUES (1, 'a\\b')",
+        "INSERT INTO T_SS4 VALUES (2, 'plain')"
+      ],
+      "query": "SELECT id, s FROM T_SS4 WHERE s = 'a\\b' ORDER BY id"
+    },
+    {
+      "name": "string_all_whitespace_eq",
+      "schema_template": "CREATE TABLE T_SS5 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS5 VALUES (1, '   ')",
+        "INSERT INTO T_SS5 VALUES (2, '')",
+        "INSERT INTO T_SS5 VALUES (3, 'x')"
+      ],
+      "query": "SELECT id, s FROM T_SS5 WHERE s = '   ' ORDER BY id"
+    },
+    {
+      "name": "string_single_space_vs_empty",
+      "schema_template": "CREATE TABLE T_SS6 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS6 VALUES (1, ' ')",
+        "INSERT INTO T_SS6 VALUES (2, '')"
+      ],
+      "query": "SELECT id, s FROM T_SS6 WHERE s = ' ' ORDER BY id"
+    },
+    {
+      "name": "string_all_digits_eq",
+      "schema_template": "CREATE TABLE T_SS7 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS7 VALUES (1, '12345')",
+        "INSERT INTO T_SS7 VALUES (2, '67890')",
+        "INSERT INTO T_SS7 VALUES (3, 'abc')"
+      ],
+      "query": "SELECT id, s FROM T_SS7 WHERE s = '12345' ORDER BY id"
+    },
+    {
+      "name": "string_leading_zeros_preserved",
+      "schema_template": "CREATE TABLE T_SS8 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS8 VALUES (1, '007')",
+        "INSERT INTO T_SS8 VALUES (2, '7')",
+        "INSERT INTO T_SS8 VALUES (3, '0007')"
+      ],
+      "query": "SELECT id, s FROM T_SS8 ORDER BY id"
+    },
+    {
+      "name": "string_lex_lt_digit_strings",
+      "schema_template": "CREATE TABLE T_SS9 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS9 VALUES (1, '2')",
+        "INSERT INTO T_SS9 VALUES (2, '10')",
+        "INSERT INTO T_SS9 VALUES (3, '100')"
+      ],
+      "query": "SELECT id, s FROM T_SS9 WHERE s < '2' ORDER BY id"
+    },
+    {
+      "name": "string_unicode_nfc_vs_nfd",
+      "schema_template": "CREATE TABLE T_SS10 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS10 VALUES (1, 'café')",
+        "INSERT INTO T_SS10 VALUES (2, 'café')"
+      ],
+      "query": "SELECT id, s FROM T_SS10 WHERE s = 'café' ORDER BY id"
+    },
+    {
+      "name": "string_bom_preserved",
+      "schema_template": "CREATE TABLE T_SS11 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS11 VALUES (1, '﻿hello')",
+        "INSERT INTO T_SS11 VALUES (2, 'hello')"
+      ],
+      "query": "SELECT id, s FROM T_SS11 WHERE s = '﻿hello' ORDER BY id"
+    },
+    {
+      "name": "string_repeated_count",
+      "schema_template": "CREATE TABLE T_SS12 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS12 VALUES (1, 'same'), (2, 'same'), (3, 'same'), (4, 'other'), (5, 'same')"
+      ],
+      "query": "SELECT count(*) FROM T_SS12 WHERE s = 'same'"
+    },
+    {
+      "name": "string_trailing_whitespace_preserved",
+      "schema_template": "CREATE TABLE T_SS14 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS14 VALUES (1, 'abc')",
+        "INSERT INTO T_SS14 VALUES (2, 'abc ')",
+        "INSERT INTO T_SS14 VALUES (3, 'abc  ')"
+      ],
+      "query": "SELECT id, s FROM T_SS14 WHERE s = 'abc ' ORDER BY id"
+    },
+    {
+      "name": "dml_idx_insert_then_index_eq",
+      "schema_template": "CREATE TABLE T_DI1 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di1_v ON T_DI1 (v)",
+      "setup_sqls": [
+        "INSERT INTO T_DI1 VALUES (1, 100)",
+        "INSERT INTO T_DI1 VALUES (2, 200)",
+        "INSERT INTO T_DI1 VALUES (3, 300)"
+      ],
+      "query": "SELECT id, v FROM T_DI1 WHERE v = 200 ORDER BY id"
+    },
+    {
+      "name": "dml_idx_update_indexed_query_new",
+      "schema_template": "CREATE TABLE T_DI2 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di2_v ON T_DI2 (v)",
+      "setup_sqls": [
+        "INSERT INTO T_DI2 VALUES (1, 100)",
+        "INSERT INTO T_DI2 VALUES (2, 200)",
+        "UPDATE T_DI2 SET v = 999 WHERE id = 2"
+      ],
+      "query": "SELECT id, v FROM T_DI2 WHERE v = 999 ORDER BY id"
+    },
+    {
+      "name": "dml_idx_update_indexed_query_old",
+      "schema_template": "CREATE TABLE T_DI3 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di3_v ON T_DI3 (v)",
+      "setup_sqls": [
+        "INSERT INTO T_DI3 VALUES (1, 100)",
+        "INSERT INTO T_DI3 VALUES (2, 200)",
+        "UPDATE T_DI3 SET v = 999 WHERE id = 2"
+      ],
+      "query": "SELECT id, v FROM T_DI3 WHERE v = 200 ORDER BY id"
+    },
+    {
+      "name": "dml_idx_delete_then_index_eq",
+      "schema_template": "CREATE TABLE T_DI4 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di4_v ON T_DI4 (v)",
+      "setup_sqls": [
+        "INSERT INTO T_DI4 VALUES (1, 100)",
+        "INSERT INTO T_DI4 VALUES (2, 200)",
+        "INSERT INTO T_DI4 VALUES (3, 300)",
+        "DELETE FROM T_DI4 WHERE id = 2"
+      ],
+      "query": "SELECT id, v FROM T_DI4 WHERE v = 200 ORDER BY id"
+    },
+    {
+      "name": "dml_idx_insert_after_delete",
+      "schema_template": "CREATE TABLE T_DI5 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di5_v ON T_DI5 (v)",
+      "setup_sqls": [
+        "INSERT INTO T_DI5 VALUES (1, 100)",
+        "INSERT INTO T_DI5 VALUES (2, 200)",
+        "DELETE FROM T_DI5 WHERE id = 2",
+        "INSERT INTO T_DI5 VALUES (4, 200)"
+      ],
+      "query": "SELECT id, v FROM T_DI5 WHERE v = 200 ORDER BY id"
+    },
+    {
+      "name": "dml_idx_mixed_then_range",
+      "schema_template": "CREATE TABLE T_DI6 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di6_v ON T_DI6 (v)",
+      "setup_sqls": [
+        "INSERT INTO T_DI6 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+        "UPDATE T_DI6 SET v = v + 1000 WHERE id <= 2",
+        "DELETE FROM T_DI6 WHERE id = 4"
+      ],
+      "query": "SELECT id, v FROM T_DI6 WHERE v >= 30 ORDER BY id"
+    },
+    {
+      "name": "dml_idx_string_update_query",
+      "schema_template": "CREATE TABLE T_DI7 (id BIGINT, name STRING, PRIMARY KEY (id)) CREATE INDEX idx_di7_name ON T_DI7 (name)",
+      "setup_sqls": [
+        "INSERT INTO T_DI7 VALUES (1, 'alice')",
+        "INSERT INTO T_DI7 VALUES (2, 'bob')",
+        "UPDATE T_DI7 SET name = 'zelda' WHERE id = 1"
+      ],
+      "query": "SELECT id, name FROM T_DI7 WHERE name = 'zelda' ORDER BY id"
+    },
+    {
+      "name": "dml_compidx_update_leading",
+      "schema_template": "CREATE TABLE T_DI8 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di8_ab ON T_DI8 (a, b)",
+      "setup_sqls": [
+        "INSERT INTO T_DI8 VALUES (1, 1, 100), (2, 1, 200), (3, 2, 100)",
+        "UPDATE T_DI8 SET a = 9 WHERE id = 1"
+      ],
+      "query": "SELECT id, a, b FROM T_DI8 WHERE a = 9 ORDER BY id"
+    },
+    {
+      "name": "dml_compidx_update_trailing",
+      "schema_template": "CREATE TABLE T_DI9 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di9_ab ON T_DI9 (a, b)",
+      "setup_sqls": [
+        "INSERT INTO T_DI9 VALUES (1, 1, 100), (2, 1, 200), (3, 2, 100)",
+        "UPDATE T_DI9 SET b = 555 WHERE id = 2"
+      ],
+      "query": "SELECT id, a, b FROM T_DI9 WHERE a = 1 AND b = 555 ORDER BY id"
+    },
+    {
+      "name": "dml_idx_delete_predicate_on_indexed",
+      "schema_template": "CREATE TABLE T_DI10 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di10_v ON T_DI10 (v)",
+      "setup_sqls": [
+        "INSERT INTO T_DI10 VALUES (1, 100), (2, 200), (3, 300)",
+        "DELETE FROM T_DI10 WHERE v = 200"
+      ],
+      "query": "SELECT id, v FROM T_DI10 ORDER BY id"
+    },
+    {
+      "name": "dml_idx_update_to_null_then_isnull",
+      "schema_template": "CREATE TABLE T_DI11 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di11_v ON T_DI11 (v)",
+      "setup_sqls": [
+        "INSERT INTO T_DI11 VALUES (1, 100)",
+        "INSERT INTO T_DI11 VALUES (2, 200)",
+        "UPDATE T_DI11 SET v = NULL WHERE id = 2"
+      ],
+      "query": "SELECT id, v FROM T_DI11 WHERE v IS NULL ORDER BY id"
+    },
+    {
+      "name": "dml_idx_insert_null_then_isnull",
+      "schema_template": "CREATE TABLE T_DI12 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di12_v ON T_DI12 (v)",
+      "setup_sqls": [
+        "INSERT INTO T_DI12 VALUES (1, 100)",
+        "INSERT INTO T_DI12 VALUES (2, NULL)",
+        "INSERT INTO T_DI12 VALUES (3, 300)"
+      ],
+      "query": "SELECT id, v FROM T_DI12 WHERE v IS NULL ORDER BY id"
+    },
+    {
+      "name": "dml_idx_update_all_then_range",
+      "schema_template": "CREATE TABLE T_DI13 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di13_v ON T_DI13 (v)",
+      "setup_sqls": [
+        "INSERT INTO T_DI13 VALUES (1, 10), (2, 20), (3, 30)",
+        "UPDATE T_DI13 SET v = v * 100"
+      ],
+      "query": "SELECT id, v FROM T_DI13 WHERE v >= 2000 ORDER BY id"
+    },
+    {
+      "name": "dml_idx_delete_all_then_range",
+      "schema_template": "CREATE TABLE T_DI14 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di14_v ON T_DI14 (v)",
+      "setup_sqls": [
+        "INSERT INTO T_DI14 VALUES (1, 10), (2, 20), (3, 30)",
+        "DELETE FROM T_DI14"
+      ],
+      "query": "SELECT id, v FROM T_DI14 WHERE v >= 0 ORDER BY id"
+    },
+    {
+      "name": "mixed_six_type_families_star",
+      "schema_template": "CREATE TABLE T_MS1 (id BIGINT, name STRING, val DOUBLE, flag BOOLEAN, payload BYTES, key UUID, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MS1 VALUES (1, 'alice', 1.5, TRUE, X'cafe', CAST('11111111-1111-1111-1111-111111111111' AS UUID))",
+        "INSERT INTO T_MS1 VALUES (2, 'bob', -2.25, FALSE, X'beef', CAST('22222222-2222-2222-2222-222222222222' AS UUID))"
+      ],
+      "query": "SELECT * FROM T_MS1 ORDER BY id"
+    },
+    {
+      "name": "mixed_six_type_families_subset_reordered",
+      "schema_template": "CREATE TABLE T_MS2 (id BIGINT, name STRING, val DOUBLE, flag BOOLEAN, payload BYTES, key UUID, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MS2 VALUES (1, 'alice', 1.5, TRUE, X'cafe', CAST('11111111-1111-1111-1111-111111111111' AS UUID))",
+        "INSERT INTO T_MS2 VALUES (2, 'bob', -2.25, FALSE, X'beef', CAST('22222222-2222-2222-2222-222222222222' AS UUID))"
+      ],
+      "query": "SELECT key, name, val FROM T_MS2 ORDER BY id"
+    },
+    {
+      "name": "wide_ten_bigint_project_three",
+      "schema_template": "CREATE TABLE T_MS3 (id BIGINT, c1 BIGINT, c2 BIGINT, c3 BIGINT, c4 BIGINT, c5 BIGINT, c6 BIGINT, c7 BIGINT, c8 BIGINT, c9 BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MS3 VALUES (1, 10, 20, 30, 40, 50, 60, 70, 80, 90)",
+        "INSERT INTO T_MS3 VALUES (2, 11, 21, 31, 41, 51, 61, 71, 81, 91)"
+      ],
+      "query": "SELECT c1, c5, c9 FROM T_MS3 ORDER BY id"
+    },
+    {
+      "name": "wide_filter_first_project_last",
+      "schema_template": "CREATE TABLE T_MS4 (id BIGINT, c1 BIGINT, c2 BIGINT, c3 BIGINT, c4 BIGINT, c5 BIGINT, c6 BIGINT, c7 BIGINT, c8 BIGINT, c9 BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MS4 VALUES (1, 10, 20, 30, 40, 50, 60, 70, 80, 90)",
+        "INSERT INTO T_MS4 VALUES (2, 11, 21, 31, 41, 51, 61, 71, 81, 91)",
+        "INSERT INTO T_MS4 VALUES (3, 10, 22, 32, 42, 52, 62, 72, 82, 92)"
+      ],
+      "query": "SELECT c9 FROM T_MS4 WHERE c1 = 10 ORDER BY id"
+    },
+    {
+      "name": "wide_mixed_filter_string_project_double_bool",
+      "schema_template": "CREATE TABLE T_MS5 (id BIGINT, name STRING, val DOUBLE, flag BOOLEAN, n BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MS5 VALUES (1, 'alpha', 1.5, TRUE, 100)",
+        "INSERT INTO T_MS5 VALUES (2, 'beta', -2.5, FALSE, 200)",
+        "INSERT INTO T_MS5 VALUES (3, 'alpha', 3.5, FALSE, 300)"
+      ],
+      "query": "SELECT val, flag FROM T_MS5 WHERE name = 'alpha' ORDER BY id"
+    },
+    {
+      "name": "wide_three_nulls_is_null_filter",
+      "schema_template": "CREATE TABLE T_MS6 (id BIGINT, a STRING, b DOUBLE, c BOOLEAN, d BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MS6 VALUES (1, 'x', 1.5, TRUE, 10)",
+        "INSERT INTO T_MS6 VALUES (2, NULL, NULL, NULL, 20)",
+        "INSERT INTO T_MS6 VALUES (3, 'y', NULL, FALSE, 30)"
+      ],
+      "query": "SELECT id, a, b, c FROM T_MS6 WHERE b IS NULL ORDER BY id"
+    },
+    {
+      "name": "wide_mixed_is_not_null_filter",
+      "schema_template": "CREATE TABLE T_MS7 (id BIGINT, a STRING, b DOUBLE, c BOOLEAN, d BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MS7 VALUES (1, 'x', 1.5, TRUE, 10)",
+        "INSERT INTO T_MS7 VALUES (2, NULL, NULL, NULL, 20)",
+        "INSERT INTO T_MS7 VALUES (3, 'y', NULL, FALSE, 30)"
+      ],
+      "query": "SELECT id, a, c FROM T_MS7 WHERE a IS NOT NULL ORDER BY id"
+    },
+    {
+      "name": "composite_pk_three_comp_leading_eq",
+      "schema_template": "CREATE TABLE T_MS9 (region STRING, tenant BIGINT, id BIGINT, val BIGINT, PRIMARY KEY (region, tenant, id))",
+      "setup_sqls": [
+        "INSERT INTO T_MS9 VALUES ('us', 1, 10, 100)",
+        "INSERT INTO T_MS9 VALUES ('us', 1, 20, 200)",
+        "INSERT INTO T_MS9 VALUES ('us', 2, 10, 300)",
+        "INSERT INTO T_MS9 VALUES ('eu', 1, 10, 400)"
+      ],
+      "query": "SELECT region, tenant, id, val FROM T_MS9 WHERE region = 'us' ORDER BY region, tenant, id"
+    },
+    {
+      "name": "composite_pk_three_comp_full_eq",
+      "schema_template": "CREATE TABLE T_MS10 (region STRING, tenant BIGINT, id BIGINT, val BIGINT, PRIMARY KEY (region, tenant, id))",
+      "setup_sqls": [
+        "INSERT INTO T_MS10 VALUES ('us', 1, 10, 100)",
+        "INSERT INTO T_MS10 VALUES ('us', 1, 20, 200)",
+        "INSERT INTO T_MS10 VALUES ('us', 2, 10, 300)"
+      ],
+      "query": "SELECT val FROM T_MS10 WHERE region = 'us' AND tenant = 1 AND id = 20"
+    },
+    {
+      "name": "pk_only_single_col",
+      "schema_template": "CREATE TABLE T_MS11 (id BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MS11 VALUES (3)",
+        "INSERT INTO T_MS11 VALUES (1)",
+        "INSERT INTO T_MS11 VALUES (2)"
+      ],
+      "query": "SELECT id FROM T_MS11 ORDER BY id"
+    },
+    {
+      "name": "computed_arith_across_three_cols",
+      "schema_template": "CREATE TABLE T_MS12 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MS12 VALUES (1, 1, 2, 3)",
+        "INSERT INTO T_MS12 VALUES (2, 10, 20, 30)",
+        "INSERT INTO T_MS12 VALUES (3, -1, -2, -3)"
+      ],
+      "query": "SELECT a + b + c FROM T_MS12 ORDER BY id"
+    },
+    {
+      "name": "wide_mixed_count_star",
+      "schema_template": "CREATE TABLE T_MS13 (id BIGINT, name STRING, val DOUBLE, flag BOOLEAN, payload BYTES, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MS13 VALUES (1, 'a', 1.5, TRUE, X'01')",
+        "INSERT INTO T_MS13 VALUES (2, 'b', 2.5, FALSE, X'02')",
+        "INSERT INTO T_MS13 VALUES (3, NULL, NULL, NULL, NULL)"
+      ],
+      "query": "SELECT count(*) FROM T_MS13"
+    },
+    {
+      "name": "join_four_way_eq_chain",
+      "schema_template": "CREATE TABLE T_JJ1 (id BIGINT, PRIMARY KEY (id)) CREATE TABLE T_JJ2 (id BIGINT, p BIGINT, PRIMARY KEY (id)) CREATE TABLE T_JJ3 (id BIGINT, p BIGINT, PRIMARY KEY (id)) CREATE TABLE T_JJ4 (id BIGINT, p BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_JJ1 VALUES (1), (2)",
+        "INSERT INTO T_JJ2 VALUES (10, 1), (11, 2)",
+        "INSERT INTO T_JJ3 VALUES (100, 10), (101, 11)",
+        "INSERT INTO T_JJ4 VALUES (1000, 100), (1001, 101)"
+      ],
+      "query": "SELECT a.id, b.id, c.id, d.id FROM T_JJ1 a, T_JJ2 b, T_JJ3 c, T_JJ4 d WHERE a.id = b.p AND b.id = c.p AND c.id = d.p ORDER BY a.id"
+    },
+    {
+      "name": "join_or_chained_predicates",
+      "schema_template": "CREATE TABLE T_JJ5 (id BIGINT, x BIGINT, PRIMARY KEY (id)) CREATE TABLE T_JJ6 (id BIGINT, y BIGINT, PRIMARY KEY (id)) CREATE TABLE T_JJ7 (id BIGINT, y BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_JJ5 VALUES (1, 10), (2, 20), (3, 30)",
+        "INSERT INTO T_JJ6 VALUES (100, 10)",
+        "INSERT INTO T_JJ7 VALUES (200, 30)"
+      ],
+      "query": "SELECT count(*) FROM T_JJ5 a, T_JJ6 b, T_JJ7 c WHERE a.x = b.y OR a.x = c.y"
+    },
+    {
+      "name": "join_derived_with_outer_filter",
+      "schema_template": "CREATE TABLE T_JJ8 (id BIGINT, gid BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE T_JJ9 (gid BIGINT, label STRING, PRIMARY KEY (gid))",
+      "setup_sqls": [
+        "INSERT INTO T_JJ8 VALUES (1, 10, 100), (2, 10, 200), (3, 20, 300), (4, 20, 50)",
+        "INSERT INTO T_JJ9 VALUES (10, 'x'), (20, 'y')"
+      ],
+      "query": "SELECT s.id, b.label FROM (SELECT id, gid, val FROM T_JJ8 WHERE val > 75) AS s, T_JJ9 b WHERE s.gid = b.gid AND b.label = 'y' ORDER BY s.id"
+    },
+    {
+      "name": "self_join_both_sides_filter",
+      "schema_template": "CREATE TABLE T_JJA (id BIGINT, val BIGINT, parent BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_JJA VALUES (1, 10, 0), (2, 20, 1), (3, 30, 1), (4, 40, 2), (5, 50, 3)"
+      ],
+      "query": "SELECT a.id, b.id FROM T_JJA a, T_JJA b WHERE a.parent = b.id AND a.val > 25 AND b.val < 25 ORDER BY a.id"
+    },
+    {
+      "name": "join_single_row_both_sides",
+      "schema_template": "CREATE TABLE T_JJB (id BIGINT, code STRING, PRIMARY KEY (id)) CREATE TABLE T_JJC (id BIGINT, code STRING, label STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_JJB VALUES (1, 'alpha'), (2, 'beta')",
+        "INSERT INTO T_JJC VALUES (10, 'alpha', 'matched'), (11, 'gamma', 'orphan')"
+      ],
+      "query": "SELECT a.id, a.code, b.label FROM T_JJB a, T_JJC b WHERE a.code = b.code ORDER BY a.id"
+    },
+    {
+      "name": "join_composite_pk_both_sides",
+      "schema_template": "CREATE TABLE T_JJD (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id)) CREATE TABLE T_JJE (region STRING, id BIGINT, score BIGINT, PRIMARY KEY (region, id))",
+      "setup_sqls": [
+        "INSERT INTO T_JJD VALUES ('us', 1, 100), ('us', 2, 200), ('eu', 1, 300)",
+        "INSERT INTO T_JJE VALUES ('us', 1, 10), ('us', 2, 20), ('eu', 1, 30)"
+      ],
+      "query": "SELECT a.region, a.id, a.val, b.score FROM T_JJD a, T_JJE b WHERE a.region = b.region AND a.id = b.id ORDER BY a.region, a.id"
+    },
+    {
+      "name": "join_eq_plus_range_remote_count",
+      "schema_template": "CREATE TABLE T_JJF (id BIGINT, name STRING, PRIMARY KEY (id)) CREATE TABLE T_JJG (id BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_JJF VALUES (1, 'a'), (2, 'b'), (3, 'c')",
+        "INSERT INTO T_JJG VALUES (10, 1, 5), (11, 1, 50), (12, 2, 99), (13, 2, 200), (14, 3, 75)"
+      ],
+      "query": "SELECT count(*) FROM T_JJF a, T_JJG b WHERE a.id = b.parent AND b.val > 10 AND b.val < 100"
+    },
+    {
+      "name": "join_duplicates_count",
+      "schema_template": "CREATE TABLE T_JJH (id BIGINT, gid BIGINT, PRIMARY KEY (id)) CREATE TABLE T_JJI (id BIGINT, gid BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_JJH VALUES (1, 10), (2, 10), (3, 20)",
+        "INSERT INTO T_JJI VALUES (100, 10), (101, 10), (102, 20), (103, 20)"
+      ],
+      "query": "SELECT count(*) FROM T_JJH a, T_JJI b WHERE a.gid = b.gid"
+    },
+    {
+      "name": "join_deep_where_eq_range_eq_count",
+      "schema_template": "CREATE TABLE T_JJO (id BIGINT, region STRING, PRIMARY KEY (id)) CREATE TABLE T_JJP (id BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_JJO VALUES (1, 'us'), (2, 'us'), (3, 'eu')",
+        "INSERT INTO T_JJP VALUES (10, 1, 5), (11, 1, 50), (12, 2, 100), (13, 3, 999)"
+      ],
+      "query": "SELECT count(*) FROM T_JJO a, T_JJP b WHERE a.id = b.parent AND b.val > 10 AND a.region = 'us'"
+    },
+    {
+      "name": "join_reverse_order_projection",
+      "schema_template": "CREATE TABLE T_JJQ (id BIGINT, y STRING, PRIMARY KEY (id)) CREATE TABLE T_JJR (id BIGINT, parent BIGINT, x STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_JJQ VALUES (1, 'left1'), (2, 'left2')",
+        "INSERT INTO T_JJR VALUES (10, 1, 'right1'), (11, 2, 'right2')"
+      ],
+      "query": "SELECT b.x, a.y FROM T_JJQ a, T_JJR b WHERE a.id = b.parent ORDER BY b.id"
+    },
+    {
+      "name": "join_is_not_distinct_from_eq",
+      "schema_template": "CREATE TABLE T_JJS (id BIGINT, k BIGINT, PRIMARY KEY (id)) CREATE TABLE T_JJT (id BIGINT, k BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_JJS VALUES (1, 10), (2, NULL), (3, 30)",
+        "INSERT INTO T_JJT VALUES (100, 10), (101, NULL), (102, 99)"
+      ],
+      "query": "SELECT count(*) FROM T_JJS a, T_JJT b WHERE a.k IS NOT DISTINCT FROM b.k"
+    },
+    {
+      "name": "arith_paren_predicate",
+      "schema_template": "CREATE TABLE T_AR1 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AR1 VALUES (1, 10, 20)",
+        "INSERT INTO T_AR1 VALUES (2, 40, 30)",
+        "INSERT INTO T_AR1 VALUES (3, 5, 5)"
+      ],
+      "query": "SELECT id FROM T_AR1 WHERE (a + b) * 2 > 100 ORDER BY id"
+    },
+    {
+      "name": "arith_precedence_predicate",
+      "schema_template": "CREATE TABLE T_AR2 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AR2 VALUES (1, 10, 10)",
+        "INSERT INTO T_AR2 VALUES (2, 10, 30)",
+        "INSERT INTO T_AR2 VALUES (3, 90, 50)"
+      ],
+      "query": "SELECT id FROM T_AR2 WHERE a + b * 2 > 50 ORDER BY id"
+    },
+    {
+      "name": "arith_three_term_sum_predicate",
+      "schema_template": "CREATE TABLE T_AR3 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AR3 VALUES (1, 10, 20, 30)",
+        "INSERT INTO T_AR3 VALUES (2, 5, 5, 5)",
+        "INSERT INTO T_AR3 VALUES (3, 100, -50, 10)"
+      ],
+      "query": "SELECT id FROM T_AR3 WHERE a + b + c > 50 ORDER BY id"
+    },
+    {
+      "name": "arith_mixed_int_double_predicate",
+      "schema_template": "CREATE TABLE T_AR4 (id BIGINT, a BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AR4 VALUES (1, 5)",
+        "INSERT INTO T_AR4 VALUES (2, 7)",
+        "INSERT INTO T_AR4 VALUES (3, 20)"
+      ],
+      "query": "SELECT id FROM T_AR4 WHERE a * 1.5 > 10 ORDER BY id"
+    },
+    {
+      "name": "arith_modulo_predicate",
+      "schema_template": "CREATE TABLE T_AR5 (id BIGINT, a BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AR5 VALUES (1, 3)",
+        "INSERT INTO T_AR5 VALUES (2, 5)",
+        "INSERT INTO T_AR5 VALUES (3, 9)",
+        "INSERT INTO T_AR5 VALUES (4, 10)"
+      ],
+      "query": "SELECT id FROM T_AR5 WHERE a % 3 = 0 ORDER BY id"
+    },
+    {
+      "name": "arith_int_division_predicate",
+      "schema_template": "CREATE TABLE T_AR6 (id BIGINT, a BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AR6 VALUES (1, 5)",
+        "INSERT INTO T_AR6 VALUES (2, 12)",
+        "INSERT INTO T_AR6 VALUES (3, 11)"
+      ],
+      "query": "SELECT id FROM T_AR6 WHERE a / 2 > 5 ORDER BY id"
+    },
+    {
+      "name": "arith_double_division_predicate",
+      "schema_template": "CREATE TABLE T_AR7 (id BIGINT, a BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AR7 VALUES (1, 5)",
+        "INSERT INTO T_AR7 VALUES (2, 11)",
+        "INSERT INTO T_AR7 VALUES (3, 12)"
+      ],
+      "query": "SELECT id FROM T_AR7 WHERE a / 2.0 > 5.5 ORDER BY id"
+    },
+    {
+      "name": "arith_subtraction_predicate",
+      "schema_template": "CREATE TABLE T_AR8 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AR8 VALUES (1, 10, 5)",
+        "INSERT INTO T_AR8 VALUES (2, 5, 10)",
+        "INSERT INTO T_AR8 VALUES (3, 7, 7)"
+      ],
+      "query": "SELECT id FROM T_AR8 WHERE a - b > 0 ORDER BY id"
+    },
+    {
+      "name": "arith_both_sides_predicate",
+      "schema_template": "CREATE TABLE T_AR9 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AR9 VALUES (1, 5, 10)",
+        "INSERT INTO T_AR9 VALUES (2, 10, 5)",
+        "INSERT INTO T_AR9 VALUES (3, 5, 5)"
+      ],
+      "query": "SELECT id FROM T_AR9 WHERE a + 1 > b - 1 ORDER BY id"
+    },
+    {
+      "name": "arith_negation_projection",
+      "schema_template": "CREATE TABLE T_AR10 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AR10 VALUES (1, 5)",
+        "INSERT INTO T_AR10 VALUES (2, -3)",
+        "INSERT INTO T_AR10 VALUES (3, 0)"
+      ],
+      "query": "SELECT id, -val FROM T_AR10 ORDER BY id"
+    },
+    {
+      "name": "arith_int_times_double_projection",
+      "schema_template": "CREATE TABLE T_AR11 (id BIGINT, a BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AR11 VALUES (1, 4)",
+        "INSERT INTO T_AR11 VALUES (2, 7)"
+      ],
+      "query": "SELECT id, a * 1.5 FROM T_AR11 ORDER BY id"
+    },
+    {
+      "name": "arith_three_term_sum_projection",
+      "schema_template": "CREATE TABLE T_AR12 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AR12 VALUES (1, 1, 2, 3)",
+        "INSERT INTO T_AR12 VALUES (2, 10, 20, 30)"
+      ],
+      "query": "SELECT id, a + b + c FROM T_AR12 ORDER BY id"
+    },
+    {
+      "name": "arith_modular_chain_predicate",
+      "schema_template": "CREATE TABLE T_AR13 (id BIGINT, a BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AR13 VALUES (1, 2)",
+        "INSERT INTO T_AR13 VALUES (2, 4)",
+        "INSERT INTO T_AR13 VALUES (3, 7)"
+      ],
+      "query": "SELECT id FROM T_AR13 WHERE (a * 2 + 1) % 5 = 0 ORDER BY id"
+    },
+    {
+      "name": "between_both_bounds_null",
+      "schema_template": "CREATE TABLE T_BNL1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BNL1 VALUES (1, 5)",
+        "INSERT INTO T_BNL1 VALUES (2, 10)",
+        "INSERT INTO T_BNL1 VALUES (3, 15)"
+      ],
+      "query": "SELECT id FROM T_BNL1 WHERE val BETWEEN CAST(NULL AS BIGINT) AND CAST(NULL AS BIGINT) ORDER BY id"
+    },
+    {
+      "name": "between_null_lower_literal_upper",
+      "schema_template": "CREATE TABLE T_BNL2 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BNL2 VALUES (1, -5)",
+        "INSERT INTO T_BNL2 VALUES (2, 5)",
+        "INSERT INTO T_BNL2 VALUES (3, 50)"
+      ],
+      "query": "SELECT id FROM T_BNL2 WHERE val BETWEEN CAST(NULL AS BIGINT) AND 10 ORDER BY id"
+    },
+    {
+      "name": "between_null_column_value",
+      "schema_template": "CREATE TABLE T_BNL3 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BNL3 VALUES (1, 7)",
+        "INSERT INTO T_BNL3 VALUES (2, NULL)",
+        "INSERT INTO T_BNL3 VALUES (3, 12)"
+      ],
+      "query": "SELECT id FROM T_BNL3 WHERE val BETWEEN 5 AND 10 ORDER BY id"
+    },
+    {
+      "name": "between_double_fractional_bounds",
+      "schema_template": "CREATE TABLE T_BNL4 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BNL4 VALUES (1, 0.5)",
+        "INSERT INTO T_BNL4 VALUES (2, 1.25)",
+        "INSERT INTO T_BNL4 VALUES (3, 2.75)",
+        "INSERT INTO T_BNL4 VALUES (4, 3.5)"
+      ],
+      "query": "SELECT id FROM T_BNL4 WHERE v BETWEEN 1.25 AND 2.75 ORDER BY id"
+    },
+    {
+      "name": "between_composite_pk_leading",
+      "schema_template": "CREATE TABLE T_BNL5 (a BIGINT, b BIGINT, v BIGINT, PRIMARY KEY (a, b))",
+      "setup_sqls": [
+        "INSERT INTO T_BNL5 VALUES (1, 10, 100)",
+        "INSERT INTO T_BNL5 VALUES (2, 20, 200)",
+        "INSERT INTO T_BNL5 VALUES (3, 30, 300)",
+        "INSERT INTO T_BNL5 VALUES (4, 40, 400)"
+      ],
+      "query": "SELECT a, b, v FROM T_BNL5 WHERE a BETWEEN 2 AND 3 ORDER BY a, b"
+    },
+    {
+      "name": "between_indexed_non_pk",
+      "schema_template": "CREATE TABLE T_BNL6 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_v ON T_BNL6 (v)",
+      "setup_sqls": [
+        "INSERT INTO T_BNL6 VALUES (1, 100)",
+        "INSERT INTO T_BNL6 VALUES (2, 200)",
+        "INSERT INTO T_BNL6 VALUES (3, 300)",
+        "INSERT INTO T_BNL6 VALUES (4, 400)"
+      ],
+      "query": "SELECT id, v FROM T_BNL6 WHERE v BETWEEN 150 AND 350 ORDER BY id"
+    },
+    {
+      "name": "not_between_and_eq",
+      "schema_template": "CREATE TABLE T_BNL7 (id BIGINT, val BIGINT, region STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BNL7 VALUES (1, 5, 'us')",
+        "INSERT INTO T_BNL7 VALUES (2, 15, 'us')",
+        "INSERT INTO T_BNL7 VALUES (3, 25, 'eu')",
+        "INSERT INTO T_BNL7 VALUES (4, 35, 'us')"
+      ],
+      "query": "SELECT id, val FROM T_BNL7 WHERE val NOT BETWEEN 10 AND 20 AND region = 'us' ORDER BY id"
+    },
+    {
+      "name": "between_or_between",
+      "schema_template": "CREATE TABLE T_BNL8 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BNL8 VALUES (1, 7)",
+        "INSERT INTO T_BNL8 VALUES (2, 50)",
+        "INSERT INTO T_BNL8 VALUES (3, 150)",
+        "INSERT INTO T_BNL8 VALUES (4, 250)",
+        "INSERT INTO T_BNL8 VALUES (5, 500)"
+      ],
+      "query": "SELECT id, val FROM T_BNL8 WHERE (val BETWEEN 5 AND 10) OR (val BETWEEN 100 AND 200) ORDER BY id"
+    },
+    {
+      "name": "order_by_pk_asc_desc_mixed_rejected",
+      "schema_template": "CREATE TABLE T_OBM (a BIGINT, b BIGINT, val BIGINT, PRIMARY KEY (a, b))",
+      "setup_sqls": [
+        "INSERT INTO T_OBM VALUES (1, 1, 10), (1, 2, 20)"
+      ],
+      "query": "SELECT a, b FROM T_OBM ORDER BY a ASC, b DESC"
+    },
+    {
+      "name": "between_empty_range_with_order_by",
+      "schema_template": "CREATE TABLE T_BNLA (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BNLA VALUES (1, 5)",
+        "INSERT INTO T_BNLA VALUES (2, 10)",
+        "INSERT INTO T_BNLA VALUES (3, 15)"
+      ],
+      "query": "SELECT id, val FROM T_BNLA WHERE val BETWEEN 1000 AND 2000 ORDER BY id"
+    },
+    {
+      "name": "between_negative_bounds",
+      "schema_template": "CREATE TABLE T_BNLB (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BNLB VALUES (1, -20)",
+        "INSERT INTO T_BNLB VALUES (2, -7)",
+        "INSERT INTO T_BNLB VALUES (3, 0)",
+        "INSERT INTO T_BNLB VALUES (4, 5)"
+      ],
+      "query": "SELECT id, val FROM T_BNLB WHERE val BETWEEN -10 AND -5 ORDER BY id"
+    },
+    {
+      "name": "between_negative_to_positive",
+      "schema_template": "CREATE TABLE T_BNLC (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BNLC VALUES (1, -10)",
+        "INSERT INTO T_BNLC VALUES (2, -1)",
+        "INSERT INTO T_BNLC VALUES (3, 0)",
+        "INSERT INTO T_BNLC VALUES (4, 1)",
+        "INSERT INTO T_BNLC VALUES (5, 10)"
+      ],
+      "query": "SELECT id, val FROM T_BNLC WHERE val BETWEEN -2 AND 2 ORDER BY id"
+    },
+    {
+      "name": "count_join_multi_and_rhs",
+      "schema_template": "CREATE TABLE T_AJ1 (id BIGINT, name STRING, PRIMARY KEY (id)) CREATE TABLE T_AJ2 (id BIGINT, parent BIGINT, val BIGINT, region STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AJ1 VALUES (1, 'a')",
+        "INSERT INTO T_AJ1 VALUES (2, 'b')",
+        "INSERT INTO T_AJ2 VALUES (10, 1, 100, 'us')",
+        "INSERT INTO T_AJ2 VALUES (11, 1, 50, 'us')",
+        "INSERT INTO T_AJ2 VALUES (12, 2, 200, 'eu')",
+        "INSERT INTO T_AJ2 VALUES (13, 2, 25, 'eu')"
+      ],
+      "query": "SELECT count(*) FROM T_AJ1 a, T_AJ2 b WHERE a.id = b.parent AND b.val > 30 AND b.region = 'us'"
+    },
+    {
+      "name": "sum_join_rhs_val",
+      "schema_template": "CREATE TABLE T_AJ3 (id BIGINT, PRIMARY KEY (id)) CREATE TABLE T_AJ4 (id BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AJ3 VALUES (1)",
+        "INSERT INTO T_AJ3 VALUES (2)",
+        "INSERT INTO T_AJ4 VALUES (10, 1, 100)",
+        "INSERT INTO T_AJ4 VALUES (11, 1, 50)",
+        "INSERT INTO T_AJ4 VALUES (12, 2, 200)"
+      ],
+      "query": "SELECT sum(b.val) FROM T_AJ3 a, T_AJ4 b WHERE a.id = b.parent"
+    },
+    {
+      "name": "min_max_join_rhs",
+      "schema_template": "CREATE TABLE T_AJ7 (id BIGINT, PRIMARY KEY (id)) CREATE TABLE T_AJ8 (id BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AJ7 VALUES (1)",
+        "INSERT INTO T_AJ7 VALUES (2)",
+        "INSERT INTO T_AJ8 VALUES (10, 1, 100)",
+        "INSERT INTO T_AJ8 VALUES (11, 1, 25)",
+        "INSERT INTO T_AJ8 VALUES (12, 2, 200)",
+        "INSERT INTO T_AJ8 VALUES (13, 2, 75)"
+      ],
+      "query": "SELECT min(b.val), max(b.val) FROM T_AJ7 a, T_AJ8 b WHERE a.id = b.parent"
+    },
+    {
+      "name": "sum_count_join",
+      "schema_template": "CREATE TABLE T_AJ9 (id BIGINT, PRIMARY KEY (id)) CREATE TABLE T_AJ10 (id BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AJ9 VALUES (1)",
+        "INSERT INTO T_AJ9 VALUES (2)",
+        "INSERT INTO T_AJ10 VALUES (10, 1, 100)",
+        "INSERT INTO T_AJ10 VALUES (11, 1, 50)",
+        "INSERT INTO T_AJ10 VALUES (12, 2, 200)"
+      ],
+      "query": "SELECT sum(b.val), count(*) FROM T_AJ9 a, T_AJ10 b WHERE a.id = b.parent"
+    },
+    {
+      "name": "count_join_empty_rhs",
+      "schema_template": "CREATE TABLE T_AJ11 (id BIGINT, PRIMARY KEY (id)) CREATE TABLE T_AJ12 (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AJ11 VALUES (1)",
+        "INSERT INTO T_AJ11 VALUES (2)"
+      ],
+      "query": "SELECT count(*) FROM T_AJ11 a, T_AJ12 b WHERE a.id = b.parent"
+    },
+    {
+      "name": "count_join_duplicates_within_group",
+      "schema_template": "CREATE TABLE T_AJ13 (id BIGINT, PRIMARY KEY (id)) CREATE TABLE T_AJ14 (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AJ13 VALUES (1)",
+        "INSERT INTO T_AJ13 VALUES (2)",
+        "INSERT INTO T_AJ14 VALUES (10, 1)",
+        "INSERT INTO T_AJ14 VALUES (11, 1)",
+        "INSERT INTO T_AJ14 VALUES (12, 1)",
+        "INSERT INTO T_AJ14 VALUES (20, 2)",
+        "INSERT INTO T_AJ14 VALUES (21, 2)"
+      ],
+      "query": "SELECT count(*) FROM T_AJ13 a, T_AJ14 b WHERE a.id = b.parent"
+    },
+    {
+      "name": "sum_join_with_filter",
+      "schema_template": "CREATE TABLE T_AJ15 (id BIGINT, PRIMARY KEY (id)) CREATE TABLE T_AJ16 (id BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AJ15 VALUES (1)",
+        "INSERT INTO T_AJ15 VALUES (2)",
+        "INSERT INTO T_AJ16 VALUES (10, 1, 100)",
+        "INSERT INTO T_AJ16 VALUES (11, 1, 50)",
+        "INSERT INTO T_AJ16 VALUES (12, 2, 200)",
+        "INSERT INTO T_AJ16 VALUES (13, 2, 25)"
+      ],
+      "query": "SELECT sum(b.val) FROM T_AJ15 a, T_AJ16 b WHERE a.id = b.parent AND b.val > 40"
+    },
+    {
+      "name": "count_derived_join_table",
+      "schema_template": "CREATE TABLE T_AJ17 (id BIGINT, gid BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE T_AJ18 (id BIGINT, gid BIGINT, label STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AJ17 VALUES (1, 100, 200)",
+        "INSERT INTO T_AJ17 VALUES (2, 100, 50)",
+        "INSERT INTO T_AJ17 VALUES (3, 200, 300)",
+        "INSERT INTO T_AJ18 VALUES (10, 100, 'x')",
+        "INSERT INTO T_AJ18 VALUES (11, 200, 'y')"
+      ],
+      "query": "SELECT count(*) FROM (SELECT id, gid FROM T_AJ17 WHERE val > 100) AS d, T_AJ18 b WHERE d.gid = b.gid"
+    },
+    {
+      "name": "count_self_join_alias",
+      "schema_template": "CREATE TABLE T_AJ19 (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AJ19 VALUES (1, 0)",
+        "INSERT INTO T_AJ19 VALUES (2, 1)",
+        "INSERT INTO T_AJ19 VALUES (3, 1)",
+        "INSERT INTO T_AJ19 VALUES (4, 2)"
+      ],
+      "query": "SELECT count(*) FROM T_AJ19 AS c, T_AJ19 AS p WHERE c.parent = p.id"
+    },
+    {
+      "name": "count_composite_pk_join_simple",
+      "schema_template": "CREATE TABLE T_AJ20 (a BIGINT, b BIGINT, fid BIGINT, PRIMARY KEY (a, b)) CREATE TABLE T_AJ21 (id BIGINT, label STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AJ20 VALUES (1, 1, 100)",
+        "INSERT INTO T_AJ20 VALUES (1, 2, 200)",
+        "INSERT INTO T_AJ20 VALUES (2, 1, 100)",
+        "INSERT INTO T_AJ21 VALUES (100, 'x')",
+        "INSERT INTO T_AJ21 VALUES (200, 'y')"
+      ],
+      "query": "SELECT count(*) FROM T_AJ20 c, T_AJ21 s WHERE c.fid = s.id"
+    },
+    {
+      "name": "sum_join_no_matches",
+      "schema_template": "CREATE TABLE T_AJ22 (id BIGINT, PRIMARY KEY (id)) CREATE TABLE T_AJ23 (id BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AJ22 VALUES (1)",
+        "INSERT INTO T_AJ22 VALUES (2)",
+        "INSERT INTO T_AJ23 VALUES (10, 99, 100)",
+        "INSERT INTO T_AJ23 VALUES (11, 99, 50)"
+      ],
+      "query": "SELECT sum(b.val) FROM T_AJ22 a, T_AJ23 b WHERE a.id = b.parent"
+    },
+    {
+      "name": "count_three_way_chain_join",
+      "schema_template": "CREATE TABLE T_AJ24 (a_id BIGINT, b_id BIGINT, PRIMARY KEY (a_id)) CREATE TABLE T_AJ25 (b_id BIGINT, c_id BIGINT, PRIMARY KEY (b_id)) CREATE TABLE T_AJ26 (c_id BIGINT, name STRING, PRIMARY KEY (c_id))",
+      "setup_sqls": [
+        "INSERT INTO T_AJ24 VALUES (1, 10)",
+        "INSERT INTO T_AJ24 VALUES (2, 20)",
+        "INSERT INTO T_AJ25 VALUES (10, 100)",
+        "INSERT INTO T_AJ25 VALUES (20, 200)",
+        "INSERT INTO T_AJ26 VALUES (100, 'x')",
+        "INSERT INTO T_AJ26 VALUES (200, 'y')"
+      ],
+      "query": "SELECT count(*) FROM T_AJ24 a, T_AJ25 b, T_AJ26 c WHERE a.b_id = b.b_id AND b.c_id = c.c_id"
+    },
+    {
+      "name": "insert_select_where_filter_src",
+      "schema_template": "CREATE TABLE T_IS1_SRC (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE T_IS1_DST (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IS1_SRC VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+        "INSERT INTO T_IS1_DST SELECT id, val FROM T_IS1_SRC WHERE val > 15 AND val < 35"
+      ],
+      "query": "SELECT id, val FROM T_IS1_DST ORDER BY id"
+    },
+    {
+      "name": "insert_select_arith_projection",
+      "schema_template": "CREATE TABLE T_IS2_SRC (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE T_IS2_DST (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IS2_SRC VALUES (1, 10), (2, 20), (3, 30)",
+        "INSERT INTO T_IS2_DST SELECT id, val * 2 FROM T_IS2_SRC"
+      ],
+      "query": "SELECT id, val FROM T_IS2_DST ORDER BY id"
+    },
+    {
+      "name": "insert_select_zero_rows",
+      "schema_template": "CREATE TABLE T_IS5_SRC (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE T_IS5_DST (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IS5_SRC VALUES (1, 10), (2, 20)",
+        "INSERT INTO T_IS5_DST SELECT id, val FROM T_IS5_SRC WHERE val > 99999"
+      ],
+      "query": "SELECT id, val FROM T_IS5_DST ORDER BY id"
+    },
+    {
+      "name": "insert_select_composite_pk",
+      "schema_template": "CREATE TABLE T_IS6_SRC (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id)) CREATE TABLE T_IS6_DST (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+      "setup_sqls": [
+        "INSERT INTO T_IS6_SRC VALUES ('us', 1, 100), ('us', 2, 200), ('eu', 1, 500)",
+        "INSERT INTO T_IS6_DST SELECT region, id, val FROM T_IS6_SRC"
+      ],
+      "query": "SELECT region, id, val FROM T_IS6_DST ORDER BY region, id"
+    },
+    {
+      "name": "insert_select_then_update",
+      "schema_template": "CREATE TABLE T_IS7_SRC (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE T_IS7_DST (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IS7_SRC VALUES (1, 10), (2, 20), (3, 30)",
+        "INSERT INTO T_IS7_DST SELECT id, val FROM T_IS7_SRC",
+        "UPDATE T_IS7_DST SET val = val + 1000 WHERE id <= 2"
+      ],
+      "query": "SELECT id, val FROM T_IS7_DST ORDER BY id"
+    },
+    {
+      "name": "insert_select_self_copy_shifted",
+      "schema_template": "CREATE TABLE T_IS8 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IS8 VALUES (1, 10), (2, 20)",
+        "INSERT INTO T_IS8 SELECT id + 100, val FROM T_IS8"
+      ],
+      "query": "SELECT id, val FROM T_IS8 ORDER BY id"
+    },
+    {
+      "name": "insert_select_cast_projection",
+      "schema_template": "CREATE TABLE T_IS9_SRC (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE T_IS9_DST (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IS9_SRC VALUES (1, 10), (2, 20)",
+        "INSERT INTO T_IS9_DST SELECT CAST(id AS BIGINT), CAST(val AS BIGINT) FROM T_IS9_SRC"
+      ],
+      "query": "SELECT id, val FROM T_IS9_DST ORDER BY id"
+    }
+  ]
+}
