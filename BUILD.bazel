@@ -55,6 +55,9 @@ exports_files([
     # TestDocClaimsCited (//conformance:doc_claims_cited_test).
     "DIVERGENCES.md",
     "SQL_CONFORMANCE.md",
+    # Panic/recover boundary allowlist; gated against norecover.Allowlist by
+    # //internal/linters/norecover:norecover_test.
+    "docs/panic-audit.md",
 ])
 
 # gazelle:prefix fdb.dev
