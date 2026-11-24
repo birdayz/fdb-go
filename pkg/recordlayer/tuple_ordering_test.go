@@ -9,6 +9,7 @@ import (
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/tupleordering"
 )
 
 // ---------------------------------------------------------------------------
@@ -1324,5 +1325,25 @@ func TestTupleOrderingPack_IncompleteVersionstampErrorsNotPanics(t *testing.T) {
 	complete := tuple.Versionstamp{TransactionVersion: [10]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, UserVersion: 3}
 	if _, err := tupleOrderingPack(tuple.Tuple{complete}, OrderDescNullsLast); err != nil {
 		t.Errorf("a COMPLETE versionstamp must still pack: %v", err)
+	}
+}
+
+func TestOrderDirectionInternalConversion(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		dir      OrderDirection
+		internal tupleordering.Direction
+	}{
+		{OrderAscNullsFirst, tupleordering.AscNullsFirst},
+		{OrderAscNullsLast, tupleordering.AscNullsLast},
+		{OrderDescNullsFirst, tupleordering.DescNullsFirst},
+		{OrderDescNullsLast, tupleordering.DescNullsLast},
+	} {
+		if got := tc.dir.toInternal(); got != tc.internal {
+			t.Errorf("%+v.toInternal() = %+v, want %+v", tc.dir, got, tc.internal)
+		}
+		if got := orderDirectionFromInternal(tc.internal); got != tc.dir {
+			t.Errorf("orderDirectionFromInternal(%+v) = %+v, want %+v", tc.internal, got, tc.dir)
+		}
 	}
 }
