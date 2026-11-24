@@ -55,6 +55,19 @@ const (
 	ScanIdentityTypeErrorCycle
 )
 
+// InvalidScanRangeExecutionIdentityPlanError reports a nil scan plan or
+// required inner index plan while a continuation fingerprint is being built.
+type InvalidScanRangeExecutionIdentityPlanError struct {
+	PlanKind string
+}
+
+func (e *InvalidScanRangeExecutionIdentityPlanError) Error() string {
+	if e.PlanKind == "" {
+		return "scan range execution identity: nil plan"
+	}
+	return fmt.Sprintf("scan range execution identity: nil %s", e.PlanKind)
+}
+
 // InvalidScanRangeExecutionIdentityTypeError reports an invalid values.Type
 // graph while a continuation fingerprint is being built. It deliberately
 // records only concrete implementation names and structural paths: formatting
@@ -349,6 +362,9 @@ func scanIdentityCompositeTypeNode(typ values.Type) (scanIdentityTypeNode, bool)
 // primaryScanRangeFingerprintSalt identifies every execution-shape input that
 // is outside the evaluated primary-key comparison ranges themselves.
 func primaryScanRangeFingerprintSalt(plan *plans.RecordQueryScanPlan) (string, error) {
+	if plan == nil {
+		return "", &InvalidScanRangeExecutionIdentityPlanError{PlanKind: "RecordQueryScanPlan"}
+	}
 	b := newScanRangeExecutionIdentityBuilder("primary")
 	b.stringsField("record-types", plan.GetRecordTypes())
 	b.boolField("reverse", plan.IsReverse())
@@ -401,6 +417,9 @@ func coveringIndexScanRangeFingerprintSalt(
 	plan *plans.RecordQueryCoveringIndexPlan,
 	scanType recordlayer.IndexScanType,
 ) (string, error) {
+	if plan == nil {
+		return "", &InvalidScanRangeExecutionIdentityPlanError{PlanKind: "RecordQueryCoveringIndexPlan"}
+	}
 	return indexScanRangeFingerprintSaltFields(
 		plan.GetIndexPlan(), scanType, true, plan.GetCoveringColumns())
 }
@@ -413,7 +432,13 @@ func coveringIndexValueScanRangeFingerprintSalt(
 	plan *plans.RecordQueryCoveringIndexValuePlan,
 	scanType recordlayer.IndexScanType,
 ) (string, error) {
+	if plan == nil {
+		return "", &InvalidScanRangeExecutionIdentityPlanError{PlanKind: "RecordQueryCoveringIndexValuePlan"}
+	}
 	index := plan.GetIndexPlan()
+	if index == nil {
+		return "", &InvalidScanRangeExecutionIdentityPlanError{PlanKind: "RecordQueryCoveringIndexValuePlan.indexPlan"}
+	}
 	b := newScanRangeExecutionIdentityBuilder("covering-index-value")
 	b.stringField("index-name", index.GetIndexName())
 	b.stringField("scan-type", string(scanType))
@@ -440,8 +465,7 @@ func indexScanRangeFingerprintSaltFields(
 	coveringColumns []string,
 ) (string, error) {
 	if plan == nil {
-		return indexScanRangeFingerprintSaltFieldsWithFlowedType(
-			plan, scanType, covering, coveringColumns, plan.GetFlowedType())
+		return "", &InvalidScanRangeExecutionIdentityPlanError{PlanKind: "RecordQueryIndexPlan"}
 	}
 	key := indexSaltKey{plan: weak.Make(plan), scanType: scanType, covering: covering, columns: identityColumns(coveringColumns)}
 	if salt, ok := indexSaltMemo.Load(key); ok {
@@ -511,6 +535,9 @@ func indexScanRangeFingerprintSaltFieldsWithFlowedType(
 	coveringColumns []string,
 	flowedType values.Type,
 ) (string, error) {
+	if plan == nil {
+		return "", &InvalidScanRangeExecutionIdentityPlanError{PlanKind: "RecordQueryIndexPlan"}
+	}
 	b := newScanRangeExecutionIdentityBuilder("index")
 	b.stringField("index-name", plan.GetIndexName())
 	b.stringField("scan-type", string(scanType))
@@ -539,6 +566,12 @@ func aggregateScanRangeFingerprintSalt(
 	physicalGroupingCount int,
 	physicalGroupingPrefixCount int,
 ) (string, error) {
+	if plan == nil {
+		return "", &InvalidScanRangeExecutionIdentityPlanError{PlanKind: "RecordQueryAggregateIndexPlan"}
+	}
+	if plan.GetIndexPlan() == nil {
+		return "", &InvalidScanRangeExecutionIdentityPlanError{PlanKind: "RecordQueryAggregateIndexPlan.indexPlan"}
+	}
 	b := newScanRangeExecutionIdentityBuilder("aggregate")
 	b.stringField("index-name", plan.GetIndexName())
 	b.stringField("index-type", indexType)
@@ -575,6 +608,9 @@ func vectorScanRangeFingerprintSalt(
 	effectiveEfSearch int,
 	invocationRange recordlayer.TupleRange,
 ) (string, error) {
+	if plan == nil {
+		return "", &InvalidScanRangeExecutionIdentityPlanError{PlanKind: "RecordQueryVectorIndexPlan"}
+	}
 	b := newScanRangeExecutionIdentityBuilder("vector")
 	b.stringField("index-name", plan.GetIndexName())
 	b.stringField("index-type", indexType)
