@@ -267,7 +267,7 @@ func (m *StandardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 					return m.insertInt64Entry(val, newRecord)
 				}
 			}
-			// DirectPacker: encode fields straight into FDB key bytes.
+			// directPacker: encode fields straight into FDB key bytes.
 			// Avoids scalarToInterface boxing — handles both single-field and
 			// composite keys without going through any.
 			if dp, ok := m.index.RootExpression.(directPacker); ok {

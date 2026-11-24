@@ -140,7 +140,7 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnly(newRecord *FDBStoredRec
 		return false, nil // entries filtered one by one: the standard path
 	}
 
-	// Try zero-alloc path: evaluate grouping key fields directly via ScalarEvaluator,
+	// Try zero-alloc path: evaluate grouping key fields directly via scalarEvaluator,
 	// bypassing CompositeKeyExpression.EvaluateFlat's make([]any, 0, N). It
 	// reads one group per record, so a whole key that can fan out (no entry,
 	// or several, each counted as Java does) takes the paths below.
@@ -201,7 +201,7 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnly(newRecord *FDBStoredRec
 }
 
 // updateInsertOnlyGrouped handles the insert-only fast path for GroupingKeyExpression
-// roots. Evaluates grouping key fields directly via ScalarEvaluator, bypassing
+// roots. Evaluates grouping key fields directly via scalarEvaluator, bypassing
 // CompositeKeyExpression.EvaluateFlat's make([]any) allocation.
 // Returns (true, nil) on success, (false, nil) to fall through.
 func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
@@ -222,7 +222,7 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 		return false, nil // SUM/other with gc=0: fall through
 	}
 
-	// Single-field grouping (gc=1): try ScalarEvaluator on first child.
+	// Single-field grouping (gc=1): try scalarEvaluator on first child.
 	if gc == 1 {
 		comp, ok := gke.wholeKey.(*CompositeKeyExpression)
 		if !ok {
@@ -231,7 +231,7 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 		if len(comp.expressions) == 0 {
 			return false, nil
 		}
-		// Try Int64Evaluator for zero-alloc group key packing.
+		// Try int64Evaluator for zero-alloc group key packing.
 		var fdbKey fdb.Key
 		if ie, ok := comp.expressions[0].(int64Evaluator); ok {
 			groupInt64, valid, err := ie.EvaluateInt64(newRecord, newRecord.Record)
@@ -287,7 +287,7 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 		return m.applyInsertMutation(fdbKey, nil, gc, newRecord, gke)
 	}
 
-	// Multi-field grouping (gc > 1): try DirectPacker on the grouping fields.
+	// Multi-field grouping (gc > 1): try directPacker on the grouping fields.
 	comp, ok := gke.wholeKey.(*CompositeKeyExpression)
 	if !ok || len(comp.expressions) < gc {
 		return false, nil

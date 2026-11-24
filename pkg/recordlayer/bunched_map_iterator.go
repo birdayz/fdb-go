@@ -1,6 +1,6 @@
 // Portions derived from FoundationDB Record Layer (
-// bunchedMapMultiIterator.java, SubspaceSplitter.java,
-// textSubspaceSplitter.java),
+// BunchedMapMultiIterator.java, SubspaceSplitter.java,
+// TextSubspaceSplitter.java),
 // Copyright 2015-2018 Apple Inc. and the FoundationDB project authors
 // Licensed under the Apache License, Version 2.0; translated to Go and modified.
 
@@ -18,7 +18,7 @@ import (
 )
 
 // subspaceSplitter determines which sub-map a given FDB key belongs to.
-// Used by BunchedMapMultiIterator to partition scans across multiple BunchedMaps.
+// Used by bunchedMapMultiIterator to partition scans across multiple BunchedMaps.
 // Matches Java's com.apple.foundationdb.map.SubspaceSplitter.
 type subspaceSplitter interface {
 	SubspaceOf(keyBytes []byte) (subspace.Subspace, error)
@@ -118,7 +118,7 @@ type bunchedMapScanEntry struct {
 // kvCallback is called for each raw FDB key-value pair read during iteration.
 // Used for byte scan limiting — the callback receives the raw key and value
 // lengths before deserialization. Matches Java's Consumer<KeyValue> callback
-// passed to BunchedMapMultiIterator.
+// passed to bunchedMapMultiIterator.
 type kvCallback func(keyLen, valueLen int)
 
 // bunchedMapMultiIterator iterates over multiple BunchedMaps within a parent subspace.
@@ -173,7 +173,7 @@ type bunchedMapMultiIterator struct {
 	nextEntry *bunchedMapScanEntry
 }
 
-// newBunchedMapMultiIterator creates a multi-map iterator.
+// newbunchedMapMultiIterator creates a multi-map iterator.
 // Streams from FDB lazily — only one bunch in memory at a time.
 func newBunchedMapMultiIterator(
 	tx fdb.ReadTransaction,
@@ -192,7 +192,7 @@ func newBunchedMapMultiIterator(
 	)
 }
 
-// newBunchedMapMultiIteratorWithCallback creates a multi-map iterator with a
+// newbunchedMapMultiIteratorWithCallback creates a multi-map iterator with a
 // per-KV callback for byte tracking. The callback fires once per raw FDB
 // key-value pair read, before deserialization. Matches Java's scanMulti()
 // with Consumer<KeyValue> callback parameter.

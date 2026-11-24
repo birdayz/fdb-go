@@ -577,11 +577,11 @@ func TestKeyExpressionFastPath_NestingExpressionDeclinesFastPath(t *testing.T) {
 	expr := Nest("flower", Field("type"))
 
 	_, isDirect := expr.(directPacker)
-	g.Expect(isDirect).To(BeFalse(), "NestingKeyExpression must not implement DirectPacker")
+	g.Expect(isDirect).To(BeFalse(), "NestingKeyExpression must not implement directPacker")
 	_, isInt64 := expr.(int64Evaluator)
-	g.Expect(isInt64).To(BeFalse(), "NestingKeyExpression must not implement Int64Evaluator")
+	g.Expect(isInt64).To(BeFalse(), "NestingKeyExpression must not implement int64Evaluator")
 	_, isScalar := expr.(scalarEvaluator)
-	g.Expect(isScalar).To(BeFalse(), "NestingKeyExpression must not implement ScalarEvaluator")
+	g.Expect(isScalar).To(BeFalse(), "NestingKeyExpression must not implement scalarEvaluator")
 }
 
 // --- The divergence this file exists to pin ---
