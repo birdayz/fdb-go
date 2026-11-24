@@ -9,6 +9,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -356,7 +357,7 @@ var _ = Describe("SPFresh fine-split primitives", func() {
 	// simEnvDB is sharedDB's backend under a simulated environment, where the
 	// attempt loop draws its delays without waiting and bounds a stalled seal.
 	simEnvDB := func() *recordlayer.FDBDatabase {
-		return recordlayer.NewFDBDatabaseWithTransactor(sharedRawDB, sharedRawDB).SetEnv(dst.NewSim(9))
+		return recordlayer.NewFDBDatabaseWithTransactor(sharedRawDB, sharedRawDB).SetEnv(dstwire.Env(dst.NewSim(9)))
 	}
 	saveAt := func(db *recordlayer.FDBDatabase, storeBuilder func(*recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error), id int64) error {
 		_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {

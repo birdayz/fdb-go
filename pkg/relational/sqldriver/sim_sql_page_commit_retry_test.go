@@ -69,6 +69,7 @@ import (
 	"time"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -272,7 +273,7 @@ func openRetryOnceSchema(t *testing.T, seed uint64, tableDDL string) (*sql.DB, *
 	env := dst.NewSim(seed)
 	env.Buggify = dst.DisabledBuggifier()
 	backend := newRetryOnceBackend(simfdb.New(env))
-	simDB := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(env)
+	simDB := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(dstwire.Env(env))
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 	key := "sim://" + t.Name()
 	fdbDBCache.Store(key, simDB)

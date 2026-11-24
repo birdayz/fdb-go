@@ -8,6 +8,7 @@ go_library(
     importpath = "fdb.dev/pkg/simfdb/hunt/sqlpage",
     visibility = ["//cmd/dst-hunt:__pkg__"],
     deps = [
+        "//internal/dstwire",
         "//pkg/dst",
         "//pkg/recordlayer",
         "//pkg/relational/api",

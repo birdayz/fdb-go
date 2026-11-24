@@ -22,6 +22,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -81,7 +82,7 @@ func newSRHarness(t *testing.T, seed uint64) *srHarness {
 		t.Fatal(err)
 	}
 	be := &srBackend{Backend: simgate.New(sim), sim: sim}
-	return &srHarness{be: be, env: env, db: recordlayer.NewFDBDatabaseWithBackend(be).SetEnv(env), cat: cat, ks: ks}
+	return &srHarness{be: be, env: env, db: recordlayer.NewFDBDatabaseWithBackend(be).SetEnv(dstwire.Env(env)), cat: cat, ks: ks}
 }
 
 // srProbe observes one connection's database.
@@ -100,7 +101,7 @@ func (p *srProbe) reset() {
 // however long the statement took to plan.
 func (h *srHarness) open(t *testing.T) (*EmbeddedConnection, *srProbe) {
 	t.Helper()
-	fdbDB := recordlayer.NewFDBDatabaseWithBackend(h.be).SetEnv(h.env)
+	fdbDB := recordlayer.NewFDBDatabaseWithBackend(h.be).SetEnv(dstwire.Env(h.env))
 	fdbDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 	p := &srProbe{timer: recordlayer.NewStoreTimer()}
 	fdbDB.SetTimer(p.timer)
@@ -620,7 +621,7 @@ func TestStatementRead_SharedCommitFailureRerunsThePage(t *testing.T) {
 	}
 	// The injected fault was spent: the next writing commit commits first time.
 	var attempts atomic.Int64
-	writer := recordlayer.NewFDBDatabaseWithBackend(h.be).SetEnv(h.env)
+	writer := recordlayer.NewFDBDatabaseWithBackend(h.be).SetEnv(dstwire.Env(h.env))
 	writer.SetAttemptObserver(func(recordlayer.AttemptCall, error) { attempts.Add(1) })
 	if _, err := writer.Run(context.Background(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		rctx.Transaction().Set(fdb.Key(subspace.Sub("sr-probe", t.Name()).Pack(tuple.Tuple{"k"})), []byte("v"))

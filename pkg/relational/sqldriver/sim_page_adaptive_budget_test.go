@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
@@ -61,7 +62,7 @@ func TestSimPageBudgetAdaptsToShortMVCCWindow(t *testing.T) {
 	env.Clock = clock
 	env.Buggify = dst.DisabledBuggifier()
 	backend := &shortWindowBackend{SimDB: simfdb.New(env), clock: clock}
-	rdb := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(env)
+	rdb := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(dstwire.Env(env))
 	rdb.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 	key := "sim://" + t.Name()
 	fdbDBCache.Store(key, rdb)

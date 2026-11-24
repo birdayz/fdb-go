@@ -38,7 +38,7 @@ func TestFDB_IndexCursorRunnerCreationTime(t *testing.T) {
 	for _, route := range []string{"RunWithRetry", "OpenContext"} {
 		t.Run(route, func(t *testing.T) {
 			clock := dst.NewSimClock(dst.Epoch)
-			env := &dst.Env{Clock: clock}
+			env := &Env{Clock: clock}
 			db.SetEnv(env)
 			runner := NewFDBDatabaseRunner(db)
 			scan := func(rc *FDBRecordContext) (any, error) {

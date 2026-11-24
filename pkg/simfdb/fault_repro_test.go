@@ -8,6 +8,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -26,7 +27,7 @@ func TestSimFDB_ByteReproducibleUnderFaults(t *testing.T) {
 	t.Parallel()
 	dump := func() []fdb.KeyValue {
 		env := dst.NewSim(99) // Buggify ON — faults injected at seed-chosen commit points
-		db := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+		db := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
 		md := buildOrderMetadata(t)
 		sub := subspace.FromBytes(tuple.Tuple{"simfdb-faults"}.Pack())
 		ctx := context.Background()

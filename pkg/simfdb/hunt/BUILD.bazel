@@ -16,6 +16,7 @@ go_library(
     ],
     deps = [
         "//gen/demopb",
+        "//internal/dstwire",
         "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
@@ -36,6 +37,7 @@ go_test(
     embed = [":hunt"],
     deps = [
         "//gen/demopb",
+        "//internal/dstwire",
         "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",

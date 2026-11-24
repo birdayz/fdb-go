@@ -373,11 +373,11 @@ func TestRules(t *testing.T) {
 			want:     0,
 		},
 		{
-			name:     "R4 allowlisted dst prod import with Bazel prefix passes",
+			name:     "R4 retired dst prod import with Bazel prefix fails",
 			pkgPath:  "fdb.dev/pkg/recordlayer",
 			filename: "/b/f/w/execroot/_main/pkg/recordlayer/store.go",
 			src:      srcImporting("recordlayer", "fdb.dev/pkg/dst"),
-			want:     0,
+			want:     1,
 		},
 		{
 			name:     "R4+R5 prod relational importing gomock fails",

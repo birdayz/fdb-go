@@ -377,7 +377,7 @@ func statusCatalogBudgetChecks(t *testing.T, ctx context.Context, clusterFile st
 	t.Run("catalog-count-time-budget", func(t *testing.T) {
 		backend := &statusCatalogCountBackend{Database: db}
 		clock := &statusCatalogStepClock{}
-		paged := recordlayer.NewFDBDatabaseWithTransactor(backend, db).SetEnv(&dst.Env{Clock: clock})
+		paged := recordlayer.NewFDBDatabaseWithTransactor(backend, db).SetEnv(&recordlayer.Env{Clock: clock})
 		count, err := countCatalogDatabasesBatched(ctx, paged, 256)
 		if err != nil || count != 2 || backend.succeeded < 2 || clock.calls.Load() == 0 {
 			t.Fatalf("time-bounded count=(%d, %v), successful batches=%d clock calls=%d; want two databases across multiple batches", count, err, backend.succeeded, clock.calls.Load())
@@ -440,7 +440,7 @@ func statusCatalogBudgetChecks(t *testing.T, ctx context.Context, clusterFile st
 		seeded := snapshotStoreBytes(t, clusterFile, root)
 		backend := &statusCatalogCountBackend{Database: db}
 		paged := recordlayer.NewFDBDatabaseWithTransactor(backend, db).
-			SetEnv(&dst.Env{Clock: dst.NewSimClock(dst.Epoch)})
+			SetEnv(&recordlayer.Env{Clock: dst.NewSimClock(dst.Epoch)})
 		count, err := countCatalogDatabasesBatched(ctx, paged, 256)
 		if err != nil || count != extraDatabases+2 || backend.succeeded < 2 {
 			t.Fatalf("byte-bounded count=(%d, %v), successful batches=%d; want %d databases across multiple batches", count, err, backend.succeeded, extraDatabases+2)

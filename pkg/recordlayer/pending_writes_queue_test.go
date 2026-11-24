@@ -146,7 +146,7 @@ var _ = Describe("PendingWritesQueue", func() {
 		} {
 			rc := open()
 			clock := dst.NewSimClock(dst.Epoch)
-			rc.env = &dst.Env{Clock: clock}
+			rc.env = &Env{Clock: clock}
 			state := NewScanLimiterStateIn(rc.env)
 			clock.Advance(time.Hour)
 			ss := root.Sub(tc.name)

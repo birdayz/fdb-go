@@ -43,6 +43,7 @@ import (
 	"sort"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/dstwire"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -464,7 +465,7 @@ func (w Workload) seedData(rng *rand.Rand) []rec {
 func (w Workload) setup(seed uint64, recs []rec) (*simfdb.SimDB, *recordlayer.FDBDatabase, subspace.Subspace, *recordlayer.RecordMetaData, *recordlayer.Index, error) {
 	env := hunt.NewSimEnv(seed, 0)
 	backend := simfdb.New(env)
-	db := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(env)
+	db := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(dstwire.Env(env))
 	sub := subspace.FromBytes(tuple.Tuple{"cont"}.Pack())
 	md, index := buildMetadata()
 	ctx := context.Background()

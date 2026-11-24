@@ -87,6 +87,7 @@ go_test(
     ],
     deps = [
         "//gen",
+        "//internal/dstwire",
         "//pkg/dst",
         "//pkg/fdbgo/client",
         "//pkg/fdbgo/fdb",
@@ -128,6 +129,7 @@ go_test(
     ],
     embed = [":sqldriver"],
     deps = [
+        "//internal/dstwire",
         "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
@@ -151,6 +153,7 @@ go_test(
     embed = [":sqldriver"],
     deps = [
         "//gen",
+        "//internal/dstwire",
         "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",

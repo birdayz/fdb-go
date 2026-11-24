@@ -5,6 +5,7 @@ import (
 	"context"
 	"testing"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
@@ -23,7 +24,7 @@ func TestResolvedSchemaSubspace(t *testing.T) {
 	ctx := context.Background()
 	env := dst.NewSim(41)
 	env.Buggify = dst.DisabledBuggifier()
-	db := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+	db := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
 	ks := keyspace.New(subspace.Sub())
 
 	if _, ok := ks.ResolvedSchemaSubspace("/FRL/DB", "S"); ok {

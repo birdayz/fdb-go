@@ -331,7 +331,7 @@ func TestOnlineIndexerOngoingStampValidation(t *testing.T) {
 	index := NewIndex("target", Field("price"))
 	oi := &OnlineIndexer{targetIndexes: []*Index{index}}
 	env := dst.NewSim(17)
-	store := &FDBRecordStore{context: NewFDBRecordContext(nil, env)}
+	store := &FDBRecordStore{context: NewFDBRecordContext(nil, simEnv(env))}
 	for _, tc := range []struct {
 		name      string
 		stamp     *gen.IndexBuildIndexingStamp

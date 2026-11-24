@@ -29,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
@@ -77,7 +78,7 @@ func injectTickingSimFDB(t *testing.T, seed uint64, tick time.Duration) (string,
 	env.Buggify = dst.DisabledBuggifier()
 	env.Clock = &tickClock{now: dst.Epoch, tick: tick}
 	backend := &txCountingBackend{BackendDatabase: simfdb.New(env)}
-	simDB := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(env)
+	simDB := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(dstwire.Env(env))
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 	key := "sim://" + t.Name()
 	fdbDBCache.Store(key, simDB)

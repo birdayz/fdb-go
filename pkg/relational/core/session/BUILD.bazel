@@ -6,7 +6,6 @@ go_library(
     importpath = "fdb.dev/pkg/relational/core/session",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/dst",
         "//pkg/recordlayer",
         "//pkg/relational/api",
         "//pkg/relational/api/ddl",

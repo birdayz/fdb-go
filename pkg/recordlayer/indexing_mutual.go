@@ -18,7 +18,6 @@ import (
 
 	"fdb.dev/pkg/recordlayer/internal/tuplefast"
 
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
@@ -145,7 +144,7 @@ func (m *mutualIndexBuilder) setFragments(pkBoundaries [][]byte) {
 // A nil env keeps the raw math/rand draw: this site has always used math/rand, and routing the
 // production arm through the crypto-backed nil default would change production behaviour rather
 // than make it more deterministic.
-func mutualFragmentSeed(env *dst.Env) int64 {
+func mutualFragmentSeed(env *Env) int64 {
 	if env == nil {
 		return rand.Int63()
 	}

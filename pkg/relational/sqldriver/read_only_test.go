@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -41,7 +42,7 @@ func newROBackend(seed uint64) *recordlayer.FDBDatabase {
 	RegisterDomainIfNotExists("FRL")
 	env := dst.NewSim(seed)
 	env.Buggify = dst.DisabledBuggifier()
-	rdb := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+	rdb := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
 	rdb.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 	return rdb
 }

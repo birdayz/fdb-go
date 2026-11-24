@@ -170,7 +170,7 @@ func TestCompositeFanOutUnderAbsentParentWritesNoIndexEntry(t *testing.T) {
 	}
 	env := dst.NewSim(1035)
 	env.Buggify = dst.DisabledBuggifier()
-	db := NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+	db := NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(simEnv(env))
 	sub := subspace.FromBytes(tuple.Tuple{"absent_parent_fanout"}.Pack())
 
 	entries := func(t *testing.T, save ...proto.Message) []tuple.Tuple {
@@ -339,7 +339,7 @@ func newIndexStateHarness(t *testing.T, fd protoreflect.FileDescriptor, seed uin
 	env := dst.NewSim(seed)
 	env.Buggify = dst.DisabledBuggifier()
 	return &indexStateHarness{
-		db:      NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env),
+		db:      NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(simEnv(env)),
 		md:      md,
 		sub:     subspace.FromBytes(tuple.Tuple{name}.Pack()),
 		indexes: indexes,

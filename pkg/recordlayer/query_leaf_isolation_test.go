@@ -136,7 +136,7 @@ func TestQueryLeavesConsultIsolationLevel(t *testing.T) {
 				env := dst.NewSim(41)
 				env.Buggify = dst.DisabledBuggifier()
 				sim := simfdb.New(env)
-				db := NewFDBDatabaseWithBackend(sim).SetEnv(env)
+				db := NewFDBDatabaseWithBackend(sim).SetEnv(simEnv(env))
 				sub := subspace.FromBytes(tuple.Tuple{"oq2", leaf.name, level.name}.Pack())
 				md, fx := buildMetaData(t)
 

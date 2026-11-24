@@ -26,7 +26,6 @@ import (
 
 	"fdb.dev/gen"
 
-	"fdb.dev/pkg/dst"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 
@@ -460,7 +459,7 @@ func (c *EmbeddedConnection) storeIn(rctx *recordlayer.FDBRecordContext, tx *emb
 // scanStateIn returns the transaction-scoped ScanLimiterState, minting it on
 // first use through the seamed constructor so the sim clock governs the anchor
 // and every elapsed measurement.
-func (tx *embeddedTx) scanStateIn(env *dst.Env) *recordlayer.ScanLimiterState {
+func (tx *embeddedTx) scanStateIn(env *recordlayer.Env) *recordlayer.ScanLimiterState {
 	if tx.scanState == nil {
 		tx.scanState = recordlayer.NewScanLimiterStateIn(env)
 	}

@@ -9,7 +9,6 @@ package recordlayer
 import (
 	"time"
 
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 )
 
@@ -250,7 +249,7 @@ func DefaultExecuteProperties() ExecuteProperties {
 // It exists as a sibling rather than as a signature change because DefaultExecuteProperties has
 // ~900 call sites and only ONE of them arms a time limit under simulation — the SQL page loop.
 // Threading an env through the other 899 would be churn that obscures the one edit that matters.
-func DefaultExecutePropertiesIn(env *dst.Env) ExecuteProperties {
+func DefaultExecutePropertiesIn(env *Env) ExecuteProperties {
 	return ExecuteProperties{
 		IsolationLevel:             SerializableIsolation,
 		ReturnedRowLimit:           0, // No limit

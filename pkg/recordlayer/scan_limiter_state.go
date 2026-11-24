@@ -10,8 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"fdb.dev/pkg/dst"
 )
 
 // ScanLimiterState shares Java ExecuteState's scan/byte budgets and a transaction-anchored time limit.
@@ -34,7 +32,7 @@ type ScanLimiterState struct {
 	// nondeterministic, it is the difference between two unrelated epochs, so the time limit
 	// trips on the first record or never. A nil env is production (wall clock), which is what
 	// every caller that does not run under a simulation gets.
-	env *dst.Env
+	env *Env
 }
 
 // resolveScanLimiterState preserves the shared budget, or supplies a private
@@ -63,7 +61,7 @@ func NewScanLimiterState() *ScanLimiterState {
 // a per-transaction page budget so the FDB 5s wall is never crossed), so a wall-clock anchor
 // means a simulated run pages differently depending on how fast the machine happened to be —
 // nondeterminism in the exact layer RFC-199 exists to make reproducible.
-func NewScanLimiterStateIn(env *dst.Env) *ScanLimiterState {
+func NewScanLimiterStateIn(env *Env) *ScanLimiterState {
 	return &ScanLimiterState{startTime: env.Now(), env: env}
 }
 

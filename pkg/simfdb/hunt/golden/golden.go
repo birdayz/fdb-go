@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/recordlayer"
 	// registers the "fdbsql" driver and exposes RegisterBackend
@@ -89,7 +90,7 @@ func Capture(s Scenario) (string, error) {
 
 	env := dst.NewSim(s.Seed)
 	env.Buggify = dst.DisabledBuggifier() // golden is a correctness/behavior snapshot, not a fault run
-	simDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+	simDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 
 	key := fmt.Sprintf("sim://golden/%s/%d", s.Name, keyCounter.Add(1))

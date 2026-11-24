@@ -28,6 +28,7 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
@@ -209,7 +210,7 @@ func TestCurrentTimestampSeedRetriesExpiredTransaction(t *testing.T) {
 	env := dst.NewSim(256)
 	env.Buggify = dst.DisabledBuggifier()
 	sim := simfdb.New(env)
-	backend := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(env)
+	backend := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(dstwire.Env(env))
 	backend.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 	key := "sim://" + t.Name()
 	t.Cleanup(sqldriver.RegisterBackend(key, backend))

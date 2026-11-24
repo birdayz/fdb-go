@@ -97,6 +97,7 @@ go_test(
         "resources:memory:400",
     ],
     deps = [
+        "//internal/dstwire",
         "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/recordlayer",

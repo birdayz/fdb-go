@@ -18,6 +18,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -44,7 +45,7 @@ func openLimitsDB(t *testing.T, params string) (*sql.DB, *txOptionRecorder) {
 	env := dst.NewSim(221)
 	env.Buggify = dst.DisabledBuggifier()
 	rec := &txOptionRecorder{SimDB: simfdb.New(env)}
-	simDB := recordlayer.NewFDBDatabaseWithBackend(rec).SetEnv(env)
+	simDB := recordlayer.NewFDBDatabaseWithBackend(rec).SetEnv(dstwire.Env(env))
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 	key := "sim://" + t.Name()
 	fdbDBCache.Store(key, simDB)

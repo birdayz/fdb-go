@@ -8,6 +8,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -39,7 +40,7 @@ func buildOrderMetadata(t *testing.T) *recordlayer.RecordMetaData {
 func newSimDatabase(seed uint64) (*recordlayer.FDBDatabase, subspace.Subspace) {
 	env := dst.NewSim(seed)
 	env.Buggify = dst.DisabledBuggifier()
-	db := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+	db := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
 	return db, subspace.FromBytes(tuple.Tuple{"simfdb-itest"}.Pack())
 }
 

@@ -9,6 +9,7 @@ go_library(
     visibility = ["//cmd/dst-hunt:__pkg__"],
     deps = [
         "//gen/demopb",
+        "//internal/dstwire",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",

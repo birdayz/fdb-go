@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/sqldriver"
@@ -26,7 +27,7 @@ func threeTableHarness(t *testing.T, seed uint64) *sql.DB {
 	env := dst.NewSim(seed)
 	env.Buggify = dst.DisabledBuggifier()
 
-	simDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+	simDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 
 	key := fmt.Sprintf("sim://outerjoinbox/%d/%d", seed, qcKeyCounter.Add(1))

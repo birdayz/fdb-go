@@ -21,7 +21,7 @@ func TestLessenWorkRetryWaits(t *testing.T) {
 		t.Parallel()
 		newDB := func() *FDBDatabase {
 			env := dst.NewSim(41)
-			return NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+			return NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(simEnv(env))
 		}
 		db := newDB()
 		timer := NewStoreTimer()

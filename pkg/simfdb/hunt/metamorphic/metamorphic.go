@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/recordlayer"
 	// registers the "fdbsql" driver + exposes RegisterBackend
@@ -192,7 +193,7 @@ func setup(s Scenario) (*harness, error) {
 	ctx := context.Background()
 	env := dst.NewSim(s.Seed)
 	env.Buggify = dst.DisabledBuggifier()
-	simDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+	simDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 
 	key := fmt.Sprintf("sim://metamorphic/%s/%d", s.Name, keyCounter.Add(1))

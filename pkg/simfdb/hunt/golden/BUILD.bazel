@@ -8,6 +8,7 @@ go_library(
     importpath = "fdb.dev/pkg/simfdb/hunt/golden",
     visibility = ["//visibility:private"],
     deps = [
+        "//internal/dstwire",
         "//pkg/dst",
         "//pkg/recordlayer",
         "//pkg/relational/sqldriver",

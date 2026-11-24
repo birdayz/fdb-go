@@ -68,7 +68,6 @@ go_library(
     importpath = "fdb.dev/pkg/relational/sqltest/testkit",
     visibility = ["//pkg/relational:__subpackages__"],
     deps = [
-        "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",

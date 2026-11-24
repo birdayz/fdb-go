@@ -36,6 +36,7 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
@@ -60,7 +61,7 @@ func newSimBackend(t *testing.T, seed uint64) *simBackend {
 	env := dst.NewSim(seed)
 	env.Buggify = dst.DisabledBuggifier()
 	sim := simfdb.New(env)
-	fdbDB := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(env)
+	fdbDB := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(dstwire.Env(env))
 	fdbDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 	ks := keyspace.New(subspace.Sub())
 	cat, err := catalog.NewRecordLayerStoreCatalog(ks.CatalogSubspace())

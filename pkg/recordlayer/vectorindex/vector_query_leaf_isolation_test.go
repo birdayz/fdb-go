@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -160,7 +161,7 @@ func TestVectorQueryLeavesConsultIsolationLevel(t *testing.T) {
 				env := dst.NewSim(41)
 				env.Buggify = dst.DisabledBuggifier()
 				sim := simfdb.New(env)
-				db := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(env)
+				db := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(dstwire.Env(env))
 				sub := subspace.FromBytes(tuple.Tuple{"oq2-vector", leaf.name, level.name}.Pack())
 				md, fx := buildMetaData(t)
 

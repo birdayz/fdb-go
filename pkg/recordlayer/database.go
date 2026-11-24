@@ -19,7 +19,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/internal/fdbclient"
@@ -76,11 +75,11 @@ type FDBDatabase struct {
 	// Matches Java's FDBDatabase.storeStateCache field.
 	storeStateCache FDBRecordStoreStateCache
 
-	// env is the DST Tier-0 environment (Clock + Randomness + Buggify) inherited by every
-	// FDBRecordContext this database opens. Nil means production (wall clock, crypto/rand,
-	// buggify off) — the nil-safe *dst.Env accessors handle that. A simulation sets a
-	// seeded env via SetEnv so persisted timestamps/nonces are reproducible (RFC-199 Tier 0).
-	env *dst.Env
+	// env is the simulation environment (Clock + Random) inherited by every
+	// FDBRecordContext this database opens. Nil means production (wall clock, crypto/rand)
+	// — the nil-safe *Env accessors handle that. A simulation sets a seeded env via SetEnv
+	// so persisted timestamps/nonces are reproducible (RFC-199 Tier 0).
+	env *Env
 
 	// timer is the StoreTimer inherited by every FDBRecordContext this database opens,
 	// and therefore the aggregation point for record-layer instrumentation across all
@@ -134,18 +133,17 @@ func (d *FDBDatabase) Timer() *StoreTimer {
 	return d.timer.Load()
 }
 
-// SetEnv installs the DST environment inherited by every context this database opens. A
-// simulation driver calls this with dst.NewSim(seed) right after constructing the database
-// (typically over a SimFDB backend); production leaves it unset. Returns d for chaining.
-func (d *FDBDatabase) SetEnv(env *dst.Env) *FDBDatabase {
+// SetEnv installs the simulation environment inherited by every context this database opens.
+// Production leaves it unset (nil). Returns d for chaining.
+func (d *FDBDatabase) SetEnv(env *Env) *FDBDatabase {
 	d.env = env
 	return d
 }
 
-// Env returns the database's DST environment, or nil (which the *dst.Env accessors treat
+// Env returns the database's simulation environment, or nil (which the *Env accessors treat
 // as production). Nil-safe on the receiver, like FDBRecordContext.Env: an accessor whose whole
 // contract is "nil means production" must not be the one call in the chain that panics.
-func (d *FDBDatabase) Env() *dst.Env {
+func (d *FDBDatabase) Env() *Env {
 	if d == nil {
 		return nil
 	}
@@ -699,11 +697,11 @@ type FDBRecordContext struct {
 	// configure is reapplied to child transactions (Java's newRunner).
 	configure TransactionConfigurer
 
-	// env is the DST Tier-0 environment inherited from the FDBDatabase (Clock + Randomness +
-	// Buggify). Nil means production; read it through Env() which is nil-safe. Persisted-byte
+	// env is the simulation environment inherited from the FDBDatabase (Clock + Random).
+	// Nil means production; read it through Env() which is nil-safe. Persisted-byte
 	// sites (store header LastUpdateTime, lock-state timestamp, heartbeats, nonces) route
 	// their time/randomness through here so a simulation run is byte-reproducible.
-	env *dst.Env
+	env *Env
 
 	// Client-side transaction size thresholds. Zero = disabled.
 	txSizeWarnBytes  int64
@@ -762,12 +760,12 @@ type FDBRecordContext struct {
 	indexStateViews map[string]*transactionIndexStateView
 }
 
-// Env returns the DST environment for this context (Clock + Randomness + Buggify),
-// inherited from the FDBDatabase. Never nil in the sense that matters: the returned *dst.Env
-// may be nil, and the *dst.Env accessors (Now/Read/Fault) treat nil as production. Use this
+// Env returns the simulation environment for this context (Clock + Random),
+// inherited from the FDBDatabase. Never nil in the sense that matters: the returned *Env
+// may be nil, and the *Env accessors (Now/Since/Read) treat nil as production. Use this
 // at every persisted-byte site instead of time.Now / crypto.rand so a simulation run is
 // byte-reproducible.
-func (rc *FDBRecordContext) Env() *dst.Env {
+func (rc *FDBRecordContext) Env() *Env {
 	if rc == nil {
 		return nil
 	}
@@ -808,7 +806,7 @@ func (rc *FDBRecordContext) PutSession(key string, value any) {
 // which threads every piece of per-database state at once. Enumerating the fields at each
 // call site is what let env go unthreaded here in the first place, and a second such field
 // (the StoreTimer) would have repeated it exactly.
-func NewFDBRecordContext(tx fdb.WritableTransaction, env *dst.Env) *FDBRecordContext {
+func NewFDBRecordContext(tx fdb.WritableTransaction, env *Env) *FDBRecordContext {
 	return &FDBRecordContext{
 		createTime: env.Now(),
 		tx:         tx,

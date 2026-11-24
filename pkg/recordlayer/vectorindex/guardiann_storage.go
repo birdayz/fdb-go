@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"math"
 
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -43,7 +42,7 @@ type guardiannListener interface {
 type guardiann struct {
 	ss        subspace.Subspace
 	config    guardiannConfig
-	env       *dst.Env
+	env       *recordlayer.Env
 	listener  guardiannListener
 	centroids *hnswGraph
 	codec     *guardiannVectorCodec
@@ -94,7 +93,7 @@ func (g *guardiann) neighbourFetchRefusal(operation string, width int, widthOpti
 	return nil
 }
 
-func newGuardiann(ss subspace.Subspace, config guardiannConfig, env *dst.Env, listener guardiannListener) *guardiann {
+func newGuardiann(ss subspace.Subspace, config guardiannConfig, env *recordlayer.Env, listener guardiannListener) *guardiann {
 	hc := DefaultHNSWConfig(config.numDimensions)
 	hc.Metric = config.metric
 	hc.EfRepair = 64

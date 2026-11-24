@@ -591,7 +591,10 @@ func (m *multidimensionalIndexMaintainer) rtreeFor(prefix tuple.Tuple) (*rtree.R
 	if len(prefix) > 0 {
 		rtSubspace, nsiSubspace = m.indexSubspace.Sub(prefix...), m.nodeSlotIndexSubspace.Sub(prefix...)
 	}
-	storage := rtree.NewStorageAdapter(rtSubspace, m.rTreeConfig).WithNodeSlotIndex(nsiSubspace).WithEnv(m.store.Env())
+	storage := rtree.NewStorageAdapter(rtSubspace, m.rTreeConfig).WithNodeSlotIndex(nsiSubspace)
+	if env := m.store.Env(); env != nil {
+		storage = storage.WithRandom(env)
+	}
 	return rtree.NewRTree(storage, m.rTreeConfig)
 }
 

@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
@@ -57,7 +56,7 @@ var spfreshOwnerSeq atomic.Int64
 // (Re-drawing per run would in fact have been no less unique — spfreshOwnerSeq
 // already separates runs within a process. That is an argument for why the
 // change was harmless, not for why the claim was true.)
-func spfreshProcessNonce(env *dst.Env) string {
+func spfreshProcessNonce(env *recordlayer.Env) string {
 	if env == nil {
 		return spfreshProcessNonceGlobal
 	}
@@ -68,7 +67,7 @@ func spfreshProcessNonce(env *dst.Env) string {
 // it was before the seam.
 var spfreshProcessNonceGlobal = newSPFreshProcessNonce(nil)
 
-func newSPFreshProcessNonce(env *dst.Env) string {
+func newSPFreshProcessNonce(env *recordlayer.Env) string {
 	var b [8]byte
 	if _, err := env.Read(b[:]); err != nil {
 		// crypto/rand read cannot fail on supported platforms; if it ever

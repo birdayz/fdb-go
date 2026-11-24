@@ -167,7 +167,7 @@ func (i recordKeyObservedIterator) Get() (fdb.KeyValue, error) {
 	return i.RangeIterator.Get()
 }
 
-func recordKeyObservedOpen(ss subspace.Subspace, md *RecordMetaData, format int32, env *dst.Env) (*FDBRecordStore, *recordKeyObservedTransaction) {
+func recordKeyObservedOpen(ss subspace.Subspace, md *RecordMetaData, format int32, env *Env) (*FDBRecordStore, *recordKeyObservedTransaction) {
 	tx, err := sharedDB.CreateTransaction()
 	ExpectWithOffset(1, err).NotTo(HaveOccurred())
 	observed := &recordKeyObservedTransaction{WritableTransaction: tx}
@@ -557,7 +557,7 @@ var _ = Describe("Suffixed record-key simultaneous limits", func() {
 						{0x15, 1, 0x15, 1}, {0x15, 1, 0x15, 2}, {0x15, 2, 0x15, 1}, {0x15, 2, 0x15, 2},
 					})
 					clock := dst.NewSimClock(dst.Epoch)
-					env := &dst.Env{Clock: clock, Random: dst.NewSeededRandomness(152)}
+					env := &Env{Clock: clock, Random: dst.NewSeededRandomness(152)}
 					store, pulls := recordKeyObservedOpen(ss, md, 14, env)
 					props := NewScanProperties(DefaultExecutePropertiesIn(env)).WithReverse(reverse)
 					props.ExecuteProperties.ReturnedRowLimit = 1
@@ -670,7 +670,7 @@ var _ = Describe("Bare record-key physical limits", func() {
 				for _, rowLimit := range []int{0, 1} {
 					It(fmt.Sprintf("stops on %s before the row boundary, reverse=%t fail=%t rows=%d", budget, reverse, fail, rowLimit), func() {
 						clock := dst.NewSimClock(dst.Epoch)
-						env := &dst.Env{Clock: clock, Random: dst.NewSeededRandomness(151)}
+						env := &Env{Clock: clock, Random: dst.NewSeededRandomness(151)}
 						store, pulls := recordKeyObservedOpen(ss, md, 4, env)
 						clock.Advance(time.Second)
 						props := NewScanProperties(DefaultExecutePropertiesIn(env)).WithReverse(reverse)
@@ -1147,7 +1147,7 @@ var _ = Describe("Record-key public factory limit and corruption contracts", fun
 			recordKeySeedRaw(ss, md, [][]byte{{0x15, 1, 0x14}, {0x15, 2, 0x14}, {0x15, 3, 0x14}})
 			for _, reverse := range []bool{false, true} {
 				clock := dst.NewSimClock(dst.Epoch)
-				env := &dst.Env{Clock: clock, Random: dst.NewSeededRandomness(151)}
+				env := &Env{Clock: clock, Random: dst.NewSeededRandomness(151)}
 				store, pulls := recordKeyObservedOpen(ss, md, 14, env)
 				clock.Advance(time.Second)
 				props := NewScanProperties(DefaultExecutePropertiesIn(env).WithTimeLimit(100 * time.Millisecond)).WithReverse(reverse)

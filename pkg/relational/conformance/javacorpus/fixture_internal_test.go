@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"testing"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
@@ -173,7 +174,7 @@ func TestPrivateFixtureLoadCommitFaults(t *testing.T) {
 			env := dst.NewSim(745)
 			env.Buggify = dst.DisabledBuggifier()
 			sim := simfdb.New(env)
-			backend := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(env)
+			backend := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(dstwire.Env(env))
 			key := "fixture/" + t.Name()
 			t.Cleanup(sqldriver.RegisterBackend(key, backend))
 			file := fixtureFile(t)
@@ -244,7 +245,7 @@ func TestPrivateFixtureRunParsedAndNamespaceOwnership(t *testing.T) {
 			env.Buggify = dst.DisabledBuggifier()
 			sim := simfdb.New(env)
 			key := "fixture/" + t.Name()
-			t.Cleanup(sqldriver.RegisterBackend(key, recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(env)))
+			t.Cleanup(sqldriver.RegisterBackend(key, recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(dstwire.Env(env))))
 			file := fixtureFile(t)
 			cfg := Config{ClusterFile: key, IDPrefix: "PIN", FactoryResetLoad: factoryMode}
 			res := RunParsed(context.Background(), file, cfg)

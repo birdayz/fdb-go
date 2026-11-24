@@ -41,8 +41,8 @@ func TestIndexerID_SeamedBothDirections(t *testing.T) {
 	}
 
 	// Simulation: reproducible from the seed across independently built envs.
-	s1 := newIndexerID(dst.NewSim(11))
-	s2 := newIndexerID(dst.NewSim(11))
+	s1 := newIndexerID(simEnv(dst.NewSim(11)))
+	s2 := newIndexerID(simEnv(dst.NewSim(11)))
 	if s1 != s2 {
 		t.Fatalf("sim indexer ID not reproducible at the same seed: %v vs %v", s1, s2)
 	}
@@ -51,7 +51,7 @@ func TestIndexerID_SeamedBothDirections(t *testing.T) {
 	}
 	// A different seed must give a different ID, or "reproducible" would be
 	// satisfied by a constant.
-	if other := newIndexerID(dst.NewSim(12)); other == s1 {
+	if other := newIndexerID(simEnv(dst.NewSim(12))); other == s1 {
 		t.Fatal("sim indexer ID is seed-independent — a constant would pass the reproducibility check")
 	}
 }

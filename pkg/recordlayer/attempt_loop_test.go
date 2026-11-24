@@ -25,7 +25,7 @@ func TestAttemptLoop_BoundAndPredicate(t *testing.T) {
 	env := dst.NewSim(1)
 	conflict := fmt.Errorf("body: %w", fdb.Error{Code: 1020})
 	runs := 0
-	_, err := attemptLoop(context.Background(), env, nil, testPolicy(10), RouteAttempt, func(AttemptCall) (any, error) {
+	_, err := attemptLoop(context.Background(), simEnv(env), nil, testPolicy(10), RouteAttempt, func(AttemptCall) (any, error) {
 		runs++
 		return nil, conflict
 	})
@@ -35,7 +35,7 @@ func TestAttemptLoop_BoundAndPredicate(t *testing.T) {
 
 	runs = 0
 	terminal := fdb.Error{Code: 2000}
-	_, err = attemptLoop(context.Background(), env, nil, testPolicy(10), RouteAttempt, func(AttemptCall) (any, error) {
+	_, err = attemptLoop(context.Background(), simEnv(env), nil, testPolicy(10), RouteAttempt, func(AttemptCall) (any, error) {
 		runs++
 		return nil, terminal
 	})
@@ -48,7 +48,7 @@ func TestAttemptLoop_BoundAndPredicate(t *testing.T) {
 // execution, Attempt only counted ones, and CallID is fixed within a call.
 func TestAttemptLoop_CallNumbering(t *testing.T) {
 	t.Parallel()
-	env := dst.NewSim(2)
+	env := simEnv(dst.NewSim(2))
 	window := &SPFreshSplitWindowError{Sealed: []SPFreshSealedPosting{{PostingID: 1}}}
 	errs := []error{window, fdb.Error{Code: 1020}, window, nil}
 	var calls []AttemptCall
@@ -72,7 +72,7 @@ func TestAttemptLoop_CallNumbering(t *testing.T) {
 // split windows (each with a different seal, so the stall bound never trips).
 func TestAttemptLoop_SplitWindowIsUncounted(t *testing.T) {
 	t.Parallel()
-	env := dst.NewSim(3)
+	env := simEnv(dst.NewSim(3))
 	runs := 0
 	_, err := attemptLoop(context.Background(), env, nil, testPolicy(2), RouteAttempt, func(AttemptCall) (any, error) {
 		runs++
@@ -91,7 +91,7 @@ func TestAttemptLoop_SplitWindowIsUncounted(t *testing.T) {
 // SPFreshStalledSealError, which is not retried.
 func TestAttemptLoop_StalledSealUnderSimulation(t *testing.T) {
 	t.Parallel()
-	env := dst.NewSim(4)
+	env := simEnv(dst.NewSim(4))
 	sealed := []SPFreshSealedPosting{{CellID: 1, PostingID: 2, Epoch: 3}}
 	runs := 0
 	_, err := attemptLoop(context.Background(), env, nil, testPolicy(10), RouteAttempt, func(AttemptCall) (any, error) {
@@ -168,7 +168,7 @@ func strippingDB(t *testing.T, seed uint64, rerun bool) *FDBDatabase {
 	env := dst.NewSim(seed)
 	env.Buggify = dst.DisabledBuggifier()
 	backend := simfdb.New(env)
-	return NewFDBDatabaseWithTransactor(&strippingTransactor{inner: backend, rerun: rerun}, fdb.Database{}).SetEnv(env)
+	return NewFDBDatabaseWithTransactor(&strippingTransactor{inner: backend, rerun: rerun}, fdb.Database{}).SetEnv(simEnv(env))
 }
 
 // TestRun_BodyErrorChainSurvivesAStrippingTransactor pins the body-error
@@ -252,7 +252,7 @@ func TestOnlineIndexer_MaxAttemptsBoundsItsTransactions(t *testing.T) {
 	t.Parallel()
 	env := dst.NewSim(7)
 	env.Buggify = dst.DisabledBuggifier()
-	db := NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+	db := NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(simEnv(env))
 	for _, tc := range []struct{ set, want int }{{3, 3}, {0, DefaultMaxAttempts}} {
 		b := &OnlineIndexerBuilder{}
 		b.SetDatabase(db).SetMaxAttempts(tc.set)
@@ -275,7 +275,7 @@ func TestAttemptLoop_RecordsRetryDelay(t *testing.T) {
 	timer := NewStoreTimer()
 	policy := testPolicy(4)
 	policy.timer = timer
-	_, _ = attemptLoop(context.Background(), dst.NewSim(8), nil, policy, RouteAttempt, func(AttemptCall) (any, error) {
+	_, _ = attemptLoop(context.Background(), simEnv(dst.NewSim(8)), nil, policy, RouteAttempt, func(AttemptCall) (any, error) {
 		return nil, fdb.Error{Code: 1020}
 	})
 	if got := timer.GetCount(EventRetryDelay); got != 3 {

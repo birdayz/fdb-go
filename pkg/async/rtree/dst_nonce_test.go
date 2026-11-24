@@ -16,10 +16,10 @@ import (
 func TestRTreeNodeID_SeamedBothDirections(t *testing.T) {
 	t.Parallel()
 
-	// The constructor must leave env nil: production is the default, and the
-	// maintainer opts in by assigning store.Env().
-	if NewStorageAdapter(subspace.Sub("t"), RTreeConfig{}).env != nil {
-		t.Fatal("NewStorageAdapter installed a non-nil env — production must be the default")
+	// The constructor must leave random nil: production is the default, and the
+	// maintainer opts in via WithRandom(store.Env()).
+	if NewStorageAdapter(subspace.Sub("t"), RTreeConfig{}).random != nil {
+		t.Fatal("NewStorageAdapter installed a non-nil random — production must be the default")
 	}
 
 	prod := NewStorageAdapter(subspace.Sub("t"), RTreeConfig{})
@@ -44,9 +44,9 @@ func TestRTreeNodeID_SeamedBothDirections(t *testing.T) {
 	// Simulation: two independently built sims at one seed mint the same node ID
 	// sequence, which is what makes a vector-index run replayable.
 	simA := NewStorageAdapter(subspace.Sub("t"), RTreeConfig{})
-	simA.env = dst.NewSim(5)
+	simA.WithRandom(dst.NewSim(5))
 	simB := NewStorageAdapter(subspace.Sub("t"), RTreeConfig{})
-	simB.env = dst.NewSim(5)
+	simB.WithRandom(dst.NewSim(5))
 	for i := 0; i < 4; i++ {
 		gotA, errA := simA.newRandomNodeID()
 		gotB, errB := simB.newRandomNodeID()
@@ -59,10 +59,10 @@ func TestRTreeNodeID_SeamedBothDirections(t *testing.T) {
 	}
 	// Different seed → different sequence.
 	simC := NewStorageAdapter(subspace.Sub("t"), RTreeConfig{})
-	simC.env = dst.NewSim(6)
+	simC.WithRandom(dst.NewSim(6))
 	first, _ := simC.newRandomNodeID()
 	simD := NewStorageAdapter(subspace.Sub("t"), RTreeConfig{})
-	simD.env = dst.NewSim(5)
+	simD.WithRandom(dst.NewSim(5))
 	other, _ := simD.newRandomNodeID()
 	if bytes.Equal(first, other) {
 		t.Fatal("sim node IDs are seed-independent — a constant would pass the reproducibility check")

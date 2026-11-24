@@ -1067,7 +1067,7 @@ var _ = Describe("CollectStatistics", func() {
 
 		counter := &countingTransactor{inner: sharedDB.transactor}
 		steppingDB := NewFDBDatabaseWithTransactor(counter, sharedDB.db).
-			SetEnv(&dst.Env{Clock: &steppingClock{now: dst.Epoch, step: time.Second}})
+			SetEnv(&Env{Clock: &steppingClock{now: dst.Epoch, step: time.Second}})
 
 		report, err := CollectStatistics(ctx, steppingDB,
 			func(rtx *FDBRecordContext) (*FDBRecordStore, error) {

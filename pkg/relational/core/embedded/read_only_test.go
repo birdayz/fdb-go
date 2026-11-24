@@ -9,6 +9,7 @@ import (
 	"slices"
 	"testing"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
@@ -144,7 +145,7 @@ func TestReadOnly_SchemaSubspaceInternsNothing(t *testing.T) {
 	}
 
 	// What persisted, through a database and keyspace with no cached names.
-	fresh := recordlayer.NewFDBDatabaseWithBackend(g.gate).SetEnv(g.env)
+	fresh := recordlayer.NewFDBDatabaseWithBackend(g.gate).SetEnv(dstwire.Env(g.env))
 	ks := keyspace.New(subspace.Sub())
 	runs := 0
 	counted := countingRunner{r: ReadOnlyRunner(fresh), runs: &runs}

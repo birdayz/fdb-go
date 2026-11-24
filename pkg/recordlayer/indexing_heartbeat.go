@@ -14,7 +14,6 @@ import (
 	"fdb.dev/pkg/recordlayer/internal/tuplefast"
 
 	"fdb.dev/gen"
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -43,11 +42,11 @@ type IndexingHeartbeat struct {
 	leaseLengthMs int64  // heartbeat lease duration in ms
 	allowMutual   bool   // true for mutual/concurrent mode
 
-	// env is the RFC-199 Tier-0 environment (Clock + Randomness) inherited from the
-	// indexer's database. Nil means production; read it through the nil-safe *dst.Env
+	// env is the simulation environment (Clock + Random) inherited from the
+	// indexer's database. Nil means production; read it through the nil-safe *Env
 	// accessors. The indexer UUID, the createTime, and every persisted per-heartbeat
 	// timestamp draw from here so a simulation run is byte-reproducible.
-	env *dst.Env
+	env *Env
 }
 
 // NewIndexingHeartbeat creates a heartbeat manager for an indexer.
@@ -55,14 +54,14 @@ type IndexingHeartbeat struct {
 // env is the DST environment (from the indexer's database, oi.db.Env()); a nil env means
 // production — the UUID and timestamps then come from crypto/rand and the wall clock,
 // byte-identical to the pre-seam behavior.
-func NewIndexingHeartbeat(info string, leaseLengthMs int64, allowMutual bool, env *dst.Env) *IndexingHeartbeat {
+func NewIndexingHeartbeat(info string, leaseLengthMs int64, allowMutual bool, env *Env) *IndexingHeartbeat {
 	return newIndexingHeartbeatWithID(newIndexerID(env), info, leaseLengthMs, allowMutual, env)
 }
 
 // newIndexingHeartbeatWithID is Java's IndexingHeartbeat constructor, which takes
 // the indexer's ID (IndexingHeartbeat.java:66): an OnlineIndexer passes its one
 // identity rather than minting one per heartbeat.
-func newIndexingHeartbeatWithID(indexerID uuid.UUID, info string, leaseLengthMs int64, allowMutual bool, env *dst.Env) *IndexingHeartbeat {
+func newIndexingHeartbeatWithID(indexerID uuid.UUID, info string, leaseLengthMs int64, allowMutual bool, env *Env) *IndexingHeartbeat {
 	return &IndexingHeartbeat{
 		indexerID:     indexerID,
 		info:          info,
@@ -78,7 +77,7 @@ func newIndexingHeartbeatWithID(indexerID uuid.UUID, info string, leaseLengthMs 
 // does — uuid.NewRandomFromReader over crypto/rand, with the same v4 version/variant bits —
 // so production output is byte-identical. The err path (crypto/rand cannot fail on supported
 // platforms) falls back to uuid.New() so the ID is never the nil UUID.
-func newIndexerID(env *dst.Env) uuid.UUID {
+func newIndexerID(env *Env) uuid.UUID {
 	if id, err := uuid.NewRandomFromReader(env); err == nil {
 		return id
 	}

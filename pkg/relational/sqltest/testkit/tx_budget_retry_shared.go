@@ -42,7 +42,6 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
@@ -202,7 +201,7 @@ func SpikedClusterKey(t *testing.T, lateBy time.Duration) (string, *lateClock) {
 		t.Fatalf("open db: %v", err)
 	}
 	clk := NewLateClock(lateBy)
-	rlDB := recordlayer.NewFDBDatabase(rawDB).SetEnv(&dst.Env{Clock: clk})
+	rlDB := recordlayer.NewFDBDatabase(rawDB).SetEnv(&recordlayer.Env{Clock: clk})
 	key := "spikeclock://" + t.Name()
 	t.Cleanup(sqldriver.RegisterBackend(key, rlDB))
 	return key, clk

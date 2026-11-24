@@ -64,7 +64,7 @@ func newShardMapDB(seed uint64) (*FDBDatabase, *shardMapBackend) {
 	env := dst.NewSim(seed)
 	env.Buggify = dst.DisabledBuggifier()
 	backend := &shardMapBackend{BackendDatabase: simfdb.New(env)}
-	return NewFDBDatabaseWithBackend(backend).SetEnv(env), backend
+	return NewFDBDatabaseWithBackend(backend).SetEnv(simEnv(env)), backend
 }
 
 // seedOrders saves orders with the given ids; an order in large holds a record split

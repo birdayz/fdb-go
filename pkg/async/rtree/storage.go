@@ -9,14 +9,15 @@
 package rtree
 
 import (
+	crand "crypto/rand"
 	"fmt"
+	"io"
 	"maps"
 	"math"
 	"math/big"
 	"slices"
 	"sort"
 
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -59,11 +60,10 @@ type StorageAdapter struct {
 	// checkWritten refuses a non-root one Java's read-back would refuse.
 	written map[string]int
 
-	// env is the DST Tier-0 environment routing node-ID entropy. Nil means
-	// production (crypto/rand); the maintainer sets it from the record
-	// context so a simulation run mints reproducible node IDs. The *dst.Env
-	// accessors are nil-safe, so leaving it unset keeps production byte-identical.
-	env *dst.Env
+	// random routes node-ID entropy. Nil means production (crypto/rand);
+	// the maintainer sets it from the record context so a simulation run
+	// mints reproducible node IDs.
+	random io.Reader
 }
 
 func NewStorageAdapter(ss subspace.Subspace, config RTreeConfig) *StorageAdapter {
@@ -77,9 +77,9 @@ func (s *StorageAdapter) WithNodeSlotIndex(sub subspace.Subspace) *StorageAdapte
 	return s
 }
 
-// WithEnv routes node-ID entropy through env (nil keeps production).
-func (s *StorageAdapter) WithEnv(env *dst.Env) *StorageAdapter {
-	s.env = env
+// WithRandom routes node-ID entropy through r (nil keeps production crypto/rand).
+func (s *StorageAdapter) WithRandom(r io.Reader) *StorageAdapter {
+	s.random = r
 	return s
 }
 
@@ -94,7 +94,11 @@ type nodeSlotIndexTouch struct {
 // seeded source in simulation). Matches Java's NodeHelpers.newRandomNodeId().
 func (s *StorageAdapter) newRandomNodeID() ([]byte, error) {
 	id := make([]byte, 16)
-	if _, err := s.env.Read(id); err != nil {
+	r := s.random
+	if r == nil {
+		r = crand.Reader
+	}
+	if _, err := io.ReadFull(r, id); err != nil {
 		return nil, fmt.Errorf("rtree: generate node ID: %w", err)
 	}
 	return id, nil

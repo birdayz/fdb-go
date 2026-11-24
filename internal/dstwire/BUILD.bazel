@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+package(default_visibility = ["//:__subpackages__"])
+
+go_library(
+    name = "dstwire",
+    srcs = ["dstwire.go"],
+    importpath = "fdb.dev/internal/dstwire",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//pkg/dst",
+        "//pkg/recordlayer",
+    ],
+)
+
+go_test(
+    name = "dstwire_test",
+    srcs = ["dstwire_test.go"],
+    embed = [":dstwire"],
+    deps = ["//pkg/dst"],
+)
