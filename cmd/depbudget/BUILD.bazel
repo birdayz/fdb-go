@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+exports_files(["budget.json"])
+
+go_library(
+    name = "depbudget_lib",
+    srcs = ["main.go"],
+    importpath = "fdb.dev/cmd/depbudget",
+    visibility = ["//visibility:private"],
+)
+
+go_binary(
+    name = "depbudget",
+    data = ["budget.json"],
+    embed = [":depbudget_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "depbudget_test",
+    srcs = ["depbudget_test.go"],
+    data = ["budget.json"],
+    embed = [":depbudget_lib"],
+)

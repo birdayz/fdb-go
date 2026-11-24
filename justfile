@@ -685,3 +685,8 @@ vanity-modules:
 # Example: `just fdb version` or `just fdb rl store info`.
 fdb *args:
     bazelisk run //cmd/fdb -- {{args}}
+
+# Measure consumer dependency counts and binary sizes across public entrypoints.
+# Example: `just depbudget` or `just depbudget -mode=check -budget=cmd/depbudget/budget.json`.
+depbudget *args:
+    bazelisk run //cmd/depbudget -- {{args}}
