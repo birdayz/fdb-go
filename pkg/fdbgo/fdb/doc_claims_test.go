@@ -1,7 +1,9 @@
-package fdbgo
+package fdb
 
 import (
 	_ "embed"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -20,15 +22,37 @@ import (
 //go:embed doc.go
 var packageDoc string
 
-//go:embed README.md
-var readme string
+func repoRootForDocs(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "MODULE.bazel")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("MODULE.bazel not found walking up from working directory; under Bazel //:MODULE.bazel must be a data dep")
+		}
+		dir = parent
+	}
+}
 
 func TestDocsStateTheUnboundedContract(t *testing.T) {
 	t.Parallel()
 
+	readmePath := filepath.Join(repoRootForDocs(t), "pkg/fdbgo/README.md")
+	readmeBytes, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("reading %s: %v.\nUnder Bazel this file must be a `data` dep of "+
+			"this target — a test that cannot find its input must FAIL, not skip.", readmePath, err)
+	}
+
 	docs := map[string]string{
-		"pkg/fdbgo/doc.go":    packageDoc,
-		"pkg/fdbgo/README.md": readme,
+		"pkg/fdbgo/fdb/doc.go": packageDoc,
+		"pkg/fdbgo/README.md":  string(readmeBytes),
 	}
 
 	// Each doc must carry the C++ citation that makes the claim checkable, name the

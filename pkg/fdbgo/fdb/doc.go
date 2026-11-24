@@ -1,10 +1,3 @@
-// Package fdbgo is the root of the pure-Go FoundationDB client. It contains no
-// code; the importable packages are the subdirectories — [fdb.dev/pkg/fdbgo/fdb]
-// (the API modeled on Apple's Go binding, which most callers want), fdbgo/client (the
-// lower-level client), fdbgo/transport, fdbgo/wire and fdbgo/tuple.
-//
-// This doc exists to put one operational fact where a migrator will find it.
-//
 // # Retries and timeouts are UNBOUNDED by default — in this client and in libfdb_c
 //
 // A transaction created with no options has no timeout and no retry limit. A
@@ -34,7 +27,7 @@
 // Bootstrap — the initial coordinator connection — is internally bounded here at
 // defaultBootstrapTimeout (60s, fdb/database.go:139-153) whenever the caller
 // supplies no deadline of its own. libfdb_c has no equivalent bound: a C-client
-// open against an unreachable cluster waits indefinitely. So [fdb.OpenDatabase]
+// open against an unreachable cluster waits indefinitely. So [OpenDatabase]
 // fails fast where libfdb_c would not. Only the LIVE database (post-open
 // reconnection, and the transaction retry loop) is unbounded.
 //
@@ -51,8 +44,8 @@
 //   - A retry limit — Transaction.SetRetryLimit or
 //     DatabaseOptions.SetTransactionRetryLimit. Caps retries; the most recent
 //     error escapes once the cap is hit.
-//   - A context deadline — [fdb.Database.TransactCtx] or
-//     [fdb.Database.ReadTransactCtx].
+//   - A context deadline — [Database.TransactCtx] or
+//     [Database.ReadTransactCtx].
 //
 // The context form is Go's EXTRA bound (RFC-090), not a substitute for a
 // libfdb_c mechanism that does not exist. A migrator porting from libfdb_c who
@@ -61,5 +54,5 @@
 // unbounded here.
 //
 // Ordinary databases use context.Background(): bound retries with a timeout, retry limit or TransactCtx/ReadTransactCtx.
-// [fdb.WrapDatabaseContext] instead supplies the inherited context for retries, CreateTransaction reads and snapshots.
-package fdbgo
+// [WrapDatabaseContext] instead supplies the inherited context for retries, CreateTransaction reads and snapshots.
+package fdb

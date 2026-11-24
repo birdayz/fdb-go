@@ -7,7 +7,6 @@ package ddl
 
 import (
 	"fdb.dev/pkg/relational/api"
-	apiddl "fdb.dev/pkg/relational/api/ddl"
 	"fdb.dev/pkg/relational/core/keyspace"
 )
 
@@ -36,38 +35,38 @@ func NewRecordLayerMetadataOperationsFactoryWithKeyspace(
 	return &RecordLayerMetadataOperationsFactory{catalog: cat, ks: ks}
 }
 
-var _ apiddl.MetadataOperationsFactory = (*RecordLayerMetadataOperationsFactory)(nil)
+var _ api.MetadataOperationsFactory = (*RecordLayerMetadataOperationsFactory)(nil)
 
-func (f *RecordLayerMetadataOperationsFactory) SaveSchemaTemplate(template api.SchemaTemplate, _ api.Options) apiddl.ConstantAction {
+func (f *RecordLayerMetadataOperationsFactory) SaveSchemaTemplate(template api.SchemaTemplate, _ api.Options) api.ConstantAction {
 	return NewSaveSchemaTemplateConstantAction(template, f.catalog.SchemaTemplateCatalog())
 }
 
-func (f *RecordLayerMetadataOperationsFactory) DropSchemaTemplate(templateID string, throwIfDoesNotExist bool, _ api.Options) apiddl.ConstantAction {
+func (f *RecordLayerMetadataOperationsFactory) DropSchemaTemplate(templateID string, throwIfDoesNotExist bool, _ api.Options) api.ConstantAction {
 	return NewDropSchemaTemplateConstantAction(templateID, throwIfDoesNotExist, f.catalog.SchemaTemplateCatalog())
 }
 
-func (f *RecordLayerMetadataOperationsFactory) CreateDatabase(dbPath string, _ api.Options) apiddl.ConstantAction {
+func (f *RecordLayerMetadataOperationsFactory) CreateDatabase(dbPath string, _ api.Options) api.ConstantAction {
 	if f.ks != nil {
 		return NewCreateDatabaseConstantActionWithKeyspace(dbPath, f.catalog, f.ks)
 	}
 	return NewCreateDatabaseConstantAction(dbPath, f.catalog)
 }
 
-func (f *RecordLayerMetadataOperationsFactory) CreateSchema(dbPath, schemaName, templateID string, _ api.Options) apiddl.ConstantAction {
+func (f *RecordLayerMetadataOperationsFactory) CreateSchema(dbPath, schemaName, templateID string, _ api.Options) api.ConstantAction {
 	return NewCreateSchemaConstantAction(dbPath, schemaName, templateID, f.catalog, f.ks)
 }
 
-func (f *RecordLayerMetadataOperationsFactory) DropDatabase(dbPath string, throwIfDoesNotExist bool, options api.Options) apiddl.ConstantAction {
+func (f *RecordLayerMetadataOperationsFactory) DropDatabase(dbPath string, throwIfDoesNotExist bool, options api.Options) api.ConstantAction {
 	return NewDropDatabaseConstantAction(dbPath, throwIfDoesNotExist, f.catalog, f, options)
 }
 
 // SetStoreState forces a schema store's index states, Java's
 // getSetStoreStateConstantAction (with the config Java's factory carries passed
 // here instead).
-func (f *RecordLayerMetadataOperationsFactory) SetStoreState(dbPath, schemaName string, config RecordLayerConfig) apiddl.ConstantAction {
+func (f *RecordLayerMetadataOperationsFactory) SetStoreState(dbPath, schemaName string, config RecordLayerConfig) api.ConstantAction {
 	return NewSetStoreStateConstantAction(dbPath, schemaName, config, f.catalog, f.ks)
 }
 
-func (f *RecordLayerMetadataOperationsFactory) DropSchema(dbPath, schemaName string, _ api.Options) apiddl.ConstantAction {
+func (f *RecordLayerMetadataOperationsFactory) DropSchema(dbPath, schemaName string, _ api.Options) api.ConstantAction {
 	return NewDropSchemaConstantAction(dbPath, schemaName, f.catalog, f.ks)
 }

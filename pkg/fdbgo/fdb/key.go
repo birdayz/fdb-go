@@ -39,7 +39,7 @@
 // waits — RFC-112), SetRetryLimit, or a deadline ctx via TransactCtx (Go's extra
 // bound, RFC-090). Bootstrap is the one place this client is STRICTER than
 // libfdb_c: OpenDatabase bounds the initial coordinator connection at 60s where
-// libfdb_c waits forever. See the package doc at fdb.dev/pkg/fdbgo.
+// libfdb_c waits forever. See the package doc at fdb.dev/pkg/fdbgo/fdb.
 package fdb
 
 import (

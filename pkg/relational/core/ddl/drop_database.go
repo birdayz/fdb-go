@@ -7,7 +7,6 @@ package ddl
 
 import (
 	"fdb.dev/pkg/relational/api"
-	apiddl "fdb.dev/pkg/relational/api/ddl"
 )
 
 // DropDatabaseConstantAction removes a database and all its schemas.
@@ -16,7 +15,7 @@ type DropDatabaseConstantAction struct {
 	dbPath              string
 	throwIfDoesNotExist bool
 	catalog             api.StoreCatalog
-	opsFactory          apiddl.MetadataOperationsFactory
+	opsFactory          api.MetadataOperationsFactory
 	options             api.Options
 }
 
@@ -24,7 +23,7 @@ func NewDropDatabaseConstantAction(
 	dbPath string,
 	throwIfDoesNotExist bool,
 	catalog api.StoreCatalog,
-	opsFactory apiddl.MetadataOperationsFactory,
+	opsFactory api.MetadataOperationsFactory,
 	options api.Options,
 ) *DropDatabaseConstantAction {
 	return &DropDatabaseConstantAction{

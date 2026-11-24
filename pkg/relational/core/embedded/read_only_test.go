@@ -13,7 +13,6 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
-	apiddl "fdb.dev/pkg/relational/api/ddl"
 	"fdb.dev/pkg/relational/core/keyspace"
 	"fdb.dev/pkg/relational/core/rowstruct"
 )
@@ -76,7 +75,7 @@ func TestReadOnly_WritingGoAPIsRefuse(t *testing.T) {
 		}},
 		{"ClearStatistics", "clearing statistics", func() error { return c.ClearStatistics(ctx) }},
 		{"ApplyMetadataOperation", "a metadata operation", func() error {
-			return c.ApplyMetadataOperation(ctx, func(apiddl.MetadataOperationsFactory, api.Transaction) error {
+			return c.ApplyMetadataOperation(ctx, func(api.MetadataOperationsFactory, api.Transaction) error {
 				opRan = true
 				return nil
 			})

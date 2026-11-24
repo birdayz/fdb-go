@@ -81,7 +81,7 @@ way. If you set nothing there, you were already unbounded there, and you are equ
 
 Pinned by `client/unbounded_default_pin_test.go` (default is unbounded; each of the three bounds terminates)
 and `fdb/unbounded_default_pin_test.go` + `fdb/database_bootstrap_test.go` (no internal deadline on the bare
-`Transact` path; the 60s bootstrap cap). Full detail: `go doc fdb.dev/pkg/fdbgo`.
+`Transact` path; the 60s bootstrap cap). Full detail: `go doc fdb.dev/pkg/fdbgo/fdb`.
 
 ## Architecture
 

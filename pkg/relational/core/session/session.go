@@ -33,7 +33,6 @@ import (
 
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
-	apiddl "fdb.dev/pkg/relational/api/ddl"
 	"fdb.dev/pkg/relational/core/catalog"
 	"fdb.dev/pkg/relational/core/keyspace"
 )
@@ -63,7 +62,7 @@ type Session struct {
 	// Factory builds metadata operations (DDL). Injected at session
 	// construction so the embedded engine and a future remote engine
 	// can plug in different factories.
-	Factory apiddl.MetadataOperationsFactory
+	Factory api.MetadataOperationsFactory
 
 	// DBPath is the current database URI (e.g. "/FRL/mydb"). Set at
 	// Conn/Session construction and updated by USE DATABASE (not yet
@@ -171,7 +170,7 @@ func New(
 	db *recordlayer.FDBDatabase,
 	cat *catalog.RecordLayerStoreCatalog,
 	ks *keyspace.RelationalKeyspace,
-	factory apiddl.MetadataOperationsFactory,
+	factory api.MetadataOperationsFactory,
 ) *Session {
 	return &Session{
 		DB:          db,

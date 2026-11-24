@@ -18,7 +18,6 @@ go_library(
     deps = [
         "//pkg/recordlayer",
         "//pkg/relational/api",
-        "//pkg/relational/api/ddl",
         "//pkg/relational/core/keyspace",
         "//pkg/relational/core/metadata",
     ],

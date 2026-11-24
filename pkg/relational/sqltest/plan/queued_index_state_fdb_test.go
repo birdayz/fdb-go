@@ -14,7 +14,6 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/vectorcodec"
 	"fdb.dev/pkg/relational/api"
-	apiddl "fdb.dev/pkg/relational/api/ddl"
 	rlddl "fdb.dev/pkg/relational/core/ddl"
 	"fdb.dev/pkg/relational/core/embedded"
 	relkeyspace "fdb.dev/pkg/relational/core/keyspace"
@@ -83,7 +82,7 @@ func TestFDB_QueuedVectorIndexIsWriteOnlyToSQL(t *testing.T) {
 			if !ok {
 				return fmt.Errorf("need an embedded connection, got %T", dc)
 			}
-			return ec.ApplyMetadataOperation(ctx, func(f apiddl.MetadataOperationsFactory, txn api.Transaction) error {
+			return ec.ApplyMetadataOperation(ctx, func(f api.MetadataOperationsFactory, txn api.Transaction) error {
 				return f.(*rlddl.RecordLayerMetadataOperationsFactory).SetStoreState(strings.ToUpper(dbPath), strings.ToUpper(schemaName),
 					rlddl.RecordLayerConfig{IndexStates: map[string]recordlayer.IndexState{"DOCSIDX": recordlayer.IndexStateWriteOnlyWithQueue}, FormatVersion: format}).Execute(txn)
 			})

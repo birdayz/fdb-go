@@ -24,7 +24,6 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
-	apiddl "fdb.dev/pkg/relational/api/ddl"
 	"fdb.dev/pkg/relational/core/catalog"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/core/fleet"
@@ -346,7 +345,7 @@ func TestDSN_CatalogStoreFDBErrorsAreTranslated(t *testing.T) {
 			defer c.Close()
 			err = c.Raw(func(dc any) error {
 				return dc.(*embedded.EmbeddedConnection).ApplyMetadataOperation(ctx,
-					func(f apiddl.MetadataOperationsFactory, txn api.Transaction) error {
+					func(f api.MetadataOperationsFactory, txn api.Transaction) error {
 						return f.CreateDatabase("/FRL/OTHER", *api.NoOptions()).Execute(txn)
 					})
 			})
