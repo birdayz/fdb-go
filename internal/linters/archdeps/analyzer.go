@@ -230,28 +230,7 @@ var (
 	r3Allow = map[string]map[string]bool{
 		"pkg/fdbgo/libfdbc/differential_test.go": {"fdb.dev/pkg/recordlayer": true},
 	}
-	r4Allow = map[string]map[string]bool{
-		"pkg/recordlayer/attempt_loop.go":                    {"fdb.dev/pkg/dst": true},
-		"pkg/recordlayer/database.go":                        {"fdb.dev/pkg/dst": true},
-		"pkg/recordlayer/index_maintainer.go":                {"fdb.dev/pkg/dst": true},
-		"pkg/recordlayer/indexing_heartbeat.go":              {"fdb.dev/pkg/dst": true},
-		"pkg/recordlayer/indexing_mutual.go":                 {"fdb.dev/pkg/dst": true},
-		"pkg/recordlayer/online_indexer.go":                  {"fdb.dev/pkg/dst": true},
-		"pkg/recordlayer/ranked_set.go":                      {"fdb.dev/pkg/dst": true},
-		"pkg/recordlayer/retry_predicate.go":                 {"fdb.dev/pkg/dst": true},
-		"pkg/recordlayer/scan_limiter_state.go":              {"fdb.dev/pkg/dst": true},
-		"pkg/recordlayer/scan_properties.go":                 {"fdb.dev/pkg/dst": true},
-		"pkg/recordlayer/store.go":                           {"fdb.dev/pkg/dst": true},
-		"pkg/recordlayer/store_builder.go":                   {"fdb.dev/pkg/dst": true},
-		"pkg/recordlayer/transformed_record_serializer.go":   {"fdb.dev/pkg/dst": true},
-		"pkg/recordlayer/vectorindex/guardiann_storage.go":   {"fdb.dev/pkg/dst": true},
-		"pkg/recordlayer/vectorindex/guardiann_types.go":     {"fdb.dev/pkg/dst": true},
-		"pkg/recordlayer/vectorindex/hnsw.go":                {"fdb.dev/pkg/dst": true},
-		"pkg/recordlayer/vectorindex/spfresh_rebalancer.go":  {"fdb.dev/pkg/dst": true},
-		"pkg/relational/core/embedded/cascades_generator.go": {"fdb.dev/pkg/dst": true},
-		"pkg/relational/core/embedded/connection.go":         {"fdb.dev/pkg/dst": true},
-		"pkg/relational/core/session/session.go":             {"fdb.dev/pkg/dst": true},
-	}
+	r4Allow = map[string]map[string]bool{}
 	// r5Allow freezes the exact set of normalized packages allowed to import
 	// testify, ginkgo, gomega, or gomock (sorted alphabetically).
 	r5Allow = map[string]bool{
