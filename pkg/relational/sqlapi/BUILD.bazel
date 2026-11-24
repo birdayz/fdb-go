@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+# gazelle:exclude errcode_java_parity_test.go
+
+go_library(
+    name = "sqlapi",
+    srcs = [
+        "continuation.go",
+        "ddl_scope_error.go",
+        "errcode.go",
+        "error.go",
+        "transaction_time_limit_error.go",
+    ],
+    importpath = "fdb.dev/pkg/relational/sqlapi",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "sqlapi_test",
+    srcs = ["sqlapi_test.go"],
+    deps = [
+        ":sqlapi",
+        "//pkg/relational/api",
+    ],
+)
+
+go_test(
+    name = "sqlapi_parity_test",
+    srcs = ["errcode_java_parity_test.go"],
+    embed = [":sqlapi"],
+)
