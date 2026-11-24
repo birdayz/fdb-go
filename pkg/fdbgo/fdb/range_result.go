@@ -2,12 +2,25 @@ package fdb
 
 import (
 	"bytes"
+	"fmt"
 	"math"
 	"unsafe"
 
 	"fdb.dev/pkg/fdbgo/client"
 	"fdb.dev/pkg/fdbgo/internal/rangecheck"
 )
+
+// RangeMaterializationLimitError is returned by a GetRange that would materialize
+// more than the opt-in WithRangeByteCeiling cap (RFC-115 §2).
+type RangeMaterializationLimitError struct {
+	LimitBytes   int64
+	ReachedBytes int64
+}
+
+func (e *RangeMaterializationLimitError) Error() string {
+	return fmt.Sprintf("fdbgo: GetRange materialized %d bytes, exceeding the configured WithRangeByteCeiling of %d bytes; use Iterator() for large/unbounded scans",
+		e.ReachedBytes, e.LimitBytes)
+}
 
 // RangeResult is the asynchronous result of a range read. It is an INTERFACE (RFC-109)
 // so a non-pure-Go backend (libfdb_c) can return its own implementation; the pure-Go

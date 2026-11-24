@@ -1,5 +1,5 @@
 // Package fdbmetrics exposes a pure-Go FDB client's operational counters
-// (client.Database.Metrics, RFC-097) in the Prometheus text exposition
+// (fdb.Database.Metrics, RFC-097) in the Prometheus text exposition
 // format, ready to scrape — with zero dependencies.
 //
 // Usage:
@@ -21,13 +21,13 @@ import (
 	"io"
 	"net/http"
 
-	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/pkg/fdbgo/fdb"
 )
 
-// MetricsSource is the part of *client.Database this package consumes —
+// MetricsSource is the part of fdb.Database this package consumes —
 // accepted as an interface so tests and wrappers can substitute snapshots.
 type MetricsSource interface {
-	Metrics() client.ClientMetricsSnapshot
+	Metrics() fdb.MetricsSnapshot
 }
 
 // Handler returns an http.Handler that renders the database's counters in
@@ -57,7 +57,7 @@ type counterDef struct {
 	name   string
 	help   string
 	origin counterOrigin
-	get    func(s client.ClientMetricsSnapshot) int64
+	get    func(s fdb.MetricsSnapshot) int64
 }
 
 // counters follows C++ TransactionMetrics names where a twin exists.
@@ -66,97 +66,97 @@ var counters = []counterDef{
 	{
 		"fdb_client_transactions_commit_started_total", "Commits sent (read-only fast-path commits excluded, matching C++).",
 		originCPPTwin,
-		func(s client.ClientMetricsSnapshot) int64 { return s.TransactionsCommitStarted },
+		func(s fdb.MetricsSnapshot) int64 { return s.TransactionsCommitStarted },
 	},
 	{
 		"fdb_client_transactions_commit_completed_total", "Commits acknowledged successful.",
 		originCPPTwin,
-		func(s client.ClientMetricsSnapshot) int64 { return s.TransactionsCommitCompleted },
+		func(s fdb.MetricsSnapshot) int64 { return s.TransactionsCommitCompleted },
 	},
 	{
 		"fdb_client_transactions_not_committed_total", "Commit conflicts (FDB error 1020).",
 		originCPPTwin,
-		func(s client.ClientMetricsSnapshot) int64 { return s.TransactionsNotCommitted },
+		func(s fdb.MetricsSnapshot) int64 { return s.TransactionsNotCommitted },
 	},
 	{
 		"fdb_client_transactions_maybe_committed_total", "Ambiguous commits (commit_unknown_result, 1021).",
 		originCPPTwin,
-		func(s client.ClientMetricsSnapshot) int64 { return s.TransactionsMaybeCommitted },
+		func(s fdb.MetricsSnapshot) int64 { return s.TransactionsMaybeCommitted },
 	},
 	{
 		"fdb_client_transactions_resource_constrained_total", "Proxy memory-limit retries (1042/1078).",
 		originCPPTwin,
-		func(s client.ClientMetricsSnapshot) int64 { return s.TransactionsResourceConstrained },
+		func(s fdb.MetricsSnapshot) int64 { return s.TransactionsResourceConstrained },
 	},
 	{
 		"fdb_client_transactions_process_behind_total", "process_behind retries (1037).",
 		originCPPTwin,
-		func(s client.ClientMetricsSnapshot) int64 { return s.TransactionsProcessBehind },
+		func(s fdb.MetricsSnapshot) int64 { return s.TransactionsProcessBehind },
 	},
 	{
 		"fdb_client_transactions_throttled_total", "Ratekeeper/tag throttle retries (1051/1213/1223).",
 		originCPPTwin,
-		func(s client.ClientMetricsSnapshot) int64 { return s.TransactionsThrottled },
+		func(s fdb.MetricsSnapshot) int64 { return s.TransactionsThrottled },
 	},
 	{
 		"fdb_client_transactions_too_old_total", "transaction_too_old retries (1007).",
 		originCPPTwin,
-		func(s client.ClientMetricsSnapshot) int64 { return s.TransactionsTooOld },
+		func(s fdb.MetricsSnapshot) int64 { return s.TransactionsTooOld },
 	},
 	{
 		"fdb_client_transactions_future_versions_total", "future_version retries (1009).",
 		originCPPTwin,
-		func(s client.ClientMetricsSnapshot) int64 { return s.TransactionsFutureVersions },
+		func(s fdb.MetricsSnapshot) int64 { return s.TransactionsFutureVersions },
 	},
 	{
 		"fdb_client_transaction_read_versions_completed_total", "Transactions served by a real GRV reply (cache hits excluded, matching C++).",
 		originCPPTwin,
-		func(s client.ClientMetricsSnapshot) int64 { return s.TransactionReadVersionsCompleted },
+		func(s fdb.MetricsSnapshot) int64 { return s.TransactionReadVersionsCompleted },
 	},
 	{
 		"fdb_client_transaction_batch_read_versions_completed_total", "BATCH-priority GRV completions.",
 		originCPPTwin,
-		func(s client.ClientMetricsSnapshot) int64 { return s.TransactionBatchReadVersionsCompleted },
+		func(s fdb.MetricsSnapshot) int64 { return s.TransactionBatchReadVersionsCompleted },
 	},
 	{
 		"fdb_client_transaction_default_read_versions_completed_total", "DEFAULT-priority GRV completions.",
 		originCPPTwin,
-		func(s client.ClientMetricsSnapshot) int64 { return s.TransactionDefaultReadVersionsCompleted },
+		func(s fdb.MetricsSnapshot) int64 { return s.TransactionDefaultReadVersionsCompleted },
 	},
 	{
 		"fdb_client_transaction_immediate_read_versions_completed_total", "SYSTEM_IMMEDIATE-priority GRV completions.",
 		originCPPTwin,
-		func(s client.ClientMetricsSnapshot) int64 { return s.TransactionImmediateReadVersionsCompleted },
+		func(s fdb.MetricsSnapshot) int64 { return s.TransactionImmediateReadVersionsCompleted },
 	},
 	{
 		"fdb_client_grv_cache_hits_total", "Read versions served from the GRV cache (USE_GRV_CACHE opt-in; complement of read_versions_completed). Go-only: no C++ TransactionMetrics counter.",
 		originGoOnly,
-		func(s client.ClientMetricsSnapshot) int64 { return s.GRVCacheHits },
+		func(s fdb.MetricsSnapshot) int64 { return s.GRVCacheHits },
 	},
 	{
 		"fdb_client_grv_in_band_maybe_delivered_total", "GRV replies carrying an in-band maybeDelivered error (1100/1030), taking basicLoadBalance's next-alternative arm; the rate at which GRV proxies die mid-reply. Go-only: no C++ TransactionMetrics counter.",
 		originGoOnly,
-		func(s client.ClientMetricsSnapshot) int64 { return s.GRVInBandMaybeDelivered },
+		func(s fdb.MetricsSnapshot) int64 { return s.GRVInBandMaybeDelivered },
 	},
 	{
 		"fdb_client_transaction_get_range_requests_total", "Range reads issued to storage, one per client getRange call (C++ GetRangeRequests).",
 		originCPPTwin,
-		func(s client.ClientMetricsSnapshot) int64 { return s.TransactionGetRangeRequests },
+		func(s fdb.MetricsSnapshot) int64 { return s.TransactionGetRangeRequests },
 	},
 	{
 		"fdb_client_transaction_retries_total", "All OnError-sanctioned retries (Go aggregate; includes codes C++ retries without a counter).",
 		originGoOnly,
-		func(s client.ClientMetricsSnapshot) int64 { return s.TransactionRetries },
+		func(s fdb.MetricsSnapshot) int64 { return s.TransactionRetries },
 	},
 	{
 		"fdb_client_connection_failures_total", "Connection/dial failures recorded by the failure monitor (RFC-114; Go-only observability).",
 		originGoOnly,
-		func(s client.ClientMetricsSnapshot) int64 { return s.ClientConnectionFailures },
+		func(s fdb.MetricsSnapshot) int64 { return s.ClientConnectionFailures },
 	},
 	{
 		"fdb_client_coordinator_changes_total", "Followed coordinator-set forwards (RFC-114; Go-only observability).",
 		originGoOnly,
-		func(s client.ClientMetricsSnapshot) int64 { return s.CoordinatorChanges },
+		func(s fdb.MetricsSnapshot) int64 { return s.CoordinatorChanges },
 	},
 }
 
@@ -165,32 +165,32 @@ var counters = []counterDef{
 type summaryDef struct {
 	name string
 	help string
-	get  func(s client.ClientMetricsSnapshot) client.LatencyStats
+	get  func(s fdb.MetricsSnapshot) fdb.LatencyStats
 }
 
 // summaries are the read/commit/GRV/total latency distributions, in seconds.
 var summaries = []summaryDef{
 	{
 		"fdb_client_read_latency_seconds", "GetValue read round-trip latency (DDSketch, all-time).",
-		func(s client.ClientMetricsSnapshot) client.LatencyStats { return s.ReadLatency },
+		func(s fdb.MetricsSnapshot) fdb.LatencyStats { return s.ReadLatency },
 	},
 	{
 		"fdb_client_commit_latency_seconds", "Commit round-trip latency (DDSketch, all-time).",
-		func(s client.ClientMetricsSnapshot) client.LatencyStats { return s.CommitLatency },
+		func(s fdb.MetricsSnapshot) fdb.LatencyStats { return s.CommitLatency },
 	},
 	{
 		"fdb_client_grv_latency_seconds", "GetReadVersion round-trip latency (DDSketch, all-time).",
-		func(s client.ClientMetricsSnapshot) client.LatencyStats { return s.GRVLatency },
+		func(s fdb.MetricsSnapshot) fdb.LatencyStats { return s.GRVLatency },
 	},
 	{
 		"fdb_client_transaction_latency_seconds", "Total transaction latency, start to commit (DDSketch, all-time).",
-		func(s client.ClientMetricsSnapshot) client.LatencyStats { return s.TransactionLatency },
+		func(s fdb.MetricsSnapshot) fdb.LatencyStats { return s.TransactionLatency },
 	},
 }
 
 // WriteText renders one snapshot in the Prometheus text exposition format.
 // Returns the first writer error (the exposition itself cannot fail).
-func WriteText(w io.Writer, s client.ClientMetricsSnapshot) error {
+func WriteText(w io.Writer, s fdb.MetricsSnapshot) error {
 	for _, c := range counters {
 		if _, err := fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n%s %d\n",
 			c.name, c.help, c.name, c.name, c.get(s)); err != nil {

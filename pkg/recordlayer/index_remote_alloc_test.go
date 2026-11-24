@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"fdb.dev/gen/demopb"
-	"fdb.dev/pkg/fdbgo/client"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -37,7 +36,7 @@ func remoteAllocationRaw(t *testing.T, store *FDBRecordStore, id int64) FDBIndex
 	}
 	return FDBIndexedRawRecord{
 		IndexEntry: &IndexEntry{Index: NewIndex("price", Field("price")), Key: tuple.Tuple{int64(25), id}},
-		RawRecord: fdb.MappedKeyValue{Kind: fdb.MappedResultGetRange, GetRange: client.MappedGetRange{Rows: []client.KeyValue{{
+		RawRecord: fdb.MappedKeyValue{Kind: fdb.MappedResultGetRange, GetRange: fdb.MappedGetRange{Rows: []fdb.KeyValue{{
 			Key: store.recordsSubspace.Pack(tuple.Tuple{id, unsplitRecord}), Value: data,
 		}}}},
 	}

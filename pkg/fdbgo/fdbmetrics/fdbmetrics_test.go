@@ -1,21 +1,29 @@
 package fdbmetrics
 
 import (
+	_ "embed"
+	"go/parser"
+	"go/token"
 	"net/http/httptest"
+	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/pkg/fdbgo/fdb"
 )
 
-type fakeSource struct{ s client.ClientMetricsSnapshot }
+//go:embed fdbmetrics.go
+var fdbmetricsSrc string
 
-func (f fakeSource) Metrics() client.ClientMetricsSnapshot { return f.s }
+type fakeSource struct{ s fdb.MetricsSnapshot }
+
+func (f fakeSource) Metrics() fdb.MetricsSnapshot { return f.s }
 
 func TestHandler_TextExposition(t *testing.T) {
 	t.Parallel()
-	src := fakeSource{s: client.ClientMetricsSnapshot{
+	src := fakeSource{s: fdb.MetricsSnapshot{
 		TransactionsCommitStarted:        7,
 		TransactionsCommitCompleted:      6,
 		TransactionsNotCommitted:         3,
@@ -56,10 +64,10 @@ func TestHandler_TextExposition(t *testing.T) {
 		TransactionBatchReadVersionsCompleted:     16,
 		TransactionDefaultReadVersionsCompleted:   17,
 		TransactionImmediateReadVersionsCompleted: 18,
-		ReadLatency:        client.LatencyStats{Count: 100, Sum: 1.5, Mean: 0.015, Median: 0.001, P90: 0.005, P99: 0.02, Max: 0.03},
-		CommitLatency:      client.LatencyStats{Count: 10, Sum: 0.5, Mean: 0.05, Median: 0.04, P90: 0.06, P99: 0.07, Max: 0.08},
-		GRVLatency:         client.LatencyStats{Count: 20, Sum: 0.6, Mean: 0.03, Median: 0.02, P90: 0.05, P99: 0.09, Max: 0.1},
-		TransactionLatency: client.LatencyStats{Count: 30, Sum: 0.7, Mean: 0.023, Median: 0.01, P90: 0.03, P99: 0.04, Max: 0.05},
+		ReadLatency:        fdb.LatencyStats{Count: 100, Sum: 1.5, Mean: 0.015, Median: 0.001, P90: 0.005, P99: 0.02, Max: 0.03},
+		CommitLatency:      fdb.LatencyStats{Count: 10, Sum: 0.5, Mean: 0.05, Median: 0.04, P90: 0.06, P99: 0.07, Max: 0.08},
+		GRVLatency:         fdb.LatencyStats{Count: 20, Sum: 0.6, Mean: 0.03, Median: 0.02, P90: 0.05, P99: 0.09, Max: 0.1},
+		TransactionLatency: fdb.LatencyStats{Count: 30, Sum: 0.7, Mean: 0.023, Median: 0.01, P90: 0.03, P99: 0.04, Max: 0.05},
 	}}
 
 	rec := httptest.NewRecorder()
@@ -417,4 +425,68 @@ func renderExposition(t *testing.T) string {
 	rec := httptest.NewRecorder()
 	Handler(fakeSource{}).ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
 	return rec.Body.String()
+}
+
+func TestFDBDatabaseSatisfiesMetricsSourceAndNoClientImport(t *testing.T) {
+	t.Parallel()
+
+	var _ MetricsSource = fdb.Database{}
+	var _ MetricsSource = (*fdb.Database)(nil)
+
+	rec := httptest.NewRecorder()
+	Handler(fdb.Database{}).ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	if body := rec.Body.String(); !strings.Contains(body, "fdb_client_transactions_commit_started_total 0\n") {
+		t.Fatalf("Handler(fdb.Database{}) unexpected output:\n%s", body)
+	}
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "fdbmetrics.go", fdbmetricsSrc, parser.ImportsOnly)
+	if err != nil {
+		t.Fatalf("parse fdbmetrics.go imports: %v", err)
+	}
+	for _, imp := range file.Imports {
+		p, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			t.Fatalf("unquote import %s: %v", imp.Path.Value, err)
+		}
+		if p == "fdb.dev/pkg/fdbgo/client" || strings.HasPrefix(p, "fdb.dev/pkg/fdbgo/client/") {
+			t.Errorf("fdbmetrics.go must not import pkg/fdbgo/client (found %q)", p)
+		}
+	}
+
+	visited := map[reflect.Type]bool{}
+	var checkType func(typ reflect.Type)
+	checkType = func(typ reflect.Type) {
+		if typ == nil || visited[typ] {
+			return
+		}
+		visited[typ] = true
+		if pkg := typ.PkgPath(); pkg == "fdb.dev/pkg/fdbgo/client" || strings.HasPrefix(pkg, "fdb.dev/pkg/fdbgo/client/") {
+			t.Errorf("public API leaks client type %s (%s)", typ, pkg)
+		}
+		switch typ.Kind() {
+		case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Chan:
+			checkType(typ.Elem())
+		case reflect.Struct:
+			for i := range typ.NumField() {
+				if f := typ.Field(i); f.IsExported() {
+					checkType(f.Type)
+				}
+			}
+		case reflect.Func:
+			for i := range typ.NumIn() {
+				checkType(typ.In(i))
+			}
+			for i := range typ.NumOut() {
+				checkType(typ.Out(i))
+			}
+		case reflect.Interface:
+			for i := range typ.NumMethod() {
+				checkType(typ.Method(i).Type)
+			}
+		}
+	}
+	checkType(reflect.TypeOf((*MetricsSource)(nil)).Elem())
+	checkType(reflect.TypeOf(Handler))
+	checkType(reflect.TypeOf(WriteText))
 }

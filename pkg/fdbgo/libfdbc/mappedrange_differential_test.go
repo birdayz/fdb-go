@@ -486,9 +486,32 @@ func mdDrainCWithSkip(t *testing.T, tr libfdbc.CTxnHandle, f mdFixture, limit, m
 	return nil, nil
 }
 
+func mdFromClientRow(g fdbclient.MappedKeyValue) gofdb.MappedKeyValue {
+	rows := make([]gofdb.KeyValue, len(g.GetRange.Rows))
+	for i, kv := range g.GetRange.Rows {
+		rows[i] = gofdb.KeyValue{Key: gofdb.Key(kv.Key), Value: kv.Value}
+	}
+	return gofdb.MappedKeyValue{
+		Key:   g.Key,
+		Value: g.Value,
+		Kind:  gofdb.MappedResultKind(g.Kind),
+		GetValue: gofdb.MappedGetValue{
+			Key:     g.GetValue.Key,
+			Value:   g.GetValue.Value,
+			Present: g.GetValue.Present,
+		},
+		GetRange: gofdb.MappedGetRange{
+			Begin: gofdb.MappedKeySelector{Key: g.GetRange.Begin.Key, OrEqual: g.GetRange.Begin.OrEqual, Offset: g.GetRange.Begin.Offset},
+			End:   gofdb.MappedKeySelector{Key: g.GetRange.End.Key, OrEqual: g.GetRange.End.OrEqual, Offset: g.GetRange.End.Offset},
+			Rows:  rows,
+			More:  g.GetRange.More,
+		},
+	}
+}
+
 func mdCompareRangeRow(t *testing.T, c libfdbc.CMappedRow, g gofdb.MappedKeyValue) {
 	t.Helper()
-	if c.Kind != libfdbc.CMappedKindGetRange || g.Kind != fdbclient.MappedResultGetRange {
+	if c.Kind != libfdbc.CMappedKindGetRange || g.Kind != gofdb.MappedResultGetRange {
 		t.Fatalf("mapped kinds: C=%d Go=%v, want range", c.Kind, g.Kind)
 	}
 	if !bytes.Equal(c.Key, g.Key) || !bytes.Equal(c.Value, g.Value) ||
@@ -698,7 +721,7 @@ func TestLibFDBC_MappedRangeByteTarget(t *testing.T) {
 					t.Fatalf("unlimited normalization returned %d rows, want 17", len(cRows))
 				}
 				for i := range cRows {
-					mdCompareRangeRow(t, cRows[i], gRows[i])
+					mdCompareRangeRow(t, cRows[i], mdFromClientRow(gRows[i]))
 				}
 			})
 		}
@@ -963,7 +986,7 @@ func TestLibFDBC_MappedRangeTruncatedSecondaryConflicts(t *testing.T) {
 			}
 			compareGo := func(t *testing.T, row gofdb.MappedKeyValue) {
 				t.Helper()
-				if row.Kind != fdbclient.MappedResultGetRange || !row.GetRange.More || len(row.GetRange.Rows) != len(cRow.RangeRows) ||
+				if row.Kind != gofdb.MappedResultGetRange || !row.GetRange.More || len(row.GetRange.Rows) != len(cRow.RangeRows) ||
 					!bytes.Equal(row.Key, cRow.Key) || !bytes.Equal(row.Value, cRow.Value) ||
 					!bytes.Equal(row.GetRange.Begin.Key, cRow.RangeBeginKey) || !bytes.Equal(row.GetRange.End.Key, cRow.RangeEndKey) {
 					t.Fatalf("truncated mapped result: C secondary=%d Go secondary=%d more=%v", len(cRow.RangeRows), len(row.GetRange.Rows), row.GetRange.More)
@@ -1025,7 +1048,7 @@ func TestLibFDBC_MappedRangeTruncatedSecondaryConflicts(t *testing.T) {
 					if err != nil || len(rows) != 1 || !more {
 						t.Fatalf("direct Go primary result: rows=%d more=%v err=%v", len(rows), more, err)
 					}
-					compareGo(t, rows[0])
+					compareGo(t, mdFromClientRow(rows[0]))
 					readFacade(t, ft)
 				})
 			}
@@ -1374,7 +1397,7 @@ func TestLibFDBC_MappedRangeSkip(t *testing.T) {
 					t.Fatalf("Skip first batch C=%d/%v Go=%d/%v", len(cRows), cMore, len(gRows), gMore)
 				}
 				for i := range cRows {
-					mdCompareRangeRow(t, cRows[i], gRows[i])
+					mdCompareRangeRow(t, cRows[i], mdFromClientRow(gRows[i]))
 				}
 				// Original anchors retain the skipped PRIMARY portion, including
 				// a resolved-empty read. Only returned secondaries contribute.
@@ -1560,7 +1583,7 @@ func TestLibFDBC_MappedRangeSkip(t *testing.T) {
 							t.Fatalf("successful Skip population C=%d Go=%d facade=%d", len(cRows), len(gRows), len(fRows))
 						}
 						for i := range cRows {
-							mdCompareRangeRow(t, cRows[i], gRows[i])
+							mdCompareRangeRow(t, cRows[i], mdFromClientRow(gRows[i]))
 							mdCompareRangeRow(t, cRows[i], fRows[i])
 						}
 					}
@@ -1693,7 +1716,7 @@ func TestLibFDBC_MappedRangeSkipLiteralOffsets(t *testing.T) {
 					t.Fatal("Skip oracle differs from independently supplied literal offsets")
 				}
 				for i := range gRows {
-					mdCompareRangeRow(t, lRows[i], gRows[i])
+					mdCompareRangeRow(t, lRows[i], mdFromClientRow(gRows[i]))
 					mdCompareRangeRow(t, lRows[i], fRows[i])
 				}
 				if wantCode == 0 {
@@ -1808,7 +1831,7 @@ func TestLibFDBC_MappedRangeSelectorReplyMore(t *testing.T) {
 			if len(gRows) != 1 || gMore != cMore {
 				t.Fatalf("selector first batch C=%d/%v Go=%d/%v", len(cRows), cMore, len(gRows), gMore)
 			}
-			mdCompareRangeRow(t, cRows[0], gRows[0])
+			mdCompareRangeRow(t, cRows[0], mdFromClientRow(gRows[0]))
 			wantBounds := []libfdbc.CKeyValue{
 				{Key: begin, Value: []byte("1")},
 				{Key: end, Value: []byte("0")},

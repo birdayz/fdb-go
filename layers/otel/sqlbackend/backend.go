@@ -25,7 +25,6 @@ import (
 
 	"fdb.dev/layers/otel"
 	"fdb.dev/layers/otel/otelsql"
-	"fdb.dev/pkg/fdbgo/client"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
@@ -112,7 +111,7 @@ type Backend struct {
 	explained         map[string]bool // with OTELBENCH_SQL_EXPLAIN, the query texts already explained
 	// With OTELBENCH_SQL_RPCS, the client counters at the first query; Close
 	// reports the FDB requests per query since (a diagnostic).
-	rpcStart *client.ClientMetricsSnapshot
+	rpcStart *fdb.MetricsSnapshot
 	queries  int64
 
 	unregister func() // the driver's backend registration
@@ -177,7 +176,7 @@ func Open(ctx context.Context, c otel.Config, cluster string, opts Options) (*Ba
 		return nil, err
 	}
 	sqldriver.RegisterDomainIfNotExists(domain)
-	cf, err := client.ParseClusterFile(cluster)
+	cf, err := fdb.ParseClusterFile(cluster)
 	if err != nil {
 		return nil, err
 	}

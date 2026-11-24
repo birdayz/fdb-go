@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"net"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,8 +29,8 @@ func MustAPIVersion(version int) {
 }
 
 // APIVersion must be called before any other fdb function. It selects the
-// FDB API version to use: client.MinAPIVersion through client.MaxAPIVersion
-// (510-730). Re-selecting the same version is a no-op; any other version once
+// FDB API version to use (510-730). Re-selecting the same version is a no-op;
+// any other version once
 // one is selected fails with api_version_already_set (2201), and an
 // unsupported version with api_version_not_supported (2203).
 func APIVersion(version int) error {
@@ -175,50 +177,154 @@ type Database struct {
 	d *internalDB
 }
 
-// Option configures a database opened via OpenDatabase / OpenDatabaseFromConfig
-// (e.g. WithTLSConfig, WithDialFunc). It is an alias for client.Option so the
-// two packages share one option type.
-type Option = client.Option
+// DialFunc overrides the dialer used for every connection (matches net.Dialer.DialContext).
+type DialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+
+// Option configures a database opened via OpenDatabase / OpenWithConnectionString /
+// OpenDatabaseFromConfig (e.g. WithTLSConfig, WithDialFunc).
+type Option func(*openOptions)
+
+type openOptions struct {
+	clientOpts []client.Option
+}
+
+func toClientOptions(opts []Option, apiVer int) []client.Option {
+	var oo openOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&oo)
+		}
+	}
+	// Thread the selected API version into the client (RFC-149).
+	oo.clientOpts = append(oo.clientOpts, client.WithAPIVersion(apiVer))
+	return oo.clientOpts
+}
 
 // WithTLSConfig connects to the cluster over TLS using a standard
 // *crypto/tls.Config (in-memory certs, GetClientCertificate rotation, custom
 // VerifyPeerCertificate, cipher/version policy). It takes precedence over the
 // FDB_TLS_* environment / cluster-file ":tls" resolution and enables TLS even
 // when the cluster string lacks ":tls". It keeps Go's verification, including the
-// per-dial host-name check libfdb_c does not make (see client.WithTLSConfig).
-func WithTLSConfig(cfg *tls.Config) Option { return client.WithTLSConfig(cfg) }
+// per-dial host-name check libfdb_c does not make.
+func WithTLSConfig(cfg *tls.Config) Option {
+	return func(o *openOptions) {
+		o.clientOpts = append(o.clientOpts, client.WithTLSConfig(cfg))
+	}
+}
 
 // WithDialFunc overrides the dialer used for every connection (advanced / tests).
-func WithDialFunc(fn client.DialFunc) Option { return client.WithDialFunc(fn) }
+func WithDialFunc(fn DialFunc) Option {
+	return func(o *openOptions) {
+		var cfn client.DialFunc
+		if fn != nil {
+			cfn = client.DialFunc(fn)
+		}
+		o.clientOpts = append(o.clientOpts, client.WithDialFunc(cfn))
+	}
+}
 
 // WithCoalesceDelay sets each connection's timer-based batch delay bounds (default
 // 0, 0 on D-NG; 10/20 µs on WithLegacyWriter(); the last linger/coalesce option wins).
 func WithCoalesceDelay(minDelay, maxDelay time.Duration) Option {
-	return client.WithCoalesceDelay(minDelay, maxDelay)
+	return func(o *openOptions) {
+		o.clientOpts = append(o.clientOpts, client.WithCoalesceDelay(minDelay, maxDelay))
+	}
 }
 
 // WithAdaptiveLinger configures Nagle-style adaptive linger on the D-NG writer
 // (0 disables; the last linger/coalesce option wins; RFC-282).
 func WithAdaptiveLinger(d time.Duration) Option {
-	return client.WithAdaptiveLinger(d)
+	return func(o *openOptions) {
+		o.clientOpts = append(o.clientOpts, client.WithAdaptiveLinger(d))
+	}
 }
 
 // WithRangeByteCeiling bounds how many bytes a single GetRange may materialize
-// before it fails with a *client.RangeMaterializationLimitError, instead of OOM-ing
+// before it fails with a *RangeMaterializationLimitError, instead of OOM-ing
 // on a runaway unbounded scan. n ≤ 0 (the default) is UNLIMITED, matching libfdb_c.
 // An opt-in OOM safety valve; for large result sets prefer the bounded Iterator()
 // (which honors StreamingMode). RFC-115 §2.
-func WithRangeByteCeiling(n int64) Option { return client.WithRangeByteCeiling(n) }
+func WithRangeByteCeiling(n int64) Option {
+	return func(o *openOptions) {
+		o.clientOpts = append(o.clientOpts, client.WithRangeByteCeiling(n))
+	}
+}
 
 // WithTracingSampleRate sets the fraction (0.0–1.0) of transactions whose trace span
 // is flagged sampled. Default 0.0 matches C++ TRACING_SAMPLE_RATE — every transaction
 // still carries a real (randomly-generated, wire-faithful) SpanContext, flagged
 // unsampled. RFC-115 §4.
-func WithTracingSampleRate(rate float64) Option { return client.WithTracingSampleRate(rate) }
+func WithTracingSampleRate(rate float64) Option {
+	return func(o *openOptions) {
+		o.clientOpts = append(o.clientOpts, client.WithTracingSampleRate(rate))
+	}
+}
 
 // WithTracer sets the application-owned OpenTelemetry tracer for client spans.
-// See [client.WithTracer] for sampling, span ownership, and callback restrictions.
-func WithTracer(t oteltrace.Tracer) Option { return client.WithTracer(t) }
+func WithTracer(t oteltrace.Tracer) Option {
+	return func(o *openOptions) {
+		o.clientOpts = append(o.clientOpts, client.WithTracer(t))
+	}
+}
+
+// ClusterFile represents a parsed FoundationDB cluster file or connection string.
+// Format: "<description>:<id>@<host>:<port>[,<host>:<port>...]".
+type ClusterFile struct {
+	Description  string
+	ID           string
+	Coordinators []string // "host:port" addresses for TCP connection (":tls" suffix stripped)
+	UseTLS       bool     // true when coordinators carry the ":tls" suffix
+}
+
+// String renders the canonical cluster connection string.
+func (cf *ClusterFile) String() string {
+	if cf == nil {
+		return ""
+	}
+	return toClientClusterFile(cf).String()
+}
+
+// ParseClusterFile reads and parses an fdb.cluster file.
+func ParseClusterFile(path string) (*ClusterFile, error) {
+	cf, err := client.ParseClusterFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return fromClientClusterFile(cf), nil
+}
+
+// ParseClusterString parses a cluster connection string.
+func ParseClusterString(s string) (*ClusterFile, error) {
+	cf, err := client.ParseClusterString(s)
+	if err != nil {
+		return nil, err
+	}
+	return fromClientClusterFile(cf), nil
+}
+
+func fromClientClusterFile(cf *client.ClusterFile) *ClusterFile {
+	if cf == nil {
+		return nil
+	}
+	return &ClusterFile{
+		Description:  cf.Description,
+		ID:           cf.ID,
+		Coordinators: slices.Clone(cf.Coordinators),
+		UseTLS:       cf.UseTLS,
+	}
+}
+
+func toClientClusterFile(cf *ClusterFile) *client.ClusterFile {
+	if cf == nil {
+		return nil
+	}
+	return &client.ClusterFile{
+		Description:  cf.Description,
+		ID:           cf.ID,
+		Coordinators: slices.Clone(cf.Coordinators),
+		UseTLS:       cf.UseTLS,
+	}
+}
 
 // defaultBootstrapTimeout bounds the initial coordinator connection so an
 // unreachable cluster fails fast instead of blocking forever (a control-plane
@@ -257,10 +363,7 @@ func OpenDatabase(clusterFile string, opts ...Option) (Database, error) {
 	// bootstrap context (which we cancel after connect).
 	bootstrapCtx, bootstrapCancel := bootstrapContext(context.Background())
 	defer bootstrapCancel()
-	// Thread the selected API version into the client (RFC-149); the unset check
-	// above guarantees it is non-zero, so the client's mandatory-set gate passes.
-	opts = append(opts, client.WithAPIVersion(int(apiVersion.Load())))
-	db, err := client.OpenDatabase(bootstrapCtx, clusterFile, opts...)
+	db, err := client.OpenDatabase(bootstrapCtx, clusterFile, toClientOptions(opts, int(apiVersion.Load()))...)
 	if err != nil {
 		return Database{}, err
 	}
@@ -272,28 +375,25 @@ func OpenDatabase(clusterFile string, opts ...Option) (Database, error) {
 // OpenWithConnectionString opens a connection using a cluster connection string
 // (e.g., "description:id@host1:port1,host2:port2").
 func OpenWithConnectionString(connStr string, opts ...Option) (Database, error) {
-	cf, err := client.ParseClusterString(connStr)
+	cf, err := ParseClusterString(connStr)
 	if err != nil {
 		return Database{}, fmt.Errorf("parse connection string: %w", err)
 	}
 	return OpenDatabaseFromConfig(context.Background(), cf, opts...)
 }
 
-// OpenDatabaseFromConfig creates a Database from a client.ClusterFile.
+// OpenDatabaseFromConfig creates a Database from a ClusterFile.
 // The provided ctx is used only for the initial bootstrap (coordinator
 // connection); if it has no deadline, bootstrap is bounded by
 // defaultBootstrapTimeout so an unreachable cluster fails fast instead of
 // hanging forever. The Database uses context.Background() for ongoing operations.
-func OpenDatabaseFromConfig(ctx context.Context, cf *client.ClusterFile, opts ...Option) (Database, error) {
+func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option) (Database, error) {
 	if apiVersion.Load() == 0 {
 		return Database{}, Error{Code: 2200} // api_version_unset
 	}
 	bootstrapCtx, cancel := bootstrapContext(ctx)
 	defer cancel()
-	// Thread the selected API version into the client (RFC-149); the unset check
-	// above guarantees it is non-zero, so the client's mandatory-set gate passes.
-	opts = append(opts, client.WithAPIVersion(int(apiVersion.Load())))
-	db, err := client.OpenDatabaseFromConfig(bootstrapCtx, cf, opts...)
+	db, err := client.OpenDatabaseFromConfig(bootstrapCtx, toClientClusterFile(cf), toClientOptions(opts, int(apiVersion.Load()))...)
 	if err != nil {
 		return Database{}, err
 	}
@@ -349,13 +449,105 @@ func MustOpenDatabase(clusterFile string) Database {
 	return db
 }
 
-// Metrics returns the client's operational counters (client.Database.Metrics),
-// so a facade Database can be passed to fdbmetrics.Handler.
-func (db Database) Metrics() client.ClientMetricsSnapshot {
-	if db.d == nil || db.d.inner == nil {
-		return client.ClientMetricsSnapshot{}
+// LatencyStats is a point-in-time summary of one latency distribution in seconds.
+type LatencyStats struct {
+	Count  int64
+	Sum    float64
+	Mean   float64
+	Median float64
+	P90    float64
+	P99    float64
+	Min    float64
+	Max    float64
+}
+
+// MetricsSnapshot is a point-in-time copy of the database's operational
+// counters and latency distributions.
+type MetricsSnapshot struct {
+	TransactionsCommitStarted   int64
+	TransactionsCommitCompleted int64
+
+	TransactionsNotCommitted        int64
+	TransactionsMaybeCommitted      int64
+	TransactionsResourceConstrained int64
+	TransactionsProcessBehind       int64
+	TransactionsThrottled           int64
+	TransactionsTooOld              int64
+	TransactionsFutureVersions      int64
+
+	TransactionReadVersionsCompleted          int64
+	TransactionBatchReadVersionsCompleted     int64
+	TransactionDefaultReadVersionsCompleted   int64
+	TransactionImmediateReadVersionsCompleted int64
+	GRVCacheHits                              int64
+	GRVInBandMaybeDelivered                   int64
+
+	TransactionRetries int64
+
+	TransactionGetRangeRequests int64
+
+	RecoveredPanics               int64
+	RecoveredPanicsConsecutiveMax int64
+
+	ClientConnectionFailures int64
+	CoordinatorChanges       int64
+
+	ReadLatency        LatencyStats
+	CommitLatency      LatencyStats
+	GRVLatency         LatencyStats
+	TransactionLatency LatencyStats
+}
+
+func fromClientLatencyStats(s client.LatencyStats) LatencyStats {
+	return LatencyStats{
+		Count:  s.Count,
+		Sum:    s.Sum,
+		Mean:   s.Mean,
+		Median: s.Median,
+		P90:    s.P90,
+		P99:    s.P99,
+		Min:    s.Min,
+		Max:    s.Max,
 	}
-	return db.d.inner.Metrics()
+}
+
+func fromClientMetricsSnapshot(s client.ClientMetricsSnapshot) MetricsSnapshot {
+	return MetricsSnapshot{
+		TransactionsCommitStarted:                 s.TransactionsCommitStarted,
+		TransactionsCommitCompleted:               s.TransactionsCommitCompleted,
+		TransactionsNotCommitted:                  s.TransactionsNotCommitted,
+		TransactionsMaybeCommitted:                s.TransactionsMaybeCommitted,
+		TransactionsResourceConstrained:           s.TransactionsResourceConstrained,
+		TransactionsProcessBehind:                 s.TransactionsProcessBehind,
+		TransactionsThrottled:                     s.TransactionsThrottled,
+		TransactionsTooOld:                        s.TransactionsTooOld,
+		TransactionsFutureVersions:                s.TransactionsFutureVersions,
+		TransactionReadVersionsCompleted:          s.TransactionReadVersionsCompleted,
+		TransactionBatchReadVersionsCompleted:     s.TransactionBatchReadVersionsCompleted,
+		TransactionDefaultReadVersionsCompleted:   s.TransactionDefaultReadVersionsCompleted,
+		TransactionImmediateReadVersionsCompleted: s.TransactionImmediateReadVersionsCompleted,
+		GRVCacheHits:                              s.GRVCacheHits,
+		GRVInBandMaybeDelivered:                   s.GRVInBandMaybeDelivered,
+		TransactionRetries:                        s.TransactionRetries,
+		TransactionGetRangeRequests:               s.TransactionGetRangeRequests,
+		RecoveredPanics:                           s.RecoveredPanics,
+		RecoveredPanicsConsecutiveMax:             s.RecoveredPanicsConsecutiveMax,
+		ClientConnectionFailures:                  s.ClientConnectionFailures,
+		CoordinatorChanges:                        s.CoordinatorChanges,
+		ReadLatency:                               fromClientLatencyStats(s.ReadLatency),
+		CommitLatency:                             fromClientLatencyStats(s.CommitLatency),
+		GRVLatency:                                fromClientLatencyStats(s.GRVLatency),
+		TransactionLatency:                        fromClientLatencyStats(s.TransactionLatency),
+	}
+}
+
+// Metrics returns the database's operational counters and latency distributions,
+// so a facade Database can be passed to fdbmetrics.Handler.
+func (db Database) Metrics() MetricsSnapshot {
+	if db.d == nil || db.d.inner == nil {
+		return MetricsSnapshot{}
+	}
+	return fromClientMetricsSnapshot(db.d.inner.Metrics())
 }
 
 // Close closes the database connection.

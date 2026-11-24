@@ -6,7 +6,6 @@ import (
 	"sync"
 
 	"fdb.dev/layers/otel/otelsql"
-	"fdb.dev/pkg/fdbgo/client"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
@@ -148,7 +147,7 @@ func openRelDatabase(ctx context.Context, cluster string) (fdb.Database, error) 
 	if err := fdb.APIVersion(730); err != nil {
 		return fdb.Database{}, err
 	}
-	cf, err := client.ParseClusterFile(cluster)
+	cf, err := fdb.ParseClusterFile(cluster)
 	if err != nil {
 		return fdb.Database{}, wrap("config", "cluster file", err)
 	}
@@ -178,7 +177,7 @@ func (e *Exporter) Config() ExporterConfig { return e.cfg }
 
 // ClientMetrics is the FDB client counters of the exporter's database
 // handle, for diagnostics that diff two snapshots.
-func (e *Exporter) ClientMetrics() client.ClientMetricsSnapshot { return e.raw.Metrics() }
+func (e *Exporter) ClientMetrics() fdb.MetricsSnapshot { return e.raw.Metrics() }
 
 // txnContext applies the exporter's transaction policy to work under ctx.
 func (e *Exporter) txnContext(ctx context.Context) context.Context {

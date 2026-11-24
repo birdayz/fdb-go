@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"fdb.dev/gen/demopb"
-	"fdb.dev/pkg/fdbgo/client"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -598,7 +597,7 @@ var _ = Describe("Index remote fetch", func() {
 		Expect(err).NotTo(HaveOccurred())
 		raw := FDBIndexedRawRecord{
 			IndexEntry: &IndexEntry{Index: store.GetRecordMetaData().GetIndex("price"), Key: tuple.Tuple{int64(999), int64(1)}},
-			RawRecord: fdb.MappedKeyValue{Kind: fdb.MappedResultGetRange, GetRange: client.MappedGetRange{Rows: []client.KeyValue{{
+			RawRecord: fdb.MappedKeyValue{Kind: fdb.MappedResultGetRange, GetRange: fdb.MappedGetRange{Rows: []fdb.KeyValue{{
 				Key: store.recordsSubspace.Pack(appendToTuple(pk, unsplitRecord)), Value: []byte{0xff},
 			}}}},
 		}
@@ -640,9 +639,7 @@ var _ = Describe("Index remote fetch", func() {
 				IndexEntry: &IndexEntry{Index: store.GetRecordMetaData().GetIndex("price"), Key: tuple.Tuple{int64(1), int64(1)}},
 				RawRecord:  fdb.MappedKeyValue{Kind: fdb.MappedResultGetRange},
 			}
-			for _, kv := range kvs {
-				out.RawRecord.GetRange.Rows = append(out.RawRecord.GetRange.Rows, client.KeyValue{Key: kv.Key, Value: kv.Value})
-			}
+			out.RawRecord.GetRange.Rows = append(out.RawRecord.GetRange.Rows, kvs...)
 			return out
 		}
 		other := fdb.KeyValue{Key: store.recordsSubspace.Pack(tuple.Tuple{int64(2), int64(0)}), Value: []byte("next record")}

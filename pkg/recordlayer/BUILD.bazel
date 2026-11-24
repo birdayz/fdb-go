@@ -546,7 +546,6 @@ go_test(
         "//gen/demopb",
         "//pkg/async/rtree",
         "//pkg/dst",
-        "//pkg/fdbgo/client",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",

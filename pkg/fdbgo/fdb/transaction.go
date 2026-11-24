@@ -593,7 +593,7 @@ func fdbErrorCode(err error) (int, bool) {
 	return 0, false
 }
 
-// convertError converts a client error to an fdb.Error if applicable.
+// convertError converts a client error to an fdb.Error or public fdb error type if applicable.
 func convertError(err error) error {
 	if err == nil {
 		return nil
@@ -601,6 +601,13 @@ func convertError(err error) error {
 	var fdbErr *wire.FDBError
 	if errors.As(err, &fdbErr) {
 		return Error{Code: fdbErr.Code}
+	}
+	var limitErr *client.RangeMaterializationLimitError
+	if errors.As(err, &limitErr) {
+		return &RangeMaterializationLimitError{
+			LimitBytes:   limitErr.LimitBytes,
+			ReachedBytes: limitErr.ReachedBytes,
+		}
 	}
 	return err
 }
