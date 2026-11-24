@@ -5,6 +5,8 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -195,22 +197,45 @@ func TestOptionAndDialFuncAndErrors(t *testing.T) {
 		WithRangeByteCeiling(1024),
 		WithTracingSampleRate(0.5),
 		WithTracer(oteltrace.Tracer(nil)),
+		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
+		WithLogger(nil),
 	}, 730)
-	// 8 non-nil options + WithAPIVersion(730).
-	if len(clientOpts) != 9 {
-		t.Fatalf("toClientOptions returned %d options, want 9", len(clientOpts))
+	// 10 non-nil options + WithAPIVersion(730).
+	if len(clientOpts) != 11 {
+		t.Fatalf("toClientOptions returned %d options, want 11", len(clientOpts))
 	}
 
-	// RangeMaterializationLimitError is converted from client.RangeMaterializationLimitError.
+	// RangeMaterializationLimitError is converted from client.RangeMaterializationLimitError
+	// without leaking the client error type, while preserving non-client wrapped causes.
+	directConverted := convertError(&client.RangeMaterializationLimitError{LimitBytes: 100, ReachedBytes: 250})
+	var pubLimit *RangeMaterializationLimitError
+	if !errors.As(directConverted, &pubLimit) || pubLimit.LimitBytes != 100 || pubLimit.ReachedBytes != 250 || pubLimit.Cause != nil {
+		t.Fatalf("convertError(direct) = %T (%v), want *RangeMaterializationLimitError{100, 250, nil}", directConverted, directConverted)
+	}
+
 	cliErr := fmt.Errorf("wrapped: %w", &client.RangeMaterializationLimitError{LimitBytes: 100, ReachedBytes: 250})
 	converted := convertError(cliErr)
-	var pubLimit *RangeMaterializationLimitError
+	pubLimit = nil
 	if !errors.As(converted, &pubLimit) || pubLimit.LimitBytes != 100 || pubLimit.ReachedBytes != 250 {
 		t.Fatalf("convertError = %T (%v), want *RangeMaterializationLimitError{100, 250}", converted, converted)
 	}
 	var cliLimit *client.RangeMaterializationLimitError
 	if errors.As(converted, &cliLimit) {
 		t.Fatalf("convertError leaked *client.RangeMaterializationLimitError: %v", converted)
+	}
+
+	sentinel := errors.New("range aborted")
+	joinedErr := fmt.Errorf("outer: %w", errors.Join(fmt.Errorf("ctx: %w", sentinel), &client.RangeMaterializationLimitError{LimitBytes: 64, ReachedBytes: 128}))
+	joinedConverted := convertError(joinedErr)
+	pubLimit = nil
+	if !errors.As(joinedConverted, &pubLimit) || pubLimit.LimitBytes != 64 || pubLimit.ReachedBytes != 128 {
+		t.Fatalf("convertError(joined) = %T (%v), want *RangeMaterializationLimitError{64, 128}", joinedConverted, joinedConverted)
+	}
+	if !errors.Is(joinedConverted, sentinel) {
+		t.Fatalf("convertError(joined) dropped wrapped sentinel cause: %v", joinedConverted)
+	}
+	if errors.As(joinedConverted, &cliLimit) {
+		t.Fatalf("convertError(joined) leaked *client.RangeMaterializationLimitError: %v", joinedConverted)
 	}
 }
 
@@ -311,6 +336,7 @@ func TestPublicAPINoClientLeakage(t *testing.T) {
 		"WithRangeByteCeiling":           WithRangeByteCeiling,
 		"WithTracingSampleRate":          WithTracingSampleRate,
 		"WithTracer":                     WithTracer,
+		"WithLogger":                     WithLogger,
 	}
 	for name, sym := range publicSymbols {
 		checkType(name, reflect.TypeOf(sym))

@@ -607,9 +607,38 @@ func convertError(err error) error {
 		return &RangeMaterializationLimitError{
 			LimitBytes:   limitErr.LimitBytes,
 			ReachedBytes: limitErr.ReachedBytes,
+			Cause:        stripClientLimitError(err),
 		}
 	}
 	return err
+}
+
+// stripClientLimitError preserves non-client errors in err's unwrap tree while
+// dropping *client.RangeMaterializationLimitError so convertError never leaks it.
+func stripClientLimitError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var target *client.RangeMaterializationLimitError
+	if !errors.As(err, &target) {
+		return err
+	}
+	if _, ok := err.(*client.RangeMaterializationLimitError); ok {
+		return nil
+	}
+	if multi, ok := err.(interface{ Unwrap() []error }); ok {
+		var kept []error
+		for _, sub := range multi.Unwrap() {
+			if s := stripClientLimitError(sub); s != nil {
+				kept = append(kept, s)
+			}
+		}
+		return errors.Join(kept...)
+	}
+	if single, ok := err.(interface{ Unwrap() error }); ok {
+		return stripClientLimitError(single.Unwrap())
+	}
+	return nil
 }
 
 // unconvertError converts fdb.Error back to *wire.FDBError so the

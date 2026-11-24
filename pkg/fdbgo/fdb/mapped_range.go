@@ -8,15 +8,21 @@ import (
 	"fdb.dev/pkg/fdbgo/client"
 )
 
-// MappedResultKind names which arm of a mapped-range row's secondary result is populated.
+// MappedResultKind names which arm of the per-row union is populated. It mirrors
+// the std::variant index in MappedReqAndResultRef, and the underlying values are
+// the flatbuffers union tags (1-based, 0 = unset) so a decode is a direct read.
 type MappedResultKind uint8
 
 const (
-	// MappedResultNone means the row carried no secondary result.
+	// MappedResultNone means the row carried no secondary result at all. The
+	// storage server does not produce this, but the tag is representable on the
+	// wire (tag 0), so it is named rather than silently conflated with a
+	// point-lookup miss — those are different facts.
 	MappedResultNone MappedResultKind = 0
-	// MappedResultGetValue means the mapper resolved to a single point lookup.
+	// MappedResultGetValue: the mapper resolved to a single key.
 	MappedResultGetValue MappedResultKind = 1
-	// MappedResultGetRange means the mapper resolved to a secondary range scan.
+	// MappedResultGetRange: the mapper ended in a "{...}" range descriptor and
+	// resolved to a key range.
 	MappedResultGetRange MappedResultKind = 2
 )
 
@@ -32,21 +38,27 @@ func (k MappedResultKind) String() string {
 	return fmt.Sprintf("MappedResultKind(%d)", uint8(k))
 }
 
-// MappedKeySelector represents the resolved secondary-range selector bounds returned in MappedGetRange.
+// MappedKeySelector mirrors C++ KeySelectorRef (FDBTypes.h:631-700) for the
+// resolved secondary-range selector bounds returned in MappedGetRange.
 type MappedKeySelector struct {
 	Key     []byte
 	OrEqual bool
 	Offset  int32
 }
 
-// MappedGetValue is the point-lookup secondary arm of a mapped range row.
+// MappedGetValue is the point-lookup arm (C++ GetValueReqAndResultRef,
+// FDBTypes.h:855). Present distinguishes "the mapped key holds an empty value"
+// from "the mapped key does not exist" — the C++ field is Optional<ValueRef> and
+// collapsing the two would silently invent a record.
 type MappedGetValue struct {
 	Key     []byte
 	Value   []byte
 	Present bool
 }
 
-// MappedGetRange is the range-scan secondary arm of a mapped range row.
+// MappedGetRange is the range arm (C++ GetRangeReqAndResultRef,
+// FDBTypes.h:873). Begin/End are the selectors the server actually resolved, so
+// a range that matched nothing still reports what it probed.
 type MappedGetRange struct {
 	Begin MappedKeySelector
 	End   MappedKeySelector
@@ -54,7 +66,10 @@ type MappedGetRange struct {
 	More  bool
 }
 
-// MappedKeyValue includes the primary row and the server-resolved secondary read.
+// MappedKeyValue is one row of a mapped range: the primary row (Key/Value —
+// the index entry that was scanned) plus the secondary read the mapper resolved
+// it to. Mirrors C++ MappedKeyValueRef (FDBTypes.h:895), whose KeyValueRef base
+// carries the primary row.
 type MappedKeyValue struct {
 	Key      []byte
 	Value    []byte

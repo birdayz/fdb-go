@@ -1,8 +1,8 @@
-// Package fdbmetrics exposes a pure-Go FDB client's operational counters
-// (fdb.Database.Metrics, RFC-097) in the Prometheus text exposition
-// format, ready to scrape — with zero dependencies.
+// Package fdbmetrics exposes a pure-Go FDB database's operational counters
+// (fdb.Database.Metrics, returning fdb.MetricsSnapshot; RFC-097) in the
+// Prometheus text exposition format, ready to scrape — with zero dependencies.
 //
-// Usage:
+// Usage (where db is an fdb.Database):
 //
 //	http.Handle("/metrics", fdbmetrics.Handler(db))
 //

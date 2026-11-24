@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"net"
 	"slices"
 	"sync"
@@ -29,8 +30,8 @@ func MustAPIVersion(version int) {
 }
 
 // APIVersion must be called before any other fdb function. It selects the
-// FDB API version to use (510-730). Re-selecting the same version is a no-op;
-// any other version once
+// FDB API version to use: client.MinAPIVersion through client.MaxAPIVersion
+// (510-730). Re-selecting the same version is a no-op; any other version once
 // one is selected fails with api_version_already_set (2201), and an
 // unsupported version with api_version_not_supported (2203).
 func APIVersion(version int) error {
@@ -261,9 +262,28 @@ func WithTracingSampleRate(rate float64) Option {
 }
 
 // WithTracer sets the application-owned OpenTelemetry tracer for client spans.
+// WithTracingSampleRate gates sampling before the provider's sampler; nil
+// disables export without constructing OTel contexts or spans. Managed Transact
+// and ReadTransact helpers end spans on every exit, whereas raw
+// CreateTransaction handles require commit, OnError, Reset, or Cancel (always
+// Cancel or Reset uncommitted handles). Tracer and span-processor callbacks run
+// synchronously and must not call transaction methods (including Reset/Cancel);
+// the application owns provider flushing and shutdown (Database.Close does not
+// shut it down). See also [client.WithTracer] for sampling, span ownership, and
+// callback restrictions.
 func WithTracer(t oteltrace.Tracer) Option {
 	return func(o *openOptions) {
 		o.clientOpts = append(o.clientOpts, client.WithTracer(t))
+	}
+}
+
+// WithLogger sets the per-handle logger for operational events (transaction
+// retries, commit_unknown_result — RFC-097). nil (the default) uses
+// slog.Default(), so zero-config apps keep slog.SetDefault; the per-handle
+// option exists for multi-tenant hosts and tests.
+func WithLogger(l *slog.Logger) Option {
+	return func(o *openOptions) {
+		o.clientOpts = append(o.clientOpts, client.WithLogger(l))
 	}
 }
 
@@ -363,6 +383,8 @@ func OpenDatabase(clusterFile string, opts ...Option) (Database, error) {
 	// bootstrap context (which we cancel after connect).
 	bootstrapCtx, bootstrapCancel := bootstrapContext(context.Background())
 	defer bootstrapCancel()
+	// Thread the selected API version into the client (RFC-149); the unset check
+	// above guarantees it is non-zero, so the client's mandatory-set gate passes.
 	db, err := client.OpenDatabase(bootstrapCtx, clusterFile, toClientOptions(opts, int(apiVersion.Load()))...)
 	if err != nil {
 		return Database{}, err
@@ -393,6 +415,8 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 	}
 	bootstrapCtx, cancel := bootstrapContext(ctx)
 	defer cancel()
+	// Thread the selected API version into the client (RFC-149); the unset check
+	// above guarantees it is non-zero, so the client's mandatory-set gate passes.
 	db, err := client.OpenDatabaseFromConfig(bootstrapCtx, toClientClusterFile(cf), toClientOptions(opts, int(apiVersion.Load()))...)
 	if err != nil {
 		return Database{}, err

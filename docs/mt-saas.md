@@ -466,17 +466,21 @@ What follows is only what a multi-tenant operator has to do differently.
 
 ### Retain a client or facade handle for client metrics
 
-Both `*client.Database` and the pure-Go `fdb.Database` facade expose `Metrics()`
-and can be passed to `fdbmetrics.Handler`. `*recordlayer.FDBDatabase` does not
-expose client metrics, so keep either underlying handle when wrapping a record store:
+The pure-Go `fdb.Database` facade exposes `Metrics()` (returning
+`fdb.MetricsSnapshot`) and satisfies `fdbmetrics.MetricsSource`, so it can be
+passed to `fdbmetrics.Handler`. Neither `*client.Database` (whose `Metrics()`
+returns `client.ClientMetricsSnapshot`) nor `*recordlayer.FDBDatabase`
+satisfies `fdbmetrics.MetricsSource`, so keep the `fdb.Database` handle when
+wrapping a record store:
 
 ```go
 cdb, err := client.OpenDatabase(ctx, clusterFile, client.WithAPIVersion(730))
 if err != nil {
 	return err
 }
-http.Handle("/metrics", fdbmetrics.Handler(cdb))    // Prometheus text exposition
-rdb := recordlayer.NewFDBDatabase(fdb.WrapDatabase(cdb))
+db := fdb.WrapDatabase(cdb)
+http.Handle("/metrics", fdbmetrics.Handler(db)) // Prometheus text exposition
+rdb := recordlayer.NewFDBDatabase(db)
 ```
 
 `fdbmetrics.Handler` (`pkg/fdbgo/fdbmetrics/fdbmetrics.go:36`) accepts any
