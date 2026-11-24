@@ -213,6 +213,12 @@ go_test(
         "testdata/rfc257/wsj_java_legacy_pins.json",
         "testdata/rfc257/wsj_java_pins.json",
     ],
+    embedsrcs = [
+        "testdata/probes/ws_e_pins.json",
+        "testdata/probes/ws_f_acceptance.json",
+        "testdata/probes/ws_f_go_pins.json",
+        "testdata/probes/ws_f_java_pins.json",
+    ],
     tags = [
         "conformance_java",
         "resources:cpu:2",
@@ -341,6 +347,9 @@ go_test(
     ],
     data = [
         ":conformance_server",
+    ],
+    embedsrcs = [
+        "testdata/probes/guardiann_pins.json",
     ],
     tags = [
         "conformance_java",

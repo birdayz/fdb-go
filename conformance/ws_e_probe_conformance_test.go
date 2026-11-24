@@ -5,7 +5,9 @@ package conformance_test
 import (
 	"context"
 	"database/sql"
+	_ "embed"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -30,6 +32,38 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 )
+
+//go:embed testdata/probes/ws_e_pins.json
+var wsEPinsJSON []byte
+
+type wsEPinSet struct {
+	V1       map[string]string `json:"v1"`
+	V2       map[string]string `json:"v2"`
+	V2Ext    map[string]string `json:"v2Ext"`
+	V4       map[string]string `json:"v4"`
+	V5       map[string]string `json:"v5"`
+	V6       map[string]string `json:"v6"`
+	V7       map[string]string `json:"v7"`
+	V8       map[string]string `json:"v8"`
+	V5Go     map[string]string `json:"v5Go"`
+	V6Go     map[string]string `json:"v6Go"`
+	V7Go     map[string]string `json:"v7Go"`
+	V8Go     map[string]string `json:"v8Go"`
+	V9       map[string]string `json:"v9"`
+	V10      map[string]string `json:"v10"`
+	V11      map[string]string `json:"v11"`
+	V12      map[string]string `json:"v12"`
+	V12Cost  map[string]string `json:"v12Cost"`
+	V12Cross map[string]string `json:"v12Cross"`
+}
+
+var wsEPins = func() wsEPinSet {
+	var out wsEPinSet
+	if err := json.Unmarshal(wsEPinsJSON, &out); err != nil {
+		panic(fmt.Sprintf("decode ws_e_pins.json: %v", err))
+	}
+	return out
+}()
 
 // Live-JVM oracle for the RFC-257 WS-E shared SQL semantics. Every probe runs
 // the same statement on the target 4.14.2.0 engine and on Go. The JAVA line of
@@ -548,82 +582,7 @@ var _ = Describe("WS-E target oracle", func() {
 			o.prepared(schema, setup, c)
 		}
 		// Measured target outcomes.
-		o.check(map[string]string{
-			"array_bare_null_element":            "ERROR 0A000 RelationalException \"An ARRAY value cannot have NULL elements\"",
-			"array_nullable_column_element":      "ERROR 0A000 SemanticException \"The action is currently unsupported An ARRAY value cannot have NULL elements\"",
-			"array_typed_null_element":           "ERROR 0A000 SemanticException \"The action is currently unsupported An ARRAY value cannot have NULL elements\"",
-			"coalesce_all_null":                  "ERROR 22F00 SemanticException \"The function is not defined for the given argument types\"",
-			"coalesce_evaluates_every_argument":  "ERROR XXXXX ArithmeticException \"/ by zero\"",
-			"coalesce_nullable_column":           "OK [BIGINT BIGINT] [NULL NOT NULL] [[1 0] [2 5] [3 7] [4 1] [5 2] [6 3] [7 4]]",
-			"coalesce_single_argument":           "ERROR XX000 VerifyException \"com.google.common.base.VerifyException\"",
-			"comment_cr_terminates":              "OK [BIGINT] [NULL] [[1]]",
-			"comment_crlf_terminates":            "OK [BIGINT] [NULL] [[1]]",
-			"comment_dash_no_space":              "OK [BIGINT] [NULL] [[1]]",
-			"comment_hash_not_comment":           "ERROR 42601 RelationalException \"syntax error:\\nline 1:30 token recognition error at: '# '\"",
-			"comment_marker_in_string":           "OK [BIGINT] [NULL] [[1]]",
-			"comment_mysql_executable_form":      "OK [BIGINT] [NULL] [[1]]",
-			"comment_nested_block":               "OK [BIGINT] [NULL] [[1]]",
-			"comment_unterminated_block":         "ERROR 42601 RelationalException \"syntax error:\\nline 1:36 token recognition error at: 'n'\"",
-			"comment_unterminated_nested":        "ERROR 42601 RelationalException \"syntax error:\\nline 1:40 token recognition error at: '*/'\"",
-			"greatest_all_null":                  "ERROR 22F00 SemanticException \"The function is not defined for the given argument types\"",
-			"greatest_mixed_numeric":             "OK [DOUBLE] [NOT NULL] [[2.5]]",
-			"greatest_one_null":                  "OK [INTEGER] [NULL] [[NULL]]",
-			"greatest_single_argument":           "ERROR XX000 VerifyException \"com.google.common.base.VerifyException\"",
-			"in_bare_null":                       "ERROR 42809 RelationalException \"NULL values are not allowed in the IN list\"",
-			"in_bare_null_beside_literal":        "ERROR 42809 RelationalException \"NULL values are not allowed in the IN list\"",
-			"in_column_value_null":               "ERROR 0A000 SemanticException \"The action is currently unsupported An ARRAY value cannot have NULL elements\"",
-			"in_typed_null":                      "ERROR 0A000 SemanticException \"The action is currently unsupported An ARRAY value cannot have NULL elements\"",
-			"in_wrapped_null":                    "ERROR 0A000 SemanticException \"The action is currently unsupported An ARRAY value cannot have NULL elements\"",
-			"least_nullable_column":              "OK [BIGINT BIGINT] [NULL NULL] [[1 NULL] [2 3] [3 3] [4 1] [5 2] [6 3] [7 3]]",
-			"like_adjacent_literal_pattern":      "OK [BIGINT] [NULL] [[1] [2] [4] [5] [6] [7]]",
-			"like_dangling_escape":               "ERROR 22025 SemanticException \"The like operator pattern requires all escape characters to be followed by a special character.\"",
-			"like_empty_pattern":                 "OK [BIGINT] [NULL] []",
-			"like_enum_operand":                  "ERROR 22F00 SemanticException \"The like operator expects string operands but was invoked with an operand of another type.\"",
-			"like_escape_before_ordinary":        "ERROR 22025 SemanticException \"The like operator pattern requires all escape characters to be followed by a special character.\"",
-			"like_escape_empty":                  "ERROR 22019 SemanticException \"The like operator expects an escape character of length 1.\"",
-			"like_escape_is_percent":             "ERROR 2200B SemanticException \"The like operator rejects wildcards as the escape character.\"",
-			"like_escape_is_underscore":          "ERROR 2200B SemanticException \"The like operator rejects wildcards as the escape character.\"",
-			"like_escape_percent":                "OK [BIGINT] [NULL] [[4]]",
-			"like_escape_supplementary":          "ERROR 22019 SemanticException \"The like operator expects an escape character of length 1.\"",
-			"like_escape_two_chars":              "ERROR 22019 SemanticException \"The like operator expects an escape character of length 1.\"",
-			"like_escape_underscore":             "OK [BIGINT] [NULL] [[5]]",
-			"like_escaped_escape":                "OK [BIGINT] [NULL] [[7]]",
-			"like_no_trailing_newline_tolerance": "OK [BIGINT] [NULL] []",
-			"like_not":                           "OK [BIGINT] [NULL] [[3]]",
-			"like_null_pattern":                  "OK [BIGINT] [NULL] []",
-			"like_null_pattern_bad_escape":       "ERROR 22019 SemanticException \"The like operator expects an escape character of length 1.\"",
-			"like_numeric_operand":               "ERROR 22F00 SemanticException \"The like operator expects string operands but was invoked with an operand of another type.\"",
-			"like_numeric_pattern":               "ERROR 22F00 SemanticException \"The like operator expects string operands but was invoked with an operand of another type.\"",
-			"like_percent_crosses_newline":       "OK [BIGINT] [NULL] [[2] [4] [5] [7]]",
-			"like_projection":                    "OK [BIGINT BOOLEAN] [NULL NULL] [[1 true] [2 true] [3 false] [4 true] [5 true] [6 true] [7 true]]",
-			"like_underscore_matches_newline":    "OK [BIGINT] [NULL] [[2] [4] [5] [7]]",
-			"like_underscore_surrogate_pair":     "OK [BIGINT] [NULL] [[3]]",
-			"literal_adjacent":                   "OK [STRING] [NOT NULL] [[ab]]",
-			"literal_adjacent_predicate":         "OK [BIGINT] [NULL] [[1]]",
-			"literal_adjacent_with_doubled":      "OK [STRING] [NOT NULL] [[a'b]]",
-			"literal_doubled_quote":              "OK [STRING] [NOT NULL] [[a'b]]",
-			"not_in_bare_null":                   "ERROR 42809 RelationalException \"NULL values are not allowed in the IN list\"",
-			"options_after_order_by":             "OK [BIGINT] [NULL] [[1] [2] [3] [4] [5] [6] [7]]",
-			"options_ef_search_statement":        "ERROR 42601 RelationalException \"syntax error:\\nSELECT id FROM T WHERE id = 1 OPTIONS (EF_SEARCH 10)\\n                                       ^^^^^^^^^\"",
-			"options_inside_subquery":            "ERROR 42601 RelationalException \"syntax error:\\nSELECT id FROM (SELECT id FROM T OPTIONS (NOCACHE)) AS X WHERE id = 1\\n                                 ^^^^^^^\"",
-			"options_log_query":                  "OK [BIGINT] [NULL] [[1]]",
-			"options_snapshot_select":            "OK [BIGINT] [NULL] [[1]]",
-			"prepared_array_typed_null_element":  "ERROR 0A000 RelationalException \"An ARRAY value cannot have NULL elements\"",
-			"prepared_coalesce_typed_null":       "OK [INTEGER] [NOT NULL] [[0]]",
-			"prepared_eq_typed_null":             "OK [BIGINT] [NULL] []",
-			"prepared_in_literal_and_typed_null": "ERROR 0A000 SemanticException \"The action is currently unsupported An ARRAY value cannot have NULL elements\"",
-			"prepared_in_long":                   "OK [BIGINT] [NULL] [[1]]",
-			"prepared_in_object_null":            "ERROR 0A000 SemanticException \"The action is currently unsupported An ARRAY value cannot have NULL elements\"",
-			"prepared_in_typed_null":             "ERROR 0A000 SemanticException \"The action is currently unsupported An ARRAY value cannot have NULL elements\"",
-			"prepared_int_overflow":              "ERROR XXXXX ArithmeticException \"integer overflow\"",
-			"prepared_is_null_param":             "OK [BIGINT] [NULL] [[1] [2] [3] [4] [5] [6] [7]]",
-			"prepared_like_param_pattern":        "ERROR 42601 RelationalException \"syntax error:\\nSELECT id FROM T WHERE s LIKE ? ORDER BY id\\n                              ^\"",
-			"prepared_limit_param":               "ERROR 0AF00 RelationalException \"LIMIT clause is not supported.\"",
-			"prepared_long_no_overflow":          "OK [BIGINT] [NULL] [[2147483648]]",
-			"prepared_order_by_param":            "ERROR 0AF00 UnableToPlanException \"Cascades planner could not plan query\"",
-			"prepared_select_long":               "OK [BIGINT] [NOT NULL] [[5]]",
-			"prepared_string_eq":                 "OK [BIGINT] [NULL] [[1]]",
-		})
+		o.check(wsEPins.V1)
 	})
 })
 
@@ -697,45 +656,7 @@ var _ = Describe("WS-E target oracle v2", func() {
 			o.prepared(schema, setup, c)
 		}
 		// Measured target outcomes (4.14.2.0).
-		o.check(map[string]string{
-			"like_bad_escape_empty_table":            "OK [BIGINT] [NULL] []",
-			"like_dangling_escape_empty_table":       "OK [BIGINT] [NULL] []",
-			"like_bad_escape_filtered_out":           "OK [BIGINT] [NULL] []",
-			"like_bad_escape_null_operand":           "ERROR 22019 SemanticException \"The like operator expects an escape character of length 1.\"",
-			"like_bad_escape_explain":                "OK EXPLAIN \"SCAN([IS T]) | FILTER _.S LIKE @c7 ESCAPE 'ab' | MAP (_.ID AS ID)\"",
-			"b64_literal_upper":                      "OK [BINARY] [NOT NULL] [[YWJj]]",
-			"b64_literal_lower":                      "OK [BINARY] [NOT NULL] [[ywjj]]",
-			"literal_charset_prefix":                 "ERROR 0AF00 RelationalException \"charset not is supported\"",
-			"literal_national":                       "ERROR 0AF00 RelationalException \"national string literal is not supported\"",
-			"literal_collate":                        "ERROR 0AF00 RelationalException \"collation is not supported\"",
-			"explain_snapshot":                       "OK EXPLAIN \"SCAN([IS T, EQUALS promote(@c7 AS LONG)]) | MAP (_.ID AS ID)\"",
-			"coalesce_bytes":                         "ERROR 22F00 SemanticException \"The function is not defined for the given argument types\"",
-			"greatest_bytes":                         "ERROR 22F00 SemanticException \"The function is not defined for the given argument types\"",
-			"coalesce_incompatible":                  "ERROR 22000 SemanticException \"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.\"",
-			"coalesce_eager_div0_literal":            "ERROR XXXXX ArithmeticException \"/ by zero\"",
-			"coalesce_eager_div0_column":             "ERROR XXXXX ArithmeticException \"/ by zero\"",
-			"nullability_coalesce_nullable_literal":  "OK [BIGINT] [NOT NULL] [[0]]",
-			"nullability_coalesce_nullable_nullable": "OK [BIGINT] [NULL] [[NULL]]",
-			"nullability_coalesce_notnull_nullable":  "OK [BIGINT] [NULL] [[1]]",
-			"nullability_greatest_notnull":           "OK [BIGINT] [NULL] [[5]]",
-			"nullability_greatest_nullable":          "OK [BIGINT] [NULL] [[NULL]]",
-			"nullability_least_mixed":                "OK [BIGINT] [NULL] [[NULL]]",
-			"nullability_arith":                      "OK [BIGINT] [NULL] [[2]]",
-			"nullability_scalar_function":            "ERROR 0AF00 RelationalException \"Unsupported operator UPPER\"",
-			"int_column_eq_literal":                  "OK [BIGINT] [NULL] [[1]]",
-			"null_array_comparison_operand":          "ERROR 0A000 RelationalException \"An ARRAY value cannot have NULL elements\"",
-			"null_array_function_argument":           "ERROR 0A000 RelationalException \"An ARRAY value cannot have NULL elements\"",
-			"prepared_select_then_where":             "OK [BIGINT] [NOT NULL] []",
-			"prepared_two_where":                     "OK [BIGINT] [NULL] [[2] [3]]",
-			"prepared_named":                         "OK [BIGINT] [NULL] [[1]]",
-			"prepared_named_dollar":                  "OK [BIGINT] [NULL] [[1]]",
-			"prepared_double":                        "OK [DOUBLE] [NOT NULL] [[1.5]]",
-			"prepared_boolean":                       "OK [BOOLEAN] [NOT NULL] [[true]]",
-			"prepared_long_vs_int_column":            "OK [BIGINT] [NULL] [[1]]",
-			"prepared_int_vs_int_column":             "OK [BIGINT] [NULL] [[1]]",
-			"prepared_in_two":                        "OK [BIGINT] [NULL] [[1] [3]]",
-			"prepared_like_null_pattern":             "ERROR 42601 RelationalException \"syntax error:\\nSELECT id FROM T WHERE s LIKE ? ORDER BY id\\n                              ^\"",
-		})
+		o.check(wsEPins.V2)
 	})
 })
 
@@ -773,20 +694,7 @@ var _ = Describe("WS-E target oracle v2 extended", func() {
 			o.prepared(schema, setup, c)
 		}
 		// Measured target outcomes (4.14.2.0).
-		o.check(map[string]string{
-			"order_by_string_literal":              "ERROR 0AF00 UnableToPlanException \"Cascades planner could not plan query\"",
-			"order_by_constant_expression":         "ERROR 0AF00 UnableToPlanException \"Cascades planner could not plan query\"",
-			"snapshot_connection_select":           "OK [BIGINT] [NULL] [[1]]",
-			"snapshot_connection_explain":          "OK EXPLAIN \"SCAN([IS T, EQUALS promote(@c7 AS LONG)]) | MAP (_.ID AS ID)\"",
-			"snapshot_connection_insert":           "ERROR 0A000 RelationalException \"OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries\"",
-			"insert_long_into_int_column":          "ERROR 22000 SemanticException \"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.\"",
-			"insert_long_overflow_into_int_column": "ERROR 22000 SemanticException \"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.\"",
-			"insert_int_into_int_column":           "OK [INTEGER] [NULL] [[7]] COUNT 1",
-			"mixed_named_and_positional":           "OK [BIGINT] [NULL] [[1] [3]]",
-			"named_parameter_twice":                "OK [BIGINT] [NULL] [[1] [3]]",
-			"in_array_parameter":                   "OK [BIGINT] [NULL] [[1] [3]]",
-			"uuid_parameter":                       "OK [OTHER] [NOT NULL] [[123e4567-e89b-12d3-a456-426614174000]]",
-		})
+		o.check(wsEPins.V2Ext)
 	})
 })
 
@@ -880,54 +788,7 @@ var _ = Describe("WS-E target oracle v3", func() {
 })
 
 // wsE4Pins is the measured target outcome of every round-3 probe (4.14.2.0).
-var wsE4Pins = map[string]string{
-	"arith_untyped_null_param":                "ERROR XX000 VerifyException \"unable to encapsulate arithmetic operation due to type mismatch(es)\"",
-	"array_cast_null_empty_table":             "OK [ARRAY] [NOT NULL] []",
-	"array_cast_null_nonempty_table":          "ERROR 0A000 SemanticException \"The action is currently unsupported An ARRAY value cannot have NULL elements\"",
-	"array_eq_column_element":                 "OK [BIGINT] [NULL] [[1]]",
-	"array_eq_literal":                        "ERROR 42804 SemanticException \"The operands of a comparison operator are not compatible.\"",
-	"array_eq_parenthesised_operand":          "ERROR 42804 SemanticException \"The operands of a comparison operator are not compatible.\"",
-	"coalesce_true_erroring_tail_select":      "ERROR XXXXX ArithmeticException \"/ by zero\"",
-	"coalesce_true_erroring_tail_where":       "OK [BIGINT] [NULL] [[1] [2] [3]]",
-	"dry_run_connection_insert":               "OK [BIGINT BIGINT] [NULL NULL] [[1 10]] COUNT 1",
-	"dry_run_connection_select":               "OK [BIGINT] [NULL] [[1]]",
-	"dry_run_connection_update":               "OK [BIGINT BIGINT] [NULL NULL] [[1 10]] COUNT 1",
-	"greatest_negative_doubles":               "OK [DOUBLE] [NOT NULL] [[5e-324]]",
-	"greatest_negative_floats":                "OK [FLOAT] [NOT NULL] [[1.4e-45]]",
-	"greatest_negative_longs":                 "OK [INTEGER] [NOT NULL] [[-1]]",
-	"in_cast_null_empty_table":                "ERROR 0A000 SemanticException \"The action is currently unsupported An ARRAY value cannot have NULL elements\"",
-	"in_cast_null_nonempty_table":             "ERROR 0A000 SemanticException \"The action is currently unsupported An ARRAY value cannot have NULL elements\"",
-	"in_list_order":                           "OK [BIGINT] [NULL] [[2]]",
-	"insert_double_into_float_column":         "ERROR 22000 SemanticException \"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.\"",
-	"insert_double_literal_into_float_column": "ERROR 22000 SemanticException \"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.\"",
-	"insert_float_into_float_column":          "OK [BIGINT FLOAT] [NULL NULL] [[2 1.5]] COUNT 1",
-	"insert_float_literal_into_float_column":  "OK [BIGINT FLOAT] [NULL NULL] [[4 1.5]] COUNT 1",
-	"insert_int_into_bigint_column":           "OK [BIGINT BIGINT] [NULL NULL] [[1 10] [3 7]] COUNT 1",
-	"insert_select_then_where_order":          "OK [BIGINT BIGINT] [NULL NULL] [[1 10]] COUNT 0",
-	"insert_untyped_null_param":               "OK [BIGINT BIGINT] [NULL NULL] [[1 10] [7 NULL]] COUNT 1",
-	"least_negative_doubles":                  "OK [DOUBLE] [NOT NULL] [[-2.5]]",
-	"nn_add_literals":                         "OK [INTEGER] [NULL] [[3]]",
-	"nn_bitand_literals":                      "OK [INTEGER] [NULL] [[1]]",
-	"nn_coalesce_literals":                    "OK [INTEGER] [NOT NULL] [[1]]",
-	"nn_greatest_literals":                    "OK [INTEGER] [NOT NULL] [[5]]",
-	"nn_literal":                              "OK [INTEGER] [NOT NULL] [[7]]",
-	"nn_mod_literals":                         "OK [INTEGER] [NULL] [[1]]",
-	"nn_pk_plus_literal":                      "OK [BIGINT] [NULL] [[2]]",
-	"select_expr_then_where_order":            "OK [BIGINT BIGINT] [NULL NULL] []",
-	"select_untyped_null_param":               "ERROR XXXXX RecordCoreException \"should not be called\"",
-	"snapshot_connection_create_database":     "ERROR 0A000 RelationalException \"OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries\"",
-	"snapshot_connection_delete":              "ERROR 0A000 RelationalException \"OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries\"",
-	"snapshot_connection_drop_database":       "ERROR 0A000 RelationalException \"OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries\"",
-	"snapshot_connection_explain_insert":      "ERROR 0A000 RelationalException \"OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries\"",
-	"snapshot_connection_show_databases":      "ERROR 0A000 RelationalException \"OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries\"",
-	"snapshot_connection_show_templates":      "ERROR 0A000 RelationalException \"OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries\"",
-	"snapshot_connection_update":              "ERROR 0A000 RelationalException \"OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries\"",
-	"subquery_order":                          "ERROR 0AF00 RelationalException \"IN predicate does not support nested SELECT\"",
-	"too_few_parameters":                      "ERROR 42F02 RelationalException \"No value found for parameter 2\"",
-	"too_many_parameters":                     "OK [BIGINT] [NULL] [[1]]",
-	"update_set_then_where_order":             "OK [BIGINT BIGINT] [NULL NULL] [[1 10]] COUNT 0",
-	"where_then_having_order":                 "ERROR 0AF00 UnableToPlanException \"Cascades planner could not plan query\"",
-}
+var wsE4Pins = wsEPins.V4
 
 // Round 4 of the WS-E target oracle, answering the design-v3 gates. Folding
 // regimes: a COALESCE whose head is a NOT, AND, OR or arithmetic over literals,
@@ -1136,97 +997,7 @@ var _ = Describe("WS-E target oracle v4", func() {
 })
 
 // wsE5Pins is the measured target outcome of every round-4 probe (4.14.2.0).
-var wsE5Pins = map[string]string{
-	"add_int_boolean_select":                              "ERROR XX000 VerifyException \"unable to encapsulate arithmetic operation due to type mismatch(es)\"",
-	"add_string_int_select":                               "OK [STRING] [NULL] [[a1]]",
-	"add_string_string_select":                            "OK [STRING] [NULL] [[abcabc]]",
-	"array_column_eq_column_and_null":                     "ERROR 0A000 RelationalException \"An ARRAY value cannot have NULL elements\"",
-	"array_null_element_eq_literal":                       "ERROR 0A000 RelationalException \"An ARRAY value cannot have NULL elements\"",
-	"cast_null_plus_one_select":                           "OK [BIGINT] [NULL] [[NULL]]",
-	"coalesce_and_head_where":                             "ERROR XXXXX ArithmeticException \"/ by zero\"",
-	"coalesce_arith_head_where":                           "ERROR XXXXX ArithmeticException \"/ by zero\"",
-	"coalesce_bound_null_head_where":                      "OK [BIGINT] [NULL] [[1] [2] [3]]",
-	"coalesce_bound_true_head_select":                     "ERROR XXXXX ArithmeticException \"/ by zero\"",
-	"coalesce_bound_true_head_where":                      "OK [BIGINT] [NULL] [[1] [2] [3]]",
-	"coalesce_cast_null_head_erroring_tail_where":         "OK [BIGINT] [NULL] [[1] [2] [3]]",
-	"coalesce_cast_null_head_where":                       "OK [BIGINT] [NULL] [[1] [2] [3]]",
-	"coalesce_int_literal_head_where":                     "ERROR XXXXX ArithmeticException \"/ by zero\"",
-	"coalesce_not_head_select":                            "ERROR XXXXX ArithmeticException \"/ by zero\"",
-	"coalesce_not_head_where":                             "ERROR XXXXX ArithmeticException \"/ by zero\"",
-	"coalesce_not_head_where_explain":                     "OK EXPLAIN \"SCAN([IS T]) | FILTER coalesce_boolean(NOT 'false', @c10 / @c12 equals @c10) EQUALS true | MAP (_.ID AS ID)\"",
-	"coalesce_null_head_erroring_tail_where":              "OK [BIGINT] [NULL] [[1] [2] [3]]",
-	"coalesce_null_head_where":                            "OK [BIGINT] [NULL] [[1] [2] [3]]",
-	"coalesce_or_head_where":                              "ERROR XXXXX ArithmeticException \"/ by zero\"",
-	"coalesce_true_head_where_explain":                    "OK EXPLAIN \"SCAN([IS T]) | MAP (_.ID AS ID)\"",
-	"describe_select":                                     "OK EXPLAIN \"SCAN([IS L, EQUALS promote(@c7 AS LONG)]) | MAP (_.ID AS ID)\"",
-	"dry_run_connection_create_template":                  "OK [STRING ARRAY] [NOT NULL NULL] [[WSE5_DRYRUN_TPL [map[COLUMNS:[map[COLUMN_NAME:ID COLUMN_TYPE:-5]] TABLE_NAME:X]]]] COUNT 0",
-	"dry_run_connection_delete":                           "OK [BIGINT BIGINT] [NULL NULL] [[1 10]] COUNT 1",
-	"greatest_nan_double":                                 "OK [DOUBLE] [NULL] [[5e-324]]",
-	"greatest_negative_long_columns":                      "OK [BIGINT] [NULL] [[-95]]",
-	"greatest_negative_long_literals":                     "OK [BIGINT] [NOT NULL] [[-3000000000]]",
-	"greatest_zero_doubles":                               "OK [DOUBLE] [NOT NULL] [[5e-324]]",
-	"greatest_zero_floats":                                "OK [FLOAT] [NOT NULL] [[1.4e-45]]",
-	"group_by_literal_control":                            "ERROR 0AF00 UnableToPlanException \"Cascades planner could not plan query\"",
-	"having_literal_control":                              "ERROR 0AF00 UnableToPlanException \"Cascades planner could not plan query\"",
-	"in_cast_null_explain":                                "OK EXPLAIN \"EXPLODE arrayDistinct(array(NULL)) | FLATMAP q0 -> { SCAN([IS E]) | FILTER _.X EQUALS q0 AS q1 RETURN (q1.X AS X) }\"",
-	"in_cast_null_filtered_out":                           "ERROR 0A000 SemanticException \"The action is currently unsupported An ARRAY value cannot have NULL elements\"",
-	"in_cast_null_mixed_empty_table":                      "OK [BIGINT] [NULL] []",
-	"in_cast_null_mixed_nonempty_table":                   "ERROR 0A000 SemanticException \"The action is currently unsupported An ARRAY value cannot have NULL elements\"",
-	"in_literal_and_cast_null_explain":                    "OK EXPLAIN \"[IN arrayDistinct(array(promote(@c8 AS LONG), NULL))] | INJOIN q0 -> { SCAN([IS T, EQUALS q0]) | MAP (_.ID AS ID) }\"",
-	"in_single_literal_explain":                           "OK EXPLAIN \"[IN arrayDistinct(promote(@c7 AS ARRAY(LONG)))] | INJOIN q0 -> { SCAN([IS T, EQUALS q0]) | MAP (_.ID AS ID) }\"",
-	"inline_null_plus_one_select":                         "ERROR XX000 VerifyException \"unable to encapsulate arithmetic operation due to type mismatch(es)\"",
-	"inline_null_plus_one_where":                          "ERROR XX000 VerifyException \"unable to encapsulate arithmetic operation due to type mismatch(es)\"",
-	"insert_array_parameter":                              "OK [BIGINT ARRAY] [NULL NULL] [[1 [5]] [3 [7 8]]] COUNT 1",
-	"insert_double_expr_into_float_column":                "ERROR 22000 SemanticException \"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.\"",
-	"insert_double_literal_into_bigint_column":            "ERROR 22000 SemanticException \"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.\"",
-	"insert_empty_array_parameter":                        "OK [BIGINT ARRAY] [NULL NULL] [[1 [5]] [4 []]] COUNT 1",
-	"insert_float_literal_into_double_column":             "OK [BIGINT DOUBLE] [NULL NULL] [[1 1.5] [8 1.5]] COUNT 1",
-	"insert_int_expr_into_int_column":                     "OK [BIGINT INTEGER] [NULL NULL] [[1 5] [20 3]] COUNT 1",
-	"insert_int_literal_into_double_column":               "OK [BIGINT DOUBLE] [NULL NULL] [[1 1.5] [7 1]] COUNT 1",
-	"insert_int_literal_into_float_column":                "OK [BIGINT FLOAT] [NULL NULL] [[1 2.5] [6 1]] COUNT 1",
-	"insert_int_param_into_float_column":                  "OK [BIGINT FLOAT] [NULL NULL] [[1 2.5] [10 1]] COUNT 1",
-	"insert_long_expr_into_int_column":                    "ERROR 22000 SemanticException \"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.\"",
-	"insert_long_literal_into_int_column":                 "ERROR 22000 SemanticException \"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.\"",
-	"insert_null_array_parameter":                         "OK [BIGINT ARRAY] [NULL NULL] [[1 [5]] [5 NULL]] COUNT 1",
-	"insert_select_bigint_column_into_int":                "ERROR 22000 SemanticException \"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.\"",
-	"insert_select_double_column_into_float":              "ERROR 22000 SemanticException \"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.\"",
-	"insert_select_int_column_into_bigint":                "OK [BIGINT BIGINT] [NULL NULL] [[1 10] [101 5]] COUNT 1",
-	"least_infinite_doubles":                              "OK [DOUBLE] [NULL] [[1.7976931348623157e+308]]",
-	"least_long_literals":                                 "OK [BIGINT] [NOT NULL] [[3000000000]]",
-	"least_nan_double":                                    "OK [DOUBLE] [NULL] [[1]]",
-	"least_overflowing_literal":                           "ERROR XXXXX NumberFormatException \"For input string: \\\"1e309\\\"\"",
-	"null_strict_cast_null_beside_div0_select":            "OK [INTEGER] [NULL] [[NULL]]",
-	"null_strict_cast_null_beside_div0_select_explain":    "OK EXPLAIN \"SCAN([IS T, EQUALS promote(@c18 AS LONG)]) | MAP (NULL AS _0)\"",
-	"null_strict_cast_null_beside_div0_where":             "ERROR XXXXX ArithmeticException \"/ by zero\"",
-	"null_strict_cast_null_beside_div0_where_empty_table": "OK [BIGINT] [NULL] []",
-	"null_strict_cast_null_beside_div0_where_explain":     "OK EXPLAIN \"SCAN([IS T]) | FILTER promote(@c6 AS INT) EQUALS @c6 / @c8 + NULL | MAP (_.ID AS ID)\"",
-	"null_strict_column_beside_cast_null_where_explain":   "OK EXPLAIN \"SCAN([IS T]) | FILTER _.N + NULL EQUALS promote(@c14 AS LONG) | MAP (_.ID AS ID)\"",
-	"null_strict_null_beside_div0_select":                 "ERROR XX000 VerifyException \"unable to encapsulate arithmetic operation due to type mismatch(es)\"",
-	"read_scope_covering_explain":                         "OK EXPLAIN \"COVERING(S_V <,> -> [ID: KEY:[2], V: KEY:[0]]) | MAP (_.ID AS ID)\"",
-	"read_scope_covering_serializable_insert":             "READ OK [BIGINT] [NULL] [[1] [2] [3]] COMMIT ERROR 40001 ContextualSQLException Transaction not committed due to conflict with another transaction",
-	"read_scope_covering_snapshot_insert":                 "READ OK [BIGINT] [NULL] [[1] [2] [3]] COMMIT OK",
-	"read_scope_covering_snapshot_update":                 "READ OK [BIGINT] [NULL] [[1] [2] [3]] COMMIT OK",
-	"read_scope_fetch_explain":                            "OK EXPLAIN \"ISCAN(S_V [[GREATER_THAN promote(@c9 AS LONG)]]) | MAP (_.ID AS ID, _.W AS W)\"",
-	"read_scope_fetch_serializable_insert":                "READ OK [BIGINT BIGINT] [NULL NULL] [[2 200] [3 300]] COMMIT ERROR 40001 ContextualSQLException Transaction not committed due to conflict with another transaction",
-	"read_scope_fetch_serializable_update_fetched":        "READ OK [BIGINT BIGINT] [NULL NULL] [[2 200] [3 300]] COMMIT ERROR 40001 ContextualSQLException Transaction not committed due to conflict with another transaction",
-	"read_scope_fetch_snapshot_insert":                    "READ OK [BIGINT BIGINT] [NULL NULL] [[2 200] [3 300]] COMMIT OK",
-	"read_scope_fetch_snapshot_update_fetched":            "READ OK [BIGINT BIGINT] [NULL NULL] [[2 200] [3 300]] COMMIT ERROR 40001 ContextualSQLException Transaction not committed due to conflict with another transaction",
-	"read_scope_scan_explain":                             "OK EXPLAIN \"SCAN([IS P])\"",
-	"read_scope_scan_serializable_insert":                 "READ OK [BIGINT BIGINT] [NULL NULL] [[1 100] [2 200] [3 300]] COMMIT ERROR 40001 ContextualSQLException Transaction not committed due to conflict with another transaction",
-	"read_scope_scan_snapshot_insert":                     "READ OK [BIGINT BIGINT] [NULL NULL] [[1 100] [2 200] [3 300]] COMMIT OK",
-	"read_scope_scan_snapshot_update":                     "READ OK [BIGINT BIGINT] [NULL NULL] [[1 100] [2 200] [3 300]] COMMIT OK",
-	"snapshot_connection_desc_select":                     "OK EXPLAIN \"SCAN([IS L, EQUALS promote(@c7 AS LONG)]) | MAP (_.ID AS ID)\"",
-	"snapshot_connection_describe_schema":                 "ERROR 0A000 RelationalException \"OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries\"",
-	"snapshot_connection_describe_select":                 "OK EXPLAIN \"SCAN([IS L, EQUALS promote(@c7 AS LONG)]) | MAP (_.ID AS ID)\"",
-	"snapshot_connection_describe_template":               "ERROR 0A000 RelationalException \"OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries\"",
-	"snapshot_connection_help":                            "ERROR 0A000 RelationalException \"OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries\"",
-	"sub_string_int_select":                               "ERROR XX000 VerifyException \"unable to encapsulate arithmetic operation due to type mismatch(es)\"",
-	"update_array_parameter":                              "OK [BIGINT ARRAY] [NULL NULL] [[1 [9]]] COUNT 1",
-	"update_float_column_plus_double":                     "ERROR 22000 SemanticException \"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.\"",
-	"update_float_column_plus_float":                      "OK [BIGINT FLOAT] [NULL NULL] [[1 3]] COUNT 1",
-	"update_int_column_from_bigint_column":                "ERROR 22000 SemanticException \"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.\"",
-	"update_int_column_plus_literal":                      "OK [BIGINT INTEGER] [NULL NULL] [[1 6]] COUNT 1",
-}
+var wsE5Pins = wsEPins.V5
 
 var _ = Describe("WS-E target oracle v5", func() {
 	It("records predicate folding, IN timing outside the explode, STRING lanes, nested assignment and index-state conflicts", func() {
@@ -1524,141 +1295,10 @@ var _ = Describe("WS-E target oracle v6", func() {
 })
 
 // wsE7Pins is the measured target outcome of every round-6 probe (4.14.2.0).
-var wsE7Pins = map[string]string{
-	"case_div0_branch_select":               "OK [INTEGER] [NULL] [[1]]",
-	"case_literals_select":                  "OK [INTEGER] [NULL] [[1]]",
-	"cast_column_nullability_select":        "OK [INTEGER] [NULL] [[5]]",
-	"cast_literal_nullability_select":       "OK [BIGINT] [NOT NULL] [[1]]",
-	"cast_string_to_bigint_select":          "ERROR 22F3H SemanticException \"Invalid cast operation Cannot cast string 'x' to LONG: For input string: \\\"x\\\"\"",
-	"cast_uuid_braces":                      "ERROR XX000 SemanticException \"Invalid UUID value for the UUID type {123e4567-e89b-12d3-a456-426614174000}\"",
-	"cast_uuid_component_2_pow_63":          "ERROR XX000 SemanticException \"Invalid UUID value for the UUID type 1-2-3-4-8000000000000000\"",
-	"cast_uuid_component_long_max":          "OK [OTHER] [NOT NULL] [[00000001-0002-0003-0004-ffffffffffff]]",
-	"cast_uuid_component_past_64_bits":      "ERROR XX000 SemanticException \"Invalid UUID value for the UUID type 1-2-3-4-10000000000000000\"",
-	"cast_uuid_empty_component":             "ERROR XX000 SemanticException \"Invalid UUID value for the UUID type 1--3-4-5\"",
-	"cast_uuid_fifth_dash":                  "ERROR XX000 SemanticException \"Invalid UUID value for the UUID type 1-2-3-4--5\"",
-	"cast_uuid_fullwidth_hex":               "OK [OTHER] [NOT NULL] [[0000000a-0002-0003-0004-000000000005]]",
-	"cast_uuid_short_components":            "OK [OTHER] [NOT NULL] [[00000001-0002-0003-0004-000000000005]]",
-	"cast_uuid_surrounding_space":           "ERROR XX000 SemanticException \"Invalid UUID value for the UUID type  123e4567-e89b-12d3-a456-426614174000\"",
-	"cast_uuid_thirty_seven_chars":          "ERROR XX000 SemanticException \"Invalid UUID value for the UUID type 123e4567-e89b-12d3-a456-4266141740000\"",
-	"cast_uuid_unicode_digit":               "OK [OTHER] [NOT NULL] [[00000001-0002-0003-0004-000000000005]]",
-	"cast_uuid_wide_first_component":        "OK [OTHER] [NOT NULL] [[23456789-0001-0001-0001-000000000001]]",
-	"conj_false_explain":                    "OK EXPLAIN \"SCAN([IS T]) | FILTER false | MAP (_.ID AS ID)\"",
-	"conj_false_where":                      "OK [BIGINT] [NULL] []",
-	"conj_true_explain":                     "OK EXPLAIN \"SCAN([IS T]) | FILTER _.N GREATER_THAN promote(@c7 AS LONG) | MAP (_.ID AS ID)\"",
-	"conj_true_where":                       "OK [BIGINT] [NULL] [[2] [3]]",
-	"constant_expression_comparand_explain": "OK EXPLAIN \"SCAN([IS T, EQUALS promote(@c7 + @c9 AS LONG)]) | MAP (_.ID AS ID)\"",
-	"constant_expression_comparand_where":   "OK [BIGINT] [NULL] [[3]]",
-	"constant_expression_range_explain":     "OK EXPLAIN \"SCAN([IS T, [GREATER_THAN promote(@c7 - @c9 AS LONG)]]) | MAP (_.ID AS ID)\"",
-	"enum_lowercase_bound":                  "ERROR XX000 SemanticException \"Invalid enum value for the enum type green\"",
-	"enum_lowercase_literal":                "ERROR XX000 SemanticException \"Invalid enum value for the enum type red\"",
-	"enum_padded_literal":                   "ERROR XX000 SemanticException \"Invalid enum value for the enum type RED \"",
-	"in_own_column_item_explain":            "OK EXPLAIN \"SCAN([IS T]) | FLATMAP q0 -> { EXPLODE arrayDistinct(array(q0.ID + @c10, promote(@c12 AS LONG))) | FILTER q0.N EQUALS _ AS q1 RETURN (q0.ID AS ID) }\"",
-	"in_own_column_item_where":              "OK [BIGINT] [NULL] [[3]]",
-	"is_not_null_coalesce_div0_where":       "OK [BIGINT] [NULL] [[1] [2] [3]]",
-	"is_null_case_both_arithmetic_where":    "OK [BIGINT] [NULL] []",
-	"is_null_case_div0_branch_where":        "ERROR 22000 SemanticException \"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.\"",
-	"is_null_case_div0_condition_where":     "ERROR XXXXX ArithmeticException \"/ by zero\"",
-	"is_null_case_literals_where":           "OK [BIGINT] [NULL] []",
-	"is_null_cast_div0_where":               "ERROR XXXXX ArithmeticException \"/ by zero\"",
-	"is_null_cast_string_to_bigint_where":   "OK [BIGINT] [NULL] []",
-	"is_null_greatest_div0_where":           "ERROR XXXXX ArithmeticException \"/ by zero\"",
-	"trace_conj_false":                      "TRACE EXPLAIN \"SCAN([IS T]) | FILTER false | MAP (_.ID AS ID)\"; QueryPredicateSimplificationRule calls=2 finals=0 exploratory=1; ranking: REWRITING-PRUNE members: 2 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[false] semanticHash=1503357515 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=2 predicates=[q#.N [GREATER_THAN promote(@c7 AS LONG)], coalesce_int(@c11 / @c7, @c15) [IS_NULL]] semanticHash=1174156789 | REWRITING-COMPARE 0 vs 1 = -1",
-	"trace_conj_true":                       "TRACE EXPLAIN \"SCAN([IS T]) | FILTER _.N GREATER_THAN promote(@c7 AS LONG) | MAP (_.ID AS ID)\"; QueryPredicateSimplificationRule calls=2 finals=0 exploratory=1; ranking: REWRITING-PRUNE members: 2 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[q#.N [GREATER_THAN promote(@c7 AS LONG)]] semanticHash=1569283107 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=2 predicates=[q#.N [GREATER_THAN promote(@c7 AS LONG)], @c10 / @c7 + NULL [IS_NULL]] semanticHash=941872657 | REWRITING-COMPARE 0 vs 1 = -1",
-	"trace_constant_expression_comparand":   "TRACE EXPLAIN \"SCAN([IS T, EQUALS promote(@c7 + @c9 AS LONG)]) | MAP (_.ID AS ID)\"; QueryPredicateSimplificationRule calls=1 finals=0 exploratory=0",
-	"uuid_bound_braces":                     "ERROR XX000 SemanticException \"Invalid UUID value for the UUID type {123e4567-e89b-12d3-a456-426614174000}\"",
-	"uuid_bound_no_dashes":                  "ERROR XX000 SemanticException \"Invalid UUID value for the UUID type 123e4567e89b12d3a456426614174000\"",
-	"uuid_bound_plus_sign_component":        "OK [BIGINT OTHER] [NULL NULL] [[6 00000001-0002-0003-0004-000000000005]] COUNT 1",
-	"uuid_bound_short_components":           "OK [BIGINT OTHER] [NULL NULL] [[1 00000001-0002-0003-0004-000000000005]] COUNT 1",
-	"uuid_bound_surrounding_space":          "ERROR XX000 SemanticException \"Invalid UUID value for the UUID type  123e4567-e89b-12d3-a456-426614174000\"",
-	"uuid_bound_uppercase":                  "OK [BIGINT OTHER] [NULL NULL] [[2 123e4567-e89b-12d3-a456-426614174000]] COUNT 1",
-	"uuid_bound_urn":                        "ERROR XX000 SemanticException \"Invalid UUID value for the UUID type urn:uuid:123e4567-e89b-12d3-a456-426614174000\"",
-	"uuid_literal_braces":                   "ERROR XX000 SemanticException \"Invalid UUID value for the UUID type {123e4567-e89b-12d3-a456-426614174000}\"",
-	"uuid_literal_no_dashes":                "ERROR XX000 SemanticException \"Invalid UUID value for the UUID type 123e4567e89b12d3a456426614174000\"",
-	"uuid_literal_plus_sign_component":      "OK [BIGINT OTHER] [NULL NULL] [[6 00000001-0002-0003-0004-000000000005]] COUNT 1",
-	"uuid_literal_short_components":         "OK [BIGINT OTHER] [NULL NULL] [[1 00000001-0002-0003-0004-000000000005]] COUNT 1",
-	"uuid_literal_surrounding_space":        "ERROR XX000 SemanticException \"Invalid UUID value for the UUID type  123e4567-e89b-12d3-a456-426614174000\"",
-	"uuid_literal_uppercase":                "OK [BIGINT OTHER] [NULL NULL] [[2 123e4567-e89b-12d3-a456-426614174000]] COUNT 1",
-	"uuid_literal_urn":                      "ERROR XX000 SemanticException \"Invalid UUID value for the UUID type urn:uuid:123e4567-e89b-12d3-a456-426614174000\"",
-}
+var wsE7Pins = wsEPins.V7
 
 // wsE6Pins is the measured target outcome of every round-5 probe (4.14.2.0).
-var wsE6Pins = map[string]string{
-	"add_double_string_select":                         "OK [STRING] [NULL] [[1.5a]]",
-	"add_string_double_select":                         "OK [STRING] [NULL] [[a1.5]]",
-	"add_string_float_select":                          "OK [STRING] [NULL] [[a1.5]]",
-	"add_string_large_double_select":                   "OK [STRING] [NULL] [[a1.0E10]]",
-	"add_string_long_select":                           "OK [STRING] [NULL] [[a3000000000]]",
-	"add_string_small_double_select":                   "OK [STRING] [NULL] [[a1.0E-4]]",
-	"coalesce_div0_five_is_null_where":                 "OK [BIGINT] [NULL] []",
-	"coalesce_div0_five_is_null_where_explain":         "OK EXPLAIN \"SCAN([IS T]) | FILTER false | MAP (_.ID AS ID)\"",
-	"coalesce_not_cast_null_head_where":                "OK [BIGINT] [NULL] [[1] [2] [3]]",
-	"coalesce_not_cast_null_head_where_explain":        "OK EXPLAIN \"SCAN([IS T]) | MAP (_.ID AS ID)\"",
-	"coalesce_true_div0_and_column_where":              "ERROR XX000 VerifyException \"com.google.common.base.VerifyException\"",
-	"coalesce_true_div0_and_column_where_explain":      "ERROR XX000 VerifyException \"com.google.common.base.VerifyException\"",
-	"first_planning_a_exec":                            "OK [BIGINT] [NULL] []",
-	"first_planning_a_explain":                         "OK EXPLAIN \"SCAN([IS T, [GREATER_THAN promote(@c8 AS LONG)]]) | FILTER null | MAP (_.ID AS ID)\"",
-	"first_planning_b_exec":                            "OK [BIGINT] [NULL] []",
-	"first_planning_b_explain":                         "OK EXPLAIN \"SCAN([IS T, [GREATER_THAN_OR_EQUALS promote(@c8 AS LONG)]]) | FILTER null | MAP (_.ID AS ID)\"",
-	"fold_div0_or_not_false_where":                     "ERROR XXXXX ArithmeticException \"/ by zero\"",
-	"fold_div0_or_not_false_where_explain":             "OK EXPLAIN \"SCAN([IS T]) | FILTER promote(@c6 AS INT) EQUALS @c6 / @c8 OR promote(@c19 AS BOOLEAN) EQUALS NOT @c16 | MAP (_.ID AS ID)\"",
-	"in_cast_null_case_nonempty_table":                 "ERROR 0A000 SemanticException \"The action is currently unsupported An ARRAY value cannot have NULL elements\"",
-	"in_cast_null_join_inner_empty":                    "OK [BIGINT] [NULL] []",
-	"in_cast_null_join_inner_explain":                  "OK EXPLAIN \"SCAN([IS E]) | FLATMAP q0 -> { EXPLODE arrayDistinct(array(NULL)) | FLATMAP q1 -> { SCAN([IS T]) | FILTER q0.X EQUALS q1 AS q2 RETURN q2 } AS q3 RETURN (q3.ID AS ID) }\"",
-	"in_cast_null_or_empty_table":                      "OK [BIGINT] [NULL] []",
-	"in_cast_null_or_explain":                          "OK EXPLAIN \"[IN arrayDistinct(array(NULL)) SORTED] | INJOIN q0 -> { SCAN([IS T, EQUALS q0]) } ∪ SCAN([IS T, [GREATER_THAN promote(@c18 AS LONG)]]) COMPARE BY (_.ID) | MAP (_.ID AS ID)\"",
-	"in_cast_null_or_nonempty_table":                   "ERROR 0A000 SemanticException \"The action is currently unsupported An ARRAY value cannot have NULL elements\"",
-	"in_cast_null_projection_empty_table":              "OK [BOOLEAN] [NULL] []",
-	"in_cast_null_projection_nonempty_table":           "ERROR 0A000 SemanticException \"The action is currently unsupported An ARRAY value cannot have NULL elements\"",
-	"index_state_index_read_explain":                   "OK EXPLAIN \"COVERING(X_V [[GREATER_THAN promote(@c7 AS LONG)]] -> [ID: KEY:[2], V: KEY:[0]]) | MAP (_.V AS V)\"",
-	"index_state_record_read_explain":                  "OK EXPLAIN \"SCAN([IS X, [GREATER_THAN promote(@c11 AS LONG)]])\"",
-	"index_state_record_scan_serializable":             "READ OK [BIGINT BIGINT BIGINT] [NULL NULL NULL] [[1 10 100] [2 20 200]] COMMIT OK",
-	"index_state_scanned_serializable":                 "READ OK [BIGINT] [NULL] [[10] [20]] COMMIT ERROR 40001 ContextualSQLException Transaction not committed due to conflict with another transaction",
-	"index_state_scanned_snapshot":                     "READ OK [BIGINT] [NULL] [[10] [20]] COMMIT ERROR 40001 ContextualSQLException Transaction not committed due to conflict with another transaction",
-	"index_state_unused_serializable":                  "READ OK [BIGINT] [NULL] [[10] [20]] COMMIT OK",
-	"index_state_unused_snapshot":                      "READ OK [BIGINT] [NULL] [[10] [20]] COMMIT OK",
-	"insert_bad_string_into_enum":                      "ERROR XX000 SemanticException \"Invalid enum value for the enum type BLUE\"",
-	"insert_bad_string_into_uuid":                      "ERROR XX000 SemanticException \"Invalid UUID value for the UUID type not-a-uuid\"",
-	"insert_bound_string_into_enum":                    "OK [BIGINT OTHER] [NULL NULL] [[2 GREEN]] COUNT 1",
-	"insert_bound_string_into_uuid":                    "OK [BIGINT OTHER] [NULL NULL] [[2 123e4567-e89b-12d3-a456-426614174001]] COUNT 1",
-	"insert_double_array_into_bigint_array":            "ERROR 22000 SemanticException \"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.\"",
-	"insert_double_array_into_float_array":             "ERROR 22000 SemanticException \"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.\"",
-	"insert_double_expr_array_into_float_array":        "ERROR 22000 SemanticException \"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.\"",
-	"insert_double_struct_field_into_float":            "ERROR 22000 SemanticException \"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.\"",
-	"insert_empty_array_into_float_array":              "OK [BIGINT ARRAY] [NULL NULL] [[4 []]] COUNT 1",
-	"insert_int_array_into_float_array":                "OK [BIGINT ARRAY] [NULL NULL] [[3 [1]]] COUNT 1",
-	"insert_int_struct_field_into_float":               "OK [BIGINT STRUCT] [NULL NULL] [[2 map[F:1]]] COUNT 1",
-	"insert_long_array_into_bigint_array":              "OK [BIGINT ARRAY] [NULL NULL] [[1 [3e+09]]] COUNT 1",
-	"insert_string_literal_into_enum":                  "OK [BIGINT OTHER] [NULL NULL] [[1 RED]] COUNT 1",
-	"insert_string_literal_into_uuid":                  "OK [BIGINT OTHER] [NULL NULL] [[1 123e4567-e89b-12d3-a456-426614174000]] COUNT 1",
-	"not_coalesce_false_div0_where":                    "ERROR XX000 VerifyException \"com.google.common.base.VerifyException\"",
-	"not_coalesce_false_div0_where_explain":            "ERROR XX000 VerifyException \"com.google.common.base.VerifyException\"",
-	"not_column_comparison_select":                     "OK [BOOLEAN] [NULL] [[false]]",
-	"not_false_select":                                 "OK [BOOLEAN] [NULL] [[true]]",
-	"not_in_cast_null_empty_table":                     "OK [BIGINT] [NULL] []",
-	"not_in_cast_null_explain":                         "OK EXPLAIN \"SCAN([IS T]) | FILTER NOT _.ID IN array(NULL) | MAP (_.ID AS ID)\"",
-	"not_in_cast_null_nonempty_table":                  "ERROR 0A000 SemanticException \"The action is currently unsupported An ARRAY value cannot have NULL elements\"",
-	"not_in_paren_cast_null_empty_table":               "OK [BIGINT] [NULL] []",
-	"not_in_paren_cast_null_nonempty_table":            "ERROR 0A000 SemanticException \"The action is currently unsupported An ARRAY value cannot have NULL elements\"",
-	"null_strict_div0_cast_null_eq_one_explain":        "OK EXPLAIN \"SCAN([IS T]) | FILTER null | MAP (_.ID AS ID)\"",
-	"null_strict_div0_cast_null_eq_one_where":          "OK [BIGINT] [NULL] []",
-	"null_strict_div0_cast_null_is_null_where":         "OK [BIGINT] [NULL] [[1] [2] [3]]",
-	"null_strict_div0_cast_null_is_null_where_explain": "OK EXPLAIN \"SCAN([IS T]) | MAP (_.ID AS ID)\"",
-	"read_scope_covering_serializable_update_indexed":  "READ OK [BIGINT] [NULL] [[1] [2] [3]] COMMIT ERROR 40001 ContextualSQLException Transaction not committed due to conflict with another transaction",
-	"read_scope_covering_snapshot_update_indexed":      "READ OK [BIGINT] [NULL] [[1] [2] [3]] COMMIT OK",
-	"read_scope_scan_serializable_update":              "READ OK [BIGINT BIGINT] [NULL NULL] [[1 100] [2 200] [3 300]] COMMIT ERROR 40001 ContextualSQLException Transaction not committed due to conflict with another transaction",
-	"trace_coalesce_div0_five_is_null":                 "TRACE EXPLAIN \"SCAN([IS T]) | FILTER false | MAP (_.ID AS ID)\"; QueryPredicateSimplificationRule calls=2 finals=0 exploratory=1; ranking: REWRITING-PRUNE members: 2 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[coalesce_int(@c7 / @c9, @c11) [IS_NULL]] semanticHash=1104627478 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[false] semanticHash=-816198362 | REWRITING-COMPARE 0 vs 1 = 1",
-	"trace_fold_div0_or_not_false":                     "TRACE EXPLAIN \"SCAN([IS T]) | FILTER promote(@c6 AS INT) EQUALS @c6 / @c8 OR promote(@c19 AS BOOLEAN) EQUALS NOT @c16 | MAP (_.ID AS ID)\"; QueryPredicateSimplificationRule calls=2 finals=0 exploratory=1; ranking: REWRITING-PRUNE members: 2 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[@c6 EQUALS @c6 / @c8 OR 'true' EQUALS NOT 'false'] semanticHash=1145130613 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[promote(@c6 AS INT) EQUALS @c6 / @c8 OR promote(@c19 AS BOOLEAN) EQUALS NOT @c16] semanticHash=245992012 | REWRITING-COMPARE 0 vs 1 = 1",
-	"trace_coalesce_not_head":                          "TRACE EXPLAIN \"SCAN([IS T]) | FILTER coalesce_boolean(NOT 'false', @c10 / @c12 equals @c10) EQUALS true | MAP (_.ID AS ID)\"; QueryPredicateSimplificationRule calls=2 finals=0 exploratory=1; ranking: REWRITING-PRUNE members: 2 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[coalesce_boolean(NOT 'false', @c10 / @c12 equals @c10) [EQUALS true]] semanticHash=-1317608110 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[coalesce_boolean(NOT @c8, @c10 / @c12 equals @c10) [EQUALS true]] semanticHash=33718888 | REWRITING-COMPARE 0 vs 1 = -1",
-	"trace_coalesce_true_div0":                         "TRACE EXPLAIN \"SCAN([IS T]) | MAP (_.ID AS ID)\"; QueryPredicateSimplificationRule calls=2 finals=0 exploratory=1; ranking: REWRITING-PRUNE members: 2 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=0 predicates=[true] semanticHash=-816198548 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[coalesce_boolean(@c7, @c9 / @c11 equals @c9) [EQUALS true]] semanticHash=41870026 | REWRITING-COMPARE 0 vs 1 = -1",
-	"trace_null_strict_column_cast_null_eq_one":        "TRACE EXPLAIN \"SCAN([IS T]) | FILTER null | MAP (_.ID AS ID)\"; QueryPredicateSimplificationRule calls=2 finals=0 exploratory=1; ranking: REWRITING-PRUNE members: 2 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[null] semanticHash=-816236709 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[q#.N + NULL [EQUALS promote(@c14 AS LONG)]] semanticHash=1244780087 | REWRITING-COMPARE 0 vs 1 = -1",
-	"trace_null_strict_div0_cast_null_eq_one":          "TRACE EXPLAIN \"SCAN([IS T]) | FILTER null | MAP (_.ID AS ID)\"; QueryPredicateSimplificationRule calls=2 finals=0 exploratory=1; ranking: REWRITING-PRUNE members: 2 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[null] semanticHash=-816236709 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[promote(@c6 AS INT) [ AND EQUALS @c6 / @c8 + NULL]] semanticHash=2035668005 | REWRITING-COMPARE 0 vs 1 = -1",
-	"trace_null_strict_div0_cast_null_is_null":         "TRACE EXPLAIN \"SCAN([IS T]) | MAP (_.ID AS ID)\"; QueryPredicateSimplificationRule calls=2 finals=0 exploratory=1; ranking: REWRITING-PRUNE members: 2 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=0 predicates=[true] semanticHash=-816198548 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[@c6 / @c8 + NULL [IS_NULL]] semanticHash=872343346 | REWRITING-COMPARE 0 vs 1 = -1",
-	"trace_v4_schema_div0_cast_null_eq_one":            "TRACE EXPLAIN \"SCAN([IS T]) | FILTER promote(@c6 AS INT) EQUALS @c6 / @c8 + NULL | MAP (_.ID AS ID)\"; QueryPredicateSimplificationRule calls=2 finals=0 exploratory=1; ranking: REWRITING-PRUNE members: 2 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[null] semanticHash=671289851 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[promote(@c6 AS INT) [ AND EQUALS @c6 / @c8 + NULL]] semanticHash=-771772731 | REWRITING-COMPARE 0 vs 1 = 1",
-	"true_and_true_select":                             "OK [BOOLEAN] [NULL] [[true]]",
-	"v4_schema_div0_cast_null_eq_one_explain":          "OK EXPLAIN \"SCAN([IS T]) | FILTER promote(@c6 AS INT) EQUALS @c6 / @c8 + NULL | MAP (_.ID AS ID)\"",
-	"v4_schema_div0_cast_null_eq_one_where":            "ERROR XXXXX ArithmeticException \"/ by zero\"",
-	"v5_schema_div0_cast_null_eq_one_where_first":      "OK [BIGINT] [NULL] []",
-}
+var wsE6Pins = wsEPins.V6
 
 // Round 8 of the WS-E target oracle, answering the design-v7 gates: WHO DECIDES a
 // fold when an access path could separate the members. A fold that annuls the
@@ -1723,133 +1363,15 @@ var _ = Describe("WS-E target oracle v8", func() {
 // wsE8Pins is the measured target outcome of every round-8 probe (4.14.2.0).
 // wsE5GoPins to wsE8GoPins pin Go's answer to the simplification rows (WS-E
 // design 5.4(j)); checkGo asserts them and their declared divergences.
-var wsE5GoPins = map[string]string{
-	"coalesce_and_head_where":                             "ERROR 22012 \"/ by zero\"",
-	"coalesce_arith_head_where":                           "ERROR 22012 \"/ by zero\"",
-	"coalesce_bound_null_head_where":                      "OK [BIGINT] [NULL] [[1] [2] [3]]",
-	"coalesce_bound_true_head_select":                     "ERROR 22012 \"/ by zero\"",
-	"coalesce_bound_true_head_where":                      "OK [BIGINT] [NULL] [[1] [2] [3]]",
-	"coalesce_cast_null_head_erroring_tail_where":         "OK [BIGINT] [NULL] [[1] [2] [3]]",
-	"coalesce_cast_null_head_where":                       "OK [BIGINT] [NULL] [[1] [2] [3]]",
-	"coalesce_int_literal_head_where":                     "ERROR 22012 \"/ by zero\"",
-	"coalesce_not_head_select":                            "ERROR 22012 \"/ by zero\"",
-	"coalesce_not_head_where":                             "ERROR 22012 \"/ by zero\"",
-	"coalesce_not_head_where_explain":                     "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
-	"coalesce_null_head_erroring_tail_where":              "OK [BIGINT] [NULL] [[1] [2] [3]]",
-	"coalesce_null_head_where":                            "OK [BIGINT] [NULL] [[1] [2] [3]]",
-	"coalesce_or_head_where":                              "ERROR 22012 \"/ by zero\"",
-	"coalesce_true_head_where_explain":                    "OK EXPLAIN \"Map(Scan(T), {ID: _current.ID#0})\"",
-	"null_strict_cast_null_beside_div0_select":            "OK [INTEGER] [NULL] [[NULL]]",
-	"null_strict_cast_null_beside_div0_select_explain":    "OK EXPLAIN \"Map(Scan(T, [=]), {_0: NULL})\"",
-	"null_strict_cast_null_beside_div0_where":             "OK [BIGINT] [NULL] []",
-	"null_strict_cast_null_beside_div0_where_empty_table": "OK [BIGINT] [NULL] []",
-	"null_strict_cast_null_beside_div0_where_explain":     "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
-	"null_strict_column_beside_cast_null_where_explain":   "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
-	"null_strict_null_beside_div0_select":                 "ERROR XX000 \"unable to encapsulate arithmetic operation due to type mismatch(es)\"",
-}
+var wsE5GoPins = wsEPins.V5Go
 
-var wsE6GoPins = map[string]string{
-	"coalesce_div0_five_is_null_where":                 "OK [BIGINT] [NULL] []",
-	"coalesce_div0_five_is_null_where_explain":         "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
-	"coalesce_not_cast_null_head_where":                "OK [BIGINT] [NULL] [[1] [2] [3]]",
-	"coalesce_not_cast_null_head_where_explain":        "OK EXPLAIN \"Map(Scan(T), {ID: _current.ID#0})\"",
-	"coalesce_true_div0_and_column_where":              "OK [BIGINT] [NULL] [[2] [3]]",
-	"coalesce_true_div0_and_column_where_explain":      "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
-	"fold_div0_or_not_false_where":                     "ERROR 22012 \"/ by zero\"",
-	"fold_div0_or_not_false_where_explain":             "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
-	"not_coalesce_false_div0_where":                    "ERROR 22012 \"/ by zero\"",
-	"not_coalesce_false_div0_where_explain":            "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
-	"null_strict_div0_cast_null_eq_one_explain":        "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
-	"null_strict_div0_cast_null_eq_one_where":          "OK [BIGINT] [NULL] []",
-	"null_strict_div0_cast_null_is_null_where":         "OK [BIGINT] [NULL] [[1] [2] [3]]",
-	"null_strict_div0_cast_null_is_null_where_explain": "OK EXPLAIN \"Map(Scan(T), {ID: _current.ID#0})\"",
-	"v4_schema_div0_cast_null_eq_one_explain":          "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
-	"v4_schema_div0_cast_null_eq_one_where":            "OK [BIGINT] [NULL] []",
-	"v5_schema_div0_cast_null_eq_one_where_first":      "OK [BIGINT] [NULL] []",
-}
+var wsE6GoPins = wsEPins.V6Go
 
-var wsE7GoPins = map[string]string{
-	"conj_false_explain":                  "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
-	"conj_false_where":                    "OK [BIGINT] [NULL] []",
-	"conj_true_explain":                   "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
-	"conj_true_where":                     "OK [BIGINT] [NULL] [[2] [3]]",
-	"is_not_null_coalesce_div0_where":     "OK [BIGINT] [NULL] [[1] [2] [3]]",
-	"is_null_case_both_arithmetic_where":  "OK [BIGINT] [NULL] []",
-	"is_null_case_div0_branch_where":      "OK [BIGINT] [NULL] []",
-	"is_null_case_div0_condition_where":   "ERROR 22012 \"/ by zero\"",
-	"is_null_case_literals_where":         "OK [BIGINT] [NULL] []",
-	"is_null_cast_div0_where":             "ERROR 22012 \"/ by zero\"",
-	"is_null_cast_string_to_bigint_where": "OK [BIGINT] [NULL] []",
-	"is_null_greatest_div0_where":         "ERROR 22012 \"/ by zero\"",
-}
+var wsE7GoPins = wsEPins.V7Go
 
-var wsE8GoPins = map[string]string{
-	"index_beside_tie_fold_explain":           "OK EXPLAIN \"Map(PredicatesFilter(IndexScan(T_N, [=] COVERING), [1 preds]), {ID: _current.ID#0})\"",
-	"index_beside_tie_fold_where":             "OK [BIGINT] [NULL] [[2]]",
-	"index_eq_annulling_fold_explain":         "OK EXPLAIN \"Map(PredicatesFilter(IndexScan(T_N, [=] COVERING), [2 preds]), {ID: _current.ID#0})\"",
-	"index_eq_annulling_fold_where":           "ERROR 22012 \"/ by zero\"",
-	"index_eq_type_annulling_fold_explain":    "OK EXPLAIN \"Map(PredicatesFilter(IndexScan(T_N, [*] COVERING), [1 preds]), {ID: _current.ID#0})\"",
-	"index_eq_type_annulling_fold_where":      "OK [BIGINT] [NULL] []",
-	"index_eq_type_reducing_fold_explain":     "OK EXPLAIN \"Map(IndexScan(T_N, [=] COVERING), {ID: _current.ID#0})\"",
-	"index_eq_type_reducing_fold_where":       "OK [BIGINT] [NULL] [[2]]",
-	"index_range_annulling_fold_explain":      "OK EXPLAIN \"Map(PredicatesFilter(IndexScan(T_N, [<>] COVERING), [2 preds]), {ID: _current.ID#0})\"",
-	"index_range_annulling_fold_where":        "ERROR 22012 \"/ by zero\"",
-	"index_range_type_annulling_fold_explain": "OK EXPLAIN \"Map(PredicatesFilter(IndexScan(T_N, [*] COVERING), [1 preds]), {ID: _current.ID#0})\"",
-	"index_range_type_annulling_fold_where":   "OK [BIGINT] [NULL] []",
-	"index_tie_duplicate_or_explain":          "OK EXPLAIN \"Map(PredicatesFilter(IndexScan(T_N, [*] COVERING), [1 preds]), {ID: _current.ID#0})\"",
-	"index_tie_duplicate_or_where":            "OK [BIGINT] [NULL] [[2]]",
-	"index_tie_not_over_comparison_explain":   "OK EXPLAIN \"Map(IndexScan(T_N, [<>] COVERING), {ID: _current.ID#0})\"",
-	"index_tie_not_over_comparison_where":     "OK [BIGINT] [NULL] [[5]]",
-	"or_annulling_fold_where":                 "ERROR 22012 \"/ by zero\"",
-	"pk_annulling_fold_explain":               "OK EXPLAIN \"Map(PredicatesFilter(Scan(T, [=]), [2 preds]), {ID: _current.ID#0})\"",
-	"pk_annulling_fold_where":                 "ERROR 22012 \"/ by zero\"",
-	"pk_beside_tie_fold_explain":              "OK EXPLAIN \"Map(PredicatesFilter(Scan(T, [=]), [1 preds]), {ID: _current.ID#0})\"",
-	"pk_beside_tie_fold_where":                "OK [BIGINT] [NULL] [[5]]",
-	"pk_in_annulling_fold_explain":            "OK EXPLAIN \"InJoin(Map(PredicatesFilter(Scan(T, [=]), [2 preds]), {ID: _current.ID#0}), binding)\"",
-	"pk_in_annulling_fold_where":              "ERROR 22012 \"/ by zero\"",
-	"pk_in_type_annulling_fold_explain":       "OK EXPLAIN \"Map(PredicatesFilter(IndexScan(T_N, [*] COVERING), [1 preds]), {ID: _current.ID#0})\"",
-	"pk_in_type_annulling_fold_where":         "OK [BIGINT] [NULL] []",
-	"pk_reducing_fold_explain":                "OK EXPLAIN \"Map(PredicatesFilter(Scan(T, [=]), [1 preds]), {ID: _current.ID#0})\"",
-	"pk_reducing_fold_where":                  "OK [BIGINT] [NULL] [[5]]",
-	"pk_type_annulling_fold_explain":          "OK EXPLAIN \"Map(PredicatesFilter(IndexScan(T_N, [*] COVERING), [1 preds]), {ID: _current.ID#0})\"",
-	"pk_type_annulling_fold_where":            "OK [BIGINT] [NULL] []",
-	"pk_type_reducing_fold_explain":           "OK EXPLAIN \"Map(Scan(T, [=]), {ID: _current.ID#0})\"",
-	"pk_type_reducing_fold_where":             "OK [BIGINT] [NULL] [[5]]",
-}
+var wsE8GoPins = wsEPins.V8Go
 
-var wsE8Pins = map[string]string{
-	"index_beside_tie_fold_explain":           "OK EXPLAIN \"SCAN([IS T, [LESS_THAN_OR_EQUALS promote(@c13 AS LONG)]]) | FILTER _.N EQUALS promote(@c7 AS LONG) | MAP (_.ID AS ID)\"",
-	"index_beside_tie_fold_where":             "OK [BIGINT] [NULL] [[2]]",
-	"index_eq_annulling_fold_explain":         "OK EXPLAIN \"COVERING(T_N [EQUALS promote(@c7 AS LONG)] -> [ID: KEY:[2], N: KEY:[0]]) | FILTER promote(@c9 AS INT) EQUALS @c9 / @c11 AND @c17 EQUALS @c9 | MAP (_.ID AS ID)\"",
-	"index_eq_annulling_fold_where":           "ERROR XXXXX ArithmeticException \"/ by zero\"",
-	"index_eq_type_annulling_fold_explain":    "OK EXPLAIN \"COVERING(T_N <,> -> [ID: KEY:[2], N: KEY:[0]]) | FILTER false | MAP (_.ID AS ID)\"",
-	"index_eq_type_annulling_fold_where":      "OK [BIGINT] [NULL] []",
-	"index_eq_type_reducing_fold_explain":     "OK EXPLAIN \"COVERING(T_N [EQUALS promote(@c7 AS LONG)] -> [ID: KEY:[2], N: KEY:[0]]) | MAP (_.ID AS ID)\"",
-	"index_eq_type_reducing_fold_where":       "OK [BIGINT] [NULL] [[2]]",
-	"index_range_annulling_fold_explain":      "OK EXPLAIN \"COVERING(T_N [[GREATER_THAN promote(@c7 AS LONG)]] -> [ID: KEY:[2], N: KEY:[0]]) | FILTER promote(@c9 AS INT) EQUALS @c9 / @c7 AND @c17 EQUALS @c9 | MAP (_.ID AS ID)\"",
-	"index_range_annulling_fold_where":        "ERROR XXXXX ArithmeticException \"/ by zero\"",
-	"index_range_type_annulling_fold_explain": "OK EXPLAIN \"COVERING(T_N <,> -> [ID: KEY:[2], N: KEY:[0]]) | FILTER false | MAP (_.ID AS ID)\"",
-	"index_range_type_annulling_fold_where":   "OK [BIGINT] [NULL] []",
-	"index_tie_duplicate_or_explain":          "OK EXPLAIN \"COVERING(T_N <,> -> [ID: KEY:[2], N: KEY:[0]]) | FILTER _.N EQUALS promote(@c7 AS LONG) OR _.N EQUALS promote(@c7 AS LONG) | MAP (_.ID AS ID)\"",
-	"index_tie_duplicate_or_where":            "OK [BIGINT] [NULL] [[2]]",
-	"index_tie_not_over_comparison_explain":   "OK EXPLAIN \"COVERING(T_N <,> -> [ID: KEY:[2], N: KEY:[0]]) | FILTER NOT _.N GREATER_THAN promote(@c9 AS LONG) | MAP (_.ID AS ID)\"",
-	"index_tie_not_over_comparison_where":     "OK [BIGINT] [NULL] [[5]]",
-	"or_annulling_fold_where":                 "ERROR XXXXX ArithmeticException \"/ by zero\"",
-	"pk_annulling_fold_explain":               "OK EXPLAIN \"SCAN([IS T, EQUALS promote(@c7 AS LONG)]) | FILTER promote(@c9 AS INT) EQUALS @c9 / @c11 AND @c17 EQUALS @c9 | MAP (_.ID AS ID)\"",
-	"pk_annulling_fold_where":                 "ERROR XXXXX ArithmeticException \"/ by zero\"",
-	"pk_beside_tie_fold_explain":              "OK EXPLAIN \"SCAN([IS T, EQUALS promote(@c7 AS LONG)]) | FILTER _.N LESS_THAN_OR_EQUALS promote(@c13 AS LONG) | MAP (_.ID AS ID)\"",
-	"pk_beside_tie_fold_where":                "OK [BIGINT] [NULL] [[5]]",
-	"pk_in_annulling_fold_explain":            "OK EXPLAIN \"[IN arrayDistinct(promote(@c7 AS ARRAY(LONG)))] | INJOIN q0 -> { SCAN([IS T, EQUALS q0]) | FILTER @c8 EQUALS @c8 / @c15 AND @c10 EQUALS @c8 | MAP (_.ID AS ID) }\"",
-	"pk_in_annulling_fold_where":              "ERROR XXXXX VerifyException \"com.google.common.base.VerifyException\"",
-	"pk_in_type_annulling_fold_explain":       "OK EXPLAIN \"COVERING(T_N <,> -> [ID: KEY:[2], N: KEY:[0]]) | FILTER false | MAP (_.ID AS ID)\"",
-	"pk_in_type_annulling_fold_where":         "OK [BIGINT] [NULL] []",
-	"pk_reducing_fold_explain":                "OK EXPLAIN \"SCAN([IS T, EQUALS promote(@c7 AS LONG)]) | FILTER @c10 EQUALS @c10 OR promote(@c10 AS INT) EQUALS @c10 / @c16 | MAP (_.ID AS ID)\"",
-	"pk_reducing_fold_where":                  "OK [BIGINT] [NULL] [[5]]",
-	"pk_type_annulling_fold_explain":          "OK EXPLAIN \"COVERING(T_N <,> -> [ID: KEY:[2], N: KEY:[0]]) | FILTER false | MAP (_.ID AS ID)\"",
-	"pk_type_annulling_fold_where":            "OK [BIGINT] [NULL] []",
-	"pk_type_reducing_fold_explain":           "OK EXPLAIN \"SCAN([IS T, EQUALS promote(@c7 AS LONG)]) | MAP (_.ID AS ID)\"",
-	"pk_type_reducing_fold_where":             "OK [BIGINT] [NULL] [[5]]",
-}
+var wsE8Pins = wsEPins.V8
 
 // Round 9 of the WS-E target oracle, answering the design-v8 gates: the plan of two
 // IN lists over a two-column index (the explode route's nested_ins shape) and of two
@@ -1934,35 +1456,7 @@ var _ = Describe("WS-E target oracle v9", func() {
 })
 
 // wsE9Pins is the measured target outcome of every round-9 probe (4.14.2.0).
-var wsE9Pins = map[string]string{
-	"date_lt_bound_null_timestamp":          "ERROR 42F18 RelationalException \"could not find type 'DATE'\"",
-	"date_lt_null_timestamp_where":          "ERROR 42F18 RelationalException \"could not find type 'DATE'\"",
-	"date_not_lt_null_timestamp_where":      "ERROR 42F18 RelationalException \"could not find type 'DATE'\"",
-	"f_eq_nan_index_where":                  "OK [BIGINT] [NULL] [[4]]",
-	"f_eq_nan_rows_where":                   "OK [BIGINT] [NULL] [[4]]",
-	"f_eq_negative_zero_index_where":        "OK [BIGINT] [NULL] [[2]]",
-	"f_eq_negative_zero_rows_where":         "OK [BIGINT] [NULL] [[2]]",
-	"f_eq_zero_index_where":                 "OK [BIGINT] [NULL] [[1]]",
-	"f_eq_zero_rows_where":                  "OK [BIGINT] [NULL] [[1]]",
-	"f_in_nan_twice_index_explain":          "OK EXPLAIN \"[IN arrayDistinct(array(CAST(@c10 AS DOUBLE), CAST(@c10 AS DOUBLE)))] | INJOIN q0 -> { COVERING(F_F [EQUALS q0] -> [F: KEY:[0], ID: KEY:[2]]) | MAP (_.ID AS ID) }\"",
-	"f_in_nan_twice_index_where":            "OK [BIGINT] [NULL] [[4]]",
-	"f_in_nan_twice_rows_where":             "OK [BIGINT] [NULL] [[4]]",
-	"f_in_signed_zeros_index_explain":       "OK EXPLAIN \"[IN arrayDistinct(@c7)] | INJOIN q0 -> { COVERING(F_F [EQUALS q0] -> [F: KEY:[0], ID: KEY:[2]]) | MAP (_.ID AS ID) }\"",
-	"f_in_signed_zeros_index_where":         "OK [BIGINT] [NULL] [[1] [2]]",
-	"f_in_signed_zeros_rows_where":          "OK [BIGINT] [NULL] [[1] [2]]",
-	"f_in_zero_twice_index_where":           "OK [BIGINT] [NULL] [[1]]",
-	"f_rows":                                "OK [BIGINT DOUBLE] [NULL NULL] [[1 0] [2 0] [3 1.5] [4 NaN]]",
-	"greatest_date_timestamp_select":        "ERROR 42F18 RelationalException \"could not find type 'DATE'\"",
-	"least_date_timestamp_select":           "ERROR 42F18 RelationalException \"could not find type 'DATE'\"",
-	"nested_ins_explain":                    "OK EXPLAIN \"[IN arrayDistinct(promote(@c7 AS ARRAY(LONG)))] | INJOIN q0 -> { [IN arrayDistinct(promote(@c15 AS ARRAY(LONG)))] | INJOIN q1 -> { COVERING(IDX_AB [EQUALS q0, EQUALS q1] -> [A: KEY:[0], B: KEY:[1], ID: KEY:[3]]) | MAP (_.ID AS ID) } }\"",
-	"nested_ins_where":                      "OK [BIGINT] [NULL] [[1] [2] [3] [6]]",
-	"two_in_ordered_explain":                "OK EXPLAIN \"[IN arrayDistinct(promote(@c7 AS ARRAY(LONG))) ⋈ IN arrayDistinct(promote(@c17 AS ARRAY(LONG)))] INUNION q0, q1 -> { ISCAN(IDX_VAL [EQUALS q0]) | FILTER _.CAT EQUALS q1 | MAP (_.ID AS ID, _.VAL AS VAL) } COMPARE BY (_.VAL, _.ID) | MAP (_.ID AS ID)\"",
-	"two_in_ordered_where":                  "OK [BIGINT] [NULL] [[2] [4] [6]]",
-	"union_leg_type_annulling_fold_explain": "OK EXPLAIN \"COVERING(T_UN <,> -> [ID: KEY:[2], N: KEY:[0]]) | FILTER false | MAP (_.ID AS ID) ⊎ SCAN([IS T, EQUALS promote(@c11 AS LONG)]) | MAP (_.ID AS ID)\"",
-	"union_leg_type_annulling_fold_where":   "OK [BIGINT] [NULL] [[1]]",
-	"unique_eq_type_annulling_fold_explain": "OK EXPLAIN \"COVERING(T_UN <,> -> [ID: KEY:[2], N: KEY:[0]]) | FILTER false | MAP (_.ID AS ID)\"",
-	"unique_eq_type_annulling_fold_where":   "OK [BIGINT] [NULL] []",
-}
+var wsE9Pins = wsEPins.V9
 
 // Round 10 of the WS-E target oracle, answering the design-v9 gates: whether the
 // target has a TIMESTAMP column type (round 9 measured DATE only) and whether it
@@ -2011,20 +1505,7 @@ var _ = Describe("WS-E target oracle v10", func() {
 })
 
 // wsE10Pins is the measured target outcome of every round-10 probe (4.14.2.0).
-var wsE10Pins = map[string]string{
-	"cast_column_to_date_where":   "ERROR 42601 RelationalException \"syntax error:\\nSELECT id FROM P WHERE CAST(s AS DATE) < CAST('2025-01-01' AS DATE) ORDER BY id\\n                                 ^^^^\"",
-	"cast_date_value_select":      "ERROR 42601 RelationalException \"syntax error:\\nSELECT CAST('2024-01-01' AS DATE) FROM P WHERE id = 1\\n                            ^^^^\"",
-	"cast_timestamp_value_select": "ERROR 42601 RelationalException \"syntax error:\\nSELECT CAST('2024-01-01 10:00:00' AS TIMESTAMP) FROM P WHERE id = 1\\n                                     ^^^^^^^^^\"",
-	"nan_in_then_in_explain":      "OK EXPLAIN \"[IN arrayDistinct(array(CAST(@c10 AS DOUBLE)))] | INJOIN q0 -> { [IN arrayDistinct(promote(@c18 AS ARRAY(LONG)))] | INJOIN q1 -> { COVERING(FG_FG [EQUALS q0, EQUALS q1] -> [F: KEY:[0], G: KEY:[1], ID: KEY:[3]]) | MAP (_.ID AS ID) } }\"",
-	"nan_in_then_in_where":        "OK [BIGINT] [NULL] [[1] [2]]",
-	"nan_order_by_suffix_explain": "OK EXPLAIN \"COVERING(FG_FG [EQUALS CAST(@c9 AS DOUBLE)] -> [F: KEY:[0], G: KEY:[1], ID: KEY:[3]]) | MAP (_.ID AS ID, _.G AS G) | MAP (_.ID AS ID)\"",
-	"nan_order_by_suffix_where":   "OK [BIGINT] [NULL] [[2] [1] [4]]",
-	"nan_then_eq_explain":         "OK EXPLAIN \"COVERING(FG_FG [EQUALS CAST(@c9 AS DOUBLE), EQUALS promote(@c16 AS LONG)] -> [F: KEY:[0], G: KEY:[1], ID: KEY:[3]]) | MAP (_.ID AS ID)\"",
-	"nan_then_eq_where":           "OK [BIGINT] [NULL] [[2]]",
-	"timestamp_column_rows":       "ERROR 42F18 RelationalException \"could not find type 'TIMESTAMP'\"",
-	"unique_nan_eq_where":         "OK [BIGINT] [NULL] [[1]]",
-	"unique_nan_second_insert":    "ERROR 23505 RecordIndexUniquenessViolation \"Duplicate entry for unique index\"",
-}
+var wsE10Pins = wsEPins.V10
 
 // Round v11 (ws-e-design.md 4.2): the BITS of a NaN each engine writes. The
 // target inserts NaNs made three ways into a kept store with an index on each
@@ -2174,18 +1655,7 @@ var _ = Describe("WS-E target oracle v11", func() {
 // quiet NaN 0xfff8000000000000 on this machine, in both engines. Both engines
 // refuse a DOUBLE expression into the FLOAT column (22000): the assignment
 // lattice of 4.3, ported by RFC-257 WS-J v22 (values.CheckPromotionsTrie).
-var wsE11Pins = map[string]string{
-	"go_insert_cast_nan":        "7ff8000000000000 7ff8000000000000",
-	"go_insert_div_nan":         "ERROR 22000: A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.: incompatible type: DOUBLE NULL cannot be promoted to FLOAT NULL",
-	"go_insert_float_div_nan":   "fff8000000000000 fff8000000000000",
-	"java_insert_cast_nan":      "OK 1",
-	"java_insert_div_nan":       "ERROR 22000 SemanticException A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.",
-	"java_insert_float_div_nan": "OK 1",
-	"java_t_d_id1":              "7ff8000000000000",
-	"java_t_d_id3":              "fff8000000000000",
-	"java_t_f_id1":              "7fc00000",
-	"java_t_f_id3":              "ffc00000",
-}
+var wsE11Pins = wsEPins.V11
 
 // Round v12 (RFC-257 WS-E design v12): the target's NaN PRODUCERS beyond the CAST and the
 // division. (1) MIN and MAX over a column holding the division's NaN: the target's
@@ -2354,102 +1824,7 @@ var _ = Describe("WS-E target oracle v12", func() {
 // refused. Section 4.1(b) of ws-e-design.md ported both (javanum, javaMinF64): the Go
 // pins equal the target's. Before it Go's strconv.ParseFloat gave the reverse on each of
 // those spellings and Go's MIN/MAX stored math.NaN()'s 7ff8000000000001.
-var wsE12Pins = map[string]string{
-	"go_cast_00":          "OK 1",
-	"go_cast_01":          "OK 1",
-	"go_cast_02":          "OK 1",
-	"go_cast_03":          "ERROR 22F3H: Invalid cast operation Cannot cast string 'nan' to DOUBLE: For input string: \"nan\"",
-	"go_cast_04":          "ERROR 22F3H: Invalid cast operation Cannot cast string 'NAN' to DOUBLE: For input string: \"NAN\"",
-	"go_cast_05":          "OK 1",
-	"go_cast_06":          "OK 1",
-	"go_cast_07":          "OK 1",
-	"go_cast_08":          "ERROR 22F3H: Invalid cast operation Cannot cast string 'inf' to DOUBLE: For input string: \"inf\"",
-	"go_cast_09":          "ERROR 22F3H: Invalid cast operation Cannot cast string 'infinity' to DOUBLE: For input string: \"infinity\"",
-	"go_cast_10":          "OK 1",
-	"go_cast_11":          "OK 1",
-	"go_cast_12":          "OK 1",
-	"go_cast_13":          "OK 1",
-	"go_cast_14":          "OK 1",
-	"go_cast_15":          "OK 1",
-	"go_cast_16":          "OK 1",
-	"go_cast_17":          "ERROR 22F3H: Invalid cast operation Cannot cast string '1_000' to DOUBLE: For input string: \"1_000\"",
-	"go_cast_18":          "OK 1",
-	"go_cast_19":          "OK 1",
-	"go_cast_20":          "OK 1",
-	"go_cast_21":          "OK 1",
-	"go_insert_div_nan":   "OK 1",
-	"go_insert_max":       "OK 1",
-	"go_insert_min":       "OK 1",
-	"go_insert_one":       "OK 1",
-	"go_t_id1":            "fff8000000000000",
-	"go_t_id100":          "7ff8000000000000",
-	"go_t_id101":          "7ff8000000000000",
-	"go_t_id102":          "7ff8000000000000",
-	"go_t_id105":          "7ff0000000000000",
-	"go_t_id106":          "fff0000000000000",
-	"go_t_id107":          "7ff0000000000000",
-	"go_t_id110":          "3ff8000000000000",
-	"go_t_id111":          "3ff8000000000000",
-	"go_t_id112":          "3ff8000000000000",
-	"go_t_id113":          "3ff8000000000000",
-	"go_t_id114":          "3ff8000000000000",
-	"go_t_id115":          "4020000000000000",
-	"go_t_id116":          "4008000000000000",
-	"go_t_id118":          "7ff0000000000000",
-	"go_t_id119":          "0000000000000000",
-	"go_t_id120":          "3fe0000000000000",
-	"go_t_id121":          "4014000000000000",
-	"go_t_id2":            "3ff0000000000000",
-	"go_u_id10":           "fff8000000000000",
-	"go_u_id11":           "fff8000000000000",
-	"java_cast_00":        "OK 1",
-	"java_cast_01":        "OK 1",
-	"java_cast_02":        "OK 1",
-	"java_cast_03":        "ERROR 22F3H SemanticException Invalid cast operation Cannot cast string 'nan' to DOUBLE: For input string: \"nan\"",
-	"java_cast_04":        "ERROR 22F3H SemanticException Invalid cast operation Cannot cast string 'NAN' to DOUBLE: For input string: \"NAN\"",
-	"java_cast_05":        "OK 1",
-	"java_cast_06":        "OK 1",
-	"java_cast_07":        "OK 1",
-	"java_cast_08":        "ERROR 22F3H SemanticException Invalid cast operation Cannot cast string 'inf' to DOUBLE: For input string: \"inf\"",
-	"java_cast_09":        "ERROR 22F3H SemanticException Invalid cast operation Cannot cast string 'infinity' to DOUBLE: For input string: \"infinity\"",
-	"java_cast_10":        "OK 1",
-	"java_cast_11":        "OK 1",
-	"java_cast_12":        "OK 1",
-	"java_cast_13":        "OK 1",
-	"java_cast_14":        "OK 1",
-	"java_cast_15":        "OK 1",
-	"java_cast_16":        "OK 1",
-	"java_cast_17":        "ERROR 22F3H SemanticException Invalid cast operation Cannot cast string '1_000' to DOUBLE: For input string: \"1_000\"",
-	"java_cast_18":        "OK 1",
-	"java_cast_19":        "OK 1",
-	"java_cast_20":        "OK 1",
-	"java_cast_21":        "OK 1",
-	"java_insert_div_nan": "OK 1",
-	"java_insert_max":     "OK 1",
-	"java_insert_min":     "OK 1",
-	"java_insert_one":     "OK 1",
-	"java_t_d_id1":        "fff8000000000000",
-	"java_t_d_id100":      "7ff8000000000000",
-	"java_t_d_id101":      "7ff8000000000000",
-	"java_t_d_id102":      "7ff8000000000000",
-	"java_t_d_id105":      "7ff0000000000000",
-	"java_t_d_id106":      "fff0000000000000",
-	"java_t_d_id107":      "7ff0000000000000",
-	"java_t_d_id110":      "3ff8000000000000",
-	"java_t_d_id111":      "3ff8000000000000",
-	"java_t_d_id112":      "3ff8000000000000",
-	"java_t_d_id113":      "3ff8000000000000",
-	"java_t_d_id114":      "3ff8000000000000",
-	"java_t_d_id115":      "4020000000000000",
-	"java_t_d_id116":      "4008000000000000",
-	"java_t_d_id118":      "7ff0000000000000",
-	"java_t_d_id119":      "0000000000000000",
-	"java_t_d_id120":      "3fe0000000000000",
-	"java_t_d_id121":      "4014000000000000",
-	"java_t_d_id2":        "3ff0000000000000",
-	"java_u_d_id10":       "fff8000000000000",
-	"java_u_d_id11":       "fff8000000000000",
-}
+var wsE12Pins = wsEPins.V12
 
 // Round v12, planning cost: the target's task count, per planner phase, for the IN-list
 // family whose cost the WS-E prototype measured growing with the number of lists (ws-e-design.md
@@ -2534,17 +1909,7 @@ var _ = Describe("WS-E target oracle v12 planning cost", func() {
 // each probe (captured from /var/tmp/fdb-upgrade-recovery/wse12-cost-cap1.log). Two to
 // four IN lists cost the target 3835, 19366 and 117131 tasks; the target refuses the
 // sweep's `NOT f` conjunct family outright, so its and-idempotent pair is Go's alone.
-var wsE12CostPins = map[string]string{
-	"in2_conjunct":        "ERROR java RelationalException: expected boolean expression but got BOOLEAN AS _0",
-	"in2_conjunct_twice":  "ERROR java VerifyException: com.google.common.base.VerifyException",
-	"in2_conjunct_thrice": "ERROR java VerifyException: com.google.common.base.VerifyException",
-	"in2":                 "tasks=3835 PLANNING=3793 REWRITING=42 explain=\"[IN arrayDistinct(promote(@c7 AS ARRAY(LONG))) SORTED] | INJOIN q0 -> { [IN arrayDistinct(promote(@c18 AS ARRAY(LONG)))] | INJOIN q1 -> { SCAN([IS T, EQUALS q0]) | FILTER _.A EQUALS q1 | MAP (_.ID AS ID) } }\"",
-	"in3":                 "tasks=19366 PLANNING=19324 REWRITING=42 explain=\"[IN arrayDistinct(promote(@c7 AS ARRAY(LONG))) SORTED] | INJOIN q0 -> { [IN arrayDistinct(promote(@c18 AS ARRAY(LONG)))] | INJOIN q1 -> { [IN arrayDistinct(promote(@c29 AS ARRAY(LONG)))] | INJOIN q2 -> { SCAN([IS T, EQUALS q0]) | FILTER _.A EQUALS q1 AND _.B EQUALS q2 | MAP (_.ID AS ID) } } }\"",
-	"in4":                 "tasks=117131 PLANNING=117089 REWRITING=42 explain=\"[IN arrayDistinct(promote(@c7 AS ARRAY(LONG))) SORTED] | INJOIN q0 -> { [IN arrayDistinct(promote(@c18 AS ARRAY(LONG)))] | INJOIN q1 -> { [IN arrayDistinct(promote(@c29 AS ARRAY(LONG)))] | INJOIN q2 -> { [IN arrayDistinct(@c37)] | INJOIN q3 -> { COVERING(T_AB [EQUALS q1, EQUALS q2] -> [A: KEY:[0], B: KEY:[1], ID: KEY:[3]]) ∩ COVERING(T_S [EQUALS q3] -> [ID: KEY:[2], S: KEY:[0]]) COMPARE BY (_.ID) | FILTER _.ID EQUALS q0 | MAP (_.ID AS ID) } } } }\"",
-	"in_id_twice":         "tasks=1443 PLANNING=1401 REWRITING=42 explain=\"[IN arrayDistinct(promote(@c7 AS ARRAY(LONG))) SORTED] | INJOIN q0 -> { SCAN([IS T, EQUALS q0]) | MAP (_.ID AS ID) }\"",
-	"in_a_twice":          "tasks=641 PLANNING=599 REWRITING=42 explain=\"SCAN([IS T]) | FLATMAP q0 -> { EXPLODE arrayDistinct(promote(@c7 AS ARRAY(LONG))) | FILTER q0.A EQUALS _ AS q1 RETURN (q0.ID AS ID) }\"",
-	"in7_two_lists":       "tasks=2912 PLANNING=2855 REWRITING=57 explain=\"[IN arrayDistinct(promote(@c7 AS ARRAY(LONG))) ⋈ IN arrayDistinct(promote(@c17 AS ARRAY(LONG)))] INUNION q0, q1 -> { ISCAN(IDX_VAL [EQUALS q0]) | FILTER _.CAT EQUALS q1 | MAP (_.ID AS ID, _.VAL AS VAL) } COMPARE BY (_.VAL, _.ID) | MAP (_.ID AS ID)\"",
-}
+var wsE12CostPins = wsEPins.V12Cost
 
 // wseRequireNaNPinArch fails, loudly, when the NaN rounds run on an architecture other than
 // the one their pins were measured on. A NaN made by a division is the hardware's: amd64
@@ -2717,10 +2082,4 @@ var _ = Describe("WS-E target oracle v12 cross-engine NaN", func() {
 // answers Go's row, and the target's insert of its NaN beside it violates the UNIQUE index,
 // which keeps one NaN entry. (Captured before step (6), wse12x-cap1.log: Go wrote
 // 7ff8000000000001, the probe answered [], and the insert left two NaN entries.)
-var wsE12CrossPins = map[string]string{
-	"go_cast_nan_bits":              "7ff8000000000000",
-	"java_insert_nan_beside_go_row": "ERROR 23505 RecordIndexUniquenessViolation Duplicate entry for unique index",
-	"java_probe_explain":            "COVERING(T_D [EQUALS CAST(@c9 AS DOUBLE)] -> [D: KEY:[0], ID: KEY:[2]]) | MAP (_.ID AS ID)",
-	"java_probe_rows":               "[[2]]",
-	"t_d_id2":                       "7ff8000000000000",
-}
+var wsE12CrossPins = wsEPins.V12Cross
