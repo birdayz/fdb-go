@@ -180,6 +180,7 @@ var (
 		"fdb.dev/internal/recordlayer/javanum",
 		"fdb.dev/internal/recordlayer/protoname",
 		"fdb.dev/internal/recordlayer/protoscope",
+		"fdb.dev/internal/recordlayer/textcmp",
 		"fdb.dev/internal/recordlayer/tupleordering",
 		"fdb.dev/internal/recordlayer/vectorcodec",
 		"fdb.dev/recordlayer/indexfetch",
@@ -210,14 +211,9 @@ var (
 // Baseline debt allowlists: every entry is an existing dependency to be
 // retired rather than expanded. Keys are repo-relative file paths.
 var (
-	r1Allow = map[string]map[string]bool{
-		"pkg/recordlayer/query/executor/executor_test.go":            {"fdb.dev/pkg/relational/core/functions": true},
-		"pkg/recordlayer/query/executor/read_path_agreement_test.go": {"fdb.dev/pkg/relational/core/rowstruct": true},
-	}
+	r1Allow = map[string]map[string]bool{}
 	r2Allow = map[string]map[string]bool{
 		"pkg/recordlayer/query/plan/cascades/aggregate_index_entry_reader_test.go":    {"fdb.dev/pkg/fdbgo/fdb/tuple": true},
-		"pkg/recordlayer/query/plan/cascades/predicates/text_comparison.go":           {"fdb.dev/pkg/recordlayer": true},
-		"pkg/recordlayer/query/plan/cascades/predicates/text_comparison_test.go":      {"fdb.dev/pkg/recordlayer": true},
 		"pkg/recordlayer/query/plan/cascades/values/index_entry_extraction_test.go":   {"fdb.dev/pkg/fdbgo/fdb/tuple": true},
 		"pkg/recordlayer/query/plan/cascades/values/ordering_claim_test.go":           {"fdb.dev/pkg/fdbgo/fdb/tuple": true},
 		"pkg/recordlayer/query/plan/cascades/values/value_index_entry_object.go":      {"fdb.dev/pkg/fdbgo/fdb/tuple": true},

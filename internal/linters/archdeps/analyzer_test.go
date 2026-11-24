@@ -185,18 +185,18 @@ func TestRules(t *testing.T) {
 			want:     1,
 		},
 		{
-			name:     "R1 allowlisted executor_test passes",
+			name:     "R1 retired executor_test importing relational fails",
 			pkgPath:  "fdb.dev/pkg/recordlayer/query/executor",
 			filename: "pkg/recordlayer/query/executor/executor_test.go",
 			src:      srcImporting("executor", "fdb.dev/pkg/relational/core/functions"),
-			want:     0,
+			want:     1,
 		},
 		{
-			name:     "R1 allowlisted read_path_agreement_test with Bazel prefix passes",
+			name:     "R1 retired read_path_agreement_test with Bazel prefix fails",
 			pkgPath:  "fdb.dev/pkg/recordlayer/query/executor",
 			filename: "/b/f/w/execroot/_main/pkg/recordlayer/query/executor/read_path_agreement_test.go",
 			src:      srcImporting("executor", "fdb.dev/pkg/relational/core/rowstruct"),
-			want:     0,
+			want:     1,
 		},
 		{
 			name:     "R1 path boundary check prevents false suffix match",
@@ -264,10 +264,17 @@ func TestRules(t *testing.T) {
 			want:     0,
 		},
 		{
-			name:     "R2 allowlisted text_comparison with Bazel prefix passes",
+			name:     "R2 retired text_comparison importing recordlayer fails",
 			pkgPath:  "fdb.dev/pkg/recordlayer/query/plan/cascades/predicates",
 			filename: "/sandbox/execroot/_main/pkg/recordlayer/query/plan/cascades/predicates/text_comparison.go",
 			src:      srcImporting("predicates", "fdb.dev/pkg/recordlayer"),
+			want:     1,
+		},
+		{
+			name:     "R2 text_comparison importing L0 textcmp leaf passes",
+			pkgPath:  "fdb.dev/pkg/recordlayer/query/plan/cascades/predicates",
+			filename: "/sandbox/execroot/_main/pkg/recordlayer/query/plan/cascades/predicates/text_comparison.go",
+			src:      srcImporting("predicates", "fdb.dev/internal/recordlayer/textcmp"),
 			want:     0,
 		},
 		{
