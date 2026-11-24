@@ -93,6 +93,7 @@ type SPFreshIntegrityViolation struct {
 	Kind string
 }
 
+// String formats the integrity violation for human-readable diagnostics.
 func (v SPFreshIntegrityViolation) String() string {
 	return fmt.Sprintf("%s pk=%v fine=%d", v.Kind, v.PrimaryKey, v.FineID)
 }

@@ -13,7 +13,10 @@ const (
 	// VectorMetricEuclidean is true L2: sqrt(Σ(a_i−b_i)²). Matches Java's
 	// EUCLIDEAN_METRIC (MetricDefinition.EuclideanMetric.distance = Math.sqrt(...)).
 	VectorMetricEuclidean VectorMetric = iota
+	// VectorMetricCosine is cosine distance (1 - cos(a, b)). Matches Java's COSINE_METRIC.
 	VectorMetricCosine
+	// VectorMetricInnerProduct is negative dot product (-dot(a, b)) for similarity
+	// maximization. Matches Java's DOT_PRODUCT_METRIC.
 	VectorMetricInnerProduct
 	// VectorMetricEuclideanSquare is squared L2: Σ(a_i−b_i)² (no sqrt). Matches
 	// Java's EUCLIDEAN_SQUARE_METRIC — same KNN ordering as L2, cheaper, but it is

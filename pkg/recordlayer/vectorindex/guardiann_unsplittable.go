@@ -51,6 +51,7 @@ type ClusterUnsplittableError struct {
 	Cause     string
 }
 
+// Error returns the formatted unsplittable cluster error message.
 func (e *ClusterUnsplittableError) Error() string {
 	return fmt.Sprintf("vector index %q (GUARDIANN) cluster %s of partition %v cannot be split: %s, and it holds %d primaries, above primaryClusterHardMax %d",
 		e.IndexName, e.Cluster, e.Prefix, e.Cause, e.Count, e.Limit)

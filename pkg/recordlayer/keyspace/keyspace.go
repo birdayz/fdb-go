@@ -28,14 +28,22 @@ import (
 type KeyType int
 
 const (
-	KeyTypeNull    KeyType = iota // nil values
-	KeyTypeBytes                  // []byte
-	KeyTypeString                 // string
-	KeyTypeLong                   // int64 (also accepts int, int32)
-	KeyTypeFloat                  // float32
-	KeyTypeDouble                 // float64
-	KeyTypeBoolean                // bool
-	KeyTypeUUID                   // tuple.UUID
+	// KeyTypeNull represents nil values.
+	KeyTypeNull KeyType = iota
+	// KeyTypeBytes represents []byte values.
+	KeyTypeBytes
+	// KeyTypeString represents string values.
+	KeyTypeString
+	// KeyTypeLong represents int64 values (also accepts int and int32).
+	KeyTypeLong
+	// KeyTypeFloat represents float32 values.
+	KeyTypeFloat
+	// KeyTypeDouble represents float64 values.
+	KeyTypeDouble
+	// KeyTypeBoolean represents bool values.
+	KeyTypeBoolean
+	// KeyTypeUUID represents tuple.UUID values.
+	KeyTypeUUID
 )
 
 // String returns the name of the key type.
@@ -127,6 +135,7 @@ type ArgumentError struct {
 	KeyPos    int         // key_tuple_pos
 }
 
+// Error implements the error interface.
 func (e *ArgumentError) Error() string {
 	var sb strings.Builder
 	sb.WriteString(e.Message)
@@ -557,7 +566,7 @@ func (p *Path) DirectoryName() string {
 	return p.directory.Name
 }
 
-// Value returns the resolved value at this path position.
+// GetValue returns the resolved value at this path position.
 func (p *Path) GetValue() any {
 	return p.value
 }
@@ -602,7 +611,7 @@ func (p *Path) ToRange() (fdb.KeyRange, error) {
 	}, nil
 }
 
-// FullPath returns a human-readable representation of the path from root to here.
+// String returns a human-readable representation of the path from root to here.
 // E.g., "/state=CA/office_id=1234".
 func (p *Path) String() string {
 	if p.parent == nil {
