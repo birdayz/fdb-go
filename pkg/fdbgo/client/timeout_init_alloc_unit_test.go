@@ -14,7 +14,7 @@ func TestTimeoutQueueInitializationAllocations(t *testing.T) {
 	queueOnly := testing.AllocsPerRun(100, func() { retained = newTimeoutQueue() })
 	withTimer := testing.AllocsPerRun(100, func() {
 		q := newTimeoutQueue()
-		now := q.now()
+		now := q.nowTime()
 		q.requestLocked(now+int64(time.Hour), now)
 		q.timer.(*realTimer).t.Stop()
 		retained = q
