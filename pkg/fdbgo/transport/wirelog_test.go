@@ -206,22 +206,3 @@ func TestCaptureWireLogStop(t *testing.T) {
 		t.Fatal("stop left the capture installed")
 	}
 }
-
-func TestWithWireLogConnScoped(t *testing.T) {
-	t.Parallel()
-	var buf bytes.Buffer
-	c := &Conn{}
-	WithWireLog(&buf)(c)
-	if defaultWireLog.load() != nil {
-		t.Fatal("WithWireLog mutated process-global defaultWireLog")
-	}
-	c.logSend(UID{First: 11, Second: 22}, []byte("req"))
-	c.logRecv(UID{First: 33, Second: 44}, []byte("resp"))
-	data := buf.Bytes()
-	if len(data) != (29+3)+(29+4) {
-		t.Fatalf("conn-scoped wirelog bytes = %d, want %d", len(data), (29+3)+(29+4))
-	}
-	if data[0] != 'S' || data[29+3] != 'R' {
-		t.Fatalf("unexpected directions: %q, %q", data[0], data[29+3])
-	}
-}

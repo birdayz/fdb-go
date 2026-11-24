@@ -191,8 +191,7 @@ type KeyRange struct {
 // txOptions holds every option-backing field of a Transaction — the Go analog of C++
 // TransactionOptions + the RYW-level option state (RFC-175 C2). One field per
 // fdb_transaction_set_option-style accessor (SetTenantId, SetTimeout, SetRetryLimit, …).
-// Embedded in Transaction, so
-// field promotion keeps every existing access site unchanged.
+// Embedded in Transaction, so field promotion keeps every existing access site unchanged.
 //
 // Synchronization contract (unchanged by the move): option setters are NOT
 // concurrent-safe with operations (fdb/transaction.go) — fields here are plain unless

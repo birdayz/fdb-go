@@ -109,7 +109,6 @@ func newPingOwnerFixture(t *testing.T, opts pingOwnerOptions) *pingOwnerFixture 
 	}
 	c.ctx = f.ctx
 
-	// Cleanups run last-in first-out: the seam is restored after the monitor joins.
 	h := c.testHooks()
 	h.seriousLog = opts.seriousLog
 	var fired atomic.Bool

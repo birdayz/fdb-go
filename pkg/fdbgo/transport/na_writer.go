@@ -302,7 +302,7 @@ func (c *Conn) naEnqueueEncoded(ctx context.Context, token UID, body, frame []by
 			return err
 		}
 	}
-	if wl := c.activeWireLog(); wl != nil {
+	if wl := defaultWireLog.load(); wl != nil {
 		if permit == nil {
 			permit, _ = c.sendWaiters.Reserve()
 		}
@@ -343,7 +343,7 @@ func (c *Conn) naTrySend(token UID, body []byte) bool {
 		w.mu.Unlock()
 		return false
 	}
-	if wl := c.activeWireLog(); wl != nil {
+	if wl := defaultWireLog.load(); wl != nil {
 		permit, _ := c.sendWaiters.Reserve()
 		defer permit.Release()
 		w.mu.Unlock()

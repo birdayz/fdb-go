@@ -89,7 +89,7 @@ func (c *Conn) writeContext(ctx context.Context, token UID, body []byte, flush b
 		return c.writePrefixContext(ctx, token, body, flush, admission)
 	}
 	if !flush {
-		c.logSend(token, body)
+		LogSend(token, body)
 		if admission.ordinary() {
 			if direct, err := c.tryWriteDirect(token, body); direct {
 				return true, err
@@ -106,7 +106,7 @@ func (c *Conn) writeContext(ctx context.Context, token UID, body []byte, flush b
 func (c *Conn) writePrefixContext(ctx context.Context, token UID, body []byte, flush bool, admission peerAdmission) (bool, error) {
 	defer admission.permit.Release()
 	if !flush {
-		c.logSend(token, body)
+		LogSend(token, body)
 	}
 	return c.writeAdmittedContext(ctx, token, body, admission, newWriteCompletion())
 }
@@ -185,7 +185,7 @@ func (c *Conn) sendWithoutAck(ctx context.Context, token UID, body []byte, eager
 		return false, err
 	}
 	defer admission.permit.Release()
-	c.logSend(token, body)
+	LogSend(token, body)
 	if eager && admission.ordinary() {
 		if direct, err := c.tryWriteDirect(token, body); direct {
 			return true, err

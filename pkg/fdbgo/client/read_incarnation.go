@@ -326,7 +326,6 @@ func (tx *Transaction) armTimeoutLocked() {
 	}
 	if q == nil {
 		q = getDetachedTimeouts()
-		deadline = q.nowTime() + int64(delay)
 	}
 	n := tx.timeoutNode
 	if n == nil {
@@ -349,13 +348,6 @@ func (tx *Transaction) disarmTimeoutLocked() {
 	tx.timeoutArmed = false
 	tx.timeoutNeedsArm = false
 	tx.stopDesignTimerLocked()
-}
-
-func (tx *Transaction) timeoutQueue() *timeoutQueue {
-	if tx.db != nil && tx.db.timeouts != nil {
-		return tx.db.timeouts
-	}
-	return getDetachedTimeouts()
 }
 
 // fireTimeout delivers the timeout armed as arm. Claim and record are one

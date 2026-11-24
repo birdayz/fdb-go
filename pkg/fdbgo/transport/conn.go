@@ -252,7 +252,6 @@ type Conn struct {
 	adaptiveLinger  time.Duration
 	coalesceSet     bool
 	coldOrderActive atomic.Bool
-	wireLog         *WireLog // optional per-connection wire log (WithWireLog)
 	hooks           atomic.Pointer[connTestHooks]
 
 	// Debug tracing (set before first use).
@@ -786,7 +785,7 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
 		fmt.Fprintf(c.debugWriter, "[send %s] token=%016x:%016x bodyLen=%d\n", c.conn.RemoteAddr(),
 			destToken.First, destToken.Second, len(body))
 	}
-	c.logSend(destToken, body)
+	LogSend(destToken, body)
 	if admission.ordinary() {
 		if direct, err := c.tryWriteDirect(destToken, body); direct {
 			return err
@@ -826,7 +825,7 @@ func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
 		return err
 	}
 	defer admission.permit.Release()
-	c.logSend(destToken, body)
+	LogSend(destToken, body)
 	if ok, _ := c.enqueueAdmitted(c.ctx, writeReq{token: destToken, body: body}, nil, admission); !ok {
 		return errConnClosed
 	}
@@ -1225,7 +1224,7 @@ func (c *Conn) readLoop() {
 			return
 		}
 
-		c.logRecv(token, body)
+		LogRecv(token, body)
 
 		if c.debugFrames {
 			isPending := c.HasPendingReply(token)
