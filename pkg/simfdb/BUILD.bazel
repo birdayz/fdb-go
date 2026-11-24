@@ -1,5 +1,9 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+# gazelle:default_visibility //pkg/simfdb:__subpackages__
+
+package(default_visibility = ["//pkg/simfdb:__subpackages__"])
+
 go_library(
     name = "simfdb",
     srcs = [
@@ -31,7 +35,12 @@ go_library(
         "txn.go",
     ],
     importpath = "fdb.dev/pkg/simfdb",
-    visibility = ["//visibility:public"],
+    visibility = [
+        "//pkg/fdbgo:__subpackages__",
+        "//pkg/recordlayer:__subpackages__",
+        "//pkg/relational:__subpackages__",
+        "//pkg/simfdb:__subpackages__",
+    ],
     deps = [
         "//pkg/dst",
         "//pkg/fdbgo/fdb",

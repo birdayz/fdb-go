@@ -1,10 +1,12 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+package(default_visibility = ["//pkg/simfdb:__subpackages__"])
+
 go_library(
     name = "golden",
     srcs = ["golden.go"],
     importpath = "fdb.dev/pkg/simfdb/hunt/golden",
-    visibility = ["//visibility:public"],
+    visibility = ["//visibility:private"],
     deps = [
         "//pkg/dst",
         "//pkg/recordlayer",

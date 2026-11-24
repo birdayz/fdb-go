@@ -1,5 +1,7 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+package(default_visibility = ["//pkg/relational/conformance:__subpackages__"])
+
 # keep: the committed RFC-201 factory corpus, exported so the FULL corpus
 # target (//pkg/relational/conformance/factorycorpus/full) and the producer's
 # determinism gate (//pkg/relational/conformance/factory) can stage it into
@@ -10,14 +12,17 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 filegroup(
     name = "testdata",
     srcs = glob(["testdata/**"]),
-    visibility = ["//visibility:public"],
+    visibility = [
+        "//cmd/factory-rebless:__pkg__",
+        "//pkg/relational/conformance:__subpackages__",
+    ],
 )
 
-# keep: the census ratchet's committed baseline. Exported for the same reason.
+# keep: the census ratchet's committed baseline, kept private to this package.
 filegroup(
     name = "census_baseline",
     srcs = ["census_baseline.json"],
-    visibility = ["//visibility:public"],
+    visibility = ["//visibility:private"],
 )
 
 go_library(
@@ -34,7 +39,14 @@ go_library(
         "writer.go",
     ],
     importpath = "fdb.dev/pkg/relational/conformance/factorycorpus",
-    visibility = ["//visibility:public"],
+    visibility = [
+        "//cmd/factory-migrate:__pkg__",
+        "//cmd/factory-plan-census:__pkg__",
+        "//cmd/factory-rebless:__pkg__",
+        "//cmd/factory-rebless-plan-shapes:__pkg__",
+        "//cmd/factory-run:__pkg__",
+        "//pkg/relational/conformance:__subpackages__",
+    ],
     deps = [
         "//pkg/relational/api",
         "//pkg/relational/conformance/javacorpus",

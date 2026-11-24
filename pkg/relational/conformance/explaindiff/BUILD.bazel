@@ -1,10 +1,17 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+package(default_visibility = ["//pkg/relational/conformance:__subpackages__"])
+
 go_library(
     name = "explaindiff",
     srcs = ["explaindiff.go"],
     importpath = "fdb.dev/pkg/relational/conformance/explaindiff",
-    visibility = ["//visibility:public"],
+    visibility = [
+        "//cmd/explain-differ:__pkg__",
+        "//cmd/factory-rebless:__pkg__",
+        "//cmd/factory-rebless-plan-shapes:__pkg__",
+        "//pkg/relational/conformance:__subpackages__",
+    ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades",
         "//pkg/recordlayer/query/plan/plans",

@@ -1,5 +1,7 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+package(default_visibility = ["//pkg/relational/conformance:__subpackages__"])
+
 go_library(
     name = "rowdiff",
     srcs = [
@@ -12,7 +14,10 @@ go_library(
         "templates.go",
     ],
     importpath = "fdb.dev/pkg/relational/conformance/rowdiff",
-    visibility = ["//visibility:public"],
+    visibility = [
+        "//cmd/sql-diff-stress:__pkg__",
+        "//pkg/relational:__subpackages__",
+    ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",

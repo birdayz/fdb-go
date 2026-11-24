@@ -1,5 +1,7 @@
 load("@rules_go//go:def.bzl", "go_test")
 
+package(default_visibility = ["//pkg/relational/conformance:__subpackages__"])
+
 # The full committed RFC-201 corpus runs in `just test-full` and non-race CI,
 # as eight shards (see shard_count below).
 #

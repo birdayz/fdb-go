@@ -1,5 +1,9 @@
 load("@rules_go//go:def.bzl", "go_test")
 
+# gazelle:default_visibility //pkg/fdbgo:__subpackages__
+
+package(default_visibility = ["//pkg/fdbgo:__subpackages__"])
+
 go_test(
     name = "recovery_test",
     timeout = "long",

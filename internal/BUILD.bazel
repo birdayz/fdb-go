@@ -1,0 +1,15 @@
+# gazelle:default_visibility //:__subpackages__
+
+package(default_visibility = ["//:__subpackages__"])
+
+package_group(
+    name = "unicode15_consumers",
+    packages = [
+        "//conformance/...",
+        "//internal/...",
+        "//layers/otel/otelsql/...",
+        "//pkg/recordlayer/...",
+        "//pkg/relational/...",
+        "//tools/unicode15gen/...",
+    ],
+)

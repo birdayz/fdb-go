@@ -1,11 +1,16 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+package(default_visibility = [
+    "//pkg/recordlayer:__subpackages__",
+    "//pkg/relational:__subpackages__",
+])
+
 go_library(
     name = "allocs",
     testonly = True,
     srcs = ["isolated.go"],
     importpath = "fdb.dev/pkg/testutil/allocs",
-    visibility = ["//visibility:public"],
+    visibility = ["//pkg/recordlayer:__subpackages__"],
 )
 
 go_test(

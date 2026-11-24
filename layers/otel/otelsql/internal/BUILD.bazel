@@ -1,0 +1,3 @@
+# gazelle:default_visibility //layers/otel/otelsql:__subpackages__
+
+package(default_visibility = ["//layers/otel/otelsql:__subpackages__"])

@@ -1,5 +1,7 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+package(default_visibility = ["//pkg:__subpackages__"])
+
 go_library(
     name = "fdbclient",
     srcs = [
@@ -7,7 +9,7 @@ go_library(
         "open_purego.go",
     ],
     importpath = "fdb.dev/pkg/internal/fdbclient",
-    visibility = ["//visibility:public"],
+    visibility = ["//pkg:__subpackages__"],
     deps = ["//pkg/fdbgo/fdb"],
 )
 
