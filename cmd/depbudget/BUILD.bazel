@@ -1,0 +1,37 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+load(":sdk.bzl", "go_sdk_binary")
+
+exports_files(["budget.json"])
+
+go_sdk_binary(
+    name = "go_sdk_binary",
+)
+
+go_library(
+    name = "depbudget_lib",
+    srcs = ["main.go"],
+    importpath = "fdb.dev/cmd/depbudget",
+    visibility = ["//visibility:private"],
+)
+
+go_binary(
+    name = "depbudget",
+    data = [
+        "budget.json",
+        ":go_sdk_binary",
+    ],
+    embed = [":depbudget_lib"],
+    env = {"DEPBUDGET_GO": "$(rlocationpath :go_sdk_binary)"},
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "depbudget_test",
+    srcs = ["depbudget_test.go"],
+    data = [
+        "budget.json",
+        ":go_sdk_binary",
+    ],
+    embed = [":depbudget_lib"],
+    env = {"DEPBUDGET_GO": "$(rlocationpath :go_sdk_binary)"},
+)
