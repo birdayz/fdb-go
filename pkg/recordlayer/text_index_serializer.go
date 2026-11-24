@@ -34,18 +34,18 @@ type BunchedEntry[K any, V any] struct {
 	Value V
 }
 
-// textIndexbunchedSerializerPrefix is the version prefix for the TEXT index serialization format.
+// textIndexBunchedSerializerPrefix is the version prefix for the TEXT index serialization format.
 // Matches Java's TextIndexBunchedSerializer.PREFIX = { 0x20 }.
 var textIndexBunchedSerializerPrefix = []byte{0x20}
 
-// TextIndexbunchedSerializer serializes Tuple keys and position lists ([]int) for TEXT indexes.
+// TextIndexBunchedSerializer serializes Tuple keys and position lists ([]int) for TEXT indexes.
 // Position lists are delta-compressed using base-128 variable-length integer encoding.
 // Wire-compatible with Java's com.apple.foundationdb.record.provider.foundationdb.indexes.TextIndexBunchedSerializer.
 type TextIndexBunchedSerializer struct{}
 
 var textIndexBunchedSerializerInstance = &TextIndexBunchedSerializer{}
 
-// TextIndexbunchedSerializerInstance returns the singleton serializer.
+// TextIndexBunchedSerializerInstance returns the singleton serializer.
 func TextIndexBunchedSerializerInstance() *TextIndexBunchedSerializer {
 	return textIndexBunchedSerializerInstance
 }
@@ -525,7 +525,7 @@ func (s *TextIndexBunchedSerializer) deserializeBunch(key tuple.Tuple, data []by
 	return entries, nil
 }
 
-// Compile-time check that TextIndexbunchedSerializer implements bunchedSerializer.
+// Compile-time check that TextIndexBunchedSerializer implements bunchedSerializer.
 var _ bunchedSerializer[tuple.Tuple, []int] = (*TextIndexBunchedSerializer)(nil)
 
 // BunchedSerializationError is returned when bunched map serialization/deserialization fails.

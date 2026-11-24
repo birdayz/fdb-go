@@ -173,7 +173,7 @@ type bunchedMapMultiIterator struct {
 	nextEntry *bunchedMapScanEntry
 }
 
-// newbunchedMapMultiIterator creates a multi-map iterator.
+// newBunchedMapMultiIterator creates a multi-map iterator.
 // Streams from FDB lazily — only one bunch in memory at a time.
 func newBunchedMapMultiIterator(
 	tx fdb.ReadTransaction,
@@ -192,7 +192,7 @@ func newBunchedMapMultiIterator(
 	)
 }
 
-// newbunchedMapMultiIteratorWithCallback creates a multi-map iterator with a
+// newBunchedMapMultiIteratorWithCallback creates a multi-map iterator with a
 // per-KV callback for byte tracking. The callback fires once per raw FDB
 // key-value pair read, before deserialization. Matches Java's scanMulti()
 // with Consumer<KeyValue> callback parameter.

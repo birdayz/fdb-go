@@ -38,7 +38,7 @@ type textCursor struct {
 
 // newTextCursorWithByteTracking creates a textCursor and a kvCallback that
 // accumulates raw FDB bytes into the cursor's scanState.
-// The callback must be passed to newbunchedMapMultiIteratorWithCallback.
+// The callback must be passed to newBunchedMapMultiIteratorWithCallback.
 func newTextCursorWithByteTracking(index *Index, scanProps ScanProperties, timer *StoreTimer) (*textCursor, kvCallback) {
 	c := &textCursor{
 		index:     index,

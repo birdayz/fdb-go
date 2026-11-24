@@ -82,7 +82,7 @@ func TestInvalidNameErrorBoundary(t *testing.T) {
 		t.Errorf("ToProtoBufCompliantName empty: OutermostJavaError = %T (%v), want *recordlayer.InvalidNameError", outer, outer)
 	}
 
-	err = CheckValidProtoBufCompliantName("9bad")
+	err = checkValidProtoBufCompliantName("9bad")
 	ine = nil
 	pnErr = nil
 	if !errors.As(err, &ine) || ine.Message != "9bad it not a valid protobuf identifier" {
