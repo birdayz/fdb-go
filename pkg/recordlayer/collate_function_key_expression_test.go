@@ -325,7 +325,7 @@ func TestCollateFunctionViaFunctionExpr(t *testing.T) {
 	t.Parallel()
 
 	// Test via FunctionExpr → Evaluate chain (with mock message)
-	expr := FunctionExpr(CollateFuncJRE, LiteralExpr("test_string"))
+	expr := FunctionExpr(CollateFuncJRE, literalExpr("test_string"))
 	results, err := expr.Evaluate(nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -342,8 +342,8 @@ func TestCollateFunctionViaFunctionExpr(t *testing.T) {
 	}
 }
 
-// LiteralExpr creates a simple literal key expression for testing.
-func LiteralExpr(value any) KeyExpression {
+// literalExpr creates a simple literal key expression for testing.
+func literalExpr(value any) KeyExpression {
 	return Literal(value)
 }
 

@@ -21,7 +21,7 @@ import (
 // of passing a Consumer<KeyValue> to scanMulti() that calls
 // byteScanLimiter.registerScannedBytes(key.length + value.length).
 type textCursor struct {
-	underlying  *BunchedMapMultiIterator
+	underlying  *bunchedMapMultiIterator
 	index       *Index
 	scanProps   ScanProperties
 	closed      bool
@@ -39,7 +39,7 @@ type textCursor struct {
 // newTextCursorWithByteTracking creates a textCursor and a KVCallback that
 // accumulates raw FDB bytes into the cursor's scanState.
 // The callback must be passed to NewBunchedMapMultiIteratorWithCallback.
-func newTextCursorWithByteTracking(index *Index, scanProps ScanProperties, timer *StoreTimer) (*textCursor, KVCallback) {
+func newTextCursorWithByteTracking(index *Index, scanProps ScanProperties, timer *StoreTimer) (*textCursor, kvCallback) {
 	c := &textCursor{
 		index:     index,
 		scanProps: scanProps,
@@ -60,7 +60,7 @@ func newTextCursorWithByteTracking(index *Index, scanProps ScanProperties, timer
 }
 
 // setUnderlying sets the iterator after construction.
-func (c *textCursor) setUnderlying(it *BunchedMapMultiIterator) {
+func (c *textCursor) setUnderlying(it *bunchedMapMultiIterator) {
 	c.underlying = it
 }
 

@@ -81,7 +81,7 @@ func (m *countMutation) evaluateEntries(store IndexStoreContext, record *FDBStor
 	// Fast path: inline evaluation to skip evaluateGroupingKeys's []tuple.Tuple wrapper.
 	maintained := indexValuesFor(store, m.index, record)
 	if maintained == IndexValuesAll {
-		if fe, ok := m.index.RootExpression.(FlatEvaluator); ok {
+		if fe, ok := m.index.RootExpression.(flatEvaluator); ok {
 			values, err := fe.EvaluateFlat(record, record.Record)
 			if err == nil {
 				gc := indexGroupingCount(m.index.RootExpression)
@@ -231,7 +231,7 @@ func (m *sumMutation) evaluateEntries(store IndexStoreContext, record *FDBStored
 	// Fast path: use EvaluateFlat to avoid [][]any alloc. It evaluates no
 	// entry list, so it runs only when every entry is maintained.
 	// Falls through on error (e.g. fan-out repeated fields).
-	if fe, ok := m.index.RootExpression.(FlatEvaluator); ok && maintained == IndexValuesAll {
+	if fe, ok := m.index.RootExpression.(flatEvaluator); ok && maintained == IndexValuesAll {
 		values, err := fe.EvaluateFlat(record, record.Record)
 		if err == nil {
 			groupingCount := indexGroupingCount(m.index.RootExpression)

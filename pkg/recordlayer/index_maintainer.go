@@ -261,7 +261,7 @@ func (m *StandardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 		_, isKWV := m.index.RootExpression.(*KeyWithValueExpression)
 		if !isKWV && indexValuesFor(m.store, m.index, newRecord) == IndexValuesAll {
 			// Int64 fast path: avoids any boxing alloc for integer fields.
-			if ie, ok := m.index.RootExpression.(Int64Evaluator); ok {
+			if ie, ok := m.index.RootExpression.(int64Evaluator); ok {
 				val, ok, err := ie.EvaluateInt64(newRecord, newRecord.Record)
 				if err == nil && ok {
 					return m.insertInt64Entry(val, newRecord)
@@ -270,7 +270,7 @@ func (m *StandardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 			// DirectPacker: encode fields straight into FDB key bytes.
 			// Avoids scalarToInterface boxing — handles both single-field and
 			// composite keys without going through any.
-			if dp, ok := m.index.RootExpression.(DirectPacker); ok {
+			if dp, ok := m.index.RootExpression.(directPacker); ok {
 				pk := tuple.GetPacker()
 				pk.Reset()
 				if dp.PackDirect(pk, newRecord, newRecord.Record) {
@@ -302,7 +302,7 @@ func (m *StandardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 				}
 				tuple.PutPacker(pk)
 			}
-			if fe, ok := m.index.RootExpression.(FlatEvaluator); ok {
+			if fe, ok := m.index.RootExpression.(flatEvaluator); ok {
 				values, err := fe.EvaluateFlat(newRecord, newRecord.Record)
 				if err == nil {
 					// Zero-alloc: reinterpret []any as tuple.Tuple (same layout).
@@ -568,7 +568,7 @@ func (m *StandardIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Me
 	// skips it: its flat evaluation would fail only after evaluating the
 	// fan-out, which Evaluate then repeats.
 	if !isKeyWithValue && !createsDuplicatesRec(m.index.RootExpression, true) {
-		if fe, ok := m.index.RootExpression.(FlatEvaluator); ok {
+		if fe, ok := m.index.RootExpression.(flatEvaluator); ok {
 			values, err := fe.EvaluateFlat(record, record.Record)
 			if err == nil {
 				key := make(tuple.Tuple, len(values))

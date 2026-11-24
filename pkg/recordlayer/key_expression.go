@@ -49,29 +49,29 @@ var (
 	nilKeyResult   = [][]any{{nil}} // FieldKeyExpression unset field result
 )
 
-// FlatEvaluator is an optional interface for KeyExpressions that can return
+// flatEvaluator is an optional interface for KeyExpressions that can return
 // a single tuple directly without the [][]any wrapper. Avoids 1 alloc per call.
-type FlatEvaluator interface {
+type flatEvaluator interface {
 	EvaluateFlat(record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error)
 }
 
-// ScalarEvaluator is an optional interface for KeyExpressions that extract
+// scalarEvaluator is an optional interface for KeyExpressions that extract
 // a single scalar value. Avoids both the outer [][]any and inner []any allocs.
-type ScalarEvaluator interface {
+type scalarEvaluator interface {
 	EvaluateScalar(record *FDBStoredRecord[proto.Message], msg proto.Message) (any, error)
 }
 
-// Int64Evaluator extracts a single int64 value without boxing to any.
+// int64Evaluator extracts a single int64 value without boxing to any.
 // Go's convT64 allocates for every non-zero int64→any conversion.
 // This interface bypasses that by returning int64 directly.
-type Int64Evaluator interface {
+type int64Evaluator interface {
 	EvaluateInt64(record *FDBStoredRecord[proto.Message], msg proto.Message) (int64, bool, error)
 }
 
 // evaluateKeyFlat calls EvaluateFlat if available, otherwise falls back to Evaluate.
 // Saves 1 alloc per call on the hot path (avoids the outer [][]any).
 func evaluateKeyFlat(expr KeyExpression, record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error) {
-	if fe, ok := expr.(FlatEvaluator); ok {
+	if fe, ok := expr.(flatEvaluator); ok {
 		return fe.EvaluateFlat(record, msg)
 	}
 	tuples, err := expr.Evaluate(record, msg)
@@ -84,8 +84,8 @@ func evaluateKeyFlat(expr KeyExpression, record *FDBStoredRecord[proto.Message],
 	return tuples[0], nil
 }
 
-// DirectPacker can encode field values directly into a Packer without any boxing.
-type DirectPacker interface {
+// directPacker can encode field values directly into a Packer without any boxing.
+type directPacker interface {
 	PackDirect(pk *tuple.Packer, record *FDBStoredRecord[proto.Message], msg proto.Message) bool
 }
 
@@ -314,8 +314,8 @@ func keyExpressionEquals(a, b KeyExpression) bool {
 			return false
 		}
 		// Compare via proto serialization for type-safe equality
-		ap, _ := ValueToProto(av.value)
-		bp, _ := ValueToProto(bv.value)
+		ap, _ := valueToProto(av.value)
+		bp, _ := valueToProto(bv.value)
 		return proto.Equal(ap, bp)
 	case *KeyWithValueExpression:
 		bv, ok := b.(*KeyWithValueExpression)

@@ -146,7 +146,7 @@ func TestRecordKeyCursor_SurfacesGetError(t *testing.T) {
 func TestBunchedMapMultiIterator_SurfacesIteratorError(t *testing.T) {
 	t.Parallel()
 	injErr := errors.New("injected transaction_too_old (1007)")
-	it := &BunchedMapMultiIterator{rangeIter: &fakeRangeIterator{getErr: injErr}}
+	it := &bunchedMapMultiIterator{rangeIter: &fakeRangeIterator{getErr: injErr}}
 	if _, ok := it.nextKV(); ok {
 		t.Fatal("nextKV must report not-ok on an iterator error")
 	}

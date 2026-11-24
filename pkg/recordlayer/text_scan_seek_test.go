@@ -43,9 +43,9 @@ var _ = Describe("TEXT leapfrog seek", func() {
 		Expect(err).NotTo(HaveOccurred())
 	}
 
-	newIterator := func(tx fdb.ReadTransaction, parent subspace.Subspace, reverse bool, kvs *int) *BunchedMapMultiIterator {
+	newIterator := func(tx fdb.ReadTransaction, parent subspace.Subspace, reverse bool, kvs *int) *bunchedMapMultiIterator {
 		begin, end := parent.FDBRangeKeys()
-		return NewBunchedMapMultiIteratorWithCallback(tx, parent, NewTextSubspaceSplitter(parent, 1),
+		return newBunchedMapMultiIteratorWithCallback(tx, parent, newTextSubspaceSplitter(parent, 1),
 			begin.FDBKey(), end.FDBKey(), nil, 0, func(int, int) { *kvs++ }, reverse, TextIndexBunchedSerializerInstance())
 	}
 
@@ -147,7 +147,7 @@ var _ = Describe("TEXT leapfrog seek", func() {
 			Expect(predecessor).To(HaveLen(1))
 			Expect(predecessor[0].Key).To(Equal(parent.Pack(tuple.Tuple{"tok", int64(0)})))
 			for _, target := range []int64{12, 15, 57, 60} {
-				it := NewBunchedMapMultiIterator(tx, parent, splitter, begin, end, nil, 0, true, TextIndexBunchedSerializerInstance())
+				it := newBunchedMapMultiIterator(tx, parent, splitter, begin, end, nil, 0, true, TextIndexBunchedSerializerInstance())
 				Expect(it.HasNext()).To(BeTrue())
 				Expect(it.Next().Key).To(Equal(tuple.Tuple{int64(99)}))
 				it.seekTo(tuple.Tuple{target})
@@ -164,7 +164,7 @@ var _ = Describe("TEXT leapfrog seek", func() {
 					want = append(want, k)
 				}
 				Expect(rest).To(Equal(want))
-				resumed := NewBunchedMapMultiIterator(tx, parent, splitter, begin, end, cont, 0, true, TextIndexBunchedSerializerInstance())
+				resumed := newBunchedMapMultiIterator(tx, parent, splitter, begin, end, cont, 0, true, TextIndexBunchedSerializerInstance())
 				var replay []int64
 				for resumed.HasNext() {
 					replay = append(replay, resumed.Next().Key[0].(int64))
@@ -189,7 +189,7 @@ var _ = Describe("TEXT leapfrog seek", func() {
 				Expect(ref).To(HaveLen(mapEntries))
 				begin, end := parent.FDBRangeKeys()
 				for i, r := range ref {
-					it := NewBunchedMapMultiIterator(tx, parent, NewTextSubspaceSplitter(parent, 1),
+					it := newBunchedMapMultiIterator(tx, parent, newTextSubspaceSplitter(parent, 1),
 						begin.FDBKey(), end.FDBKey(), r.cont, 0, reverse, TextIndexBunchedSerializerInstance())
 					var rest []int64
 					for it.HasNext() {
@@ -324,11 +324,11 @@ var _ = Describe("TEXT leapfrog seek", func() {
 		case TextContainsPhrase:
 			withStop, err := s.tokenList(false)
 			Expect(err).NotTo(HaveOccurred())
-			c = firstOfMatches(FilterErrCursor(IntersectionMultiResume(children.cursors, keyFunc, props.IsReverse(), children.resume),
+			c = firstOfMatches(filterErrCursor(IntersectionMultiResume(children.cursors, keyFunc, props.IsReverse(), children.resume),
 				func(e []*IndexEntry) (bool, error) { return entriesContainPhrase(e, withStop) }))
 		case TextContainsAllWithin:
 			d := s.Comparison.MaxDistance()
-			c = firstOfMatches(FilterErrCursor(IntersectionMultiResume(children.cursors, keyFunc, props.IsReverse(), children.resume),
+			c = firstOfMatches(filterErrCursor(IntersectionMultiResume(children.cursors, keyFunc, props.IsReverse(), children.resume),
 				func(e []*IndexEntry) (bool, error) { return entriesContainAllWithin(e, d) }))
 		}
 		return LimitRowsCursor(SkipCursor(c, exec.Skip), exec.ReturnedRowLimit)

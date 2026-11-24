@@ -40,7 +40,7 @@ func TestCollationFunctionIn(t *testing.T) {
 			}
 		}
 	}
-	for _, expr := range []KeyExpression{nil, EmptyKey(), Field("name"), LiteralExpr("collate_jre"), Concat(Field("id"), Nest("customer", Field("name")))} {
+	for _, expr := range []KeyExpression{nil, EmptyKey(), Field("name"), literalExpr("collate_jre"), Concat(Field("id"), Nest("customer", Field("name")))} {
 		if got := collationFunctionIn(expr); got != "" {
 			t.Errorf("%T is not collated, got %q", expr, got)
 		}
@@ -239,7 +239,7 @@ var _ = Describe("Go-only collation guard", func() {
 	}
 
 	It("preflights collated universal indexes for writes of every record type", func() {
-		index := NewIndex("all_records", FunctionExpr(CollateFuncICU, LiteralExpr("a")))
+		index := NewIndex("all_records", FunctionExpr(CollateFuncICU, literalExpr("a")))
 		md := build(func(b *RecordMetaDataBuilder) { b.AddUniversalIndex(index) })
 		var pk tuple.Tuple
 		Expect(run(md, true, func(store *FDBRecordStore) error {
@@ -335,7 +335,7 @@ var _ = Describe("Go-only collation guard", func() {
 	}
 
 	It("guards legacy collated count writes, but not updates or raw count reads", func() {
-		countKey := FunctionExpr(CollateFuncJRE, LiteralExpr("a"))
+		countKey := FunctionExpr(CollateFuncJRE, literalExpr("a"))
 		md := build(func(b *RecordMetaDataBuilder) { b.SetRecordCountKey(countKey) })
 		var pk tuple.Tuple
 		Expect(run(md, true, func(store *FDBRecordStore) error {

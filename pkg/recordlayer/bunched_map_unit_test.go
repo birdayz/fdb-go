@@ -365,7 +365,7 @@ func TestInstrumentRangeReadEmpty(t *testing.T) {
 var _ = Describe("TextSubspaceSplitter", func() {
 	It("SubspaceOf extracts grouping columns", func() {
 		indexSS := subspace.FromBytes(tuple.Tuple{"idx"}.Pack())
-		splitter := NewTextSubspaceSplitter(indexSS, 2)
+		splitter := newTextSubspaceSplitter(indexSS, 2)
 
 		// Build a key: indexSS + ("group1", "token", "pk_part")
 		fullKey := indexSS.Pack(tuple.Tuple{"group1", "token", "pk_part"})
@@ -381,7 +381,7 @@ var _ = Describe("TextSubspaceSplitter", func() {
 
 	It("SubspaceOf returns error for short key", func() {
 		indexSS := subspace.FromBytes(tuple.Tuple{"idx"}.Pack())
-		splitter := NewTextSubspaceSplitter(indexSS, 3)
+		splitter := newTextSubspaceSplitter(indexSS, 3)
 
 		// Build a key with only 2 tuple elements (need 3).
 		shortKey := indexSS.Pack(tuple.Tuple{"group1", "token"})
@@ -394,7 +394,7 @@ var _ = Describe("TextSubspaceSplitter", func() {
 
 	It("SubspaceTag returns grouping tuple", func() {
 		indexSS := subspace.FromBytes(tuple.Tuple{"idx"}.Pack())
-		splitter := NewTextSubspaceSplitter(indexSS, 2)
+		splitter := newTextSubspaceSplitter(indexSS, 2)
 
 		// Build a subspace that is indexSS + ("group1", "token")
 		ss := indexSS.Sub("group1", "token")
@@ -406,7 +406,7 @@ var _ = Describe("TextSubspaceSplitter", func() {
 
 	It("SubspaceOf with single grouping column", func() {
 		indexSS := subspace.FromBytes(tuple.Tuple{"idx"}.Pack())
-		splitter := NewTextSubspaceSplitter(indexSS, 1)
+		splitter := newTextSubspaceSplitter(indexSS, 1)
 
 		fullKey := indexSS.Pack(tuple.Tuple{"token", int64(42)})
 
@@ -419,7 +419,7 @@ var _ = Describe("TextSubspaceSplitter", func() {
 
 	It("SubspaceOf with integer grouping columns", func() {
 		indexSS := subspace.FromBytes(tuple.Tuple{"idx"}.Pack())
-		splitter := NewTextSubspaceSplitter(indexSS, 2)
+		splitter := newTextSubspaceSplitter(indexSS, 2)
 
 		fullKey := indexSS.Pack(tuple.Tuple{int64(1), "token", "pk"})
 
@@ -437,7 +437,7 @@ var _ = Describe("TextSubspaceSplitter", func() {
 
 var _ = Describe("BunchedMapMultiIterator state", func() {
 	It("Cancel stops iteration", func() {
-		it := &BunchedMapMultiIterator{
+		it := &bunchedMapMultiIterator{
 			serializer: TextIndexBunchedSerializerInstance(),
 		}
 		it.Cancel()
@@ -445,14 +445,14 @@ var _ = Describe("BunchedMapMultiIterator state", func() {
 	})
 
 	It("Err returns nil by default", func() {
-		it := &BunchedMapMultiIterator{
+		it := &bunchedMapMultiIterator{
 			serializer: TextIndexBunchedSerializerInstance(),
 		}
 		Expect(it.Err()).To(BeNil())
 	})
 
 	It("Err returns sticky error", func() {
-		it := &BunchedMapMultiIterator{
+		it := &bunchedMapMultiIterator{
 			serializer: TextIndexBunchedSerializerInstance(),
 			iterErr:    &BunchedMapException{Message: "test error"},
 		}
@@ -460,14 +460,14 @@ var _ = Describe("BunchedMapMultiIterator state", func() {
 	})
 
 	It("GetContinuation returns nil when no iteration has occurred", func() {
-		it := &BunchedMapMultiIterator{
+		it := &bunchedMapMultiIterator{
 			serializer: TextIndexBunchedSerializerInstance(),
 		}
 		Expect(it.GetContinuation()).To(BeNil())
 	})
 
 	It("GetContinuation returns nil when done and not stopped by limit", func() {
-		it := &BunchedMapMultiIterator{
+		it := &bunchedMapMultiIterator{
 			serializer:            TextIndexBunchedSerializerInstance(),
 			lastKey:               tuple.Tuple{"foo"},
 			currentSubspaceKey:    []byte{0x01},
@@ -483,7 +483,7 @@ var _ = Describe("BunchedMapMultiIterator state", func() {
 		s := TextIndexBunchedSerializerInstance()
 		lastKey := tuple.Tuple{"mytoken"}
 		suffix := []byte{0xAB, 0xCD}
-		it := &BunchedMapMultiIterator{
+		it := &bunchedMapMultiIterator{
 			serializer:            s,
 			lastKey:               lastKey,
 			currentSubspaceKey:    []byte{0x01, 0xAB, 0xCD},
@@ -500,7 +500,7 @@ var _ = Describe("BunchedMapMultiIterator state", func() {
 	})
 
 	It("HasNext returns false when done", func() {
-		it := &BunchedMapMultiIterator{
+		it := &bunchedMapMultiIterator{
 			serializer: TextIndexBunchedSerializerInstance(),
 			done:       true,
 		}
@@ -508,7 +508,7 @@ var _ = Describe("BunchedMapMultiIterator state", func() {
 	})
 
 	It("Next returns nil when no more entries", func() {
-		it := &BunchedMapMultiIterator{
+		it := &bunchedMapMultiIterator{
 			serializer: TextIndexBunchedSerializerInstance(),
 			done:       true,
 		}
@@ -654,13 +654,13 @@ var _ = Describe("BunchedMapIterator state", func() {
 
 var _ = Describe("BunchedMapMultiIterator Next", func() {
 	It("Next returns cached entry and advances counters", func() {
-		entry := &BunchedMapScanEntry{
+		entry := &bunchedMapScanEntry{
 			Subspace:    subspace.FromBytes([]byte{0x01}),
 			SubspaceTag: tuple.Tuple{"tag"},
 			Key:         tuple.Tuple{"cached"},
 			Value:       []int{10, 20},
 		}
-		it := &BunchedMapMultiIterator{
+		it := &bunchedMapMultiIterator{
 			serializer: TextIndexBunchedSerializerInstance(),
 			nextEntry:  entry,
 			limit:      0,
@@ -674,11 +674,11 @@ var _ = Describe("BunchedMapMultiIterator Next", func() {
 	})
 
 	It("Next sets done when limit reached", func() {
-		entry := &BunchedMapScanEntry{
+		entry := &bunchedMapScanEntry{
 			Key:   tuple.Tuple{"last"},
 			Value: []int{5},
 		}
-		it := &BunchedMapMultiIterator{
+		it := &bunchedMapMultiIterator{
 			serializer: TextIndexBunchedSerializerInstance(),
 			nextEntry:  entry,
 			limit:      1,
@@ -691,7 +691,7 @@ var _ = Describe("BunchedMapMultiIterator Next", func() {
 	})
 
 	It("Next returns nil when done", func() {
-		it := &BunchedMapMultiIterator{
+		it := &bunchedMapMultiIterator{
 			serializer: TextIndexBunchedSerializerInstance(),
 			done:       true,
 		}

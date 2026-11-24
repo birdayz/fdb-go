@@ -91,7 +91,7 @@ func (g *GroupingKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message],
 // EvaluateFlat is the whole key's one tuple. A whole key yielding no tuple or
 // several (a fan-out) is an error, so callers evaluate its entries instead.
 func (g *GroupingKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error) {
-	if fe, ok := g.wholeKey.(FlatEvaluator); ok {
+	if fe, ok := g.wholeKey.(flatEvaluator); ok {
 		return fe.EvaluateFlat(record, msg)
 	}
 	tuples, err := g.wholeKey.Evaluate(record, msg)

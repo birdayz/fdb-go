@@ -538,7 +538,7 @@ func (m *textIndexMaintainer) scanText(scanRange TupleRange, continuation []byte
 	// ByteScanLimiter.
 	textCur, kvCallback := newTextCursorWithByteTracking(m.index, withAdjustedLimit, m.timer)
 
-	iterator := NewBunchedMapMultiIteratorWithCallback(
+	iterator := newBunchedMapMultiIteratorWithCallback(
 		readTx,
 		m.indexSubspace,
 		splitter,

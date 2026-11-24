@@ -747,7 +747,7 @@ func (v *MetaDataEvolutionValidator) validateIndex(old *RecordMetaData, oldIdx *
 	for option := range v.ignoredIndexOptions {
 		delete(changed, option)
 	}
-	if err := ValidateChangedIndexOptions(oldIdx, newIdx, changed); err != nil {
+	if err := validateChangedIndexOptions(oldIdx, newIdx, changed); err != nil {
 		return err
 	}
 	return nil
@@ -830,11 +830,11 @@ func optionValueOrDefault(opts map[string]string, key, defaultValue string) stri
 	return defaultValue
 }
 
-// ValidateChangedIndexOptions validates only the supplied option names, without
+// validateChangedIndexOptions validates only the supplied option names, without
 // recomputing differences. Type-specific validators may remove handled names from
 // the caller's mutable set before base validation. A nil or empty set is valid.
 // Matches Java's IndexValidator.validateChangedOptions(Index, Set).
-func ValidateChangedIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) error {
+func validateChangedIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) error {
 	if len(changed) == 0 {
 		return nil
 	}

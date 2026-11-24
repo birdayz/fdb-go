@@ -139,7 +139,7 @@ var _ = Describe("KeyExpression unit tests", func() {
 				expr := FanOut("ordinal_path")
 				msg := &gen.PIndexEntryObjectValue{OrdinalPath: []int32{9, 9, 8}}
 
-				value, ok, err := expr.(Int64Evaluator).EvaluateInt64(asStored(msg), msg)
+				value, ok, err := expr.(int64Evaluator).EvaluateInt64(asStored(msg), msg)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(ok).To(BeFalse())
 				Expect(value).To(BeZero())
