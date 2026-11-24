@@ -5,6 +5,10 @@ go_library(
     srcs = [
         "cost.go",
         "gen.go",
+        "gen_pred.go",
+        "gen_query.go",
+        "gen_schema.go",
+        "gen_sql.go",
         "nested.go",
         "oracle.go",
         "ordering.go",
