@@ -2151,8 +2151,8 @@ func TestFDB_TxMultiStatement(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	key, clk := testkit.SpikedClusterKey(t, 30*time.Second)
-	setup := testkit.OpenSpiked(t, key, "/FRL/testdb_tx_multi", "")
+	eng, clk := testkit.SpikedEngine(t, 30*time.Second)
+	setup := testkit.OpenEngineDB(t, eng, "/FRL/testdb_tx_multi", "")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_tx_multi")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE txm_tmpl "+
@@ -2160,7 +2160,7 @@ func TestFDB_TxMultiStatement(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_tx_multi/items WITH TEMPLATE txm_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	db := testkit.OpenSpiked(t, key, "/FRL/testdb_tx_multi", "items")
+	db := testkit.OpenEngineDB(t, eng, "/FRL/testdb_tx_multi", "items")
 
 	// THREE statements plus a commit on one read version — the shape this whole
 	// class is about. Retried as a whole: the two INSERTs and the UPDATE are
@@ -8612,7 +8612,8 @@ func TestFDB_DateTimestampEdgeCases(t *testing.T) {
 	}
 	for _, ins := range inserts {
 		_, err = db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO Events VALUES (%d, '%s', '%s')", ins.id, ins.d, ins.ts))
+			"INSERT INTO Events VALUES (%d, '%s', '%s')", ins.id, ins.d, ins.ts,
+		))
 		if err != nil {
 			t.Fatalf("INSERT id=%d: %v", ins.id, err)
 		}

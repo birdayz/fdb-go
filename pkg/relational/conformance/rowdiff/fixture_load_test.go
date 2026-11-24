@@ -51,14 +51,20 @@ func TestLoadFixtureReplaysOnlyALostWindow(t *testing.T) {
 			sim := simfdb.New(env)
 			backend := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(dstwire.Env(env))
 			backend.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
-			key := "sim://" + t.Name()
-			t.Cleanup(sqldriver.RegisterBackend(key, backend))
+			eng, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+				Domains: []string{"FRL"},
+				Limits:  sqldriver.UnboundedJavaCompatLimits(),
+			}, sqldriver.WithDatabase(backend))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = eng.Close() })
 			open := func(schema string) *sql.DB {
-				dsn := "fdbsql:///FRL/FIXTURE?cluster_file=" + key
+				var opts []sqldriver.ConnOption
 				if schema != "" {
-					dsn += "&schema=" + schema
+					opts = append(opts, sqldriver.WithSchema(schema))
 				}
-				db, err := sql.Open("fdbsql", dsn)
+				db, err := eng.OpenDB("/FRL/FIXTURE", opts...)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -87,7 +93,7 @@ func TestLoadFixtureReplaysOnlyALostWindow(t *testing.T) {
 			if tc.inject != 0 {
 				sim.InjectOnce(tc.inject)
 			}
-			err := loadFixture(ctx, db, insert)
+			err = loadFixture(ctx, db, insert)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("loadFixture err = %v, want error %v", err, tc.wantErr)
 			}

@@ -3,7 +3,6 @@ package sqlhunt
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -30,10 +29,16 @@ func threeTableHarness(t *testing.T, seed uint64) *sql.DB {
 	simDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 
-	key := fmt.Sprintf("sim://outerjoinbox/%d/%d", seed, qcKeyCounter.Add(1))
-	t.Cleanup(sqldriver.RegisterBackend(key, simDB))
+	engine, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		Domains: []string{"FRL"},
+		Limits:  sqldriver.UnboundedJavaCompatLimits(),
+	}, sqldriver.WithDatabase(simDB))
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	t.Cleanup(func() { _ = engine.Close() })
 
-	setup, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(qcDBPath)+"?cluster_file="+key)
+	setup, err := engine.OpenDB(strings.ToUpper(qcDBPath))
 	if err != nil {
 		t.Fatalf("open setup: %v", err)
 	}
@@ -54,7 +59,7 @@ func threeTableHarness(t *testing.T, seed uint64) *sql.DB {
 		}
 	}
 
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(qcDBPath)+"?cluster_file="+key+"&schema=S")
+	db, err := engine.OpenDB(strings.ToUpper(qcDBPath), sqldriver.WithSchema("S"))
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

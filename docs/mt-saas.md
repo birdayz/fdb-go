@@ -23,10 +23,11 @@ enforced by the engine:
    (`pkg/relational/core/parser/grammar/RelationalParser.g4:57-81`).
 2. Untrusted SQL must never reach the driver. The scoping controls below are defense-in-depth on
    top of that rule, not a substitute for it.
-3. Every per-statement quota ships effectively unlimited. The DSN can set the five limits for every
-   connection; the flag that makes the scan limits fail, the statement timeout and the result-byte
-   cap take code (§3). A tenant fleet run without either has no per-statement bound other than
-   FDB's own 5-second transaction limit.
+3. Prefer `sqldriver.NewEngine`: its default `Limits` (`sqldriver.DefaultLimits()`) enable bounded
+   per-statement quotas (`MaxRows`, `ScannedRowsLimit`, `ScannedBytesLimit`, `PageTimeLimit`,
+   `FailOnScanLimitReached: true`, `StatementTimeout`, `MaxStatementMemoryBytes`,
+   `MaxResultBytes`). The underlying `api` options and the legacy blank-import `sql.Open("fdbsql", ...)`
+   surface ship unbounded (§3) unless configured.
 
 ---
 
@@ -34,22 +35,33 @@ enforced by the engine:
 
 ### One database path per tenant, one subspace per schema
 
-A tenant is a SQL database path. The DSN is the ordinary one from
-[`operations.md` §1](operations.md#1-connecting-to-a-cluster):
+A tenant is a SQL database path opened from an explicit `*sqldriver.Engine` (see
+[`operations.md` §1](operations.md#1-connecting-to-a-cluster)):
 
+```go
+engine, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+	ClusterFile: "/etc/foundationdb/fdb.cluster",
+	Domains:     []string{"T"}, // instance-scoped; no process-global registry
+})
+// per tenant:
+db, err := engine.OpenDB("/T/"+tenantID,
+	sqldriver.WithSchema("MAIN"),
+	sqldriver.WithRestrictDDLToSessionDatabase(true),
+)
 ```
-fdbsql:///t/<tenant-id>?cluster_file=/etc/foundationdb/fdb.cluster&schema=MAIN
-```
 
-`/t/<tenant-id>` is **a convention, not a driver feature**: `t` is the domain and the second
-segment names the database. Register the domain once per process with
-`sqldriver.RegisterDomainIfNotExists("t")` before using it. `ParseDSN` rejects an empty path or a
-bare `/`; store resolution also requires a valid database path under a registered domain
-(`pkg/relational/sqldriver/dsn.go`, `pkg/relational/core/keyspace/domains.go`, `ToDatabasePath`).
-Use the exact path and schema case stored by DDL (unquoted DDL names fold to upper case).
+`/T/<tenant-id>` is **a convention, not a driver feature**: `T` is the domain and the second
+segment names the database. Declare the engine's domains in `EngineConfig.Domains` (or
+`engine.RegisterDomain`), which isolates the keyspace from process-global domain state
+(`pkg/relational/sqldriver/engine.go`, `pkg/relational/core/keyspace/keyspace.go`, `WithDomains`).
+`Engine.Connector` / `OpenDB` rejects an empty path or a bare `/`; store resolution also requires a
+valid database path under a registered domain (`pkg/relational/core/keyspace/domains.go`,
+`ToDatabasePath`). Use the exact path and schema case stored by DDL (unquoted DDL names fold to
+upper case). (Legacy `sql.Open("fdbsql", ...)` with `sqldriver.RegisterDomainIfNotExists` is
+deprecated.)
 
-`schema=` has **no default**. Omit it and the session schema stays empty and metadata loading is a
-silent no-op (`Connector.Connect` in `pkg/relational/sqldriver/driver.go`,
+`WithSchema` (or `schema=` on a DSN) has **no default**. Omit it and the session schema stays empty
+and metadata loading is a silent no-op (`Connector.Connect` in `pkg/relational/sqldriver/driver.go`,
 `EmbeddedConnection.ensureMetaData`). Always pass it. `MAIN` is only a convention.
 
 The physical layout is one subspace per (database, schema) pair. A user-schema prefix is a tuple
@@ -77,8 +89,9 @@ cost from the tenant ID's string length. This is not the old literal
 FoundationDB has a native tenant feature and this repo implements a large part of it. It is still
 the wrong tool for v1, for three independent reasons:
 
-1. **The SQL layer cannot open one.** `Connector.Connect` goes `fdbclient.Open(...)` →
-   `recordlayer.NewFDBDatabaseWithBackend(...)` (`pkg/relational/sqldriver/driver.go:211-215`).
+1. **The SQL layer cannot open one.** `NewEngine` / `Connector.Connect` goes `fdbclient.Open(...)` →
+   `recordlayer.NewFDBDatabaseWithBackend(...)` (`pkg/relational/sqldriver/engine.go:392-397`,
+   `pkg/relational/sqldriver/driver.go:457-461`).
    There is no DSN parameter and no code path. The record layer *can*
    (`pkg/recordlayer/database.go:195`, `NewFDBDatabaseFromTenant`, proven by
    `pkg/recordlayer/tenant_isolation_test.go:39-50`), but nothing outside tests calls it, and
@@ -202,11 +215,10 @@ const RestrictDDLToSessionDatabaseParam = "restrict_ddl_to_session_database"
 ```
 
 ```go
-db, err := sql.Open("fdbsql",
-    "fdbsql:///t/"+tenantID+
-        "?cluster_file=/etc/foundationdb/fdb.cluster"+
-        "&schema=MAIN"+
-        "&restrict_ddl_to_session_database=true")
+db, err := engine.OpenDB("/T/"+tenantID,
+	sqldriver.WithSchema("MAIN"),
+	sqldriver.WithRestrictDDLToSessionDatabase(true),
+)
 ```
 
 What it covers, and both halves matter:
@@ -231,23 +243,21 @@ Both are pinned end-to-end by `TestFDB_RestrictDDLToSessionDatabase`
 
 Two details worth knowing before you deploy it:
 
-- **A malformed boolean is an error, not "off".** `restrict_ddl_to_session_database=ture` fails at
-  `sql.Open`/`OpenConnector` with SQLSTATE **22023** (`parseDSNBool`,
-  `pkg/relational/sqldriver/dsn.go:265`), before FDB is touched (decode in `OpenConnector`,
-  `pkg/relational/sqldriver/driver.go:187`). A security flag that degrades silently on a typo is
+- **On the legacy DSN path, a malformed boolean is an error, not "off".** `restrict_ddl_to_session_database=ture`
+  fails at `sql.Open`/`OpenConnector` with SQLSTATE **22023** (`parseDSNBool`,
+  `pkg/relational/sqldriver/dsn.go`), before FDB is touched (decode in `OpenConnector`,
+  `pkg/relational/sqldriver/driver.go:202`). A security flag that degrades silently on a typo is
   worse than none. Only `true` and `false` are accepted, in any case; anything else, including a
   bare flag, `1`/`0`, `yes`/`no` and `on`/`off`, is 22023.
 - **The Connector's DSN is frozen.** `OpenConnector` deep-clones the parsed DSN before anything
-  reads it (`driver.go:130`) and `DSN()` hands out a defensive copy (`driver.go:251`), so nothing
+  reads it (`driver.go:209`) and `DSN()` hands out a defensive copy (`driver.go:516`), so nothing
   outside the package can flip the restriction — or the `cluster_file` — between `OpenConnector` and
   the first `Connect`. To change a connection's configuration, open a new Connector.
 
-There is no options API for this: `OpenConnector` takes a DSN string
-(`Driver.OpenConnector`) and the DSN is the only route through `database/sql`.
-The option can also be set directly on a connection built with `embedded.New`
-via `SetOptions` (`EmbeddedConnection.SetOptions`,
-`api.NoOptions().With(api.OptRestrictDDLToSessionDatabase, true)`) — exported, but it bypasses
-`database/sql` entirely, so treat the DSN as the operator surface.
+With `sqldriver.Engine`, pass `sqldriver.WithRestrictDDLToSessionDatabase(true)` (or
+`ConnConfig{RestrictDDLToSessionDatabase: true}`) to `engine.OpenDB` / `engine.Connector`. The
+option can also be set directly on a connection built with `embedded.New` via `SetOptions`
+(`EmbeddedConnection.SetOptions`, `api.NoOptions().With(api.OptRestrictDDLToSessionDatabase, true)`).
 
 **`CREATE DATABASE /__SYS/...` is refused unconditionally**, independent of the option
 (`pkg/relational/core/ddl/create_database.go:38-41`), segment-granular so `/__SYSTEM_x` is still
@@ -309,9 +319,17 @@ What happens on breach differs per limit, and two of them do **not** produce an 
 - **The time and memory limits do error.** Time → `54F01`; memory →
   `*recordlayer.MemoryLimitExceededError` mapped to `54F01` (both in `translateExecError`).
 
-### Setting them: the DSN for every connection, `conn.Raw` per tenant
+### Setting them: `EngineConfig.Limits` / `WithResourceLimits`, or `conn.Raw` per borrow
 
-The DSN sets the five options for every connection of a `*sql.DB` (`max_rows`,
+On `sqldriver.Engine`, `EngineConfig.Limits` defaults to `sqldriver.DefaultLimits()` (bounded
+production limits: `MaxRows: 10_000`, `ScannedRowsLimit: 500_000`, `ScannedBytesLimit: 64<<20`,
+`PageTimeLimit: 2s`, `FailOnScanLimitReached: true`, `StatementTimeout: 30s`,
+`MaxStatementMemoryBytes: 256<<20`, `MaxResultBytes: 32<<20`). Override per tenant with
+`sqldriver.WithResourceLimits(...)` on `engine.OpenDB` / `engine.Connector` — those defaults are
+restored across `ResetSession` on every pooled borrow. (`sqldriver.UnboundedJavaCompatLimits()`
+opts back into unbounded defaults.)
+
+On the legacy DSN path, the DSN sets the five `api` options for every connection of a `*sql.DB` (`max_rows`,
 `execution_scanned_rows_limit`, `execution_scanned_bytes_limit`, `execution_time_limit`,
 `max_statement_memory_bytes`; `DSN.ConnectionOptions`). The flag that makes the scan limits fail,
 the statement timeout and the result-byte cap have no DSN parameter, and there is no
@@ -411,23 +429,29 @@ timeout for a bound spanning fresh page transactions. See also
 
 ### Concurrency: one `*sql.DB` per tenant
 
-Give each tenant its own `*sql.DB` and cap it with `SetMaxOpenConns`. This is the **only** real
-concurrency cap available today, and it is cheap: the driver keeps a process-global cache of
-`*recordlayer.FDBDatabase` handles keyed by cluster-file path
-(`pkg/relational/sqldriver/driver.go:73`, `:196`, doc at `:70-71`), so N tenant pools against one
-cluster share **one** FDB handle, not N.
+Give each tenant its own `*sql.DB` opened from one shared `*sqldriver.Engine` and cap each pool
+with `SetMaxOpenConns`. This is the **only** real concurrency cap available today, and it is cheap:
+all N tenant pools opened from an `Engine` share that engine's **one** `*recordlayer.FDBDatabase`
+handle, catalog, and plan cache (`pkg/relational/sqldriver/engine.go`, `Engine.Connector`), with no
+process-global cache:
 
 ```go
-db, err := sql.Open("fdbsql", tenantDSN)
-if err != nil {
-	return err
+func openTenantDB(engine *sqldriver.Engine, tenantID string) (*sql.DB, error) {
+	db, err := engine.OpenDB("/T/"+tenantID,
+		sqldriver.WithSchema("MAIN"),
+		sqldriver.WithRestrictDDLToSessionDatabase(true),
+	)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(8) // the per-tenant concurrency cap
+	db.SetMaxIdleConns(2)
+	return db, nil
 }
-db.SetMaxOpenConns(8)   // the per-tenant concurrency cap
-db.SetMaxIdleConns(2)
 ```
 
-The cache is a `sync.Map` with no eviction (`driver.go:73`), bounded in practice by the number of
-distinct cluster files — which is one. That is fine; do not read it as a per-tenant leak.
+(The legacy `sql.Open` path keeps a process-global `sync.Map` in `driver.go:97` keyed by cluster
+file.)
 
 ### Background work: `PriorityBatch`, record-layer only
 
@@ -487,16 +511,14 @@ rdb := recordlayer.NewFDBDatabase(db)
 `MetricsSource` (`fdbmetrics.go:29`) and pulls in no dependencies — it is deliberately not a
 `prometheus.Collector` (`fdbmetrics.go:9-16`).
 
-**The catch for a SQL-only deployment: a tenant service that uses only `database/sql` cannot get
-client metrics at all.** The driver opens the handle itself
-(`pkg/relational/sqldriver/driver.go:211`, `:215`) and stashes it in a package-private cache
-(`driver.go:73`) with no getter. The one inversion is `sqldriver.RegisterBackend`
-(`pkg/relational/sqldriver/driver.go:84`): build the `*client.Database` yourself, register the
-wrapped record-layer database under a key, and open `fdbsql:///t/<id>?cluster_file=<key>`. Note its
-doc frames it as a deterministic-simulation seam, not a metrics API — it works, but you are using
-it off-label.
+**From SQL via `sqldriver.Engine`:** `engine.Metrics().Client` returns a
+`*client.ClientMetricsSnapshot` directly when `NewEngine` opened the FDB handle
+(`pkg/relational/sqldriver/engine.go:700-722`). For live Prometheus exposition via
+`fdbmetrics.Handler`, retain `cdb` as above and pass `sqldriver.WithDatabase(rdb)` to
+`sqldriver.NewEngine` (`engine.go:291`). (The legacy `RegisterBackend` test seam in `driver.go:108`
+is deprecated.)
 
-### Record-layer counters: arm the StoreTimer by cluster-file key
+### Record-layer counters: `engine.StoreTimer()`
 
 `fdbmetrics` covers client-level transaction counters only. The record layer's own counters —
 records saved and loaded, index scans, commit timings, bytes written — live in `StoreTimer`
@@ -504,35 +526,32 @@ records saved and loaded, index scans, commit timings, bytes written — live in
 exporter: `rlmetrics.Handler` (`pkg/recordlayer/rlmetrics/rlmetrics.go`), same zero-dependency
 Prometheus text exposition as `fdbmetrics`, under the `fdb_recordlayer_` namespace.
 
-The SQL path needs one extra step, because the driver opens the record-layer database itself and
-keeps it in a package-private cache. `EnableStoreTimer`
-(`pkg/relational/sqldriver/driver.go`) arms instrumentation **by cluster-file key** rather than by
-handle, so it works before the lazy `Connect` that opens the database:
+Every `sqldriver.Engine` owns a dedicated `StoreTimer` (or accepts one via `EngineConfig.StoreTimer`)
+and exposes it via `engine.StoreTimer()` (`pkg/relational/sqldriver/engine.go:690`):
 
 ```go
-timer := sqldriver.EnableStoreTimer("/etc/foundationdb/fdb.cluster")
-http.Handle("/metrics/recordlayer", rlmetrics.Handler(timer))
-
-db, _ := sql.Open("fdbsql", "fdbsql:///t/42?cluster_file=/etc/foundationdb/fdb.cluster")
+engine, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+	ClusterFile: "/etc/foundationdb/fdb.cluster",
+	Domains:     []string{"T"},
+})
+http.Handle("/metrics/recordlayer", rlmetrics.Handler(engine.StoreTimer()))
 ```
 
-Order does not matter — arming before or after the first connection both work, and repeat calls
-for the same key return the same timer. Both statement paths are covered: autocommit statements
-inherit the timer through `FDBDatabase.Run`, and explicit `BeginTx`→`COMMIT` transactions through
-`FDBDatabase.NewRecordContext`.
+Both statement paths are covered: autocommit statements inherit the timer through
+`FDBDatabase.Run`, and explicit `BeginTx`→`COMMIT` transactions through `FDBDatabase.NewRecordContext`.
+(For legacy `sql.Open`, `sqldriver.EnableStoreTimer` in `driver.go:159` is deprecated.)
 
-**The aggregation level is one timer per cluster-file key, which in practice means one per
-process.** It aggregates every tenant, connection and transaction against that cluster. This is
-deliberate and it is the part to internalise before building dashboards on it: **there is no
-tenant label, and you should not add one.** Tenant count here is unbounded and grows with the
-customer list, so a `tenant` label on `fdb_recordlayer_*` would multiply the cardinality of every
-record-layer series by that list — the standard way to take a Prometheus down. Per-tenant
-attribution belongs to the two hooks below (`PlanGenerationLogger`, `ExecutionStatsLogger`), which
-are log-shaped and sampled and can afford it.
+**The aggregation level is one timer per `Engine`, which in practice means one per process.** It
+aggregates every tenant, connection and transaction against that engine. This is deliberate and it
+is the part to internalise before building dashboards on it: **there is no tenant label, and you
+should not add one.** Tenant count here is unbounded and grows with the customer list, so a
+`tenant` label on `fdb_recordlayer_*` would multiply the cardinality of every record-layer series by
+that list — the standard way to take a Prometheus down. Per-tenant attribution belongs to the
+`PlanHook` / `ExecStatsHook` hooks below, which are log-shaped and sampled and can afford it.
 
-If you genuinely need a narrower scope, take it without a label: build the
-`*recordlayer.FDBDatabase` yourself, call `SetTimer` on it, and `RegisterBackend` it under its own
-key. That keeps the cardinality decision explicit and in your hands.
+If you genuinely need a narrower scope, take it without a label: construct a separate
+`*sqldriver.Engine` (with its own `StoreTimer`). That keeps the cardinality decision explicit and
+in your hands.
 
 Two caveats on reading the numbers:
 
@@ -547,12 +566,11 @@ Two caveats on reading the numbers:
 
 ### Per-tenant plan logging
 
-`PlanGenerationLogger` (`pkg/relational/core/embedded/plan_logging.go`) is installed **per
-connection borrow**, via the same `conn.Raw` route as the quotas — `SetPlanLogger` — and, like
-them, lasts until the connection returns to the pool (`ResetSession` removes it and resets the
-slow-query threshold), so install it in the same acquire/configure/use/close helper. There is no DSN
-parameter, no context value and no driver-level registration. That is convenient here: the tenant
-ID goes in the closure.
+On `sqldriver.Engine`, pass `sqldriver.WithPlanHook` and `sqldriver.WithSlowQueryThreshold` to
+`engine.OpenDB` (or `EngineConfig.PlanHook` for an engine-wide default) — those survive
+`ResetSession` across pooled borrows. For single-borrow overrides, `PlanGenerationLogger`
+(`pkg/relational/core/embedded/plan_logging.go`) can also be installed **per connection borrow**
+via `conn.Raw` → `SetPlanLogger` (`ResetSession` removes it and resets the slow-query threshold).
 
 `PlanGenerationLogger` is an interface with one method and the package ships no func adapter, so
 declare one and close over the tenant ID:
@@ -591,9 +609,9 @@ Sampling and log volume are the handler's problem: the engine always emits
 
 ### Per-tenant execution statistics
 
-`ExecutionStatsLogger` (`pkg/relational/core/embedded/execution_logging.go`) is the
-post-execution counterpart, installed the same way — per connection borrow, via `conn.Raw` →
-`SetExecutionStatsLogger`, removed by `ResetSession`. It is a **separate** interface from `PlanGenerationLogger`, not a second
+`sqldriver.WithExecStatsHook` on `engine.OpenDB` (or `EngineConfig.ExecStatsHook`) is the
+post-execution counterpart, surviving `ResetSession`; for single-borrow overrides use `conn.Raw` →
+`SetExecutionStatsLogger` on `*embedded.EmbeddedConnection` (`pkg/relational/core/embedded/execution_logging.go`). It is a **separate** interface from `PlanGenerationLogger`, not a second
 method on it, because a cached plan is planned once and executed many times: the two records do not
 pair up 1:1, and `PlanHash` is the join key between them.
 
@@ -672,9 +690,10 @@ tenant-facing "why is my query slow" tool on it.
 
 ### There is no DSN knob
 
-`pkg/relational/sqldriver/dsn.go` mentions TLS nowhere, and the driver calls
+`pkg/relational/sqldriver/dsn.go` mentions TLS nowhere, and `NewEngine` / `Connector.Connect` call
 `fdbclient.Open(clusterFile)` with no options parameter at all
-(`pkg/relational/sqldriver/driver.go:211`, `pkg/internal/fdbclient/open_purego.go:23`). A SQL-driver
+(`pkg/relational/sqldriver/engine.go:392`, `pkg/relational/sqldriver/driver.go:457`,
+`pkg/internal/fdbclient/open_purego.go:23`). A SQL-driver
 deployment configures TLS through exactly two surfaces:
 
 1. The cluster file's `:tls` coordinator suffix (`pkg/fdbgo/client/database.go:126`). It is
@@ -686,10 +705,10 @@ deployment configures TLS through exactly two surfaces:
    Setting only one of cert/key, or an unusable setting, fails the open with `tls_error`.
 
 The precedence rule is `openTLSConfig` in `pkg/fdbgo/client/tls.go`. `client.WithTLSConfig`
-(`pkg/fdbgo/client/options.go`) is the third surface, but it is unreachable from `database/sql` —
-another reason a service that needs fine control opens the client itself and uses
-`sqldriver.RegisterBackend`. Note the footgun: `WithTLSConfig(nil)` is a **no-op**, it does not
-force plaintext (see its doc comment).
+(`pkg/fdbgo/client/options.go`) is the third surface, but it is unreachable from `ClusterFile` alone —
+another reason a service that needs fine control opens the client itself and passes
+`sqldriver.WithDatabase(rdb)` to `sqldriver.NewEngine`. Note the footgun: `WithTLSConfig(nil)` is a
+**no-op**, it does not force plaintext (see its doc comment).
 
 ### Certificates are verified as libfdb_c verifies them
 

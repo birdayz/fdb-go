@@ -45,7 +45,6 @@ go_test(
         "//pkg/recordlayer",
         "//pkg/relational/conformance/factorycorpus",
         "//pkg/relational/core/keyspace",
-        "//pkg/relational/sqldriver",
         "//pkg/simfdb",
     ],
 )

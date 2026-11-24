@@ -16,19 +16,14 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
-	"sync/atomic"
 
 	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/recordlayer"
-	// registers the "fdbsql" driver and exposes RegisterBackend
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/sqldriver"
 	"fdb.dev/pkg/simfdb"
 )
-
-// keyCounter uniquifies the per-capture cache key so concurrent captures never collide. The
-// database path is FIXED, so the key (not persisted) never perturbs the captured bytes.
-var keyCounter atomic.Uint64
 
 const dbPath = "/FRL/goldendb"
 
@@ -93,11 +88,16 @@ func Capture(s Scenario) (string, error) {
 	simDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 
-	key := fmt.Sprintf("sim://golden/%s/%d", s.Name, keyCounter.Add(1))
-	unreg := sqldriver.RegisterBackend(key, simDB)
-	defer unreg()
+	engine, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		Domains: []string{"FRL"},
+		Limits:  sqldriver.UnboundedJavaCompatLimits(),
+	}, sqldriver.WithDatabase(simDB))
+	if err != nil {
+		return "", fmt.Errorf("new engine: %w", err)
+	}
+	defer engine.Close()
 
-	setup, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+key)
+	setup, err := engine.OpenDB(strings.ToUpper(dbPath))
 	if err != nil {
 		return "", fmt.Errorf("open setup: %w", err)
 	}
@@ -113,7 +113,11 @@ func Capture(s Scenario) (string, error) {
 		}
 	}
 
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+key+"&schema=S&max_total_task_count=150000")
+	db, err := engine.OpenDB(
+		strings.ToUpper(dbPath),
+		sqldriver.WithSchema("S"),
+		sqldriver.WithOptions(api.NoOptions().With(api.OptMaxTotalTaskCount, int(150000))),
+	)
 	if err != nil {
 		return "", fmt.Errorf("open db: %w", err)
 	}

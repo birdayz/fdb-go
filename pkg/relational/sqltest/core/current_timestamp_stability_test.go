@@ -212,9 +212,15 @@ func TestCurrentTimestampSeedRetriesExpiredTransaction(t *testing.T) {
 	sim := simfdb.New(env)
 	backend := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(dstwire.Env(env))
 	backend.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
-	key := "sim://" + t.Name()
-	t.Cleanup(sqldriver.RegisterBackend(key, backend))
-	setup := testkit.OpenSpiked(t, key, "/FRL/timestamp_seed", "")
+	eng, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		Domains: []string{"FRL"},
+		Limits:  sqldriver.UnboundedJavaCompatLimits(),
+	}, sqldriver.WithDatabase(backend))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	setup := testkit.OpenEngineDB(t, eng, "/FRL/timestamp_seed", "")
 	ctx := context.Background()
 	for _, ddl := range []string{
 		"CREATE DATABASE /FRL/timestamp_seed",
@@ -225,7 +231,7 @@ func TestCurrentTimestampSeedRetriesExpiredTransaction(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	db := testkit.OpenSpiked(t, key, "/FRL/timestamp_seed", "s")
+	db := testkit.OpenEngineDB(t, eng, "/FRL/timestamp_seed", "s")
 	db.SetMaxOpenConns(1)
 	// Initialize the query connection before arming the DML fault. Catalog
 	// bootstrap has its own idempotent transaction and must not consume it.

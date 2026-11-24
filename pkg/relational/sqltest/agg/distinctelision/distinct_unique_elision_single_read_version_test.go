@@ -40,8 +40,8 @@ func TestFDB_DistinctUniqueElisionFiresInExplicitTx(t *testing.T) {
 	// waiting for a loaded machine to supply the condition. Safe to arm for the
 	// whole test: preflightTxBudget runs under `if r.tx != nil`, so the DDL and
 	// seed statements below — all autocommit — never meet it.
-	key, clk := testkit.SpikedClusterKey(t, 30*time.Second)
-	setup := testkit.OpenSpiked(t, key, "/FRL/testdb_dusrv", "")
+	eng, clk := testkit.SpikedEngine(t, 30*time.Second)
+	setup := testkit.OpenEngineDB(t, eng, "/FRL/testdb_dusrv", "")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dusrv")
 	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dusrv "+
@@ -51,7 +51,7 @@ func TestFDB_DistinctUniqueElisionFiresInExplicitTx(t *testing.T) {
 			"CREATE UNIQUE INDEX by_email3 ON t3 (email)")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dusrv/s WITH TEMPLATE dusrv")
 
-	db := testkit.OpenSpiked(t, key, "/FRL/testdb_dusrv", "s")
+	db := testkit.OpenEngineDB(t, eng, "/FRL/testdb_dusrv", "s")
 
 	const nRows = 8
 	for _, tbl := range []string{"t1", "t3"} {

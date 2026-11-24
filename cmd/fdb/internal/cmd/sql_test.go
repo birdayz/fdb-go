@@ -7,69 +7,6 @@ import (
 	"testing"
 )
 
-func TestBuildFDBSQLDSN(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name        string
-		clusterFile string
-		dbPath      string
-		schema      string
-		want        string
-	}{
-		{
-			name:   "path only",
-			dbPath: "/FRL/myapp",
-			want:   "fdbsql:///FRL/myapp",
-		},
-		{
-			// url.Values.Encode percent-encodes `/` as `%2F`. The
-			// driver's url.Parse unpacks it, so the on-wire form stays
-			// correct even though it's uglier to read.
-			name:        "with cluster file",
-			clusterFile: "/etc/fdb/prod.cluster",
-			dbPath:      "/FRL/myapp",
-			want:        "fdbsql:///FRL/myapp?cluster_file=%2Fetc%2Ffdb%2Fprod.cluster",
-		},
-		{
-			name:   "with schema",
-			dbPath: "/FRL/myapp",
-			schema: "main",
-			want:   "fdbsql:///FRL/myapp?schema=main",
-		},
-		{
-			name:        "both options",
-			clusterFile: "/c",
-			dbPath:      "/FRL/myapp",
-			schema:      "main",
-			want:        "fdbsql:///FRL/myapp?cluster_file=%2Fc&schema=main",
-		},
-		{
-			name:   "strips leading slash on path",
-			dbPath: "FRL/myapp",
-			want:   "fdbsql:///FRL/myapp",
-		},
-		{
-			// Cluster file paths with spaces / special chars would corrupt
-			// the DSN under naive string concatenation. url.Values
-			// percent-encodes them so the driver's URL parser recovers
-			// the original value.
-			name:        "cluster file with space percent-encoded",
-			clusterFile: "/home/user/my project/fdb.cluster",
-			dbPath:      "/FRL/myapp",
-			want:        "fdbsql:///FRL/myapp?cluster_file=%2Fhome%2Fuser%2Fmy+project%2Ffdb.cluster",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got := buildFDBSQLDSN(tc.clusterFile, tc.dbPath, tc.schema)
-			if got != tc.want {
-				t.Errorf("buildFDBSQLDSN = %q; want %q", got, tc.want)
-			}
-		})
-	}
-}
-
 // Regression: the missing---database error used to read "--database is
 // required …", which fang's error banner capitalizes into "--Database is
 // required" — garbling the flag name. The message must start with a

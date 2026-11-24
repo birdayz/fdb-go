@@ -2,29 +2,37 @@ package fetchmethod
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/sqldriver"
 	"fdb.dev/pkg/testutil/benchcluster"
 )
 
 // TestFDB_BenchmarkDatabasePathIsValid creates and drops an /FRL database
-// through the driver, as every benchmark here does first. It fails with
-// INVALID_PATH unless TestMain registered the FRL domain.
+// through an instance-scoped Engine, as every benchmark here does first.
 func TestFDB_BenchmarkDatabasePathIsValid(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	clusterFile := benchcluster.ClusterFile(t)
+	eng, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		ClusterFile: clusterFile,
+		Domains:     []string{"FRL"},
+		Limits:      sqldriver.UnboundedJavaCompatLimits(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
 	dbPath := fmt.Sprintf("/FRL/BENCH_DOMAIN_CHECK_%d", time.Now().UnixNano())
-	catalog, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s&schema=CATALOG", clusterFile))
+	catalog, err := eng.OpenDB("/__SYS", sqldriver.WithSchema("CATALOG"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { catalog.Close() })
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", dbPath, clusterFile))
+	setup, err := eng.OpenDB(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}

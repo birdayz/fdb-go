@@ -10,7 +10,6 @@ go_test(
         "fetchmethod_bench_test.go",
     ],
     deps = [
-        "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/internal/fdbclient",
         "//pkg/recordlayer",

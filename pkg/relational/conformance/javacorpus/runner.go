@@ -13,16 +13,20 @@ import (
 	"fmt"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/javayamsql"
 	"fdb.dev/pkg/relational/conformance/yamsql"
-	"fdb.dev/pkg/relational/core/keyspace"
+	"fdb.dev/pkg/relational/sqldriver"
 )
 
 // Config parameterises one corpus run.
 type Config struct {
 	// ClusterFile is the FDB cluster file every connection is opened against.
 	ClusterFile string
+	// Database optionally injects an already-constructed *recordlayer.FDBDatabase
+	// (e.g. a SimFDB backend) instead of opening ClusterFile.
+	Database *recordlayer.FDBDatabase
 	// IDPrefix disambiguates the generated database/template/schema names so
 	// concurrent runs of the same file cannot collide. It must be a legal SQL
 	// identifier fragment.
@@ -68,6 +72,7 @@ type runner struct {
 	// global list is the concatenation of these resources' local lists.
 	resourceOrder []string
 
+	engine   *sqldriver.Engine
 	dbs      map[connTarget]*sql.DB
 	cleanups []func()
 	// counter makes the generated identifiers unique within one file.
@@ -287,6 +292,9 @@ func (r *runner) teardown() {
 	}
 	for _, db := range r.dbs {
 		_ = db.Close()
+	}
+	if r.engine != nil {
+		_ = r.engine.Close()
 	}
 }
 
@@ -641,18 +649,39 @@ func (r *runner) open(t connTarget) (*sql.DB, error) {
 	if db, ok := r.dbs[t]; ok {
 		return db, nil
 	}
-	// Java's yaml runner registers FRL before it connects (Command.java).
-	keyspace.RegisterDomainIfNotExists("FRL")
-	// The plan cache Java's yaml tests run against (EmbeddedConfig.beforeAll):
-	// one-hour TTLs, so a slow block's check_cache pass still finds the plans
-	// its tests wrote, and ten templates.
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&plan_cache_primary_time_to_live_millis=3600000"+
-		"&plan_cache_secondary_time_to_live_millis=3600000&plan_cache_tertiary_time_to_live_millis=3600000"+
-		"&plan_cache_primary_max_entries=10", t.Path, r.cfg.ClusterFile)
-	if t.Schema != "" {
-		dsn += "&schema=" + t.Schema
+	if r.engine == nil {
+		// The plan cache Java's yaml tests run against (EmbeddedConfig.beforeAll):
+		// one-hour TTLs, so a slow block's check_cache pass still finds the plans
+		// its tests wrote, and ten templates.
+		planCacheOpts := api.NewOptionsBuilder().
+			Set(api.OptPlanCachePrimaryTimeToLiveMillis, int64(3600000)).
+			Set(api.OptPlanCacheSecondaryTimeToLiveMillis, int64(3600000)).
+			Set(api.OptPlanCacheTertiaryTimeToLiveMillis, int64(3600000)).
+			Set(api.OptPlanCachePrimaryMaxEntries, int64(10)).
+			Build()
+		// Java's yaml runner registers FRL before it connects (Command.java).
+		cfg := sqldriver.EngineConfig{
+			Domains:          []string{"FRL"},
+			Limits:           sqldriver.UnboundedJavaCompatLimits(),
+			PlanCacheOptions: planCacheOpts,
+		}
+		var engOpts []sqldriver.EngineOption
+		if r.cfg.Database != nil {
+			engOpts = append(engOpts, sqldriver.WithDatabase(r.cfg.Database))
+		} else {
+			cfg.ClusterFile = r.cfg.ClusterFile
+		}
+		eng, err := sqldriver.NewEngine(cfg, engOpts...)
+		if err != nil {
+			return nil, fmt.Errorf("open engine %s: %w", t.Path, err)
+		}
+		r.engine = eng
 	}
-	db, err := sql.Open("fdbsql", dsn)
+	var connOpts []sqldriver.ConnOption
+	if t.Schema != "" {
+		connOpts = append(connOpts, sqldriver.WithSchema(t.Schema))
+	}
+	db, err := r.engine.OpenDB(t.Path, connOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", t.Path, err)
 	}

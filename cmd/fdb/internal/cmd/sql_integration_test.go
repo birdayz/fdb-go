@@ -9,7 +9,6 @@ package cmd
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -17,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqldriver"
 )
 
 // sqlFixtureOnce bootstraps the relational schema exactly once:
@@ -96,7 +97,8 @@ func TestIntegration_SQL_TransactionScript(t *testing.T) {
 	// rewrite included), then a SELECT proves the commit landed.
 	script := filepath.Join(t.TempDir(), "tx.sql")
 	if err := os.WriteFile(script, []byte(
-		"BEGIN;\nINSERT INTO items VALUES (3, 'gamma');\nCOMMIT;\n"), 0o600); err != nil {
+		"BEGIN;\nINSERT INTO items VALUES (3, 'gamma');\nCOMMIT;\n",
+	), 0o600); err != nil {
 		t.Fatalf("write tx.sql: %v", err)
 	}
 	if out, err := runCmd(t, "sql", "--database", "/FRL/fdbsql", "--schema", "main", "-f", script); err != nil {
@@ -332,8 +334,16 @@ func TestIntegration_SQL_OutputFormats(t *testing.T) {
 // dispatch is the logic under test).
 func TestIntegration_SQL_DescribeAndExplain(t *testing.T) {
 	setupSQLFixture(t)
-	// The driver takes the DSN's names as given: the stored spellings.
-	db, err := sql.Open("fdbsql", buildFDBSQLDSN(fixture.clusterFilePath, "/FRL/FDBSQL", "MAIN"))
+	engine, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		ClusterFile: fixture.clusterFilePath,
+		Domains:     []string{"FRL"},
+		Limits:      sqldriver.UnboundedJavaCompatLimits(),
+	})
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	defer engine.Close()
+	db, err := engine.OpenDB("/FRL/FDBSQL", sqldriver.WithSchema("MAIN"))
 	if err != nil {
 		t.Fatalf("open fdbsql: %v", err)
 	}
@@ -406,12 +416,11 @@ CREATE SCHEMA /FRL/fdbswitch/other WITH TEMPLATE fdbswitch_tpl;
 	}
 
 	var out, errOut bytes.Buffer
-	r, db, err := openSQLRunner(context.Background(), &out, &errOut,
+	r, err := openSQLRunner(context.Background(), &out, &errOut,
 		fixture.clusterFilePath, "/FRL/fdbswitch", "main", sqlFormatCSV)
 	if err != nil {
 		t.Fatalf("openSQLRunner: %v", err)
 	}
-	defer db.Close()
 	defer r.close()
 	if r.database != "/FRL/FDBSWITCH" || r.schema != "MAIN" {
 		t.Fatalf("runner target = (%q, %q), want the stored names (/FRL/FDBSWITCH, MAIN)", r.database, r.schema)

@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,8 +42,7 @@ import (
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/core/functions"
 
-	// Register the "fdbsql" driver via blank import.
-	_ "fdb.dev/pkg/relational/sqldriver"
+	"fdb.dev/pkg/relational/sqldriver"
 )
 
 // openSQLRunner opens the fdbsql connection pool for one `fdb sql`
@@ -60,14 +58,9 @@ func openSQLRunner(
 	ctx context.Context,
 	out, errOut io.Writer,
 	clusterFile, databaseURI, schema, outputFmt string,
-) (*sqlRunner, *sql.DB, error) {
+) (*sqlRunner, error) {
 	databaseURI = functions.NormalizeIdentifier(databaseURI)
 	schema = functions.NormalizeIdentifier(schema)
-	dsn := buildFDBSQLDSN(clusterFile, databaseURI, schema)
-	db, err := sql.Open("fdbsql", dsn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("open fdbsql %q: %w", dsn, err)
-	}
 	// Pick the style profile per-writer: real terminal → colors +
 	// box-drawing; pipe/redirect/test buffer → plain ASCII. Scripts
 	// consuming `fdb sql -c … | jq` must never see ANSI escapes.
@@ -76,7 +69,6 @@ func openSQLRunner(
 		st = ttySQLStyles()
 	}
 	return &sqlRunner{
-		db:          db,
 		out:         out,
 		errOut:      errOut,
 		ctx:         ctx,
@@ -86,7 +78,7 @@ func openSQLRunner(
 		st:          st,
 		format:      outputFmt,
 		timing:      true,
-	}, db, nil
+	}, nil
 }
 
 // newSQLCmd is the top-level `sql` noun — opens an interactive REPL
@@ -142,12 +134,11 @@ func newSQLCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			runner, db, err := openSQLRunner(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(),
+			runner, err := openSQLRunner(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(),
 				target.clusterFile(), target.database, target.schema, outputFmt)
 			if err != nil {
 				return err
 			}
-			defer db.Close()
 			defer runner.close()
 			switch {
 			case cmd.Flags().Changed("command"):
@@ -207,31 +198,6 @@ func resolveSQLAddress(cmd *cobra.Command, contextName, clusterFile, database, s
 	return target, nil
 }
 
-// buildFDBSQLDSN constructs the `fdbsql:///PATH?cluster_file=…&schema=…`
-// DSN the driver accepts. Keeps the DSN-shape knowledge local to one
-// place so the REPL + non-interactive paths agree.
-//
-// Query params go through url.Values so paths with `&`, `=`, `?`, or
-// spaces (e.g. "/home/user/my project/fdb.cluster") round-trip through
-// the driver's URL parser without corrupting the DSN.
-func buildFDBSQLDSN(clusterFile, dbPath, schema string) string {
-	var b strings.Builder
-	b.WriteString("fdbsql:///")
-	b.WriteString(strings.TrimPrefix(dbPath, "/"))
-	params := url.Values{}
-	if clusterFile != "" {
-		params.Set("cluster_file", clusterFile)
-	}
-	if schema != "" {
-		params.Set("schema", schema)
-	}
-	if len(params) > 0 {
-		b.WriteString("?")
-		b.WriteString(params.Encode())
-	}
-	return b.String()
-}
-
 // sqlRunner owns the database handle + I/O. Shared by the REPL loop
 // and the non-interactive -c / -f / stdin paths so all entry points
 // render results identically.
@@ -242,6 +208,7 @@ func buildFDBSQLDSN(clusterFile, dbPath, schema string) string {
 // queries, and tx commands — must flow through the same handle.
 // `db.Conn(ctx)` is grabbed lazily on first execute().
 type sqlRunner struct {
+	engine      *sqldriver.Engine
 	db          *sql.DB
 	conn        *sql.Conn
 	out         io.Writer
@@ -565,9 +532,38 @@ func (r *sqlRunner) footer(msg string) {
 // transaction commands (`BEGIN` / `COMMIT` / `ROLLBACK`) see a
 // consistent session — they're per-connection in fdb-relational,
 // and *sql.DB doesn't guarantee sticky connections by default.
+func (r *sqlRunner) ensureDB() error {
+	if r.db != nil {
+		return nil
+	}
+	engine, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		ClusterFile: r.clusterFile,
+		Domains:     []string{"FRL"},
+		Limits:      sqldriver.UnboundedJavaCompatLimits(),
+	})
+	if err != nil {
+		return fmt.Errorf("open sql engine: %w", err)
+	}
+	var connOpts []sqldriver.ConnOption
+	if r.schema != "" {
+		connOpts = append(connOpts, sqldriver.WithSchema(r.schema))
+	}
+	db, err := engine.OpenDB(r.database, connOpts...)
+	if err != nil {
+		_ = engine.Close()
+		return fmt.Errorf("open fdbsql %q: %w", r.database, err)
+	}
+	r.engine = engine
+	r.db = db
+	return nil
+}
+
 func (r *sqlRunner) ensureConn() error {
 	if r.conn != nil {
 		return nil
+	}
+	if err := r.ensureDB(); err != nil {
+		return err
 	}
 	c, err := r.db.Conn(r.ctx)
 	if err != nil {
@@ -604,16 +600,25 @@ func (r *sqlRunner) switchSchema(name string) error {
 // a best-effort ROLLBACK first — psql does the same on EOF, and
 // leaking an open tx to a pool would pin the connection forever.
 func (r *sqlRunner) close() error {
-	if r.conn == nil {
-		return nil
+	var err error
+	if r.conn != nil {
+		if r.inTx {
+			// Best-effort — the whole point is we're closing anyway.
+			_, _ = r.conn.ExecContext(r.ctx, "ROLLBACK")
+			r.inTx = false
+		}
+		err = r.conn.Close()
+		r.conn = nil
 	}
-	if r.inTx {
-		// Best-effort — the whole point is we're closing anyway.
-		_, _ = r.conn.ExecContext(r.ctx, "ROLLBACK")
-		r.inTx = false
+	if r.engine != nil {
+		if r.db != nil {
+			_ = r.db.Close()
+		}
+		if eErr := r.engine.Close(); err == nil {
+			err = eErr
+		}
+		r.engine = nil
 	}
-	err := r.conn.Close()
-	r.conn = nil
 	return err
 }
 
@@ -842,6 +847,9 @@ func (r *sqlRunner) listTables() error {
 // catalog directly so the output shape matches `\d` (table render with
 // headers, not raw SQL rows).
 func (r *sqlRunner) listTemplates() error {
+	if err := r.ensureDB(); err != nil {
+		return err
+	}
 	rows, err := r.db.QueryContext(r.ctx, "SHOW SCHEMA TEMPLATES")
 	if err != nil {
 		return fmt.Errorf("%w (also available: `fdb rl meta catalog templates`)", err)

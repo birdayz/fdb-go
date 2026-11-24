@@ -19,7 +19,6 @@ import (
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/conformance/factorycorpus"
-	"fdb.dev/pkg/relational/sqldriver"
 	"fdb.dev/pkg/simfdb"
 )
 
@@ -28,18 +27,14 @@ import (
 // package is only a second execution target over it.
 const corpusDir = "../testdata"
 
-var clusterFilePath string
+var simBackend *recordlayer.FDBDatabase
 
 func TestMain(m *testing.M) {
 	env := dst.NewSim(745)
 	env.Buggify = dst.DisabledBuggifier()
 	sim := simfdb.New(env)
-	backend := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(dstwire.Env(env))
-	clusterFilePath = "factorycorpus/full"
-	unregister := sqldriver.RegisterBackend(clusterFilePath, backend)
-	code := m.Run()
-	unregister()
-	os.Exit(code)
+	simBackend = recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(dstwire.Env(env))
+	os.Exit(m.Run())
 }
 
 // The corpus runs as fullShards top-level tests, one per Bazel shard
@@ -176,7 +171,7 @@ func runShard(t *testing.T, shard int) {
 			t.Parallel()
 			ctx, cancel := context.WithTimeout(context.Background(), factorycorpus.ScenarioTimeout)
 			defer cancel()
-			res := factorycorpus.RunScenario(ctx, clusterFilePath, f)
+			res := factorycorpus.RunScenarioWithDatabase(ctx, simBackend, f)
 			// CheckResult owns the vacuous-pass floor too: a scenario that ran
 			// NOTHING passes every row assertion, because zero failures out of
 			// zero tests is zero failures — the loudest possible instrument

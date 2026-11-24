@@ -4,7 +4,6 @@ package stress_test
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 	"sync"
@@ -12,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	_ "fdb.dev/pkg/relational/sqldriver"
+	"fdb.dev/pkg/relational/sqldriver"
 )
 
 func TestFDB_SQLParallelConnections(t *testing.T) {
@@ -34,10 +33,21 @@ func TestFDB_SQLParallelConnections(t *testing.T) {
 			batchSize := 2000
 			dbPath := fmt.Sprintf("/FRL/sqlpar_w%d", cfg.workers)
 
-			// Setup: create database + schema using a setup connection.
+			// Setup: create database + schema using a setup engine.
 			setup := func() {
-				sysDSN := fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", clusterFilePath)
-				sysDB, _ := sql.Open("fdbsql", sysDSN)
+				sysEng, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+					ClusterFile: clusterFilePath,
+					Domains:     []string{"FRL"},
+					Limits:      sqldriver.UnboundedJavaCompatLimits(),
+				})
+				if err != nil {
+					t.Fatalf("setup NewEngine: %v", err)
+				}
+				defer sysEng.Close()
+				sysDB, err := sysEng.OpenDB("/__SYS")
+				if err != nil {
+					t.Fatalf("setup OpenDB: %v", err)
+				}
 				defer sysDB.Close()
 				sysDB.ExecContext(context.Background(), "CREATE DATABASE "+dbPath)
 				tmpl := fmt.Sprintf("sqlpar_tmpl_w%d", cfg.workers)
@@ -67,8 +77,17 @@ func TestFDB_SQLParallelConnections(t *testing.T) {
 				wg.Add(1)
 				go func(from, to int) {
 					defer wg.Done()
-					dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=MAIN", strings.ToUpper(dbPath), clusterFilePath)
-					workerDB, openErr := sql.Open("fdbsql", dsn)
+					wEng, engErr := sqldriver.NewEngine(sqldriver.EngineConfig{
+						ClusterFile: clusterFilePath,
+						Domains:     []string{"FRL"},
+						Limits:      sqldriver.UnboundedJavaCompatLimits(),
+					})
+					if engErr != nil {
+						firstErr.Record(engErr)
+						return
+					}
+					defer wEng.Close()
+					workerDB, openErr := wEng.OpenDB(strings.ToUpper(dbPath), sqldriver.WithSchema("MAIN"))
 					if openErr != nil {
 						firstErr.Record(openErr)
 						return

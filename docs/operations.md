@@ -23,34 +23,38 @@ contract. It links back here rather than repeating the basics below.
 
 ### SQL driver (`database/sql`)
 
-Register is automatic on import; the driver name is `fdbsql`. The DSN mirrors Java's JDBC URL minus
-the `jdbc:` prefix:
-
-```
-fdbsql:///<database-path>                                  # default cluster file
-fdbsql:///<database-path>?cluster_file=/etc/foundationdb/fdb.cluster&schema=<name>
-```
+Construct an explicit `*sqldriver.Engine` to own the FDB handle, instance-scoped keyspace domains,
+`StoreTimer`, plan cache, default `ResourceLimits`, and lifecycle (`Close`):
 
 ```go
 import "fdb.dev/pkg/relational/sqldriver"
 
-sqldriver.RegisterDomainIfNotExists("FRL") // once per process
-db, err := sql.Open("fdbsql", "fdbsql:///FRL/MYAPP?cluster_file=/etc/foundationdb/fdb.cluster&schema=APP")
+engine, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+    ClusterFile: "/etc/foundationdb/fdb.cluster",
+    Domains:     []string{"FRL"},
+})
+if err != nil {
+    return err
+}
+defer engine.Close()
+
+db, err := engine.OpenDB("/FRL/MYAPP", sqldriver.WithSchema("APP"))
 ```
 
 The path and `schema` are taken exactly as written, as Java's JDBC URL takes them, while DDL folds an
 unquoted name to upper case, a database path whole: `CREATE DATABASE /FRL/myapp` stores `/FRL/MYAPP` and
-`CREATE SCHEMA /FRL/myapp/app` stores `APP`, so a DSN names them `fdbsql:///FRL/MYAPP?schema=APP`.
+`CREATE SCHEMA /FRL/myapp/app` stores `APP`, so `OpenDB` names them `"/FRL/MYAPP"` and
+`sqldriver.WithSchema("APP")`. If `EngineConfig.ClusterFile` is empty, `NewEngine` falls back to
+`FDB_CLUSTER_FILE` then FDB's default file.
 
-Cluster-file resolution order: the DSN `cluster_file` param → the `FDB_CLUSTER_FILE` environment
-variable → FDB's default file. The remote form `fdbsql://host:port/...` is **not implemented**
-(returns an unsupported-operation error) — the driver is in-process. Opened clients are cached
-per cluster-file path for the process lifetime.
+An application that already has a `*recordlayer.FDBDatabase` (for example a custom client with TLS
+or a SimFDB test database) passes `sqldriver.WithDatabase(rdb)` to `sqldriver.NewEngine`. The
+caller retains ownership of `rdb` (`Engine.Close` does not close an injected database).
 
-An application that already has a `*recordlayer.FDBDatabase` passes it to
-`sqldriver.NewConnector(db, dsn)` and hands the connector to `sql.OpenDB`. The DSN takes no
-`cluster_file`; the connector opens and caches no database and changes no process-wide state
-(`RegisterBackend` is the test seam, not this). The domain must still be registered.
+For legacy blank-import `database/sql` callers, `fdbsql` still registers on import with
+`sql.Open("fdbsql", "fdbsql:///FRL/MYAPP?cluster_file=...")` and `sqldriver.RegisterDomainIfNotExists`
+(deprecated; prefer `sqldriver.NewEngine`). The remote form `fdbsql://host:port/...` is
+**not implemented** (returns an unsupported-operation error) — the driver is in-process.
 
 `read_only=true` makes every connection of the DSN read-only:
 
@@ -310,9 +314,16 @@ rdb.SetTimer(timer)
 http.Handle("/metrics/recordlayer", rlmetrics.Handler(timer))
 ```
 
-From `database/sql`, where the driver owns the database handle, arm it by cluster-file key instead:
-`sqldriver.EnableStoreTimer(clusterFile)` returns the timer. Scope is one timer per key, with no
-tenant label by design — see [`mt-saas.md` §4](mt-saas.md#4-observability). `StoreTimer.KeysAndValues()`
+From SQL via `sqldriver.Engine`, the engine owns a dedicated `StoreTimer` (or accepts one via
+`EngineConfig.StoreTimer`); expose `engine.StoreTimer()` directly:
+
+```go
+http.Handle("/metrics/recordlayer", rlmetrics.Handler(engine.StoreTimer()))
+```
+
+Scope is one timer per `Engine` instance, with no tenant label by design — see
+[`mt-saas.md` §4](mt-saas.md#4-observability). (For legacy `sql.Open("fdbsql", ...)`,
+`sqldriver.EnableStoreTimer(clusterFile)` is deprecated.) `StoreTimer.KeysAndValues()`
 gives Java's `_count`/`_micros` log-key form for `KeyValueLogMessage`-style logging instead.
 
 **Logs.** Diagnostics route through the standard `log/slog`. Apps set their own handler with

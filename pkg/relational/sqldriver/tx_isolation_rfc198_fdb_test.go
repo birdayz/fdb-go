@@ -26,14 +26,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
-
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
+	"fdb.dev/pkg/relational/sqldriver"
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func rfc198SetupDB(t *testing.T, dbPath, tmpl string) *sql.DB {
@@ -41,31 +40,30 @@ func rfc198SetupDB(t *testing.T, dbPath, tmpl string) *sql.DB {
 	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	return rfc198SetupDBOn(t, testkit.ClusterFile(), dbPath, tmpl)
+	eng, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		ClusterFile: testkit.ClusterFile(),
+		Domains:     []string{"FRL"},
+		Limits:      sqldriver.UnboundedJavaCompatLimits(),
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	return rfc198SetupDBOn(t, eng, dbPath, tmpl)
 }
 
-// rfc198SetupDBOn is rfc198SetupDB against a named backend key, so a test can
+// rfc198SetupDBOn is rfc198SetupDB against an explicit Engine, so a test can
 // put this schema on a database whose record layer measures elapsed time on an
 // injected clock.
-func rfc198SetupDBOn(t *testing.T, key, dbPath, tmpl string) *sql.DB {
+func rfc198SetupDBOn(t *testing.T, eng *sqldriver.Engine, dbPath, tmpl string) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), key))
-	if err != nil {
-		t.Fatalf("sql.Open setup: %v", err)
-	}
-	t.Cleanup(func() { _ = setup.Close() })
+	setup := testkit.OpenEngineDB(t, eng, dbPath, "")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE "+tmpl+" CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+tmpl)
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), key))
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	db.SetMaxOpenConns(4)
-	t.Cleanup(func() { db.Close() })
-	return db
+	return testkit.OpenEngineDB(t, eng, dbPath, "S")
 }
 
 // TestFDB_RFC198_LostUpdateBecomes40001 pins the exact schedule from RFC-198's
@@ -90,8 +88,8 @@ func TestFDB_RFC198_LostUpdateBecomes40001(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	key, clk := testkit.SpikedClusterKey(t, 30*time.Second)
-	db := rfc198SetupDBOn(t, key, "/FRL/testdb_rfc198_lostupd", "rfc198lu")
+	eng, clk := testkit.SpikedEngine(t, 30*time.Second)
+	db := rfc198SetupDBOn(t, eng, "/FRL/testdb_rfc198_lostupd", "rfc198lu")
 	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
 
 	// THE WHOLE INTERLEAVING IS RETRYABLE — T1's read, T2's committed write, and
@@ -198,8 +196,8 @@ func TestFDB_RFC198_ReadConflictFromSelectAlone(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	key, clk := testkit.SpikedClusterKey(t, 30*time.Second)
-	db := rfc198SetupDBOn(t, key, "/FRL/testdb_rfc198_skew", "rfc198skew")
+	eng, clk := testkit.SpikedEngine(t, 30*time.Second)
+	db := rfc198SetupDBOn(t, eng, "/FRL/testdb_rfc198_skew", "rfc198skew")
 	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
 	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v) VALUES (2, 200)")
 
