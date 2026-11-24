@@ -263,8 +263,7 @@ func buildStatsJoinArrangement(t *testing.T, ctx context.Context, arr *statsJoin
 	h.createSchema(
 		"CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
 			" CREATE TABLE b (id BIGINT, a_id BIGINT, PRIMARY KEY (id))" +
-			" CREATE INDEX b_by_a ON b (a_id)",
-	)
+			" CREATE INDEX b_by_a ON b (a_id)")
 
 	h.bulkInsert("a", arr.aRows, func(i int) string {
 		return fmt.Sprintf("(%d, %d)", i, i)

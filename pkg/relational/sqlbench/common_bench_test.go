@@ -73,9 +73,10 @@ func createSchema(b *testing.B, ctx context.Context, dbPath, tmpl, ddl string) *
 	b.Helper()
 	clusterFile := benchcluster.ClusterFile(b)
 	eng, err := sqldriver.NewEngine(sqldriver.EngineConfig{
-		ClusterFile: clusterFile,
-		Domains:     []string{"FRL"},
-		Limits:      sqldriver.UnboundedJavaCompatLimits(),
+		ClusterFile:       clusterFile,
+		Domains:           []string{"FRL"},
+		Limits:            sqldriver.UnboundedJavaCompatLimits(),
+		DisableStoreTimer: true,
 	})
 	if err != nil {
 		b.Fatalf("NewEngine: %v", err)

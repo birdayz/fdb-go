@@ -97,8 +97,7 @@ func TestIntegration_SQL_TransactionScript(t *testing.T) {
 	// rewrite included), then a SELECT proves the commit landed.
 	script := filepath.Join(t.TempDir(), "tx.sql")
 	if err := os.WriteFile(script, []byte(
-		"BEGIN;\nINSERT INTO items VALUES (3, 'gamma');\nCOMMIT;\n",
-	), 0o600); err != nil {
+		"BEGIN;\nINSERT INTO items VALUES (3, 'gamma');\nCOMMIT;\n"), 0o600); err != nil {
 		t.Fatalf("write tx.sql: %v", err)
 	}
 	if out, err := runCmd(t, "sql", "--database", "/FRL/fdbsql", "--schema", "main", "-f", script); err != nil {

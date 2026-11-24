@@ -57,9 +57,10 @@ func loadFixture(b *testing.B) *fixture {
 	ctx := context.Background()
 	clusterFile := benchcluster.ClusterFile(b)
 	measuredEng, err := sqldriver.NewEngine(sqldriver.EngineConfig{
-		ClusterFile: clusterFile,
-		Domains:     []string{"FRL"},
-		Limits:      sqldriver.UnboundedJavaCompatLimits(),
+		ClusterFile:       clusterFile,
+		Domains:           []string{"FRL"},
+		Limits:            sqldriver.UnboundedJavaCompatLimits(),
+		DisableStoreTimer: true,
 	})
 	if err != nil {
 		b.Fatalf("NewEngine measured: %v", err)

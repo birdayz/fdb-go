@@ -261,8 +261,13 @@ type EngineConfig struct {
 	// engine. Nil defaults to DefaultLimits().
 	Limits *ResourceLimits
 	// StoreTimer collects record-layer counters across transactions executed by
-	// this engine. Nil creates a dedicated StoreTimer.
+	// this engine. Nil creates a dedicated StoreTimer unless DisableStoreTimer
+	// is true.
 	StoreTimer *recordlayer.StoreTimer
+	// DisableStoreTimer disables StoreTimer attachment so NewEngine does not
+	// call fdbDB.SetTimer and Engine.StoreTimer returns nil (for uninstrumented
+	// benchmarks). Cannot be combined with a non-nil StoreTimer.
+	DisableStoreTimer bool
 	// PlanHook receives one callback per query planning call across connections
 	// opened from this engine (surviving ResetSession).
 	PlanHook PlanHook
@@ -354,6 +359,10 @@ func NewEngine(cfg EngineConfig, opts ...EngineOption) (*Engine, error) {
 				"cannot specify both ClusterFile and WithDatabase")
 		}
 	}
+	if cfg.DisableStoreTimer && cfg.StoreTimer != nil {
+		return nil, api.NewError(api.ErrCodeInvalidParameter,
+			"cannot specify both StoreTimer and DisableStoreTimer")
+	}
 	if err := validateResourceLimits(cfg.Limits); err != nil {
 		return nil, err
 	}
@@ -398,15 +407,18 @@ func NewEngine(cfg EngineConfig, opts ...EngineOption) (*Engine, error) {
 		fdbDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 	}
 
-	timer := cfg.StoreTimer
-	if timer == nil {
-		if existing := fdbDB.Timer(); existing != nil && eo.hasDB {
-			timer = existing
-		} else {
-			timer = recordlayer.NewStoreTimer()
+	var timer *recordlayer.StoreTimer
+	if !cfg.DisableStoreTimer {
+		timer = cfg.StoreTimer
+		if timer == nil {
+			if existing := fdbDB.Timer(); existing != nil && eo.hasDB {
+				timer = existing
+			} else {
+				timer = recordlayer.NewStoreTimer()
+			}
 		}
+		fdbDB.SetTimer(timer)
 	}
-	fdbDB.SetTimer(timer)
 
 	ks := keyspace.NewRelationalKeyspace(subspace.Sub(), keyspace.WithDomains(cfg.Domains...))
 	cat, err := catalog.NewRecordLayerStoreCatalog(ks.CatalogSubspace())
@@ -686,7 +698,8 @@ func (e *Engine) RegisteredDomains() []string {
 	return e.ks.RegisteredDomains()
 }
 
-// StoreTimer returns the engine's record-layer StoreTimer (usable with rlmetrics.Handler).
+// StoreTimer returns the engine's record-layer StoreTimer (usable with
+// rlmetrics.Handler), or nil when EngineConfig.DisableStoreTimer is true.
 func (e *Engine) StoreTimer() *recordlayer.StoreTimer {
 	return e.timer
 }

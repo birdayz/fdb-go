@@ -528,10 +528,7 @@ func (r *sqlRunner) footer(msg string) {
 	fmt.Fprintln(w, r.st.muted.Render(msg))
 }
 
-// ensureConn lazily pins the runner to a single *sql.Conn so raw-SQL
-// transaction commands (`BEGIN` / `COMMIT` / `ROLLBACK`) see a
-// consistent session — they're per-connection in fdb-relational,
-// and *sql.DB doesn't guarantee sticky connections by default.
+// ensureDB lazily constructs the runner's sqldriver.Engine and *sql.DB pool.
 func (r *sqlRunner) ensureDB() error {
 	if r.db != nil {
 		return nil
@@ -558,6 +555,10 @@ func (r *sqlRunner) ensureDB() error {
 	return nil
 }
 
+// ensureConn lazily pins the runner to a single *sql.Conn so raw-SQL
+// transaction commands (`BEGIN` / `COMMIT` / `ROLLBACK`) see a
+// consistent session — they're per-connection in fdb-relational,
+// and *sql.DB doesn't guarantee sticky connections by default.
 func (r *sqlRunner) ensureConn() error {
 	if r.conn != nil {
 		return nil
@@ -610,10 +611,11 @@ func (r *sqlRunner) close() error {
 		err = r.conn.Close()
 		r.conn = nil
 	}
+	if r.db != nil {
+		_ = r.db.Close()
+		r.db = nil
+	}
 	if r.engine != nil {
-		if r.db != nil {
-			_ = r.db.Close()
-		}
 		if eErr := r.engine.Close(); err == nil {
 			err = eErr
 		}

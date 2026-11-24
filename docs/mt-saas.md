@@ -336,8 +336,11 @@ the statement timeout and the result-byte cap have no DSN parameter, and there i
 `SET statement_timeout` either (the grammar has no generic `SET <var> = <val>` rule). The SQL
 `OPTIONS(...)` clause carries an unrelated set.
 
-For per-tenant values, or for the three settings above, the route is `database/sql`'s escape hatch
-down to the driver connection:
+With `sqldriver.Engine`, `sqldriver.WithResourceLimits(&sqldriver.ResourceLimits{...})` sets all eight
+governors—including `FailOnScanLimitReached`, `StatementTimeout`, and `MaxResultBytes`—for the whole
+tenant `*sql.DB` pool (surviving `ResetSession`). On the legacy DSN path, or to override a single
+borrowed `*sql.Conn` differently from its pool, the route is `database/sql`'s escape hatch down to
+the driver connection:
 
 ```go
 import (

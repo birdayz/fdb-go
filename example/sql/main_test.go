@@ -20,8 +20,7 @@ func TestQuickstartRunsTwice(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	container, err := foundationdbtc.Run(
-		ctx, "",
+	container, err := foundationdbtc.Run(ctx, "",
 		foundationdbtc.WithAPIVersion(730),
 		foundationdbtc.WithStorageEngine("memory"),
 	)

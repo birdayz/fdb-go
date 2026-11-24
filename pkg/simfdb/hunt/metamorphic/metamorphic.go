@@ -104,8 +104,7 @@ func Check(s Scenario) ([]Violation, error) {
 			viols = append(viols, Violation{s.Name, g.Name, fmt.Sprintf(
 				"NOT equivalent (%s): q[%d] %q → %d rows; q[%d] %q → %d rows\n      base=%s\n      other=%s",
 				g.Reason, base, g.Queries[base], len(results[base]), i, g.Queries[i], len(results[i]),
-				sample(results[base]), sample(results[i]),
-			)})
+				sample(results[base]), sample(results[i]))})
 		}
 	}
 	return viols, nil

@@ -583,3 +583,45 @@ func TestEngine_ConnOptionsAndValidation(t *testing.T) {
 		t.Fatalf("count after DryRun = %d (err %v), want 1", count, err)
 	}
 }
+
+func TestEngine_DisableStoreTimer(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	simDB := newEngineSimDB(1009)
+	eng, err := NewEngine(EngineConfig{
+		Domains:           []string{"NOTIMER"},
+		DisableStoreTimer: true,
+	}, WithDatabase(simDB))
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	defer eng.Close()
+
+	if eng.StoreTimer() != nil {
+		t.Fatalf("StoreTimer() = %v, want nil", eng.StoreTimer())
+	}
+	if simDB.Timer() != nil {
+		t.Fatalf("simDB.Timer() = %v, want nil", simDB.Timer())
+	}
+	if got := eng.Metrics().StoreTimer; got != nil {
+		t.Fatalf("Metrics().StoreTimer = %v, want nil", got)
+	}
+
+	db := setupEngineSchema(t, eng, "/NOTIMER/DB", "S",
+		"CREATE TABLE item (id BIGINT, PRIMARY KEY (id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO item (id) VALUES (1)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if simDB.Timer() != nil {
+		t.Fatalf("simDB.Timer() after SQL exec = %v, want nil", simDB.Timer())
+	}
+
+	var ae *api.Error
+	if _, err := NewEngine(EngineConfig{
+		StoreTimer:        recordlayer.NewStoreTimer(),
+		DisableStoreTimer: true,
+	}, WithDatabase(newEngineSimDB(1010))); !errors.As(err, &ae) || ae.Code != api.ErrCodeInvalidParameter {
+		t.Errorf("StoreTimer + DisableStoreTimer = %v, want ErrCodeInvalidParameter", err)
+	}
+}

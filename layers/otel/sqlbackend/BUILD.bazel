@@ -35,6 +35,7 @@ go_test(
         "//layers/otel/otelsql",
         "//pkg/fdbgo/fdb",
         "//pkg/recordlayer",
+        "//pkg/relational/api",
         "//pkg/relational/sqldriver",
         "//pkg/testcontainers/foundationdb",
         "@io_opentelemetry_go_proto_otlp//common/v1:common",

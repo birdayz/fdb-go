@@ -245,8 +245,7 @@ func newStatsCollectCmd() *cobra.Command {
 						return fmt.Errorf("collection aborted for %s and stored nothing: %s",
 							addr.describe(), describeSkippedTypes(
 								safeDecoderOver(append(storedKeysOf(report.Collected), storedKeysOf(report.Skipped)...), nil),
-								report.Skipped,
-							))
+								report.Skipped))
 					}
 					return renderCollectReport(cmd, outputFmt, addr.describe(), report, time.Since(started))
 				})
@@ -483,8 +482,7 @@ func renderStatsStatus(
 	// so a decoded name equalling one of them is a real collision, which is why
 	// it goes in as `verbatim` rather than being left out.
 	decode := safeDecoderOver(
-		append(storedKeysOf(st.Stats.PerType), st.MissingTypes...), st.SyntheticTypes,
-	)
+		append(storedKeysOf(st.Stats.PerType), st.MissingTypes...), st.SyntheticTypes)
 	if len(st.AmbiguousTypes) > 0 {
 		// AmbiguousTypes are decoded at their SOURCE (AmbiguousDeclaredNames
 		// returns user identifiers), so they are not in the union above -- and a

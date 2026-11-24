@@ -41,6 +41,12 @@ defer engine.Close()
 db, err := engine.OpenDB("/FRL/MYAPP", sqldriver.WithSchema("APP"))
 ```
 
+> **Default limits:** Leaving `EngineConfig.Limits` nil uses `sqldriver.DefaultLimits()`, which
+> silently caps query results at `MaxRows: 10_000` (truncating without error, alongside bounded scan,
+> memory, and timeout limits). Pass `Limits: sqldriver.UnboundedJavaCompatLimits()` on `EngineConfig`
+> (or per pool via `sqldriver.WithResourceLimits`), or set an explicit `MaxRows`, if queries may
+> return more than 10,000 rows.
+
 The path and `schema` are taken exactly as written, as Java's JDBC URL takes them, while DDL folds an
 unquoted name to upper case, a database path whole: `CREATE DATABASE /FRL/myapp` stores `/FRL/MYAPP` and
 `CREATE SCHEMA /FRL/myapp/app` stores `APP`, so `OpenDB` names them `"/FRL/MYAPP"` and
@@ -56,7 +62,7 @@ For legacy blank-import `database/sql` callers, `fdbsql` still registers on impo
 (deprecated; prefer `sqldriver.NewEngine`). The remote form `fdbsql://host:port/...` is
 **not implemented** (returns an unsupported-operation error) — the driver is in-process.
 
-`read_only=true` makes every connection of the DSN read-only:
+`sqldriver.WithReadOnly(true)` on `engine.OpenDB` / `engine.Connector` (or `read_only=true` on a legacy DSN) makes every connection of the pool read-only:
 
 - Only `SELECT` and `EXPLAIN`/`DESCRIBE` of a `SELECT` run. Anything else, `SHOW`, transaction
   statements and any multi-statement batch included, fails at planning with SQLSTATE `0A000`

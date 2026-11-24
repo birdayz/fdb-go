@@ -118,6 +118,10 @@ type Backend struct {
 
 // Open opens the run's relational database; Ingest creates it.
 func Open(ctx context.Context, c otel.Config, cluster string, opts Options) (*Backend, error) {
+	return openWithObserver(ctx, c, cluster, opts, nil)
+}
+
+func openWithObserver(ctx context.Context, c otel.Config, cluster string, opts Options, onEngine func(*sqldriver.Engine, fdb.Database)) (*Backend, error) {
 	c.Backend = "sql"
 	if err := c.Validate(); err != nil {
 		return nil, err
@@ -192,14 +196,18 @@ func Open(ctx context.Context, c otel.Config, cluster string, opts Options) (*Ba
 	driverDB := recordlayer.NewFDBDatabase(raw)
 	driverDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 	engine, err := sqldriver.NewEngine(sqldriver.EngineConfig{
-		Domains: []string{domain},
-		Limits:  sqldriver.UnboundedJavaCompatLimits(),
+		Domains:           []string{domain},
+		Limits:            sqldriver.UnboundedJavaCompatLimits(),
+		DisableStoreTimer: true,
 	}, sqldriver.WithDatabase(driverDB))
 	if err != nil {
 		raw.Close()
 		return nil, err
 	}
 	b.engine = engine
+	if onEngine != nil {
+		onEngine(b.engine, b.raw)
+	}
 	var qOpts []sqldriver.ConnOption
 	if opts.PageRows > 0 {
 		qOpts = append(qOpts, sqldriver.WithResourceLimits(&sqldriver.ResourceLimits{ScannedRowsLimit: int64(opts.PageRows)}))

@@ -8612,8 +8612,7 @@ func TestFDB_DateTimestampEdgeCases(t *testing.T) {
 	}
 	for _, ins := range inserts {
 		_, err = db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO Events VALUES (%d, '%s', '%s')", ins.id, ins.d, ins.ts,
-		))
+			"INSERT INTO Events VALUES (%d, '%s', '%s')", ins.id, ins.d, ins.ts))
 		if err != nil {
 			t.Fatalf("INSERT id=%d: %v", ins.id, err)
 		}

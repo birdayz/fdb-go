@@ -4,6 +4,7 @@ package stress_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"sync"
@@ -58,13 +59,12 @@ func TestFDB_SQLParallelConnections(t *testing.T) {
 			}
 			setup()
 
-			start := time.Now()
-			var totalWritten atomic.Int64
+			type workerSlot struct {
+				db       *sql.DB
+				from, to int
+			}
 			chunkSize := (n + cfg.workers - 1) / cfg.workers
-
-			var wg sync.WaitGroup
-			var firstErr firstStressError
-
+			var workers []workerSlot
 			for w := range cfg.workers {
 				wStart := w * chunkSize
 				wEnd := wStart + chunkSize
@@ -74,44 +74,50 @@ func TestFDB_SQLParallelConnections(t *testing.T) {
 				if wStart >= n {
 					break
 				}
-				wg.Add(1)
-				go func(from, to int) {
-					defer wg.Done()
-					wEng, engErr := sqldriver.NewEngine(sqldriver.EngineConfig{
-						ClusterFile: clusterFilePath,
-						Domains:     []string{"FRL"},
-						Limits:      sqldriver.UnboundedJavaCompatLimits(),
-					})
-					if engErr != nil {
-						firstErr.Record(engErr)
-						return
-					}
-					defer wEng.Close()
-					workerDB, openErr := wEng.OpenDB(strings.ToUpper(dbPath), sqldriver.WithSchema("MAIN"))
-					if openErr != nil {
-						firstErr.Record(openErr)
-						return
-					}
-					defer workerDB.Close()
-					workerDB.SetMaxOpenConns(1)
+				wEng, engErr := sqldriver.NewEngine(sqldriver.EngineConfig{
+					ClusterFile: clusterFilePath,
+					Domains:     []string{"FRL"},
+					Limits:      sqldriver.UnboundedJavaCompatLimits(),
+				})
+				if engErr != nil {
+					t.Fatalf("worker %d NewEngine: %v", w, engErr)
+				}
+				defer func(e *sqldriver.Engine) { _ = e.Close() }(wEng)
+				workerDB, openErr := wEng.OpenDB(strings.ToUpper(dbPath), sqldriver.WithSchema("MAIN"))
+				if openErr != nil {
+					t.Fatalf("worker %d OpenDB: %v", w, openErr)
+				}
+				defer func(db *sql.DB) { _ = db.Close() }(workerDB)
+				workerDB.SetMaxOpenConns(1)
+				workers = append(workers, workerSlot{db: workerDB, from: wStart, to: wEnd})
+			}
 
-					for offset := from; offset < to; offset += batchSize {
+			start := time.Now()
+			var totalWritten atomic.Int64
+			var wg sync.WaitGroup
+			var firstErr firstStressError
+
+			for _, ws := range workers {
+				wg.Add(1)
+				go func(ws workerSlot) {
+					defer wg.Done()
+					for offset := ws.from; offset < ws.to; offset += batchSize {
 						end := offset + batchSize
-						if end > to {
-							end = to
+						if end > ws.to {
+							end = ws.to
 						}
 						var rows []string
 						for i := offset; i < end; i++ {
 							rows = append(rows, fmt.Sprintf("(%d, %d)", i, i*7))
 						}
 						stmt := fmt.Sprintf("INSERT INTO items VALUES %s", strings.Join(rows, ", "))
-						if _, execErr := workerDB.ExecContext(context.Background(), stmt); execErr != nil {
+						if _, execErr := ws.db.ExecContext(context.Background(), stmt); execErr != nil {
 							firstErr.Record(execErr)
 							return
 						}
 						totalWritten.Add(int64(end - offset))
 					}
-				}(wStart, wEnd)
+				}(ws)
 			}
 			wg.Wait()
 

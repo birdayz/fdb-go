@@ -20,8 +20,12 @@ type Sweep struct {
 	// database path.
 	SetupDB *sql.DB
 	DBPath  string
-	// ClusterFile is the path the per-schema query connections open.
+	// ClusterFile is the path the per-schema query connections open when
+	// OpenSchemaDB is nil.
 	ClusterFile string
+	// OpenSchemaDB, when non-nil, opens the per-schema query *sql.DB
+	// (replacing the legacy sql.Open("fdbsql", ...) path).
+	OpenSchemaDB func(schema string) (*sql.DB, error)
 	// Java, when non-nil, adds the cross-engine oracle.
 	Java CrossEngine
 	// Date is stamped into every header.
@@ -108,7 +112,13 @@ func (s Sweep) RunSeed(ctx context.Context, seed uint64, batch *Batch) ([]Outcom
 		_, _ = s.SetupDB.ExecContext(ctx, fmt.Sprintf("DROP SCHEMA TEMPLATE %s", tmpl))
 	}()
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s&max_total_task_count=150000", strings.ToUpper(s.DBPath), s.ClusterFile, strings.ToUpper(schema)))
+	var db *sql.DB
+	var err error
+	if s.OpenSchemaDB != nil {
+		db, err = s.OpenSchemaDB(strings.ToUpper(schema))
+	} else {
+		db, err = sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s&max_total_task_count=150000", strings.ToUpper(s.DBPath), s.ClusterFile, strings.ToUpper(schema)))
+	}
 	if err != nil {
 		return nil, fmt.Errorf("open: %w", err)
 	}

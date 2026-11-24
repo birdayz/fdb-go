@@ -87,6 +87,11 @@ func RunSeed(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, s
 	return RunCase(ctx, setupDB, dbPath, clusterFile, Generate(seed), fmt.Sprintf("rd%d", seed), 0)
 }
 
+// RunSeedWithOpener is RunSeed using openDB(schema) instead of sql.Open("fdbsql", ...).
+func RunSeedWithOpener(ctx context.Context, setupDB *sql.DB, dbPath string, openDB func(schema string) (*sql.DB, error), seed uint64) *SeedResult {
+	return RunCaseWithOpener(ctx, setupDB, dbPath, openDB, Generate(seed), fmt.Sprintf("rd%d", seed), 0)
+}
+
 // RunSeedPaged is RunSeed with a per-statement scanned-rows limit, forcing the
 // engine to internally page every query. This exercises CONTINUATION SOUNDNESS
 // generatively — resume across a scanned-rows page boundary must return exactly
@@ -105,6 +110,15 @@ func RunSeedPaged(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile stri
 // > 0 pins a single connection with OptExecutionScannedRowsLimit so every query
 // internally pages (see RunSeedPaged); 0 uses the pooled DB unpaged.
 func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c *Case, id string, scanLimit int) *SeedResult {
+	return runCase(ctx, setupDB, dbPath, clusterFile, nil, c, id, scanLimit)
+}
+
+// RunCaseWithOpener is RunCase using openDB(schema) instead of sql.Open("fdbsql", ...).
+func RunCaseWithOpener(ctx context.Context, setupDB *sql.DB, dbPath string, openDB func(schema string) (*sql.DB, error), c *Case, id string, scanLimit int) *SeedResult {
+	return runCase(ctx, setupDB, dbPath, "", openDB, c, id, scanLimit)
+}
+
+func runCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, openDB func(schema string) (*sql.DB, error), c *Case, id string, scanLimit int) *SeedResult {
 	res := &SeedResult{Seed: c.Seed, Histogram: map[string]int{}}
 
 	schemaName := id
@@ -122,7 +136,13 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 		}
 	}
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s&max_total_task_count=150000", strings.ToUpper(dbPath), clusterFile, strings.ToUpper(schemaName)))
+	var db *sql.DB
+	var err error
+	if openDB != nil {
+		db, err = openDB(strings.ToUpper(schemaName))
+	} else {
+		db, err = sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s&max_total_task_count=150000", strings.ToUpper(dbPath), clusterFile, strings.ToUpper(schemaName)))
+	}
 	if err != nil {
 		res.Kind = OutcomeInfra
 		res.InfraErr = fmt.Errorf("open: %w", err)

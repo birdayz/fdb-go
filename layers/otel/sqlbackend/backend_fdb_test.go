@@ -20,6 +20,7 @@ import (
 	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/sqldriver"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
@@ -294,10 +295,27 @@ func testFailedIngestAccounting(t *testing.T, open func(*testing.T, otel.Config,
 func testOpenFailureClosesEngine(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
-	b, err := Open(ctx, testConfig("sqlb_unregister"), cluster, Options{PageRows: math.MaxInt32 + 1})
+	var capturedEngine *sqldriver.Engine
+	var capturedRaw fdb.Database
+	b, err := openWithObserver(ctx, testConfig("sqlb_unregister"), cluster, Options{PageRows: math.MaxInt32 + 1}, func(eng *sqldriver.Engine, raw fdb.Database) {
+		capturedEngine = eng
+		capturedRaw = raw
+	})
 	if err == nil {
 		b.Close()
 		t.Fatal("Open with a page size over the driver's limit succeeded")
+	}
+	if capturedEngine == nil {
+		t.Fatal("expected Open to construct engine before failing OpenDB")
+	}
+	var ae *api.Error
+	if _, openErr := capturedEngine.OpenDB("/" + domain + "/SHOULD_FAIL"); !errors.As(openErr, &ae) || ae.Code != api.ErrCodeConnectionDoesNotExist {
+		t.Fatalf("capturedEngine.OpenDB after failed Open = %v, want ErrCodeConnectionDoesNotExist", openErr)
+	}
+	if _, rtErr := capturedRaw.ReadTransact(func(rt fdb.ReadTransaction) (any, error) {
+		return rt.Get(fdb.Key("x")).Get()
+	}); !errors.Is(rtErr, context.Canceled) {
+		t.Fatalf("capturedRaw.ReadTransact after failed Open = %v, want context.Canceled", rtErr)
 	}
 	// Verify a subsequent valid Open against the same cluster succeeds.
 	good, err := Open(ctx, testConfig("sqlb_after_fail"), cluster, Options{})
