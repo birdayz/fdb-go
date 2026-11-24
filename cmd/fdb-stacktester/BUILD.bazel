@@ -3,11 +3,16 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 go_library(
     name = "fdb-stacktester_lib",
     srcs = [
+        "directory_lifecycle_ops.go",
         "directory_ops.go",
+        "directory_subspace_ops.go",
+        "kv_ops.go",
         "machine.go",
         "main.go",
         "operations.go",
         "transaction_lifetime.go",
+        "tuple_ops.go",
+        "txn_ops.go",
     ],
     importpath = "fdb.dev/cmd/fdb-stacktester",
     visibility = ["//visibility:private"],

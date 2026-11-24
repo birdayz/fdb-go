@@ -28,6 +28,8 @@ go_library(
         "record_write.go",
         "root.go",
         "sql.go",
+        "sql_meta.go",
+        "sql_render.go",
         "stats.go",
         "status.go",
         "store.go",
