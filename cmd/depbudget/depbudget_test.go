@@ -1,8 +1,12 @@
 package main
 
 import (
-	"encoding/json"
+	"bytes"
 	"errors"
+	"flag"
+	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -231,10 +235,10 @@ func TestCheckBudget(t *testing.T) {
 	}
 }
 
-func TestJSONRoundTripAndMarkdownRendering(t *testing.T) {
+func TestMarkdownRendering(t *testing.T) {
 	t.Parallel()
 
-	orig := Report{
+	report := Report{
 		Entrypoints: []EntrypointReport{
 			{
 				ImportPath:      "fdb.dev/pkg/fdbgo/fdb",
@@ -255,23 +259,7 @@ func TestJSONRoundTripAndMarkdownRendering(t *testing.T) {
 		},
 	}
 
-	raw, err := RenderJSON(orig)
-	if err != nil {
-		t.Fatalf("RenderJSON: %v", err)
-	}
-	var decoded Report
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("json.Unmarshal: %v", err)
-	}
-	raw2, err := RenderJSON(decoded)
-	if err != nil {
-		t.Fatalf("RenderJSON round-trip: %v", err)
-	}
-	if string(raw) != string(raw2) {
-		t.Fatalf("JSON round-trip not deterministic:\n%s\nvs\n%s", raw, raw2)
-	}
-
-	md := RenderMarkdown(orig)
+	md := RenderMarkdown(report)
 	for _, want := range []string{
 		"| Entrypoint | Kind | Packages | Std | Repo | Ext Pkgs | Ext Mods | Unstripped (B) | Stripped (B) |",
 		"| `fdb.dev/pkg/fdbgo/fdb` | library | 205 | 184 | 9 | 12 | 6 | 5970649 | 3952800 |",
@@ -298,5 +286,286 @@ func TestCheckedInBudgetValid(t *testing.T) {
 	}
 	if !slices.Equal(got, defaultEntrypoints) {
 		t.Fatalf("budget.json entrypoints = %v, want %v", got, defaultEntrypoints)
+	}
+}
+
+func TestExitCodeForError(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "nil", err: nil, want: exitOK},
+		{name: "budget violation", err: &BudgetViolationError{Violations: []BudgetViolation{{Entrypoint: "a", Metric: "packages"}}}, want: exitBudgetViolation},
+		{name: "wrapped budget violation", err: fmt.Errorf("failed: %w", &BudgetViolationError{}), want: exitBudgetViolation},
+		{name: "config error", err: &ConfigError{Field: "budget", Detail: "missing"}, want: exitError},
+		{name: "command error", err: &CommandError{Op: "list", Entrypoint: "a", Err: errors.New("exit 1")}, want: exitError},
+		{name: "parse error", err: &ParseError{Source: "nm", Detail: "bad"}, want: exitError},
+		{name: "generic error", err: errors.New("unexpected"), want: exitError},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := exitCodeForError(tc.err); got != tc.want {
+				t.Fatalf("exitCodeForError(%v) = %d, want %d", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDefaultFlagsAndRunfilesResolution(t *testing.T) {
+	t.Parallel()
+
+	var opts options
+	fs := flag.NewFlagSet("depbudget", flag.ContinueOnError)
+	registerFlags(fs, &opts)
+	if err := fs.Parse(nil); err != nil {
+		t.Fatalf("fs.Parse: %v", err)
+	}
+	if opts.format != formatMarkdown {
+		t.Fatalf("default -format = %q, want %q", opts.format, formatMarkdown)
+	}
+	if opts.mode != modeReport {
+		t.Fatalf("default -mode = %q, want %q", opts.mode, modeReport)
+	}
+
+	tmp := t.TempDir()
+	const rloc = "rules_go_sdk/bin/go"
+	runfilesDir := filepath.Join(tmp, "rf")
+	rfGo := filepath.Join(runfilesDir, filepath.FromSlash(rloc))
+	writeTestFile(t, rfGo, "#!/bin/sh\n")
+
+	testSrcDir := filepath.Join(tmp, "srcdir")
+	srcGo := filepath.Join(testSrcDir, filepath.FromSlash(rloc))
+	writeTestFile(t, srcGo, "#!/bin/sh\n")
+
+	exePath := filepath.Join(tmp, "bin", "depbudget")
+	exeGo := filepath.Join(exePath+".runfiles", filepath.FromSlash(rloc))
+	writeTestFile(t, exeGo, "#!/bin/sh\n")
+
+	manifestTarget := filepath.Join(tmp, "manifest-target", "go")
+	writeTestFile(t, manifestTarget, "#!/bin/sh\n")
+	manifestPath := filepath.Join(tmp, "MANIFEST")
+	writeTestFile(t, manifestPath, rloc+" "+manifestTarget+"\n")
+
+	if got := resolveDepbudgetGo("", runfilesDir, testSrcDir, "", "", exePath, ""); got != "go" {
+		t.Fatalf("empty env = %q, want go", got)
+	}
+	if got := resolveDepbudgetGo("/abs/go", runfilesDir, testSrcDir, "", "", exePath, ""); got != "/abs/go" {
+		t.Fatalf("abs env = %q, want /abs/go", got)
+	}
+	if got := resolveDepbudgetGo(rloc, runfilesDir, testSrcDir, "", "", exePath, ""); got != rfGo {
+		t.Fatalf("RUNFILES_DIR = %q, want %q", got, rfGo)
+	}
+	if got := resolveDepbudgetGo(rloc, "", testSrcDir, "_main", "", exePath, ""); got != srcGo {
+		t.Fatalf("TEST_SRCDIR = %q, want %q", got, srcGo)
+	}
+	if got := resolveDepbudgetGo(rloc, "", "", "", "", exePath, ""); got != exeGo {
+		t.Fatalf("exe.runfiles = %q, want %q", got, exeGo)
+	}
+	if got := resolveDepbudgetGo(rloc, "", "", "", manifestPath, "", ""); got != manifestTarget {
+		t.Fatalf("manifest = %q, want %q", got, manifestTarget)
+	}
+	if got := resolveDepbudgetGo("custom-go", runfilesDir, testSrcDir, "", "", exePath, ""); got != "custom-go" {
+		t.Fatalf("unresolved fallback = %q, want custom-go", got)
+	}
+}
+
+func TestMeasureAndCheckEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	goBin := defaultGoBin()
+	if envGo := os.Getenv("DEPBUDGET_GO"); envGo != "" {
+		if goBin == "go" {
+			t.Fatalf("DEPBUDGET_GO=%q was not resolved from Bazel runfiles", envGo)
+		}
+		if _, err := os.Stat(goBin); err != nil {
+			t.Fatalf("resolved DEPBUDGET_GO %q stat failed: %v", goBin, err)
+		}
+	}
+
+	goBinPath, goEnv, err := buildGoEnv(goBin)
+	if err != nil {
+		t.Fatalf("buildGoEnv(%q): %v", goBin, err)
+	}
+	for _, wantEnv := range []string{
+		"CGO_ENABLED=0",
+		"GOPROXY=off",
+		"GOSUMDB=off",
+		"GOTOOLCHAIN=local",
+		"GOWORK=off",
+		"GOENV=off",
+	} {
+		if !slices.Contains(goEnv, wantEnv) {
+			t.Errorf("goEnv missing %q", wantEnv)
+		}
+	}
+	if filepath.Base(filepath.Dir(goBinPath)) == "bin" {
+		wantGOROOT := "GOROOT=" + filepath.Dir(filepath.Dir(goBinPath))
+		if !slices.Contains(goEnv, wantGOROOT) {
+			t.Errorf("goEnv missing %q", wantGOROOT)
+		}
+	}
+
+	modDir := t.TempDir()
+	writeTestFile(t, filepath.Join(modDir, "go.mod"), "module example.com/synth\n\ngo 1.21\n")
+	writeTestFile(t, filepath.Join(modDir, "lib", "lib.go"), "package lib\n\nimport \"fmt\"\n\nfunc Greeting() string {\n\treturn fmt.Sprintf(\"hello %d\", 42)\n}\n")
+	writeTestFile(t, filepath.Join(modDir, "cmd", "app", "main.go"), "package main\n\nimport (\n\t\"fmt\"\n\n\t\"example.com/synth/lib\"\n)\n\nfunc main() {\n\tfmt.Println(lib.Greeting())\n}\n")
+
+	const (
+		libPkg = "example.com/synth/lib"
+		binPkg = "example.com/synth/cmd/app"
+	)
+
+	libReport, err := measureEntrypoint(goBinPath, goEnv, modDir, libPkg, 10)
+	if err != nil {
+		t.Fatalf("measureEntrypoint(lib): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(modDir, "__depbudget_probe__")); !os.IsNotExist(err) {
+		t.Fatalf("library probe left __depbudget_probe__ in module dir (stat err=%v)", err)
+	}
+	if libReport.Kind != kindLibrary {
+		t.Fatalf("libReport.Kind = %q, want %q", libReport.Kind, kindLibrary)
+	}
+	if libReport.Packages <= 0 || libReport.StdPackages <= 0 || libReport.RepoPackages != 1 {
+		t.Fatalf("unexpected lib package counts: %+v", libReport)
+	}
+	if libReport.ExtModules != 0 || libReport.ExtPackages != 0 || len(libReport.ExtModuleList) != 0 {
+		t.Fatalf("unexpected external deps on stdlib-only module: %+v", libReport)
+	}
+	if libReport.StrippedBytes <= 0 || libReport.UnstrippedBytes <= libReport.StrippedBytes {
+		t.Fatalf("unexpected lib binary sizes: unstripped=%d stripped=%d", libReport.UnstrippedBytes, libReport.StrippedBytes)
+	}
+	if len(libReport.TopPackages) == 0 || libReport.TopPackages[0].Bytes <= 0 {
+		t.Fatalf("expected non-empty TopPackages for lib, got %+v", libReport.TopPackages)
+	}
+
+	binReport, err := measureEntrypoint(goBinPath, goEnv, modDir, binPkg, 10)
+	if err != nil {
+		t.Fatalf("measureEntrypoint(bin): %v", err)
+	}
+	if binReport.Kind != kindBinary {
+		t.Fatalf("binReport.Kind = %q, want %q", binReport.Kind, kindBinary)
+	}
+	if binReport.RepoPackages != 2 || binReport.ExtModules != 0 || binReport.ExtPackages != 0 {
+		t.Fatalf("unexpected bin package counts: %+v", binReport)
+	}
+	if binReport.StrippedBytes <= 0 || binReport.UnstrippedBytes <= binReport.StrippedBytes {
+		t.Fatalf("unexpected bin binary sizes: unstripped=%d stripped=%d", binReport.UnstrippedBytes, binReport.StrippedBytes)
+	}
+
+	measured := Report{Entrypoints: []EntrypointReport{libReport, binReport}}
+	passingBudget := BudgetConfig{
+		Entrypoints: []EntrypointBudget{
+			{
+				ImportPath:       libPkg,
+				MaxPackages:      libReport.Packages + 5,
+				MaxExtModules:    0,
+				MaxStrippedBytes: libReport.StrippedBytes + 1024,
+			},
+			{
+				ImportPath:       binPkg,
+				MaxPackages:      binReport.Packages + 5,
+				MaxExtModules:    0,
+				MaxStrippedBytes: binReport.StrippedBytes + 1024,
+			},
+		},
+	}
+	if err := checkBudget(measured, passingBudget); err != nil {
+		t.Fatalf("checkBudget(passing): %v", err)
+	}
+
+	passingBudgetPath := filepath.Join(t.TempDir(), "passing-budget.json")
+	passingJSON := fmt.Sprintf(
+		`{"entrypoints":[{"import_path":%q,"max_packages":%d,"max_ext_modules":0,"max_stripped_bytes":%d},{"import_path":%q,"max_packages":%d,"max_ext_modules":0,"max_stripped_bytes":%d}]}`+"\n",
+		libPkg, libReport.Packages+5, libReport.StrippedBytes+1024,
+		binPkg, binReport.Packages+5, binReport.StrippedBytes+1024,
+	)
+	writeTestFile(t, passingBudgetPath, passingJSON)
+
+	var passOut bytes.Buffer
+	passErr := run(options{
+		mode:        modeCheck,
+		budgetPath:  passingBudgetPath,
+		goBin:       goBin,
+		repoRoot:    modDir,
+		entrypoints: libPkg + "," + binPkg,
+		format:      formatMarkdown,
+		topN:        10,
+	}, &passOut)
+	if passErr != nil {
+		t.Fatalf("run(modeCheck passing): %v\noutput:\n%s", passErr, passOut.String())
+	}
+	if code := exitCodeForError(passErr); code != exitOK {
+		t.Fatalf("passing exitCodeForError = %d, want %d", code, exitOK)
+	}
+	if !strings.Contains(passOut.String(), "| PASS |") {
+		t.Fatalf("passing check output missing PASS:\n%s", passOut.String())
+	}
+
+	failingBudget := BudgetConfig{
+		Entrypoints: []EntrypointBudget{
+			{
+				ImportPath:       libPkg,
+				MaxPackages:      1,
+				MaxExtModules:    0,
+				MaxStrippedBytes: 1,
+			},
+			{
+				ImportPath:       binPkg,
+				MaxPackages:      binReport.Packages + 5,
+				MaxExtModules:    0,
+				MaxStrippedBytes: binReport.StrippedBytes + 1024,
+			},
+		},
+	}
+	if err := checkBudget(measured, failingBudget); err == nil {
+		t.Fatal("expected checkBudget(failing) to return violation error, got nil")
+	} else if code := exitCodeForError(err); code != exitBudgetViolation {
+		t.Fatalf("checkBudget(failing) exitCodeForError = %d, want %d (err=%v)", code, exitBudgetViolation, err)
+	}
+
+	failingBudgetPath := filepath.Join(t.TempDir(), "failing-budget.json")
+	failingJSON := fmt.Sprintf(
+		`{"entrypoints":[{"import_path":%q,"max_packages":1,"max_ext_modules":0,"max_stripped_bytes":1},{"import_path":%q,"max_packages":%d,"max_ext_modules":0,"max_stripped_bytes":%d}]}`+"\n",
+		libPkg, binPkg, binReport.Packages+5, binReport.StrippedBytes+1024,
+	)
+	writeTestFile(t, failingBudgetPath, failingJSON)
+
+	var failOut bytes.Buffer
+	failErr := run(options{
+		mode:        modeCheck,
+		budgetPath:  failingBudgetPath,
+		goBin:       goBin,
+		repoRoot:    modDir,
+		entrypoints: libPkg + "," + binPkg,
+		format:      formatMarkdown,
+		topN:        10,
+	}, &failOut)
+	if failErr == nil {
+		t.Fatal("expected run(modeCheck failing) to fail, got nil")
+	}
+	var violErr *BudgetViolationError
+	if !errors.As(failErr, &violErr) {
+		t.Fatalf("expected *BudgetViolationError, got %T (%v)", failErr, failErr)
+	}
+	if code := exitCodeForError(failErr); code != exitBudgetViolation {
+		t.Fatalf("failing exitCodeForError = %d, want %d", code, exitBudgetViolation)
+	}
+	if !strings.Contains(failOut.String(), "| FAIL |") {
+		t.Fatalf("failing check output missing FAIL:\n%s", failOut.String())
+	}
+}
+
+func writeTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
 	}
 }

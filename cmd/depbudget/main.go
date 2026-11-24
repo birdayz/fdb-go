@@ -31,6 +31,10 @@ const (
 
 	repoModulePath = "fdb.dev"
 	defaultTopN    = 15
+
+	exitOK              = 0
+	exitError           = 1
+	exitBudgetViolation = 2
 )
 
 var defaultEntrypoints = []string{
@@ -169,25 +173,124 @@ type options struct {
 	topN        int
 }
 
+func registerFlags(fs *flag.FlagSet, opts *options) {
+	fs.StringVar(&opts.mode, "mode", modeReport, "run mode: report or check")
+	fs.StringVar(&opts.budgetPath, "budget", "", "path to budget JSON file (required for -mode=check)")
+	fs.StringVar(&opts.goBin, "go", defaultGoBin(), "path to the go binary to invoke (defaults to DEPBUDGET_GO via Bazel runfiles, or go on PATH)")
+	fs.StringVar(&opts.repoRoot, "repo", defaultRepoRoot(), "path to repository root containing go.mod")
+	fs.StringVar(&opts.entrypoints, "entrypoints", "", "comma-separated import paths to measure (defaults to tracked public entrypoints)")
+	fs.StringVar(&opts.format, "format", formatMarkdown, "report output format: markdown, json, or both")
+	fs.IntVar(&opts.topN, "top", defaultTopN, "number of top packages to attribute from nm -size")
+}
+
+func exitCodeForError(err error) int {
+	if err == nil {
+		return exitOK
+	}
+	var violErr *BudgetViolationError
+	if errors.As(err, &violErr) {
+		return exitBudgetViolation
+	}
+	return exitError
+}
+
 func main() {
 	var opts options
-	flag.StringVar(&opts.mode, "mode", modeReport, "run mode: report or check")
-	flag.StringVar(&opts.budgetPath, "budget", "", "path to budget JSON file (required for -mode=check)")
-	flag.StringVar(&opts.goBin, "go", "go", "path to the go binary to invoke")
-	flag.StringVar(&opts.repoRoot, "repo", defaultRepoRoot(), "path to repository root containing go.mod")
-	flag.StringVar(&opts.entrypoints, "entrypoints", "", "comma-separated import paths to measure (defaults to tracked public entrypoints)")
-	flag.StringVar(&opts.format, "format", formatBoth, "report output format: both, json, or markdown")
-	flag.IntVar(&opts.topN, "top", defaultTopN, "number of top packages to attribute from nm -size")
+	registerFlags(flag.CommandLine, &opts)
 	flag.Parse()
 
 	if err := run(opts, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		var cfgErr *ConfigError
-		if errors.As(err, &cfgErr) {
-			os.Exit(2)
-		}
-		os.Exit(1)
+		os.Exit(exitCodeForError(err))
 	}
+}
+
+func defaultGoBin() string {
+	exePath, _ := os.Executable()
+	arg0 := ""
+	if len(os.Args) > 0 {
+		arg0 = os.Args[0]
+	}
+	return resolveDepbudgetGo(
+		os.Getenv("DEPBUDGET_GO"),
+		os.Getenv("RUNFILES_DIR"),
+		os.Getenv("TEST_SRCDIR"),
+		os.Getenv("TEST_WORKSPACE"),
+		os.Getenv("RUNFILES_MANIFEST_FILE"),
+		exePath,
+		arg0,
+	)
+}
+
+// resolveDepbudgetGo resolves DEPBUDGET_GO (typically an rlocationpath from Bazel)
+// against RUNFILES_DIR, TEST_SRCDIR, <exe>.runfiles, or runfiles manifests.
+func resolveDepbudgetGo(envGo, runfilesDir, testSrcDir, testWorkspace, manifestFile, exePath, arg0 string) string {
+	if envGo == "" {
+		return "go"
+	}
+	if filepath.IsAbs(envGo) {
+		return envGo
+	}
+	rel := filepath.FromSlash(envGo)
+	var roots []string
+	if runfilesDir != "" {
+		roots = append(roots, runfilesDir)
+	}
+	if testSrcDir != "" {
+		roots = append(roots, testSrcDir)
+		if testWorkspace != "" {
+			roots = append(roots, filepath.Join(testSrcDir, testWorkspace))
+		}
+	}
+	if exePath != "" {
+		roots = append(roots, exePath+".runfiles")
+	}
+	if arg0 != "" && filepath.Base(arg0) != arg0 {
+		roots = append(roots, arg0+".runfiles")
+	}
+	for _, root := range roots {
+		candidate := filepath.Join(root, rel)
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	var manifests []string
+	if manifestFile != "" {
+		manifests = append(manifests, manifestFile)
+	}
+	if exePath != "" {
+		manifests = append(manifests, exePath+".runfiles_manifest")
+	}
+	if arg0 != "" && filepath.Base(arg0) != arg0 {
+		manifests = append(manifests, arg0+".runfiles_manifest")
+	}
+	for _, m := range manifests {
+		if target, ok := lookupRunfilesManifest(m, envGo); ok {
+			return target
+		}
+	}
+	return envGo
+}
+
+func lookupRunfilesManifest(manifestPath, key string) (string, bool) {
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return "", false
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		k, target, ok := strings.Cut(line, " ")
+		if !ok || k != key {
+			continue
+		}
+		target = strings.TrimSpace(target)
+		if target == "" {
+			continue
+		}
+		if info, err := os.Stat(target); err == nil && !info.IsDir() {
+			return target, true
+		}
+	}
+	return "", false
 }
 
 func defaultRepoRoot() string {
@@ -379,6 +482,11 @@ func buildGoEnv(goBin string) (string, []string, error) {
 	}
 	if filepath.Base(binDir) == "bin" {
 		overrides["GOROOT"] = filepath.Dir(binDir)
+	}
+	if os.Getenv("GOCACHE") == "" {
+		if testTmp := os.Getenv("TEST_TMPDIR"); testTmp != "" {
+			overrides["GOCACHE"] = filepath.Join(testTmp, "depbudget-gocache")
+		}
 	}
 
 	env := make([]string, 0, len(os.Environ())+len(overrides))

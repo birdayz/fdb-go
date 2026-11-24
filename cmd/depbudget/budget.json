@@ -2,27 +2,27 @@
   "entrypoints": [
     {
       "import_path": "fdb.dev/pkg/fdbgo/fdb",
-      "max_packages": 250,
-      "max_ext_modules": 10,
-      "max_stripped_bytes": 5242880
+      "max_packages": 230,
+      "max_ext_modules": 8,
+      "max_stripped_bytes": 4500000
     },
     {
       "import_path": "fdb.dev/pkg/recordlayer",
-      "max_packages": 360,
-      "max_ext_modules": 15,
-      "max_stripped_bytes": 23068672
+      "max_packages": 340,
+      "max_ext_modules": 13,
+      "max_stripped_bytes": 21000000
     },
     {
       "import_path": "fdb.dev/pkg/relational/sqldriver",
-      "max_packages": 410,
-      "max_ext_modules": 18,
-      "max_stripped_bytes": 52428800
+      "max_packages": 380,
+      "max_ext_modules": 16,
+      "max_stripped_bytes": 49000000
     },
     {
       "import_path": "fdb.dev/cmd/fdb",
-      "max_packages": 520,
-      "max_ext_modules": 55,
-      "max_stripped_bytes": 67108864
+      "max_packages": 490,
+      "max_ext_modules": 52,
+      "max_stripped_bytes": 60000000
     }
   ]
 }
