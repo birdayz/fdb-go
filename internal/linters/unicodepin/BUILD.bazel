@@ -1,16 +1,17 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
-    name = "norecover",
+    name = "unicodepin",
     srcs = ["analyzer.go"],
-    importpath = "fdb.dev/pkg/linters/norecover",
-    visibility = ["//visibility:public"],
+    importpath = "fdb.dev/internal/linters/unicodepin",
+    visibility = ["//:__pkg__"],
     deps = ["@org_golang_x_tools//go/analysis"],
 )
 
 go_test(
-    name = "norecover_test",
+    name = "unicodepin_test",
     srcs = ["analyzer_test.go"],
-    embed = [":norecover"],
+    data = ["//internal/unicode15:all_sources"],
+    embed = [":unicodepin"],
     deps = ["@org_golang_x_tools//go/analysis"],
 )

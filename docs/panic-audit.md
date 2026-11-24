@@ -23,7 +23,7 @@ only via the SQL connection's boundary recover (`recoverInto`, which `Rows.Next`
 ## The gate (RFC-134) — this is what keeps the discipline honest
 
 The discipline is no longer a one-time audit; it is **enforced on every build** by the
-**`norecover` nogo analyzer** (`pkg/linters/norecover`) — the recover ratchet. It counts
+**`norecover` nogo analyzer** (`internal/linters/norecover`) — the recover ratchet. It counts
 builtin `recover()` calls per file and compares to the allowlist in §2 (baked into the
 analyzer). A `recover()` in a non-allowlisted file, or *more* than a file's allowance, is a
 **nogo build error**. Removing a recover never reddens the build (it fires on *more*, never

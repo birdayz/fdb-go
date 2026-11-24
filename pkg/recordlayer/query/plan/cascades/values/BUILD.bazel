@@ -625,7 +625,7 @@ go_test(
     ],
 )
 
-# keep: staged into //pkg/linters/typeimmutable's runfiles so
+# keep: staged into //internal/linters/typeimmutable's runfiles so
 # TestFreshConstructorsReallyAllocate can parse the constructors its allowlist
 # names. Without it that test fails loudly (it must never skip) rather than
 # leaving freshTypeConstructors unverified under a green target.

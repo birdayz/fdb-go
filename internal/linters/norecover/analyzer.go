@@ -129,7 +129,7 @@ func (r *runner) run(pass *analysis.Pass) (any, error) {
 				End: ident.End(),
 				Message: "recover() is not in the panic→error boundary allowlist (RFC-134). A new " +
 					"recover is an undisciplined panic-swallow that can hide a real error path. If this " +
-					"is a deliberate boundary, add the file (with its count) to pkg/linters/norecover " +
+					"is a deliberate boundary, add the file (with its count) to internal/linters/norecover " +
 					"and docs/panic-audit.md §2; otherwise return an error instead of recovering.",
 			})
 		}
