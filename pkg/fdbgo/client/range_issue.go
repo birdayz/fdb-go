@@ -90,6 +90,10 @@ func (tx *Transaction) issueRange(parent context.Context, begin, end []byte, lim
 // CheckRangeArgs runs a selector range read's checks on its UNRESOLVED selector keys, in
 // C++ order: deferred error and cancellation, 2004, then 2012 (ReadYourWrites.actor.cpp:1736-1749).
 // The facade resolves the selectors only after it passes.
+//
+// Exported solely for the pkg/fdbgo/fdb facade (replacing the deleted
+// pkg/fdbgo/internal/rangecheck init() hook); pkg/fdbgo/client moves under
+// internal/fdbgo/client in Phase 2 (P2.2).
 func (tx *Transaction) CheckRangeArgs(ctx context.Context, beginKey, endKey []byte, limit int) error {
 	if tx.routesSpecialKeyRange(beginKey, endKey) {
 		// RYW:1716-1721 routes before these checks; the routed read raises its own.

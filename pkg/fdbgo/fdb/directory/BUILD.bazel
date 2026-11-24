@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "directory",
@@ -16,5 +16,15 @@ go_library(
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
+    ],
+)
+
+go_test(
+    name = "directory_test",
+    srcs = ["allocator_test.go"],
+    embed = [":directory"],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
     ],
 )

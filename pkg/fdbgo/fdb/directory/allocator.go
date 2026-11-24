@@ -34,19 +34,98 @@ import (
 
 var oneBytes = []byte{0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 
+// txLockEntry serializes concurrent HCA operations targeting the same
+// transaction. refs is guarded by txLockPool.mu and prevents deleting an entry
+// while any goroutine holds or is waiting on mu.
+type txLockEntry struct {
+	mu   sync.Mutex
+	refs int
+}
+
+// txLockPool provides per-key mutual exclusion without holding a single
+// process-wide lock across unrelated transactions. Because directoryLayer
+// instances can be created fresh per partition traversal or per resolver call
+// while sharing the same underlying fdb.Transaction, mutual exclusion must be
+// keyed on the transaction rather than the highContentionAllocator instance.
+type txLockPool[K comparable] struct {
+	mu       sync.Mutex
+	entries  map[K]*txLockEntry
+	fallback sync.Mutex
+}
+
+func newTxLockPool[K comparable]() *txLockPool[K] {
+	return &txLockPool[K]{
+		entries: make(map[K]*txLockEntry),
+	}
+}
+
+type txLockGuard[K comparable] struct {
+	pool     *txLockPool[K]
+	key      K
+	entry    *txLockEntry
+	fallback bool
+}
+
+func (p *txLockPool[K]) lockKey(key K) txLockGuard[K] {
+	p.mu.Lock()
+	e := p.entries[key]
+	if e == nil {
+		e = &txLockEntry{}
+		p.entries[key] = e
+	}
+	e.refs++
+	p.mu.Unlock()
+
+	e.mu.Lock()
+	return txLockGuard[K]{pool: p, key: key, entry: e}
+}
+
+func (p *txLockPool[K]) lockFallback() txLockGuard[K] {
+	p.fallback.Lock()
+	return txLockGuard[K]{pool: p, fallback: true}
+}
+
+func (g txLockGuard[K]) unlock() {
+	if g.fallback {
+		g.pool.fallback.Unlock()
+		return
+	}
+	g.entry.mu.Unlock()
+	g.pool.mu.Lock()
+	g.entry.refs--
+	if g.entry.refs == 0 {
+		delete(g.pool.entries, g.key)
+	}
+	g.pool.mu.Unlock()
+}
+
+var hcaTxLocks = newTxLockPool[fdb.Transaction]()
+
+func lockHCATx(tr fdb.WritableTransaction) txLockGuard[fdb.Transaction] {
+	switch t := tr.(type) {
+	case fdb.Transaction:
+		return hcaTxLocks.lockKey(t)
+	case *fdb.Transaction:
+		if t != nil {
+			return hcaTxLocks.lockKey(*t)
+		}
+	}
+	return hcaTxLocks.lockFallback()
+}
+
 type highContentionAllocator struct {
 	counters, recent subspace.Subspace
-	mu               *sync.Mutex
 	// int63n draws a candidate; nil is math/rand.
 	int63n func(n int64) int64
 }
 
 func newHCA(s subspace.Subspace) highContentionAllocator {
-	return highContentionAllocator{
-		counters: s.Sub(0),
-		recent:   s.Sub(1),
-		mu:       &sync.Mutex{},
-	}
+	var hca highContentionAllocator
+
+	hca.counters = s.Sub(0)
+	hca.recent = s.Sub(1)
+
+	return hca
 }
 
 func windowSize(start int64) int64 {
@@ -85,7 +164,7 @@ func (hca highContentionAllocator) allocate(tr fdb.WritableTransaction, s subspa
 
 		windowAdvanced := false
 		for {
-			hca.mu.Lock()
+			guard := lockHCATx(tr)
 
 			if windowAdvanced {
 				tr.ClearRange(fdb.KeyRange{Begin: hca.counters, End: hca.counters.Sub(start)})
@@ -97,7 +176,7 @@ func (hca highContentionAllocator) allocate(tr fdb.WritableTransaction, s subspa
 			tr.Add(hca.counters.Sub(start), oneBytes)
 			countFuture := tr.Snapshot().Get(hca.counters.Sub(start))
 
-			hca.mu.Unlock()
+			guard.unlock()
 
 			countStr, e := countFuture.Get()
 			if e != nil {
@@ -135,14 +214,14 @@ func (hca highContentionAllocator) allocate(tr fdb.WritableTransaction, s subspa
 			candidate := draw(window) + start
 			key := hca.recent.Sub(candidate)
 
-			hca.mu.Lock()
+			guard := lockHCATx(tr)
 
 			latestCounter := tr.Snapshot().GetRange(hca.counters, fdb.RangeOptions{Limit: 1, Reverse: true})
 			candidateValue := tr.Get(key)
 			tr.Options().SetNextWriteNoWriteConflictRange()
 			tr.Set(key, []byte(""))
 
-			hca.mu.Unlock()
+			guard.unlock()
 
 			kvs, e = latestCounter.GetSliceWithError()
 			if e != nil {

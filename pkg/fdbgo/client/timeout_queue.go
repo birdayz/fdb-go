@@ -57,13 +57,15 @@ type (
 		afterPop       func(*timeoutNode)
 	}
 	timeoutQueue struct {
-		root                *timeoutQueueRoot
-		mu                  sync.Mutex
-		heap                []*timeoutNode
-		running, requested  bool
-		reqAt               int64
-		compare             func()
-		timer               timeoutTimer
+		root               *timeoutQueueRoot
+		mu                 sync.Mutex
+		heap               []*timeoutNode
+		running, requested bool
+		reqAt              int64
+		compare            func()
+		timer              timeoutTimer
+		// Test seams: nil selects production defaults (monoNow / (*Transaction).fireTimeout).
+		// timeout_design.go:production() relies on nil meaning production.
 		now                 func() int64
 		deliver             func(*Transaction, uint64)
 		beforeDeliver       func(*timeoutNode)
@@ -95,6 +97,7 @@ func newTimeoutQueue() *timeoutQueue {
 	return root.shards[0]
 }
 
+// nowTime returns the current monotonic timestamp, delegating to q.now when overridden in tests.
 func (q *timeoutQueue) nowTime() int64 {
 	if q.now != nil {
 		return q.now()
@@ -102,6 +105,7 @@ func (q *timeoutQueue) nowTime() int64 {
 	return monoNow()
 }
 
+// deliverTimeout delivers a fired timeout, delegating to q.deliver when overridden in tests.
 func (q *timeoutQueue) deliverTimeout(tx *Transaction, arm uint64) {
 	if q.deliver != nil {
 		q.deliver(tx, arm)
