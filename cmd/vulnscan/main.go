@@ -68,11 +68,27 @@ import (
 // diff, which is the point.
 const govulncheckVersion = "v1.9.0"
 
-// Scan library and released CLI entrypoints. Helper exclusions apply only to
-// entrypoints, never to dependencies reachable from a scanned package.
-var scanPatterns = []string{"./pkg/...", "./cmd/fdb/..."}
+// Scan library, internal production, and released CLI entrypoints. Helper
+// exclusions apply only to entrypoints, never to dependencies reachable from a
+// scanned package.
+var scanPatterns = []string{"./pkg/...", "./internal/...", "./cmd/fdb/..."}
 
-var excludePrefixes = []string{"fdb.dev/pkg/testcontainers", "fdb.dev/pkg/testutil/benchcluster", "fdb.dev/pkg/relational/sqltest"}
+// excludePrefixes covers non-shipped test, simulation, conformance, and
+// tooling/linter entrypoints across pkg/ and internal/.
+var excludePrefixes = []string{
+	"fdb.dev/pkg/testcontainers",
+	"fdb.dev/pkg/testutil/benchcluster",
+	"fdb.dev/pkg/relational/sqltest",
+	"fdb.dev/internal/linters",
+	"fdb.dev/internal/simfdb",
+	"fdb.dev/internal/testutil",
+	"fdb.dev/internal/testinstruments",
+	"fdb.dev/internal/dst",
+	"fdb.dev/internal/relational/sqltest",
+	"fdb.dev/internal/relational/conformance",
+	"fdb.dev/internal/recordlayer/chaos",
+	"fdb.dev/internal/recordlayer/keystoretest",
+}
 
 func excluded(pkg string) bool {
 	for _, prefix := range excludePrefixes {

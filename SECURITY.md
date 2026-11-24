@@ -41,17 +41,23 @@ Older minors are best-effort until `v1`. Security fixes land on the latest suppo
 ## Dependencies
 
 `govulncheck` runs in CI (the **Vulnerability scan** job) with library
-(`./pkg/...`) and released CLI (`./cmd/fdb/...`) entrypoints. Dependencies are
-pinned in `go.mod` / `MODULE.bazel`; report any known-vulnerable dependency you spot.
+(`./pkg/...`), internal production (`./internal/...`), and released CLI
+(`./cmd/fdb/...`) entrypoints. Dependencies are pinned in `go.mod` /
+`MODULE.bazel`; report any known-vulnerable dependency you spot.
 
-The scan excludes `pkg/testcontainers`, `pkg/testutil/benchcluster` and
-`pkg/relational/sqltest` as entrypoints. These helpers wrap Docker's client SDK
-for tests and developer/stress tools (including `factory-run`, `factory-migrate`,
+The scan excludes non-shipped test, simulation, conformance, and
+tooling/linter entrypoints: `pkg/testcontainers`, `pkg/testutil/benchcluster`,
+`pkg/relational/sqltest`, `internal/linters`, `internal/simfdb`,
+`internal/testutil`, `internal/testinstruments`, `internal/dst`,
+`internal/relational/sqltest`, `internal/relational/conformance`,
+`internal/recordlayer/chaos`, and `internal/recordlayer/keystoretest`. These
+helpers wrap Docker's client SDK or test/simulation harnesses for tests and
+developer/stress tools (including `factory-run`, `factory-migrate`,
 `fdb-binding-stress`, and `sql-diff-stress`). An excluded entrypoint is not a
-suppressed dependency: if a scanned library or CLI package imports one, its
-reachable calls are still scanned. The scan does not cover every developer tool,
-test-only call path or build-tag configuration, and is not a clean bill of health
-for the dependency graph or developer workloads.
+suppressed dependency: if a scanned library, internal production, or CLI package
+imports one, its reachable calls are still scanned. The scan does not cover
+every developer tool, test-only call path or build-tag configuration, and is not
+a clean bill of health for the dependency graph or developer workloads.
 
 The legacy `github.com/docker/docker` module has open advisories concerning
 Docker **daemon** archive/mount handling and plugin privilege validation, not
