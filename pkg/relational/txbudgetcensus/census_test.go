@@ -458,47 +458,215 @@ func dirExists(p string) bool {
 
 func TestResolveLogicalRoots(t *testing.T) {
 	t.Parallel()
-	lr := logicalRoot{
-		name:       "sqltest",
-		candidates: []string{"pkg/relational/sqltest", "tests/sql"},
-	}
 
-	empty := t.TempDir()
-	if _, err := resolveLogicalRoots(empty, lr); err == nil {
-		t.Fatal("expected error when no candidate directory exists")
-	}
+	t.Run("legacy layout", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		for _, rel := range []string{
+			"pkg/relational/sqldriver",
+			"pkg/relational/core/embedded",
+			"pkg/relational/sqltest/core",
+		} {
+			if err := os.MkdirAll(filepath.Join(root, rel), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		dirs, err := resolveCorpusDirs(root)
+		if err != nil {
+			t.Fatalf("resolveCorpusDirs(legacy): %v", err)
+		}
+		want := []string{
+			filepath.Join(root, "pkg/relational/sqldriver"),
+			filepath.Join(root, "pkg/relational/core/embedded"),
+			filepath.Join(root, "pkg/relational/sqltest"),
+			filepath.Join(root, "pkg/relational/sqltest/core"),
+		}
+		if len(dirs) != len(want) {
+			t.Fatalf("dirs = %v, want %v", dirs, want)
+		}
+		for i := range want {
+			if dirs[i] != want[i] {
+				t.Errorf("dirs[%d] = %q, want %q", i, dirs[i], want[i])
+			}
+		}
+	})
 
-	legacy := t.TempDir()
-	legacyDir := filepath.Join(legacy, "pkg/relational/sqltest")
-	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+	t.Run("future layout", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		for _, rel := range []string{
+			"relational",
+			"internal/relational/embedded",
+			"tests/sql/core",
+		} {
+			if err := os.MkdirAll(filepath.Join(root, rel), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		dirs, err := resolveCorpusDirs(root)
+		if err != nil {
+			t.Fatalf("resolveCorpusDirs(future): %v", err)
+		}
+		want := []string{
+			filepath.Join(root, "relational"),
+			filepath.Join(root, "internal/relational/embedded"),
+			filepath.Join(root, "tests/sql"),
+			filepath.Join(root, "tests/sql/core"),
+		}
+		if len(dirs) != len(want) {
+			t.Fatalf("dirs = %v, want %v", dirs, want)
+		}
+		for i := range want {
+			if dirs[i] != want[i] {
+				t.Errorf("dirs[%d] = %q, want %q", i, dirs[i], want[i])
+			}
+		}
+	})
+
+	t.Run("both layouts present returns union", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		for _, rel := range []string{
+			"pkg/relational/sqldriver",
+			"relational",
+			"pkg/relational/core/embedded",
+			"internal/relational/embedded",
+			"pkg/relational/sqltest/core",
+			"tests/sql/core",
+		} {
+			if err := os.MkdirAll(filepath.Join(root, rel), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		dirs, err := resolveCorpusDirs(root)
+		if err != nil {
+			t.Fatalf("resolveCorpusDirs(both): %v", err)
+		}
+		want := []string{
+			filepath.Join(root, "pkg/relational/sqldriver"),
+			filepath.Join(root, "relational"),
+			filepath.Join(root, "pkg/relational/core/embedded"),
+			filepath.Join(root, "internal/relational/embedded"),
+			filepath.Join(root, "pkg/relational/sqltest"),
+			filepath.Join(root, "pkg/relational/sqltest/core"),
+			filepath.Join(root, "tests/sql"),
+			filepath.Join(root, "tests/sql/core"),
+		}
+		if len(dirs) != len(want) {
+			t.Fatalf("dirs = %v, want %v", dirs, want)
+		}
+		for i := range want {
+			if dirs[i] != want[i] {
+				t.Errorf("dirs[%d] = %q, want %q", i, dirs[i], want[i])
+			}
+		}
+	})
+
+	t.Run("missing root fails loudly", func(t *testing.T) {
+		t.Parallel()
+		empty := t.TempDir()
+		for _, lr := range append(append([]logicalRoot{}, corpusDirRoots...), corpusTreeRoot) {
+			if got, err := resolveLogicalRoots(empty, lr); err == nil {
+				t.Errorf("resolveLogicalRoots(%s) = %q, want error when no candidate exists", lr.name, got)
+			}
+		}
+		if _, err := resolveCorpusDirs(empty); err == nil {
+			t.Fatal("resolveCorpusDirs(empty) succeeded, want loud error")
+		}
+
+		// File instead of directory must also fail loudly.
+		fileRoot := t.TempDir()
+		if err := os.WriteFile(filepath.Join(fileRoot, "relational"), []byte("not a dir"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := resolveLogicalRoots(fileRoot, corpusDirRoots[0]); err == nil {
+			t.Errorf("resolveLogicalRoots(file) = %q, want error when candidate is a file", got)
+		}
+
+		// Missing just one logical root (sqltest) must fail loudly rather than skipping.
+		partial := t.TempDir()
+		for _, rel := range []string{"relational", "internal/relational/embedded"} {
+			if err := os.MkdirAll(filepath.Join(partial, rel), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := resolveCorpusDirs(partial); err == nil {
+			t.Fatal("resolveCorpusDirs(partial) succeeded without sqltest root, want loud error")
+		}
+	})
+}
+
+// TestNoExposedTransactionsRemain is the guard.
+//
+// The expected exposed count is now ZERO, and that inversion is the whole point
+// of the floors above: a zero used to mean "nobody has looked", and it now means
+// "every exposed transaction retries". Because zero is the steady state, the
+// danger has flipped from collapse to GROWTH — a non-zero here means a NEW
+// transaction was written carrying the assumption, not that an old one
+// regressed.
+func TestNoExposedTransactionsRemain(t *testing.T) {
+	t.Parallel()
+	root := repoRoot(t)
+	dirs, err := resolveCorpusDirs(root)
+	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := resolveLogicalRoots(legacy, lr)
-	if err != nil || len(got) != 1 || got[0] != legacyDir {
-		t.Fatalf("legacy resolveLogicalRoots = %v, %v; want [%s]", got, err, legacyDir)
+
+	sites, filesRead, err := txbudgetcensus.ScanDirs(dirs...)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
 	}
 
-	future := t.TempDir()
-	futureDir := filepath.Join(future, "tests/sql")
-	if err := os.MkdirAll(futureDir, 0o755); err != nil {
-		t.Fatal(err)
+	// Non-vacuity, checked BEFORE the verdict so a dead instrument cannot pass.
+	if filesRead < minFilesRead {
+		t.Fatalf("the census read %d test files, want >=%d. THE INSTRUMENT IS DEAD, "+
+			"NOT THE SUITE CLEAN: the verdict below is computed over whatever this "+
+			"scan reached, so a shrunken corpus reports zero exposed transactions "+
+			"for the same reason a clean one does. Check that the corpus filegroups "+
+			"are still in this target's `data`.", filesRead, minFilesRead)
 	}
-	got, err = resolveLogicalRoots(future, lr)
-	if err != nil || len(got) != 1 || got[0] != futureDir {
-		t.Fatalf("future resolveLogicalRoots = %v, %v; want [%s]", got, err, futureDir)
+	if len(sites) < minTxSites {
+		t.Fatalf("the census found %d explicit transactions in %d files, want >=%d. "+
+			"THE INSTRUMENT IS DEAD: BeginTx detection has broken, so every "+
+			"transaction in the suite is now invisible to this guard and the zero "+
+			"below is vacuous.", len(sites), filesRead, minTxSites)
+	}
+	handled := txbudgetcensus.Handled(sites)
+	if len(handled) < minHandled {
+		t.Fatalf("only %d transactions read as handling the time limit, want >=%d. "+
+			"THE INSTRUMENT IS DEAD, or the retries were removed: handled "+
+			"transactions are recognised by their typed marker and shared retry "+
+			"helper, so a drop here means either the markers stopped matching or "+
+			"the fix was reverted.", len(handled), minHandled)
+	}
+	// The marker must DISCRIMINATE. A marker list that matched everything would
+	// mark every exposed transaction handled and the verdict below would pass
+	// silently — the one way this guard fails OPEN rather than closed, and the
+	// direction that ships bugs.
+	if len(handled) == len(sites) {
+		t.Fatalf("all %d transactions read as handling the time limit. The marker "+
+			"match is no longer discriminating, so EVERY exposed transaction would "+
+			"be classified handled and the zero below would be vacuous.", len(sites))
 	}
 
-	both := t.TempDir()
-	bothLegacy := filepath.Join(both, "pkg/relational/sqltest")
-	bothFuture := filepath.Join(both, "tests/sql")
-	if err := os.MkdirAll(bothLegacy, 0o755); err != nil {
-		t.Fatal(err)
+	exposed := txbudgetcensus.Exposed(sites)
+	if len(exposed) == 0 {
+		return
 	}
-	if err := os.MkdirAll(bothFuture, 0o755); err != nil {
-		t.Fatal(err)
+	msg := "the following explicit transactions run against a REAL FoundationDB, " +
+		"issue two or more statements, and do not handle the whole-transaction " +
+		"time limit:\n"
+	for _, s := range exposed {
+		msg += "  " + s.String() + "\n"
 	}
-	got, err = resolveLogicalRoots(both, lr)
-	if err != nil || len(got) != 2 || got[0] != bothLegacy || got[1] != bothFuture {
-		t.Fatalf("both-present resolveLogicalRoots = %v, %v; want [%s %s]", got, err, bothLegacy, bothFuture)
-	}
+	t.Fatalf("%s\n"+
+		"Each pins one FDB read version across all its statements, and that version "+
+		"dies five seconds after it opened in WALL CLOCK — under a loaded parallel "+
+		"suite, not only in theory: one such test was measured at 5.34s against "+
+		"0.08s standalone.\n\n"+
+		"THE FIX IS NOT A LONGER TIMEOUT. Retry the WHOLE transaction on the typed "+
+		"marker, so the work is re-established inside a transaction with a FRESH "+
+		"read version — see retryTx in pkg/relational/sqldriver. Match "+
+		"api.IsTransactionTimeLimit, never SQLSTATE 40001: a genuine write conflict "+
+		"carries the same code and needs the opposite response.", msg)
 }
