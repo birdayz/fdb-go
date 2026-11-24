@@ -22,4 +22,5 @@ go_test(
         "//pkg/recordlayer/query/plan/cascades/values:type.go",
     ],
     embed = [":typeimmutable"],
+    deps = ["@org_golang_x_tools//go/analysis"],
 )

@@ -93,11 +93,8 @@ var guardedTypes = map[string]bool{
 	"EnumValue":     true,
 }
 
-// Allowlist maps a repo-relative file path (matched as a path suffix) to the
-// function names within it that are permitted to write a Type they did not
-// build. Every entry is a deliberate contract that must be stated at the site.
-var Allowlist = map[string]map[string]string{
-	"pkg/recordlayer/query/plan/cascades/values/qov_source_layout.go": {
+var (
+	qovSourceLayoutAllow = map[string]string{
 		// restoreQOVRecordLayout writes `record.Legs` on a PARAMETER and recurses
 		// into `record.Fields[i].FieldType`. It is safe only because its single
 		// EXTERNAL caller (physicalFlowedRecordType) passes a graph from thaw()
@@ -105,8 +102,8 @@ var Allowlist = map[string]map[string]string{
 		// is a one-caller invariant; if a second caller appears, this entry is the
 		// thing that has to be re-justified.
 		"restoreQOVRecordLayout": "writes a parameter; sole external caller passes a private thaw()",
-	},
-	"pkg/recordlayer/query/plan/cascades/values/ordinal_layout_test.go": {
+	}
+	ordinalLayoutTestAllow = map[string]string{
 		// This test's whole subject is that a layout SNAPSHOTS its inputs: it hands
 		// the constructor a set of graphs, then mutates every one of them, and
 		// requires the layout to be unmoved. The mutation is the measurement. The
@@ -120,8 +117,8 @@ var Allowlist = map[string]map[string]string{
 		// FlowedType and are genuinely shared now. Input mutation is a contract;
 		// getter mutation was a bug waiting for RFC-234 to arm it.
 		"TestOrdinalLayoutSnapshotsEveryMutableInputAndGetter": "mutates its own fixture inputs to prove the snapshot is isolated",
-	},
-	"pkg/recordlayer/query/plan/cascades/plan_leg_concat_layout_test.go": {
+	}
+	planLegConcatLayoutTestAllow = map[string]string{
 		// The mutation IS the measurement here, in the strongest form: this test
 		// exists to prove PlanLegConcatLayout does NOT hand out the plan's own
 		// Fields slice, and the only way to observe that is to write to what it
@@ -133,8 +130,8 @@ var Allowlist = map[string]map[string]string{
 		// blanket exemption for "writes to a call result inside a test" would have
 		// covered the two genuinely latent accessor mutations this gate found.
 		"TestPlanLegConcatLayout_ReturnsADefensiveCopy": "writes the returned layout to prove it is a copy; the write is the assertion",
-	},
-	"pkg/relational/core/query/inline_values_translation_test.go": {
+	}
+	inlineValuesTranslationTestAllow = map[string]string{
 		// This test SIMULATES external drift: it mutates the collection's ordinary
 		// Type graph after construction and requires the translation to DECLINE,
 		// because the logical leaf holds a frozen schema snapshot that the drifted
@@ -145,8 +142,8 @@ var Allowlist = map[string]map[string]string{
 		// ordinary graph a logical operator carries, with no interned handle behind
 		// it. If that ever changes, this entry is what has to be re-justified.
 		"TestInlineValuesTranslationRejectsCollectionTypeDrift": "mutates a collection graph to simulate drift; declining is the assertion",
-	},
-	"pkg/recordlayer/query/plan/cascades/values/proto_field_exact_type_test.go": {
+	}
+	protoFieldExactTypeTestAllow = map[string]string{
 		// This test exists to VERIFY that FieldTypeForProtoField hands back an
 		// independent graph on every call, so mutating a returned graph is the
 		// measurement rather than a violation of it. FieldTypeForProtoField
@@ -155,7 +152,25 @@ var Allowlist = map[string]map[string]string{
 		// test is the thing that must fail, which is why it is allowlisted rather
 		// than rewritten to stop mutating.
 		"TestFieldTypeForProtoFieldReturnsIndependentTypeGraphs": "asserts the callee's freshness contract; the mutation IS the test",
-	},
+	}
+)
+
+// Allowlist maps a repo-relative file path (matched on path segment boundaries)
+// to the function names within it that are permitted to write a Type they did
+// not build. Every entry is a deliberate contract that must be stated at the
+// site, and carries both legacy pkg/... and future internal/... paths.
+var Allowlist = map[string]map[string]string{
+	"pkg/recordlayer/query/plan/cascades/values/qov_source_layout.go":                qovSourceLayoutAllow,
+	"internal/recordlayer/query/plan/cascades/values/qov_source_layout.go":           qovSourceLayoutAllow,
+	"pkg/recordlayer/query/plan/cascades/values/ordinal_layout_test.go":              ordinalLayoutTestAllow,
+	"internal/recordlayer/query/plan/cascades/values/ordinal_layout_test.go":         ordinalLayoutTestAllow,
+	"pkg/recordlayer/query/plan/cascades/plan_leg_concat_layout_test.go":             planLegConcatLayoutTestAllow,
+	"internal/recordlayer/query/plan/cascades/plan_leg_concat_layout_test.go":        planLegConcatLayoutTestAllow,
+	"pkg/relational/core/query/inline_values_translation_test.go":                    inlineValuesTranslationTestAllow,
+	"internal/relational/core/query/inline_values_translation_test.go":               inlineValuesTranslationTestAllow,
+	"internal/relational/query/inline_values_translation_test.go":                    inlineValuesTranslationTestAllow,
+	"pkg/recordlayer/query/plan/cascades/values/proto_field_exact_type_test.go":      protoFieldExactTypeTestAllow,
+	"internal/recordlayer/query/plan/cascades/values/proto_field_exact_type_test.go": protoFieldExactTypeTestAllow,
 }
 
 // Analyzer is the nogo entry point.
@@ -268,13 +283,18 @@ func (r *runner) report(pass *analysis.Pass, path string, fn *ast.FuncDecl, sel 
 		owner, sel.Sel.Name, shape, why, fn.Name.Name)
 }
 
-func matchedAllowKey(allow map[string]map[string]string, path string) string {
+func matchedAllowKey(allow map[string]map[string]string, filePath string) string {
+	norm := strings.ReplaceAll(filePath, "\\", "/")
 	for key := range allow {
-		if strings.HasSuffix(path, key) {
+		if norm == key || strings.HasSuffix(norm, "/"+key) {
 			return key
 		}
 	}
 	return ""
+}
+
+func isValuesPkgPath(pkgPath string) bool {
+	return pkgPath == valuesPkgSuffix || strings.HasSuffix(pkgPath, "/"+valuesPkgSuffix)
 }
 
 // guardedOwner reports the guarded struct name behind a selector, if any.
@@ -292,7 +312,7 @@ func guardedOwner(pass *analysis.Pass, sel *ast.SelectorExpr) (string, bool) {
 		return "", false
 	}
 	obj := named.Obj()
-	if obj.Pkg() == nil || !strings.HasSuffix(obj.Pkg().Path(), valuesPkgSuffix) {
+	if obj.Pkg() == nil || !isValuesPkgPath(obj.Pkg().Path()) {
 		return "", false
 	}
 	if !guardedTypes[obj.Name()] {

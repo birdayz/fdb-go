@@ -393,6 +393,28 @@ func TestCompatibilityCallerBoundaries(t *testing.T) {
 		{"fdb.dev/pkg/recordlayer", "pkg/recordlayer/text_tokenizer_test.go", 0},
 		{"fdb.dev/pkg/unrelated", "pkg/unrelated/text_tokenizer.go", 0},
 		{"fdb.dev/pkg/recordlayer/query/plan/plans", "pkg/recordlayer/query/plan/plans/values.go", 0},
+		// Future internal/... and top-level recordlayer/... / relational/... paths:
+		{"fdb.dev/internal/recordlayer", "internal/recordlayer/text_tokenizer.go", 2},
+		{"fdb.dev/internal/recordlayer", "internal/recordlayer/text_index_maintainer.go", 2},
+		{"fdb.dev/internal/recordlayer", "internal/recordlayer/collate_function_key_expression.go", 2},
+		{"fdb.dev/internal/recordlayer", "internal/recordlayer/keystore_key_manager.go", 2},
+		{"fdb.dev/internal/recordlayer", "internal/recordlayer/java_parse.go", 2},
+		{"fdb.dev/internal/recordlayer/query/plan/cascades/values", "internal/recordlayer/query/plan/cascades/values/values.go", 2},
+		{"fdb.dev/internal/recordlayer/query/plan/cascades/values", "internal/recordlayer/query/plan/cascades/values/uuid_parse.go", 2},
+		{"fdb.dev/internal/relational/core/parser", "internal/relational/core/parser/case_insensitive.go", 2},
+		{"fdb.dev/internal/relational/parser", "internal/relational/parser/case_insensitive.go", 2},
+		{"fdb.dev/recordlayer", "recordlayer/text_tokenizer.go", 2},
+		{"fdb.dev/recordlayer/query/plan/cascades/values", "recordlayer/query/plan/cascades/values/values.go", 2},
+		{"fdb.dev/relational/parser", "relational/parser/case_insensitive.go", 2},
+		// Negative controls under internal/ and top-level paths:
+		{"fdb.dev/internal/unrelated", "internal/unrelated/text_tokenizer.go", 0},
+		{"fdb.dev/internal/recordlayer", "internal/recordlayer/unrelated.go", 0},
+		{"fdb.dev/internal/recordlayer", "internal/recordlayer/text_tokenizer_test.go", 0},
+		{"fdb.dev/internal/recordlayer/query/plan/plans", "internal/recordlayer/query/plan/plans/values.go", 0},
+		{"fdb.dev/internal/relational/other", "internal/relational/other/case_insensitive.go", 0},
+		{"fdb.dev/pkg/internal/recordlayer", "pkg/internal/recordlayer/text_tokenizer.go", 0},
+		{"fdb.dev/recordlayer", "recordlayer/unrelated.go", 0},
+		{"other.dev/internal/recordlayer", "internal/recordlayer/text_tokenizer.go", 0},
 	} {
 		diagnostics, _ := analyze(t, tc.pkg, tc.filename, src, nil)
 		requireDiagnostics(t, diagnostics, tc.want, "Unicode 15 compatibility caller:")

@@ -4,10 +4,14 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/tools/go/analysis"
 )
 
 // The analyzer's decision is a two-axis one — is the root LOCAL, and does the
@@ -114,14 +118,29 @@ func TestFreshConstructorsReallyAllocate(t *testing.T) {
 	t.Parallel()
 
 	root := repoRootFromHere(t)
-	typeFile := filepath.Join(root, "pkg/recordlayer/query/plan/cascades/values/type.go")
-	src, err := os.ReadFile(typeFile)
-	if err != nil {
-		t.Fatalf("reading %s: %v.\nUnder Bazel this file must be a `data` dep of "+
+	var typeFile string
+	var src []byte
+	var err error
+	for _, cand := range []string{
+		"pkg/recordlayer/query/plan/cascades/values/type.go",
+		"internal/recordlayer/query/plan/cascades/values/type.go",
+		"recordlayer/query/plan/cascades/values/type.go",
+	} {
+		p := filepath.Join(root, cand)
+		if b, rerr := os.ReadFile(p); rerr == nil {
+			typeFile = p
+			src = b
+			break
+		} else {
+			err = rerr
+		}
+	}
+	if typeFile == "" {
+		t.Fatalf("reading values/type.go under %s: %v.\nUnder Bazel this file must be a `data` dep of "+
 			"this target — a test that cannot find its input must FAIL, not skip: a "+
 			"skip here would leave freshTypeConstructors unverified while the target "+
 			"still reported green, which is the exact shape this analyzer exists to "+
-			"prevent one level down.", typeFile, err)
+			"prevent one level down.", root, err)
 	}
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, typeFile, src, 0)
@@ -307,4 +326,126 @@ func firstWriteTarget(fn *ast.FuncDecl) (*ast.SelectorExpr, bool) {
 		return true
 	})
 	return found, found != nil
+}
+
+type stubValuesImporter struct {
+	valuesPkgPath string
+}
+
+func (s stubValuesImporter) Import(importPath string) (*types.Package, error) {
+	pkg := types.NewPackage(importPath, path.Base(importPath))
+	if importPath == s.valuesPkgPath {
+		fieldStruct := types.NewStruct([]*types.Var{
+			types.NewField(token.NoPos, pkg, "Name", types.Typ[types.String], false),
+		}, nil)
+		fieldType := types.NewNamed(types.NewTypeName(token.NoPos, pkg, "Field", nil), fieldStruct, nil)
+		recStruct := types.NewStruct([]*types.Var{
+			types.NewField(token.NoPos, pkg, "RecordName", types.Typ[types.String], false),
+			types.NewField(token.NoPos, pkg, "Fields", types.NewSlice(fieldType), false),
+		}, nil)
+		recType := types.NewNamed(types.NewTypeName(token.NoPos, pkg, "RecordType", nil), recStruct, nil)
+		pkg.Scope().Insert(fieldType.Obj())
+		pkg.Scope().Insert(recType.Obj())
+	}
+	pkg.MarkComplete()
+	return pkg, nil
+}
+
+func runTypeImmutablePass(t *testing.T, pkgPath, filename, valuesPkgPath, src string) []analysis.Diagnostic {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filename, src, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", filename, err)
+	}
+	info := &types.Info{
+		Types: map[ast.Expr]types.TypeAndValue{},
+		Defs:  map[*ast.Ident]types.Object{},
+		Uses:  map[*ast.Ident]types.Object{},
+	}
+	pkg, err := (&types.Config{Importer: stubValuesImporter{valuesPkgPath: valuesPkgPath}}).Check(pkgPath, fset, []*ast.File{file}, info)
+	if err != nil {
+		t.Fatalf("typecheck %s (%s): %v", pkgPath, filename, err)
+	}
+	var diagnostics []analysis.Diagnostic
+	pass := &analysis.Pass{
+		Analyzer:  Analyzer,
+		Fset:      fset,
+		Files:     []*ast.File{file},
+		Pkg:       pkg,
+		TypesInfo: info,
+		Report:    func(d analysis.Diagnostic) { diagnostics = append(diagnostics, d) },
+	}
+	if _, err := Analyzer.Run(pass); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	return diagnostics
+}
+
+// TestValuesPkgAndAllowlistPaths verifies that both valuesPkgSuffix matching
+// and Allowlist lookups work identically across legacy pkg/... and future
+// internal/... package and file paths.
+func TestValuesPkgAndAllowlistPaths(t *testing.T) {
+	t.Parallel()
+
+	for _, valuesPkg := range []string{
+		"fdb.dev/pkg/recordlayer/query/plan/cascades/values",
+		"fdb.dev/internal/recordlayer/query/plan/cascades/values",
+		"fdb.dev/recordlayer/query/plan/cascades/values",
+	} {
+		t.Run("enforced/"+valuesPkg, func(t *testing.T) {
+			t.Parallel()
+			src := "package caller\nimport values \"" + valuesPkg + "\"\nfunc mutate(r *values.RecordType) { r.RecordName = \"x\" }\n"
+			diags := runTypeImmutablePass(t, "fdb.dev/internal/relational/query", "internal/relational/query/caller.go", valuesPkg, src)
+			if len(diags) != 1 || !strings.Contains(diags[0].Message, "RecordType.RecordName") {
+				t.Fatalf("diagnostics = %+v, want 1 diagnostic for %s", diags, valuesPkg)
+			}
+		})
+	}
+
+	// Unrelated package with a matching struct name must not be flagged.
+	unrelatedSrc := "package caller\nimport values \"fdb.dev/internal/other/values\"\nfunc mutate(r *values.RecordType) { r.RecordName = \"x\" }\n"
+	if diags := runTypeImmutablePass(t, "fdb.dev/internal/relational/query", "internal/relational/query/caller.go", "fdb.dev/internal/other/values", unrelatedSrc); len(diags) != 0 {
+		t.Fatalf("unrelated package flagged: %+v", diags)
+	}
+	// Suffix collision on package name must not match valuesPkgSuffix.
+	collisionSrc := "package caller\nimport values \"fdb.dev/internal/myrecordlayer/query/plan/cascades/values\"\nfunc mutate(r *values.RecordType) { r.RecordName = \"x\" }\n"
+	if diags := runTypeImmutablePass(t, "fdb.dev/internal/relational/query", "internal/relational/query/caller.go", "fdb.dev/internal/myrecordlayer/query/plan/cascades/values", collisionSrc); len(diags) != 0 {
+		t.Fatalf("package suffix collision flagged: %+v", diags)
+	}
+
+	allowCases := []struct {
+		pkgPath   string
+		filename  string
+		fnName    string
+		valuesPkg string
+		wantDiags int
+	}{
+		{"fdb.dev/pkg/recordlayer/query/plan/cascades/values", "pkg/recordlayer/query/plan/cascades/values/qov_source_layout.go", "restoreQOVRecordLayout", "fdb.dev/pkg/recordlayer/query/plan/cascades/values", 0},
+		{"fdb.dev/internal/recordlayer/query/plan/cascades/values", "internal/recordlayer/query/plan/cascades/values/qov_source_layout.go", "restoreQOVRecordLayout", "fdb.dev/internal/recordlayer/query/plan/cascades/values", 0},
+		{"fdb.dev/internal/recordlayer/query/plan/cascades/values", "/abs/execroot/internal/recordlayer/query/plan/cascades/values/qov_source_layout.go", "restoreQOVRecordLayout", "fdb.dev/internal/recordlayer/query/plan/cascades/values", 0},
+		{"fdb.dev/pkg/recordlayer/query/plan/cascades/values", "pkg/recordlayer/query/plan/cascades/values/ordinal_layout_test.go", "TestOrdinalLayoutSnapshotsEveryMutableInputAndGetter", "fdb.dev/pkg/recordlayer/query/plan/cascades/values", 0},
+		{"fdb.dev/internal/recordlayer/query/plan/cascades/values", "internal/recordlayer/query/plan/cascades/values/ordinal_layout_test.go", "TestOrdinalLayoutSnapshotsEveryMutableInputAndGetter", "fdb.dev/internal/recordlayer/query/plan/cascades/values", 0},
+		{"fdb.dev/pkg/recordlayer/query/plan/cascades", "pkg/recordlayer/query/plan/cascades/plan_leg_concat_layout_test.go", "TestPlanLegConcatLayout_ReturnsADefensiveCopy", "fdb.dev/pkg/recordlayer/query/plan/cascades/values", 0},
+		{"fdb.dev/internal/recordlayer/query/plan/cascades", "internal/recordlayer/query/plan/cascades/plan_leg_concat_layout_test.go", "TestPlanLegConcatLayout_ReturnsADefensiveCopy", "fdb.dev/internal/recordlayer/query/plan/cascades/values", 0},
+		{"fdb.dev/pkg/relational/core/query", "pkg/relational/core/query/inline_values_translation_test.go", "TestInlineValuesTranslationRejectsCollectionTypeDrift", "fdb.dev/pkg/recordlayer/query/plan/cascades/values", 0},
+		{"fdb.dev/internal/relational/core/query", "internal/relational/core/query/inline_values_translation_test.go", "TestInlineValuesTranslationRejectsCollectionTypeDrift", "fdb.dev/internal/recordlayer/query/plan/cascades/values", 0},
+		{"fdb.dev/internal/relational/query", "internal/relational/query/inline_values_translation_test.go", "TestInlineValuesTranslationRejectsCollectionTypeDrift", "fdb.dev/internal/recordlayer/query/plan/cascades/values", 0},
+		{"fdb.dev/pkg/recordlayer/query/plan/cascades/values", "pkg/recordlayer/query/plan/cascades/values/proto_field_exact_type_test.go", "TestFieldTypeForProtoFieldReturnsIndependentTypeGraphs", "fdb.dev/pkg/recordlayer/query/plan/cascades/values", 0},
+		{"fdb.dev/internal/recordlayer/query/plan/cascades/values", "internal/recordlayer/query/plan/cascades/values/proto_field_exact_type_test.go", "TestFieldTypeForProtoFieldReturnsIndependentTypeGraphs", "fdb.dev/internal/recordlayer/query/plan/cascades/values", 0},
+		// Negative controls: wrong function, unlisted file, or prefix collision.
+		{"fdb.dev/internal/recordlayer/query/plan/cascades/values", "internal/recordlayer/query/plan/cascades/values/qov_source_layout.go", "otherFunc", "fdb.dev/internal/recordlayer/query/plan/cascades/values", 1},
+		{"fdb.dev/internal/recordlayer/query/plan/cascades/values", "internal/recordlayer/query/plan/cascades/values/unlisted.go", "restoreQOVRecordLayout", "fdb.dev/internal/recordlayer/query/plan/cascades/values", 1},
+		{"fdb.dev/internal/recordlayer/query/plan/cascades/values", "notpkg/recordlayer/query/plan/cascades/values/qov_source_layout.go", "restoreQOVRecordLayout", "fdb.dev/internal/recordlayer/query/plan/cascades/values", 1},
+	}
+	for _, tc := range allowCases {
+		t.Run(tc.filename+"/"+tc.fnName, func(t *testing.T) {
+			t.Parallel()
+			src := "package p\nimport values \"" + tc.valuesPkg + "\"\nfunc " + tc.fnName + "(r *values.RecordType) { r.RecordName = \"x\" }\n"
+			diags := runTypeImmutablePass(t, tc.pkgPath, tc.filename, tc.valuesPkg, src)
+			if len(diags) != tc.wantDiags {
+				t.Fatalf("diagnostics = %+v, want %d", diags, tc.wantDiags)
+			}
+		})
+	}
 }

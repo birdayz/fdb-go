@@ -138,38 +138,46 @@ func TestConstantFoldCensus(t *testing.T) {
 	root := repoRoot(t)
 	var all []constfoldcensus.Site
 	files := 0
-	err := filepath.WalkDir(filepath.Join(root, "pkg"), func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	for _, scanRoot := range []string{"pkg", "internal", "recordlayer", "relational"} {
+		dir := filepath.Join(root, scanRoot)
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			t.Fatal(err)
 		}
-		if d.IsDir() {
+		err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			rel, err := filepath.Rel(root, p)
+			if err != nil {
+				return err
+			}
+			rel = filepath.ToSlash(rel)
+			if !constfoldcensus.InPopulation(rel) {
+				return nil
+			}
+			src, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			sites, err := constfoldcensus.ScanSource(rel, src)
+			if err != nil {
+				return err
+			}
+			files++
+			all = append(all, sites...)
 			return nil
-		}
-		rel, err := filepath.Rel(root, p)
+		})
 		if err != nil {
-			return err
+			t.Fatal(err)
 		}
-		rel = filepath.ToSlash(rel)
-		if !constfoldcensus.InPopulation(rel) {
-			return nil
-		}
-		src, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		sites, err := constfoldcensus.ScanSource(rel, src)
-		if err != nil {
-			return err
-		}
-		files++
-		all = append(all, sites...)
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
 	if files < minFiles {
-		t.Fatalf("parsed %d files under %s/pkg, want at least %d: not the real tree", files, root, minFiles)
+		t.Fatalf("parsed %d files under %s, want at least %d: not the real tree", files, root, minFiles)
 	}
 	t.Logf("census population: %d files, %d sites", files, len(all))
 	found := constfoldcensus.Count(all)
@@ -236,11 +244,120 @@ func f(x X, ctx any) {
 		t.Errorf("an unqualified call in the defining package: %v", inValues)
 	}
 	for file, in := range map[string]bool{
-		"pkg/a/b.go": true, "pkg/a/b_test.go": false, "pkg/a/b.pb.go": false,
-		"pkg/a/testdata/c.go": false, "cmd/x/main.go": false,
+		"pkg/a/b.go":          true,
+		"pkg/a/b_test.go":     false,
+		"pkg/a/b.pb.go":       false,
+		"pkg/a/testdata/c.go": false,
+		"internal/recordlayer/query/plan/cascades/values/v.go": true,
+		"internal/relational/query/q.go":                       true,
+		"internal/a_test.go":                                   false,
+		"internal/a.pb.go":                                     false,
+		"internal/testdata/c.go":                               false,
+		"recordlayer/a.go":                                     true,
+		"recordlayer/a_test.go":                                false,
+		"relational/a.go":                                      true,
+		"relational/testdata/c.go":                             false,
+		"cmd/x/main.go":                                        false,
+		"tests/sql/q.go":                                       false,
 	} {
 		if constfoldcensus.InPopulation(file) != in {
 			t.Errorf("InPopulation(%s) = %v, want %v", file, !in, in)
+		}
+	}
+}
+
+// TestCensusMatcherSupportsLegacyInternalAndTopLevelPaths verifies that both
+// ScanSource and InPopulation behave identically across pkg/, internal/, and
+// top-level recordlayer/ and relational/ paths.
+func TestCensusMatcherSupportsLegacyInternalAndTopLevelPaths(t *testing.T) {
+	t.Parallel()
+	const qualifiedAndEvalSrc = `package p
+func f(x X) {
+	values.SimplifyValue(v)
+	values.EvaluateConstant(v)
+	predicates.SimplifyPredicateValues(p)
+	cascades.Simplify(p, rules)
+	x.Evaluate(nil)
+	x.Eval(nil)
+	SimplifyValue(v) // not a site outside values package
+}`
+	wantQualified := map[string]int{
+		"values.SimplifyValue":               1,
+		"values.EvaluateConstant":            1,
+		"predicates.SimplifyPredicateValues": 1,
+		"cascades.Simplify":                  1,
+		"Evaluate(nil)":                      1,
+		"Eval(nil)":                          1,
+	}
+	for _, file := range []string{
+		"pkg/relational/core/query/q.go",
+		"internal/relational/query/q.go",
+		"relational/query/q.go",
+		"internal/recordlayer/query/plan/plans/p.go",
+	} {
+		if !constfoldcensus.InPopulation(file) {
+			t.Fatalf("InPopulation(%q) = false, want true", file)
+		}
+		sites, err := constfoldcensus.ScanSource(file, []byte(qualifiedAndEvalSrc))
+		if err != nil {
+			t.Fatalf("ScanSource(%q): %v", file, err)
+		}
+		got := map[string]int{}
+		for _, s := range sites {
+			if s.File != file {
+				t.Errorf("site.File = %q, want %q", s.File, file)
+			}
+			got[s.Callee]++
+		}
+		if len(got) != len(wantQualified) {
+			t.Fatalf("%s: sites %v, want %v", file, got, wantQualified)
+		}
+		for k, n := range wantQualified {
+			if got[k] != n {
+				t.Errorf("%s %s: %d sites, want %d", file, k, got[k], n)
+			}
+		}
+	}
+
+	unqualifiedCases := []struct {
+		dirSuffix string
+		src       string
+		want      []string
+	}{
+		{
+			dirSuffix: "recordlayer/query/plan/cascades/values/v.go",
+			src:       "package values\nfunc f() { SimplifyValue(v); SimplifyPredicateValue(v); EvaluateConstantComparand(v); EvaluateConstant(v) }",
+			want:      []string{"values.SimplifyValue", "values.SimplifyPredicateValue", "values.EvaluateConstantComparand", "values.EvaluateConstant"},
+		},
+		{
+			dirSuffix: "recordlayer/query/plan/cascades/predicates/p.go",
+			src:       "package predicates\nfunc f() { SimplifyPredicateValues(p); EvaluatePredicateComparands(p) }",
+			want:      []string{"predicates.SimplifyPredicateValues", "predicates.EvaluatePredicateComparands"},
+		},
+		{
+			dirSuffix: "recordlayer/query/plan/cascades/c.go",
+			src:       "package cascades\nfunc f() { Simplify(p, r) }",
+			want:      []string{"cascades.Simplify"},
+		},
+	}
+	for _, tc := range unqualifiedCases {
+		for _, prefix := range []string{"pkg/", "internal/", ""} {
+			file := prefix + tc.dirSuffix
+			if !constfoldcensus.InPopulation(file) {
+				t.Fatalf("InPopulation(%q) = false, want true", file)
+			}
+			sites, err := constfoldcensus.ScanSource(file, []byte(tc.src))
+			if err != nil {
+				t.Fatalf("ScanSource(%q): %v", file, err)
+			}
+			if len(sites) != len(tc.want) {
+				t.Fatalf("%s: got %v, want %v", file, sites, tc.want)
+			}
+			for i, w := range tc.want {
+				if sites[i].Callee != w || sites[i].File != file || sites[i].Func != "f" {
+					t.Errorf("%s[%d] = %+v, want callee=%q file=%q func=f", file, i, sites[i], w, file)
+				}
+			}
 		}
 	}
 }
