@@ -3,8 +3,6 @@
 // Copyright 2021-2024 Apple Inc. and the FoundationDB project authors
 // Licensed under the Apache License, Version 2.0; translated to Go and modified.
 
-//go:generate go run go.uber.org/mock/mockgen -source=$GOFILE -destination=apimock/mocks_$GOFILE -package=apimock
-
 package api
 
 // ResultSet is a cursor over rows produced by a query. Mirrors

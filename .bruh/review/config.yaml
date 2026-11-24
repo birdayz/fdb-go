@@ -3,7 +3,6 @@ ignore:
   - "gen/**"
   - "pkg/fdbgo/wire/types/*_generated.go"
   - "pkg/relational/core/parser/gen/**"
-  - "pkg/relational/api/apimock/mocks_*.go"
   - "**/*.pb.go"
   - "third_party/**"
   # Raw benchmark receipts (JSON evidence, logs, patches); the docs/benchmarks

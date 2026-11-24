@@ -82,7 +82,6 @@ use_repo(
     "org_golang_x_text",
     "org_golang_x_tools",
     "org_golang_x_vuln",
-    "org_uber_go_mock",
 )
 
 go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
@@ -98,6 +97,7 @@ bazel_dep(name = "rules_cc", version = "0.2.26")
 bazel_dep(name = "foundationdb", version = "7.3.77")
 archive_override(
     module_name = "foundationdb",
+    integrity = "sha256-XlpcbZ0Of1EIYaqKo58A/w81rQu7UzQCB8+d383ycwA=",
     patch_cmds = [
         """cat > MODULE.bazel <<'MODEOF'
 module(name = "foundationdb", version = "7.3.77")
@@ -138,7 +138,6 @@ filegroup(
 )
 BUILDEOF""",
     ],
-    integrity = "sha256-XlpcbZ0Of1EIYaqKo58A/w81rQu7UzQCB8+d383ycwA=",
     strip_prefix = "foundationdb-7.3.77",
     urls = ["https://github.com/apple/foundationdb/archive/refs/tags/7.3.77.tar.gz"],
 )

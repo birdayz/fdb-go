@@ -82,7 +82,6 @@ go_test(
         "//pkg/fdbgo/wire",
         "//pkg/recordlayer",
         "//pkg/relational/api",
-        "//pkg/relational/api/apimock",
         "//pkg/relational/core/keyspace",
         "//pkg/relational/core/metadata",
         "//pkg/relational/core/parser",
@@ -92,6 +91,5 @@ go_test(
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protoreflect",
         "@org_golang_google_protobuf//types/descriptorpb",
-        "@org_uber_go_mock//gomock",
     ],
 )
