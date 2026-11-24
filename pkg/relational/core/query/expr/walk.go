@@ -20,6 +20,7 @@ import (
 	"github.com/antlr4-go/antlr/v4"
 
 	"fdb.dev/internal/unicode15"
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
@@ -1108,7 +1109,7 @@ func (pv *predicateValue) Evaluate(evalCtx any) (any, error) {
 	}
 	res, err := pv.pred.Eval(evalCtx)
 	if err != nil {
-		return nil, err
+		return nil, recordlayer.TranslateTextCmpError(err)
 	}
 	switch res {
 	case predicates.TriTrue:

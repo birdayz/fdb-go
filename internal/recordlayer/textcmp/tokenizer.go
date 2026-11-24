@@ -81,7 +81,7 @@ func ValidateTokenizerVersion(t TextTokenizer, version int) error {
 	return nil
 }
 
-// defaultTokenizeToMap implements the default tokenizeToMap logic matching
+// DefaultTokenizeToMap implements the default tokenizeToMap logic matching
 // Java's TextTokenizer.tokenizeToMap() default method.
 func DefaultTokenizeToMap(t TextTokenizer, text string, version int, mode TokenizerMode) (map[string][]int, error) {
 	iter, err := t.Tokenize(text, version, mode)
@@ -100,7 +100,7 @@ func DefaultTokenizeToMap(t TextTokenizer, text string, version int, mode Tokeni
 	return result, nil
 }
 
-// defaultTokenizeToList implements the default tokenizeToList logic matching
+// DefaultTokenizeToList implements the default tokenizeToList logic matching
 // Java's TextTokenizer.tokenizeToList() default method.
 func DefaultTokenizeToList(t TextTokenizer, text string, version int, mode TokenizerMode) ([]string, error) {
 	iter, err := t.Tokenize(text, version, mode)

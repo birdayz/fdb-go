@@ -1,18 +1,12 @@
 package recordlayer
 
-// Unit tests for text_tokenizer.go that are NOT already covered by
-// text_index_unit_test.go.  That file already has thorough
-// DefaultTextTokenizer.Tokenize/TokenizeToList/TokenizeToMap and registry
-// tests; this file adds:
-//   - DefaultTextTokenizer metadata (Name/MinVersion/MaxVersion)
-//   - DefaultTextTokenizerFactory
-//   - DefaultTextTokenizerInstance singleton identity
-//   - ValidateTokenizerVersion returns *MetaDataError
-//   - TokenizeToList / TokenizeToMap also reject bad versions (not just Tokenize)
-//   - TokenIterator.HasNext == false on empty input
-//   - GlobalTextTokenizerRegistry singleton identity
-//   - GetTextTokenizer errors are *MetaDataError
-//   - Registry concurrency (Register + GetTokenizer in parallel)
+// Unit tests for text_tokenizer.go wrappers (internal tokenizer mechanics
+// live in internal/recordlayer/textcmp/tokenizer_test.go):
+//   - DefaultTextTokenizer metadata (Name/MinVersion/MaxVersion), singleton, and factory
+//   - ValidateTokenizerVersion and TokenizeToList/TokenizeToMap returning *MetaDataError
+//   - TokenIterator.HasNext == false on empty input and TokenizeToMap position ordering
+//   - GlobalTextTokenizerRegistry singleton, *MetaDataError lookup, and concurrency
+//   - DefaultTextTokenizer Java 4.14.2.0 token parity
 
 import (
 	"errors"

@@ -2,8 +2,11 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/textcmp"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/gomega"
 )
@@ -106,6 +109,87 @@ func TestTextComparisonEval(t *testing.T) {
 	g.Expect(got).To(BeNil())
 	_, err = NewTextComparison(TextContainsAll, "fox", "", "").Eval(int64(1))
 	g.Expect(err).To(HaveOccurred())
+}
+
+func TestTextComparisonEvalErrorTypes(t *testing.T) {
+	t.Parallel()
+	argCases := []struct {
+		name  string
+		cmp   *TextComparison
+		value any
+	}{
+		{"empty prefix", NewTextComparison(TextContainsPrefix, "", "", ""), "fox"},
+		{"multi-token prefix", NewTextComparisonTokens(TextContainsPrefix, []string{"a", "b"}, "", ""), "a b"},
+		{"non-string value", NewTextComparison(TextContainsAll, "fox", "", ""), int64(1)},
+	}
+	for _, tc := range argCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := tc.cmp.Eval(tc.value)
+			var argErr *RecordCoreArgumentError
+			if !errors.As(err, &argErr) {
+				t.Fatalf("Eval error = %T (%v), want *RecordCoreArgumentError", err, err)
+			}
+		})
+	}
+
+	t.Run("unknown tokenizer", func(t *testing.T) {
+		t.Parallel()
+		_, err := NewTextComparison(TextContainsAll, "fox", "missing-tokenizer", "").Eval("fox")
+		var mdErr *MetaDataError
+		if !errors.As(err, &mdErr) {
+			t.Fatalf("Eval error = %T (%v), want *MetaDataError", err, err)
+		}
+		if !IsMetaDataException(err) {
+			t.Fatalf("IsMetaDataException(%v) = false, want true", err)
+		}
+	})
+
+	t.Run("invalid comparison type", func(t *testing.T) {
+		t.Parallel()
+		_, err := NewTextComparison(TextComparisonType(999), "fox", "", "").Eval("fox")
+		var coreErr *RecordCoreError
+		if !errors.As(err, &coreErr) {
+			t.Fatalf("Eval error = %T (%v), want *RecordCoreError", err, err)
+		}
+	})
+}
+
+func TestTranslateTextCmpError(t *testing.T) {
+	t.Parallel()
+	if got := TranslateTextCmpError(nil); got != nil {
+		t.Fatalf("TranslateTextCmpError(nil) = %v, want nil", got)
+	}
+	plain := errors.New("plain")
+	if got := TranslateTextCmpError(plain); got != plain {
+		t.Fatalf("TranslateTextCmpError(plain) = %v, want plain", got)
+	}
+
+	argWrapped := fmt.Errorf("outer: %w", &textcmp.ArgumentError{Message: "bad arg"})
+	var rlArg *RecordCoreArgumentError
+	if translated := TranslateTextCmpError(argWrapped); !errors.As(translated, &rlArg) || rlArg.Message != "bad arg" {
+		t.Fatalf("TranslateTextCmpError(ArgumentError) = %T (%v)", translated, translated)
+	} else if again := TranslateTextCmpError(translated); again != translated {
+		t.Fatalf("TranslateTextCmpError not idempotent on RecordCoreArgumentError: %v vs %v", again, translated)
+	}
+
+	mdRaw := &textcmp.MetaDataError{Message: "bad tok"}
+	mdWrapped := fmt.Errorf("outer: %w", mdRaw)
+	var rlMD *MetaDataError
+	if translated := TranslateTextCmpError(mdWrapped); !errors.As(translated, &rlMD) || rlMD.Message != "bad tok" || !errors.Is(translated, mdRaw) {
+		t.Fatalf("TranslateTextCmpError(MetaDataError) = %T (%v)", translated, translated)
+	} else if again := TranslateTextCmpError(translated); again != translated {
+		t.Fatalf("TranslateTextCmpError not idempotent on MetaDataError: %v vs %v", again, translated)
+	}
+
+	invRaw := &textcmp.InvalidComparisonError{Message: "bad cmp"}
+	var rlCore *RecordCoreError
+	if translated := TranslateTextCmpError(invRaw); !errors.As(translated, &rlCore) || rlCore.Message != "bad cmp" {
+		t.Fatalf("TranslateTextCmpError(InvalidComparisonError) = %T (%v)", translated, translated)
+	} else if again := TranslateTextCmpError(translated); again != translated {
+		t.Fatalf("TranslateTextCmpError not idempotent on RecordCoreError: %v vs %v", again, translated)
+	}
 }
 
 func TestGuavaBloomFilterSizingAndRoundTrip(t *testing.T) {

@@ -260,10 +260,10 @@ func TestReadPathAgreement_EmptyArrayAndAbsence(t *testing.T) {
 	// materialization, read below by ordinal.
 	posRow := executor.FromStoredRecord(&recordlayer.FDBStoredRecord[proto.Message]{Record: msg.Interface()}).Positional
 	if posRow == nil {
-		t.Fatal("protoToPositional returned nil for a non-nil message")
+		t.Fatal("FromStoredRecord returned nil for a non-nil message")
 	}
 	if got := len(posRow.Slots); got != fields.Len() {
-		t.Fatalf("protoToPositional produced %d slots for %d descriptor fields", got, fields.Len())
+		t.Fatalf("FromStoredRecord produced %d slots for %d descriptor fields", got, fields.Len())
 	}
 
 	// The struct view (path 3) is likewise built once.

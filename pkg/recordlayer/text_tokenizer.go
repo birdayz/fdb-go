@@ -7,7 +7,6 @@
 package recordlayer
 
 import (
-	"errors"
 	"sync"
 
 	"fdb.dev/internal/recordlayer/textcmp"
@@ -36,17 +35,10 @@ type TextTokenizer = textcmp.TextTokenizer
 // TokenIterator iterates over tokens produced by a TextTokenizer.
 type TokenIterator = textcmp.TokenIterator
 
-// wrapTextCmpMetaDataError converts textcmp.MetaDataError to *MetaDataError
-// while keeping the underlying textcmp error in the unwrap chain.
+// wrapTextCmpMetaDataError converts textcmp errors to public recordlayer types
+// while keeping underlying metadata causes in the unwrap chain.
 func wrapTextCmpMetaDataError(err error) error {
-	if err == nil {
-		return nil
-	}
-	var mde *textcmp.MetaDataError
-	if errors.As(err, &mde) {
-		return &MetaDataError{Message: mde.Message, Cause: err}
-	}
-	return err
+	return TranslateTextCmpError(err)
 }
 
 // ValidateTokenizerVersion checks that the given version is within the
@@ -180,9 +172,17 @@ func GetTextTokenizer(name string) (TextTokenizer, error) {
 }
 
 func defaultTokenizeToMap(t TextTokenizer, text string, version int, mode TokenizerMode) (map[string][]int, error) {
-	return textcmp.DefaultTokenizeToMap(t, text, version, mode)
+	m, err := textcmp.DefaultTokenizeToMap(t, text, version, mode)
+	if err != nil {
+		return nil, TranslateTextCmpError(err)
+	}
+	return m, nil
 }
 
 func defaultTokenizeToList(t TextTokenizer, text string, version int, mode TokenizerMode) ([]string, error) {
-	return textcmp.DefaultTokenizeToList(t, text, version, mode)
+	list, err := textcmp.DefaultTokenizeToList(t, text, version, mode)
+	if err != nil {
+		return nil, TranslateTextCmpError(err)
+	}
+	return list, nil
 }

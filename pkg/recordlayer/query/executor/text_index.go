@@ -81,7 +81,7 @@ func executeTextIndexScan(ctx context.Context, p *plans.RecordQueryTextIndexPlan
 			return nil, err
 		}
 	}
-	comparison, err := scan.Predicate.RecordLayerTextComparison(comparand)
+	comparison, err := textComparisonFromPredicate(scan.Predicate, comparand)
 	if err != nil {
 		return nil, err
 	}
@@ -142,6 +142,37 @@ func executeTextIndexScan(ctx context.Context, p *plans.RecordQueryTextIndexPlan
 	return applySkipLimit(newIndexFetchCursor(entries, store, props.ScanState), props.Skip, props.ReturnedRowLimit), nil
 }
 
+// textComparisonFromPredicate converts a predicate text comparison into the public recordlayer wrapper.
+func textComparisonFromPredicate(c *predicates.Comparison, comparand any) (*recordlayer.TextComparison, error) {
+	raw, err := c.RecordLayerTextComparison(comparand)
+	if err != nil || raw == nil {
+		return nil, err
+	}
+	tokenizer, fallback := raw.TokenizerName(), raw.FallbackTokenizerName()
+	switch cmp := raw.Comparand().(type) {
+	case []string:
+		switch raw.Type() {
+		case recordlayer.TextContainsAllWithin:
+			return recordlayer.NewTextWithMaxDistanceComparisonTokens(cmp, raw.MaxDistance(), tokenizer, fallback), nil
+		case recordlayer.TextContainsAllPrefixes:
+			return recordlayer.NewTextContainsAllPrefixesComparisonTokens(cmp, raw.IsStrict(), raw.ExpectedRecords(), raw.FalsePositivePercentage(), tokenizer, fallback), nil
+		default:
+			return recordlayer.NewTextComparisonTokens(raw.Type(), cmp, tokenizer, fallback), nil
+		}
+	case string:
+		switch raw.Type() {
+		case recordlayer.TextContainsAllWithin:
+			return recordlayer.NewTextWithMaxDistanceComparison(cmp, raw.MaxDistance(), tokenizer, fallback), nil
+		case recordlayer.TextContainsAllPrefixes:
+			return recordlayer.NewTextContainsAllPrefixesComparison(cmp, raw.IsStrict(), raw.ExpectedRecords(), raw.FalsePositivePercentage(), tokenizer, fallback), nil
+		default:
+			return recordlayer.NewTextComparison(raw.Type(), cmp, tokenizer, fallback), nil
+		}
+	default:
+		return nil, &predicates.TextComparisonError{Message: fmt.Sprintf("comparand for text query has incompatible type: %T", cmp)}
+	}
+}
+
 // textScanTerms is the token list TextScan scans (TextScan.getTokenList,
 // TextScan.java:111-128), stop-word slots included.
 func textScanTerms(comparison *recordlayer.TextComparison, tokenizer recordlayer.TextTokenizer, version int) ([]string, error) {
@@ -149,7 +180,11 @@ func textScanTerms(comparison *recordlayer.TextComparison, tokenizer recordlayer
 	case []string:
 		return comparand, nil
 	case string:
-		return tokenizer.TokenizeToList(comparand, version, recordlayer.TokenizerModeQuery)
+		tokens, err := tokenizer.TokenizeToList(comparand, version, recordlayer.TokenizerModeQuery)
+		if err != nil {
+			return nil, recordlayer.TranslateTextCmpError(err)
+		}
+		return tokens, nil
 	default:
 		return nil, &predicates.TextComparisonError{Message: fmt.Sprintf("comparand for text query has incompatible type: %T", comparand)}
 	}

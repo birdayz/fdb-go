@@ -1207,7 +1207,7 @@ func executePredicatesFilter(
 			for _, pred := range preds {
 				res, err := pred.Eval(rowCtx)
 				if err != nil {
-					return false, err
+					return false, recordlayer.TranslateTextCmpError(err)
 				}
 				if res != predicates.TriTrue {
 					return false, nil
@@ -1294,7 +1294,7 @@ func executeMap(
 			for i, f := range mapRC.Fields {
 				fv, ferr := f.Value.Evaluate(rowCtx)
 				if ferr != nil {
-					evalErr = ferr
+					evalErr = recordlayer.TranslateTextCmpError(ferr)
 					return qr
 				}
 				slots[i] = fv
@@ -1303,7 +1303,7 @@ func executeMap(
 		} else {
 			m, err := resultValue.Evaluate(rowCtx)
 			if err != nil {
-				evalErr = err
+				evalErr = recordlayer.TranslateTextCmpError(err)
 				return qr
 			}
 			pos = scalarPositionalRowOfType(m, resultValue.Type())
