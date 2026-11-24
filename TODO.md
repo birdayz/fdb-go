@@ -2622,7 +2622,8 @@ tracked only.
   (`pkg/recordlayer/query/plan/cascades/rule_decorrelate_values.go:320,398`). Fixed in #1001 (RFC-273).
 - [x] **Low:** `pkg/recordlayer/query/executor` imports `pkg/relational/api` (`executor.go`,
   `executor_new_plans.go`, `resultset.go`, `scalar_subquery.go`). Fixed in #1002 (RFC-274); the
-  `recordlayerdeps` nogo analyzer keeps non-test record-layer code off `pkg/relational`.
+  `archdeps` nogo analyzer (formerly `recordlayerdeps`) keeps record-layer code off
+  `relational` (R1, with two test-only baseline entries).
 - [ ] **Low (planner gap):** in `FROM emp a, emp b, dept d WHERE a.did = d.did AND b.did = d.did`,
   any extra predicate tying b to a (`a.eid < b.eid`, `a.salary - b.salary > d.did * 5`) makes Go
   read the innermost leg whole: `inner=PredicatesFilter(IndexScan(IDX_EMP_DID, [*]), [2 preds])`

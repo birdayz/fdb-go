@@ -10,7 +10,17 @@ go_library(
 
 go_test(
     name = "archdeps_test",
-    srcs = ["analyzer_test.go"],
+    srcs = [
+        "analyzer_test.go",
+        "sync_test.go",
+    ],
+    # keep: MODULE.bazel's runfiles symlink leads sync_test to the real repo tree
+    # so it can verify every allowlist entry and scan all packages; local=True
+    # ensures the Bazel sandbox does not hide workspace files outside data, and
+    # tags=["external"] keeps a cached pass from hiding edits outside this pkg.
+    data = ["//:MODULE.bazel"],
     embed = [":archdeps"],
+    local = True,
+    tags = ["external"],  # keep
     deps = ["@org_golang_x_tools//go/analysis"],
 )
