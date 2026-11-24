@@ -178,6 +178,7 @@ go_test(
     srcs = ["engine_test.go"],
     embed = [":sqldriver"],
     deps = [
+        "//internal/dstwire",
         "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/recordlayer",

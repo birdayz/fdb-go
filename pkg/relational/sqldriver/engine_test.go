@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
@@ -24,7 +25,7 @@ import (
 func newEngineSimDB(seed uint64) *recordlayer.FDBDatabase {
 	env := dst.NewSim(seed)
 	env.Buggify = dst.DisabledBuggifier()
-	db := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+	db := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
 	db.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 	return db
 }
@@ -160,7 +161,7 @@ func TestEngine_ConstructorValidationAndOwnedClose(t *testing.T) {
 	env.Buggify = dst.DisabledBuggifier()
 	backend := &closeCountingBackend{BackendDatabase: simfdb.New(env)}
 	eng := &Engine{
-		fdbDB:        recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(env),
+		fdbDB:        recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(dstwire.Env(env)),
 		ownedBackend: backend,
 		planCache:    embedded.NewRelationalPlanCache(nil),
 	}

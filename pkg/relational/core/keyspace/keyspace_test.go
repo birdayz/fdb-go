@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
@@ -157,7 +158,7 @@ func TestRelationalKeyspace_SchemaSubspaceIsolation(t *testing.T) {
 	ctx := context.Background()
 	env := dst.NewSim(91)
 	env.Buggify = dst.DisabledBuggifier()
-	db := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+	db := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
 
 	ks1 := keyspace.NewRelationalKeyspace(subspace.Sub(), keyspace.WithDomains("SUB_A"))
 	ks2 := keyspace.NewRelationalKeyspace(subspace.Sub(), keyspace.WithDomains("SUB_B"))
