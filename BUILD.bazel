@@ -121,7 +121,7 @@ nogo(
         "//internal/linters/gofumpt",
         "//internal/linters/noemptyiface",
         "//internal/linters/norecover",
-        "//internal/linters/recordlayerdeps",
+        "//internal/linters/archdeps",
         "//internal/linters/typeimmutable",
         "//internal/linters/unicodepin",
         # staticcheck SA analyzers
