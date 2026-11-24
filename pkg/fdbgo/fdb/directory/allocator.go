@@ -32,24 +32,21 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 )
 
-var (
-	oneBytes       = []byte{0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
-	allocatorMutex = sync.Mutex{}
-)
+var oneBytes = []byte{0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 
 type highContentionAllocator struct {
 	counters, recent subspace.Subspace
+	mu               *sync.Mutex
 	// int63n draws a candidate; nil is math/rand.
 	int63n func(n int64) int64
 }
 
 func newHCA(s subspace.Subspace) highContentionAllocator {
-	var hca highContentionAllocator
-
-	hca.counters = s.Sub(0)
-	hca.recent = s.Sub(1)
-
-	return hca
+	return highContentionAllocator{
+		counters: s.Sub(0),
+		recent:   s.Sub(1),
+		mu:       &sync.Mutex{},
+	}
 }
 
 func windowSize(start int64) int64 {
@@ -88,7 +85,7 @@ func (hca highContentionAllocator) allocate(tr fdb.WritableTransaction, s subspa
 
 		windowAdvanced := false
 		for {
-			allocatorMutex.Lock()
+			hca.mu.Lock()
 
 			if windowAdvanced {
 				tr.ClearRange(fdb.KeyRange{Begin: hca.counters, End: hca.counters.Sub(start)})
@@ -100,7 +97,7 @@ func (hca highContentionAllocator) allocate(tr fdb.WritableTransaction, s subspa
 			tr.Add(hca.counters.Sub(start), oneBytes)
 			countFuture := tr.Snapshot().Get(hca.counters.Sub(start))
 
-			allocatorMutex.Unlock()
+			hca.mu.Unlock()
 
 			countStr, e := countFuture.Get()
 			if e != nil {
@@ -138,14 +135,14 @@ func (hca highContentionAllocator) allocate(tr fdb.WritableTransaction, s subspa
 			candidate := draw(window) + start
 			key := hca.recent.Sub(candidate)
 
-			allocatorMutex.Lock()
+			hca.mu.Lock()
 
 			latestCounter := tr.Snapshot().GetRange(hca.counters, fdb.RangeOptions{Limit: 1, Reverse: true})
 			candidateValue := tr.Get(key)
 			tr.Options().SetNextWriteNoWriteConflictRange()
 			tr.Set(key, []byte(""))
 
-			allocatorMutex.Unlock()
+			hca.mu.Unlock()
 
 			kvs, e = latestCounter.GetSliceWithError()
 			if e != nil {

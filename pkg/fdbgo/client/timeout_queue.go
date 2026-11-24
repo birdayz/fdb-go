@@ -88,11 +88,26 @@ type timeoutNode struct {
 func newTimeoutQueue() *timeoutQueue {
 	root := &timeoutQueueRoot{}
 	for i := range root.shards {
-		q := &timeoutQueue{root: root, now: monoNow, deliver: (*Transaction).fireTimeout}
+		q := &timeoutQueue{root: root}
 		q.timer = &realTimer{fire: q.fire}
 		root.shards[i] = q
 	}
 	return root.shards[0]
+}
+
+func (q *timeoutQueue) nowTime() int64 {
+	if q.now != nil {
+		return q.now()
+	}
+	return monoNow()
+}
+
+func (q *timeoutQueue) deliverTimeout(tx *Transaction, arm uint64) {
+	if q.deliver != nil {
+		q.deliver(tx, arm)
+		return
+	}
+	tx.fireTimeout(arm)
 }
 
 var detachedTimeouts = newTimeoutQueue()
@@ -113,7 +128,7 @@ func (q *timeoutQueue) newNodeForShard(tx *Transaction) *timeoutNode {
 // Caller holds tx.readErrMu. A later logical key can reuse an earlier queued
 // lower bound; claiming a node or lowering its key requires eager insertion.
 func (q *timeoutQueue) schedule(n *timeoutNode, deadline int64) {
-	now := q.now()
+	now := q.nowTime()
 	n.deadline = deadline
 	n.desiredWake = min(deadline+int64(timeoutSlack), now+int64(timeoutInterval))
 	if n.queued.Load() && n.desiredWake >= n.wake {
@@ -134,7 +149,7 @@ func (q *timeoutQueue) schedule(n *timeoutNode, deadline int64) {
 		q.pushExact(n, n.desiredWake)
 	}
 	if !q.running && (!q.requested || n.wake < q.reqAt) {
-		q.requestLocked(n.wake, q.now())
+		q.requestLocked(n.wake, q.nowTime())
 	}
 	q.mu.Unlock()
 }
@@ -186,7 +201,7 @@ func (root *timeoutQueueRoot) fire() {
 	root.mu.Unlock()
 	for {
 		for {
-			now, frontier := root.shards[0].now(), root.seq.Load()
+			now, frontier := root.shards[0].nowTime(), root.seq.Load()
 			if root.afterFrontier != nil {
 				root.afterFrontier(now, frontier)
 			}
@@ -207,7 +222,7 @@ func (root *timeoutQueueRoot) fire() {
 		for _, q := range root.shards {
 			q.mu.Lock()
 			if len(q.heap) > 0 {
-				q.requestLocked(q.heap[0].wake, q.now())
+				q.requestLocked(q.heap[0].wake, q.nowTime())
 			}
 			q.running = false
 			q.mu.Unlock()
@@ -296,7 +311,7 @@ func (root *timeoutQueueRoot) deliverReady(now int64, frontier uint64) {
 				hook(n)
 			}
 			// Synchronous cancellation fan-out can delay later entries in this batch.
-			root.shards[0].deliver(tx, r.arm)
+			root.shards[0].deliverTimeout(tx, r.arm)
 			continue
 		}
 		q.mu.Unlock()

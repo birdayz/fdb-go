@@ -72,7 +72,6 @@ go_library(
     deps = [
         "//pkg/fdbgo/internal/diag",
         "//pkg/fdbgo/internal/hrtimer",
-        "//pkg/fdbgo/internal/rangecheck",
         "//pkg/fdbgo/internal/sendqueue",
         "//pkg/fdbgo/transport",
         "//pkg/fdbgo/wire",

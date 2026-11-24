@@ -2,7 +2,6 @@ package client
 
 import (
 	"os"
-	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -58,11 +57,6 @@ func (e *designTimerEntry) fire() {
 	tx.fireTimeout(arm)
 }
 
-var (
-	monoNowPC     = reflect.ValueOf(monoNow).Pointer()
-	fireTimeoutPC = reflect.ValueOf((*Transaction).fireTimeout).Pointer()
-)
-
 // production reports whether q is an unmodified database queue. Tests that
 // drive a manual clock, timer or hooks keep the queue path they inspect.
 func (q *timeoutQueue) production() bool {
@@ -72,7 +66,7 @@ func (q *timeoutQueue) production() bool {
 	r := q.root
 	return q.beforeDeliver == nil && q.beforeEagerSchedule == nil && q.compare == nil &&
 		r.afterFrontier == nil && r.beforeScan == nil && r.afterScan == nil && r.afterPop == nil &&
-		reflect.ValueOf(q.now).Pointer() == monoNowPC && reflect.ValueOf(q.deliver).Pointer() == fireTimeoutPC
+		q.now == nil && q.deliver == nil
 }
 
 // designArmLocked takes the arm when D4 applies. Caller holds tx.readErrMu and
@@ -267,7 +261,7 @@ func (tx *Transaction) withdrawTimeoutLocked() {
 // expireTimeoutLocked makes the pending arm due now. Caller holds readErrMu. For tests.
 func (tx *Transaction) expireTimeoutLocked() {
 	if n := tx.timeoutNode; n != nil {
-		n.queue.schedule(n, n.queue.now()-int64(timeoutSlack))
+		n.queue.schedule(n, n.queue.nowTime()-int64(timeoutSlack))
 		return
 	}
 	if e := tx.designEntry; e != nil {

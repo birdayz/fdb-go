@@ -303,7 +303,7 @@ func (tx *Transaction) armTimeoutLocked() {
 	q := tx.timeoutQueue()
 	// Convert before acquiring the queue lock: contention must not extend the budget.
 	delay := time.Until(tx.deadlineTime())
-	deadline := q.now() + int64(delay)
+	deadline := q.nowTime() + int64(delay)
 	if delay <= 0 {
 		inc := tx.readLife
 		if inc == nil {

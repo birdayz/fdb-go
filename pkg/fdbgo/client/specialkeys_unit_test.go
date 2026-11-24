@@ -439,7 +439,7 @@ func TestSpecialKeys_Routing(t *testing.T) {
 			t.Errorf("%s: %q %v", name, skRows(kvs), err)
 		}
 	}
-	if err := tx.checkRangeArgs(ctx, conflictingKeysBegin, conflictingKeysEnd, -5); err != nil {
+	if err := tx.CheckRangeArgs(ctx, conflictingKeysBegin, conflictingKeysEnd, -5); err != nil {
 		t.Errorf("checkRangeArgs on a routed range: %v (the routed read checks its own limits)", err)
 	}
 	if reads := tx.readConflictRanges(); tx.hadRead.Load() || len(reads) != 0 {
@@ -469,7 +469,7 @@ func TestSpecialKeys_Routing(t *testing.T) {
 	if _, _, err := tx.GetRange(ctx, conflictingKeysBegin, conflictingKeysEnd, 0); skCode(err) != 2006 {
 		t.Errorf("GetRange after a deferred error: %v", err)
 	}
-	if err := tx.checkRangeArgs(ctx, conflictingKeysBegin, conflictingKeysEnd, 0); skCode(err) != 2006 {
+	if err := tx.CheckRangeArgs(ctx, conflictingKeysBegin, conflictingKeysEnd, 0); skCode(err) != 2006 {
 		t.Errorf("checkRangeArgs after a deferred error: %v", err)
 	}
 
