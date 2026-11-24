@@ -960,8 +960,7 @@ var _ = Describe("SPFresh chunked oversized split", func() {
 
 	// The two-rebalancer churn flake made deterministic: appending into a child
 	// another executor split mid-drain strands live entries where no query reads.
-	DescribeTable(
-		"a child split out from under an in-flight drain never receives the drain's entries",
+	DescribeTable("a child split out from under an in-flight drain never receives the drain's entries",
 		func(extra int, chunked bool) {
 			config := DefaultSPFreshConfig(2)
 			config.Lmax = 16
@@ -1065,8 +1064,7 @@ var _ = Describe("SPFresh chunked oversized split", func() {
 
 	// A child sealed mid-drain (another executor's split in flight) has no
 	// posting to take its share: the pass defers, releases the lease, resumes later.
-	DescribeTable(
-		"a drain defers behind a child sealed mid-split, then completes",
+	DescribeTable("a drain defers behind a child sealed mid-split, then completes",
 		func(extra int) {
 			config := DefaultSPFreshConfig(2)
 			config.Lmax = 16

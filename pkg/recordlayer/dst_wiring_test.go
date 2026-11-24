@@ -19,6 +19,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// simEnv mirrors internal/dstwire.Env locally to avoid a test-embed import
+// cycle (internal/dstwire imports pkg/recordlayer).
 func simEnv(env *dst.Env) *Env {
 	if env == nil {
 		return nil

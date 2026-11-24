@@ -16,7 +16,7 @@ import (
 func TestRTreeNodeID_SeamedBothDirections(t *testing.T) {
 	t.Parallel()
 
-	// The constructor must leave env nil: production is the default, and the
+	// The constructor must leave random nil: production is the default, and the
 	// maintainer opts in via WithRandom(store.Env()).
 	if NewStorageAdapter(subspace.Sub("t"), RTreeConfig{}).random != nil {
 		t.Fatal("NewStorageAdapter installed a non-nil random — production must be the default")

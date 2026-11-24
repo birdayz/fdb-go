@@ -142,8 +142,7 @@ func deleteWhereBoundError(index *Index, prefix tuple.Tuple, bound int) error {
 		"%s index %q: deleteWhere prefix has %d columns but the index is keyed by %d; "+
 			"a longer prefix would clear some of its structures and miss others, leaving "+
 			"index data that answers for records that are gone",
-		index.Type, index.Name, len(prefix), bound,
-	)
+		index.Type, index.Name, len(prefix), bound)
 }
 
 // checkDeleteWhereBound is the shared CanDeleteWhere body: everything except the

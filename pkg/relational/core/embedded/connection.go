@@ -1696,8 +1696,7 @@ func (c *EmbeddedConnection) CollectStatistics(
 			&recordlayer.SyntheticRecordTypesNotModeledError{
 				TypeNames: md.SyntheticRecordTypeNames(),
 			},
-			api.ErrCodeUnsupportedOperation, "schema %q", c.sess.Schema,
-		)
+			api.ErrCodeUnsupportedOperation, "schema %q", c.sess.Schema)
 	}
 	if pair, ambiguous := md.AmbiguousDeclaredNames(); ambiguous {
 		// Refuse BEFORE scanning, for the same reason as the synthetic check

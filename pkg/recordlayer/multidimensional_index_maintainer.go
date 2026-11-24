@@ -561,8 +561,7 @@ func (m *multidimensionalIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) err
 		// success against a structure it never addressed.
 		return fmt.Errorf(
 			"MULTIDIMENSIONAL index %q: root expression contains no DimensionsKeyExpression, "+
-				"so the columns its R-trees are rooted under are unknown", m.index.Name,
-		)
+				"so the columns its R-trees are rooted under are unknown", m.index.Name)
 	}
 	if len(prefix) > dimExpr.PrefixSize {
 		return deleteWhereBoundError(m.index, prefix, dimExpr.PrefixSize)
@@ -971,15 +970,13 @@ func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*
 			lastPrefix, err := tuplefast.Unpack(c.resumePrefixBytes)
 			if err != nil {
 				return RecordCursorResult[*IndexEntry]{}, fmt.Errorf(
-					"MULTIDIMENSIONAL prefix skip-scan: invalid continuation prefix: %w", err,
-				)
+					"MULTIDIMENSIONAL prefix skip-scan: invalid continuation prefix: %w", err)
 			}
 			prefixSubspace := c.m.indexSubspace.Sub(tupleToElements(lastPrefix)...)
 			end, err := fdb.Strinc(prefixSubspace.Bytes())
 			if err != nil {
 				return RecordCursorResult[*IndexEntry]{}, fmt.Errorf(
-					"MULTIDIMENSIONAL prefix skip-scan: strinc resume prefix subspace: %w", err,
-				)
+					"MULTIDIMENSIONAL prefix skip-scan: strinc resume prefix subspace: %w", err)
 			}
 			c.nextPrefixStart = fdb.Key(end)
 			c.priorPrefixBytes = c.resumePrefixBytes
@@ -1097,8 +1094,7 @@ func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*
 			b, werr := wrapped.MarshalVT()
 			if werr != nil {
 				return RecordCursorResult[*IndexEntry]{}, fmt.Errorf(
-					"MULTIDIMENSIONAL prefix skip-scan: rewrap resume continuation: %w", werr,
-				)
+					"MULTIDIMENSIONAL prefix skip-scan: rewrap resume continuation: %w", werr)
 			}
 			innerCont = b
 			c.resumeInnerBytes = nil // only the first (resumed) prefix gets this

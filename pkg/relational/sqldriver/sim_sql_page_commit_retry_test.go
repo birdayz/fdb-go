@@ -1357,8 +1357,7 @@ func TestPageRetry_MemoryBudgetIsStatementCumulative(t *testing.T) {
 		pad := strings.Repeat("x", memPayloadBytes)
 		for i := 0; i < pageRetryRows; i++ {
 			mustExecSQL(t, db, ctx, fmt.Sprintf(
-				"INSERT INTO t (id, a, payload) VALUES (%d, %d, '%s')", i, pageRetryRows-i, pad,
-			))
+				"INSERT INTO t (id, a, payload) VALUES (%d, %d, '%s')", i, pageRetryRows-i, pad))
 		}
 		conn := pinSimConn(t, db, func(ec *embedded.EmbeddedConnection) {
 			ec.SetOptions(api.NewOptionsBuilder().

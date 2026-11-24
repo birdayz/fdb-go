@@ -527,8 +527,7 @@ func KitchenSinkMetadata() *recordlayer.RecordMetaData {
 	b.AddIndex("Order", recordlayer.NewIndex("hunt_covering",
 		recordlayer.KeyWithValue(
 			recordlayer.Concat(recordlayer.Field("price"), recordlayer.Nest("flower", recordlayer.Field("type"))),
-			1,
-		)))
+			1)))
 	md, err := b.Build()
 	if err != nil {
 		panic("hunt: failed to build kitchen-sink metadata: " + err.Error())

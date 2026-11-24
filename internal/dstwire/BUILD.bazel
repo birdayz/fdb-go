@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "dstwire",
@@ -9,4 +9,11 @@ go_library(
         "//pkg/dst",
         "//pkg/recordlayer",
     ],
+)
+
+go_test(
+    name = "dstwire_test",
+    srcs = ["dstwire_test.go"],
+    embed = [":dstwire"],
+    deps = ["//pkg/dst"],
 )

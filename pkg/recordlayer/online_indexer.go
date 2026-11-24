@@ -1703,8 +1703,7 @@ func (oi *OnlineIndexer) maybeLogBuildProgress(ctx context.Context, totalRecords
 	if !oi.shouldLogBuildProgress() {
 		return
 	}
-	logger.LogAttrs(
-		ctx, slog.LevelInfo, "Indexer: Built Range",
+	logger.LogAttrs(ctx, slog.LevelInfo, "Indexer: Built Range",
 		slog.String("index", oi.targetIndexNamesForLog()),
 		slog.Int64("records_scanned", totalRecords),
 		slog.Int64("range_records", rangeRecords),

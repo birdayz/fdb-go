@@ -231,8 +231,7 @@ func clusterMetadataFromValue(id tuple.UUID, b []byte) (*guardiannClusterMetadat
 	}
 	if len(t) == 4 {
 		return nil, &recordlayer.RecordCoreError{Message: fmt.Sprintf(
-			"guardiann cluster metadata of cluster %v has 4 elements, want 5: it was written by a GuardiANN build that did not store the lifetime peak; rebuild the index", id,
-		)}
+			"guardiann cluster metadata of cluster %v has 4 elements, want 5: it was written by a GuardiANN build that did not store the lifetime peak; rebuild the index", id)}
 	}
 	var md guardiannClusterMetadata
 	md.id = id

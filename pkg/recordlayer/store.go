@@ -1667,8 +1667,7 @@ func (store *FDBRecordStore) newRegisteredIndexMaintainer(factory IndexMaintaine
 		return m, nil
 	}
 	return newSlidingWindowIndexMaintainer(
-		index, m, store.indexSlidingWindowSubspace(index), tx, store, store.context.Timer(),
-	)
+		index, m, store.indexSlidingWindowSubspace(index), tx, store, store.context.Timer())
 }
 
 func (store *FDBRecordStore) addUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple, existingKey tuple.Tuple) error {
