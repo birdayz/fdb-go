@@ -340,6 +340,24 @@ func TestExcludedTestInfraPackages(t *testing.T) {
 		"fdb.dev/pkg/testutil/benchcluster",
 		"fdb.dev/pkg/relational/sqltest",
 		"fdb.dev/pkg/relational/sqltest/testkit",
+		"fdb.dev/internal/linters",
+		"fdb.dev/internal/linters/archdeps",
+		"fdb.dev/internal/simfdb",
+		"fdb.dev/internal/simfdb/cluster",
+		"fdb.dev/internal/testutil",
+		"fdb.dev/internal/testutil/benchcluster",
+		"fdb.dev/internal/testinstruments",
+		"fdb.dev/internal/testinstruments/fault",
+		"fdb.dev/internal/dst",
+		"fdb.dev/internal/dst/clock",
+		"fdb.dev/internal/relational/sqltest",
+		"fdb.dev/internal/relational/sqltest/testkit",
+		"fdb.dev/internal/relational/conformance",
+		"fdb.dev/internal/relational/conformance/oracle",
+		"fdb.dev/internal/recordlayer/chaos",
+		"fdb.dev/internal/recordlayer/chaos/runner",
+		"fdb.dev/internal/recordlayer/keystoretest",
+		"fdb.dev/internal/recordlayer/keystoretest/harness",
 	} {
 		if !excluded(pkg) {
 			t.Errorf("excluded(%q) = false, want true", pkg)
@@ -349,11 +367,22 @@ func TestExcludedTestInfraPackages(t *testing.T) {
 		"fdb.dev/pkg/fdbgo/fdb",
 		"fdb.dev/pkg/recordlayer",
 		"fdb.dev/pkg/relational/sqldriver",
+		"fdb.dev/internal/unicode15",
+		"fdb.dev/internal/javahashmap",
+		"fdb.dev/internal/recordlayer/query/executor",
+		"fdb.dev/internal/fdbgo/client",
+		"fdb.dev/internal/relational/embedded",
 		"fdb.dev/cmd/fdb",
 		"fdb.dev/cmd/fdb/internal/cmd",
 		"fdb.dev/pkg/testcontainers_extra",
 		"fdb.dev/pkg/relational/sqltest_extra",
+		"fdb.dev/internal/linters_extra",
+		"fdb.dev/internal/dst_extra",
+		"fdb.dev/internal/simfdb_extra",
+		"fdb.dev/internal/testutil_extra",
+		"fdb.dev/internal/recordlayer/chaos_extra",
 		"other.dev/pkg/testcontainers",
+		"other.dev/internal/linters",
 	} {
 		if excluded(pkg) {
 			t.Errorf("excluded(%q) = true, want false", pkg)
@@ -363,16 +392,82 @@ func TestExcludedTestInfraPackages(t *testing.T) {
 
 func TestScanIncludesLibraryAndReleasedCLIEntrypoints(t *testing.T) {
 	t.Parallel()
-	if got := strings.Join(scanPatterns, ","); got != "./pkg/...,./cmd/fdb/..." {
-		t.Fatalf("default scan patterns = %q: library and released CLI must both be scanned", got)
+	if got := strings.Join(scanPatterns, ","); got != "./pkg/...,./internal/...,./cmd/fdb/..." {
+		t.Fatalf("default scan patterns = %q: library, internal production, and released CLI must all be scanned", got)
 	}
-	output := "\n fdb.dev/pkg/recordlayer \nfdb.dev/pkg/testcontainers/foundationdb\nfdb.dev/pkg/testutil/benchcluster\nfdb.dev/pkg/relational/sqltest/testkit\nfdb.dev/cmd/fdb\nfdb.dev/cmd/fdb/internal/cmd\n"
-	if got := strings.Join(filterPackages(output), ","); got != "fdb.dev/pkg/recordlayer,fdb.dev/cmd/fdb,fdb.dev/cmd/fdb/internal/cmd" {
-		t.Fatalf("scanned entrypoints = %q", got)
+	output := "\n fdb.dev/pkg/recordlayer \n" +
+		"fdb.dev/pkg/testcontainers/foundationdb\n" +
+		"fdb.dev/pkg/testutil/benchcluster\n" +
+		"fdb.dev/pkg/relational/sqltest/testkit\n" +
+		"fdb.dev/internal/unicode15\n" +
+		"fdb.dev/internal/recordlayer/query/executor\n" +
+		"fdb.dev/internal/fdbgo/client\n" +
+		"fdb.dev/internal/relational/embedded\n" +
+		"fdb.dev/internal/linters/archdeps\n" +
+		"fdb.dev/internal/simfdb\n" +
+		"fdb.dev/internal/testutil/benchcluster\n" +
+		"fdb.dev/internal/relational/sqltest/testkit\n" +
+		"fdb.dev/internal/recordlayer/chaos\n" +
+		"fdb.dev/cmd/fdb\n" +
+		"fdb.dev/cmd/fdb/internal/cmd\n"
+	want := "fdb.dev/pkg/recordlayer," +
+		"fdb.dev/internal/unicode15," +
+		"fdb.dev/internal/recordlayer/query/executor," +
+		"fdb.dev/internal/fdbgo/client," +
+		"fdb.dev/internal/relational/embedded," +
+		"fdb.dev/cmd/fdb," +
+		"fdb.dev/cmd/fdb/internal/cmd"
+	if got := strings.Join(filterPackages(output), ","); got != want {
+		t.Fatalf("scanned entrypoints = %q, want %q", got, want)
 	}
-	for _, output := range []string{"", " \n\t", "fdb.dev/pkg/testcontainers\nfdb.dev/pkg/relational/sqltest"} {
+	for _, output := range []string{
+		"",
+		" \n\t",
+		"fdb.dev/pkg/testcontainers\nfdb.dev/pkg/relational/sqltest\nfdb.dev/internal/linters/archdeps\nfdb.dev/internal/simfdb",
+	} {
 		if pkgs := filterPackages(output); len(pkgs) != 0 {
 			t.Errorf("empty/excluded population %q produced %v", output, pkgs)
 		}
+	}
+}
+
+// TestFilterPackagesRetainsInternalProductionPopulation guards against dropping
+// real production internal/ packages alongside pkg/ and cmd/fdb/.
+func TestFilterPackagesRetainsInternalProductionPopulation(t *testing.T) {
+	t.Parallel()
+
+	output := strings.Join([]string{
+		"fdb.dev/pkg/fdbgo/fdb",
+		"fdb.dev/pkg/recordlayer",
+		"fdb.dev/pkg/testcontainers/foundationdb",
+		"fdb.dev/internal/javahashmap",
+		"fdb.dev/internal/unicode15",
+		"fdb.dev/internal/unicode15/text/collate",
+		"fdb.dev/internal/linters/recordlayerdeps",
+		"fdb.dev/internal/simfdb",
+		"fdb.dev/internal/relational/sqltest/testkit",
+		"fdb.dev/cmd/fdb",
+		"fdb.dev/cmd/fdb/internal/cmd",
+	}, "\n")
+
+	pkgs := filterPackages(output)
+	if len(pkgs) == 0 {
+		t.Fatal("filterPackages returned an empty production population")
+	}
+
+	var pkgCount, internalCount, cliCount int
+	for _, pkg := range pkgs {
+		switch {
+		case strings.HasPrefix(pkg, "fdb.dev/pkg/"):
+			pkgCount++
+		case strings.HasPrefix(pkg, "fdb.dev/internal/"):
+			internalCount++
+		case pkg == "fdb.dev/cmd/fdb" || strings.HasPrefix(pkg, "fdb.dev/cmd/fdb/"):
+			cliCount++
+		}
+	}
+	if pkgCount == 0 || internalCount == 0 || cliCount == 0 {
+		t.Fatalf("retained production counts pkg=%d internal=%d cmd/fdb=%d (pkgs=%v): all three populations must be nonempty",
+			pkgCount, internalCount, cliCount, pkgs)
 	}
 }

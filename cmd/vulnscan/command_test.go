@@ -42,8 +42,13 @@ func fixtureFile(t *testing.T, root, name, text string) {
 	}
 }
 
-func TestScanCommandWithPinnedScanner(t *testing.T) {
-	t.Parallel()
+type vulnscanHarness struct {
+	root string
+	run  func(args ...string) (string, error)
+}
+
+func newVulnscanHarness(t *testing.T) vulnscanHarness {
+	t.Helper()
 	goBin := testTool(t, "VULNSCAN_TEST_GO")
 	scanner := testTool(t, "VULNSCAN_TEST_SCANNER")
 	wrapper := testTool(t, "VULNSCAN_TEST_WRAPPER")
@@ -52,9 +57,6 @@ func TestScanCommandWithPinnedScanner(t *testing.T) {
 	}
 	root, cache, proxy := t.TempDir(), t.TempDir(), t.TempDir()
 	fixtureFile(t, root, "go.mod", "module fdb.dev\n\ngo 1.26.0\n\nrequire fixture.invalid/vulnerable v1.0.0\n")
-	fixtureFile(t, root, "pkg/library/library.go", "package library\nfunc Safe() {}\n")
-	fixtureFile(t, root, "pkg/testcontainers/helper/helper.go", "package helper\nimport \"fixture.invalid/vulnerable\"\nfunc Call() { vulnerable.Bad() }\n")
-	fixtureFile(t, root, "cmd/fdb/main.go", "package main\nimport \"fdb.dev/pkg/testcontainers/helper\"\nfunc main() { helper.Call() }\n")
 	// Serve the synthetic dependency through a local Go proxy so it retains a
 	// release version: local replace directives have no vulnerable version.
 	const dep = "module fixture.invalid/vulnerable\n\ngo 1.26.0\n"
@@ -115,30 +117,70 @@ func TestScanCommandWithPinnedScanner(t *testing.T) {
 		"GOROOT="+filepath.Dir(filepath.Dir(goBin)), "GOTOOLCHAIN=local", "GOWORK=off", "GOENV=off", "CGO_ENABLED=0",
 		"GOPROXY=file://"+proxy, "GOSUMDB=off", "GOPRIVATE=", "GONOPROXY=", "GONOSUMDB=", "GOTELEMETRY=off",
 		"GOCACHE="+t.TempDir(), "GOMODCACHE="+t.TempDir(), "GOFLAGS=-mod=mod -modcacherw", "VULNSCAN_DB_URL=http://127.0.0.1:1/must-not-fetch")
-	run := func(args ...string) (string, error) {
-		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, wrapper, append([]string{"-cache", cache, "-attempts", "1"}, args...)...)
-		cmd.Dir, cmd.Env = root, env
-		out, err := cmd.CombinedOutput()
-		return string(out), err
+	return vulnscanHarness{
+		root: root,
+		run: func(args ...string) (string, error) {
+			t.Helper()
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, wrapper, append([]string{"-cache", cache, "-attempts", "1"}, args...)...)
+			cmd.Dir, cmd.Env = root, env
+			out, err := cmd.CombinedOutput()
+			return string(out), err
+		},
 	}
-	out, err := run()
+}
+
+func TestScanCommandWithPinnedScanner(t *testing.T) {
+	t.Parallel()
+	h := newVulnscanHarness(t)
+	fixtureFile(t, h.root, "pkg/library/library.go", "package library\nfunc Safe() {}\n")
+	fixtureFile(t, h.root, "internal/safe/safe.go", "package safe\nfunc OK() {}\n")
+	fixtureFile(t, h.root, "pkg/testcontainers/helper/helper.go", "package helper\nimport \"fixture.invalid/vulnerable\"\nfunc Call() { vulnerable.Bad() }\n")
+	fixtureFile(t, h.root, "cmd/fdb/main.go", "package main\nimport \"fdb.dev/pkg/testcontainers/helper\"\nfunc main() { helper.Call() }\n")
+
+	out, err := h.run()
 	if err == nil || !strings.Contains(out, "this code calls 1 known vulnerability/ies: GO-2099-0001") {
 		t.Fatalf("default command missed CLI-only call through excluded helper: err=%v\n%s", err, out)
 	}
-	out, err = run("-patterns", "./pkg/...")
+	out, err = h.run("-patterns", "./pkg/...")
 	if err != nil || !strings.Contains(out, "no called vulnerabilities") {
 		t.Fatalf("library-only negative control: err=%v\n%s", err, out)
 	}
-	fixtureFile(t, root, "cmd/fdb/main.go", "package main\nfunc main() {}\n")
-	out, err = run()
+	fixtureFile(t, h.root, "cmd/fdb/main.go", "package main\nfunc main() {}\n")
+	out, err = h.run()
 	if err != nil || !strings.Contains(out, "no called vulnerabilities") {
 		t.Fatalf("removed CLI call negative control: err=%v\n%s", err, out)
 	}
-	out, err = run("-patterns", "./pkg/testcontainers/...")
+	out, err = h.run("-patterns", "./pkg/testcontainers/...")
 	if err == nil || !strings.Contains(out, "the package list came back empty, so the scan would have covered nothing") {
 		t.Fatalf("empty filtered population did not fail at the gate: err=%v\n%s", err, out)
+	}
+}
+
+func TestScanCommandCoversInternalProductionPackages(t *testing.T) {
+	t.Parallel()
+	h := newVulnscanHarness(t)
+	fixtureFile(t, h.root, "pkg/library/library.go", "package library\nfunc Safe() {}\n")
+	fixtureFile(t, h.root, "cmd/fdb/main.go", "package main\nfunc main() {}\n")
+	fixtureFile(t, h.root, "internal/linters/sample/sample.go", "package sample\nimport \"fixture.invalid/vulnerable\"\nfunc Lint() { vulnerable.Bad() }\n")
+	fixtureFile(t, h.root, "internal/runtime/runtime.go", "package runtime\nimport \"fixture.invalid/vulnerable\"\nfunc Run() { vulnerable.Bad() }\n")
+
+	out, err := h.run()
+	if err == nil || !strings.Contains(out, "this code calls 1 known vulnerability/ies: GO-2099-0001") {
+		t.Fatalf("default command missed internal production call: err=%v\n%s", err, out)
+	}
+	out, err = h.run("-patterns", "./pkg/...,./cmd/fdb/...")
+	if err != nil || !strings.Contains(out, "no called vulnerabilities") {
+		t.Fatalf("pkg+cmd negative control should not reach internal/runtime: err=%v\n%s", err, out)
+	}
+	fixtureFile(t, h.root, "internal/runtime/runtime.go", "package runtime\nfunc Run() {}\n")
+	out, err = h.run()
+	if err != nil || !strings.Contains(out, "no called vulnerabilities") {
+		t.Fatalf("excluded internal/linters call should not fail default scan once internal/runtime is clean: err=%v\n%s", err, out)
+	}
+	out, err = h.run("-patterns", "./internal/linters/...")
+	if err == nil || !strings.Contains(out, "the package list came back empty, so the scan would have covered nothing") {
+		t.Fatalf("empty filtered internal/linters population did not fail at the gate: err=%v\n%s", err, out)
 	}
 }
