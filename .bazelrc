@@ -43,7 +43,7 @@ test --test_timeout=60,300,900,3600
 
 # Coverage: only instrument our code, not generated types or linters.
 # Without this, Bazel auto-instruments everything (including gen/ and
-# pkg/linters/) which dilutes the coverage percentage.
+# internal/linters/) which dilutes the coverage percentage.
 coverage --instrumentation_filter="^//pkg/fdbgo/client[/:],^//pkg/fdbgo/fdb[/:],^//pkg/fdbgo/transport[/:],^//pkg/recordlayer[/:]"
 
 # Test scheduling: Bazel's resource accounting, the same on every machine.

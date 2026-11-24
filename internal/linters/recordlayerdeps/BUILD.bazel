@@ -1,16 +1,16 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
-    name = "dockerskip",
+    name = "recordlayerdeps",
     srcs = ["analyzer.go"],
-    importpath = "fdb.dev/pkg/linters/dockerskip",
-    visibility = ["//visibility:public"],
+    importpath = "fdb.dev/internal/linters/recordlayerdeps",
+    visibility = ["//:__pkg__"],
     deps = ["@org_golang_x_tools//go/analysis"],
 )
 
 go_test(
-    name = "dockerskip_test",
+    name = "recordlayerdeps_test",
     srcs = ["analyzer_test.go"],
-    embed = [":dockerskip"],
+    embed = [":recordlayerdeps"],
     deps = ["@org_golang_x_tools//go/analysis"],
 )
