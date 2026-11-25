@@ -100,16 +100,26 @@ func pinnedPackage(pkg string) bool {
 }
 
 func compatibilityCaller(pkg, filename string) bool {
-	switch pkg + "/" + path.Base(strings.ReplaceAll(filename, "\\", "/")) {
-	case "fdb.dev/internal/recordlayer/textcmp/tokenizer.go",
-		"fdb.dev/pkg/recordlayer/text_tokenizer.go",
-		"fdb.dev/pkg/recordlayer/text_index_maintainer.go",
-		"fdb.dev/pkg/recordlayer/collate_function_key_expression.go",
-		"fdb.dev/pkg/recordlayer/keystore_key_manager.go",
-		"fdb.dev/pkg/recordlayer/java_parse.go",
-		"fdb.dev/pkg/recordlayer/query/plan/cascades/values/values.go",
-		"fdb.dev/pkg/recordlayer/query/plan/cascades/values/uuid_parse.go",
-		"fdb.dev/pkg/relational/core/parser/case_insensitive.go":
+	rel, ok := strings.CutPrefix(pkg, "fdb.dev/")
+	if !ok {
+		return false
+	}
+	if trimmed, ok := strings.CutPrefix(rel, "pkg/"); ok {
+		rel = trimmed
+	} else if trimmed, ok := strings.CutPrefix(rel, "internal/"); ok {
+		rel = trimmed
+	}
+	switch rel + "/" + path.Base(strings.ReplaceAll(filename, "\\", "/")) {
+	case "recordlayer/textcmp/tokenizer.go",
+		"recordlayer/text_tokenizer.go",
+		"recordlayer/text_index_maintainer.go",
+		"recordlayer/collate_function_key_expression.go",
+		"recordlayer/keystore_key_manager.go",
+		"recordlayer/java_parse.go",
+		"recordlayer/query/plan/cascades/values/values.go",
+		"recordlayer/query/plan/cascades/values/uuid_parse.go",
+		"relational/core/parser/case_insensitive.go",
+		"relational/parser/case_insensitive.go":
 		return true
 	}
 	return false

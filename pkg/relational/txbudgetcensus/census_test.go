@@ -1,6 +1,7 @@
 package txbudgetcensus_test
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -332,17 +333,32 @@ func TestX(t *testing.T) {
 // The guard over the real corpus.
 // ---------------------------------------------------------------------------
 
-// corpusDirs are the packages where an explicit SQL transaction against a real
-// FoundationDB can live. They are declared as Bazel `data` on this target; see
-// the floors below for why that declaration is load-bearing.
-var corpusDirs = []string{
-	"pkg/relational/sqldriver",
-	"pkg/relational/core/embedded",
+type logicalRoot struct {
+	name       string
+	candidates []string
 }
 
-// corpusTree is scanned recursively: every package of the end-to-end SQL suite
-// (//pkg/relational/sqltest:corpus).
-const corpusTree = "pkg/relational/sqltest"
+// corpusDirRoots are the logical packages where an explicit SQL transaction
+// against a real FoundationDB can live. Each resolves across legacy and future
+// paths and is declared as Bazel `data` on this target; see the floors below for
+// why that declaration is load-bearing.
+var corpusDirRoots = []logicalRoot{
+	{
+		name:       "sqldriver",
+		candidates: []string{"pkg/relational/sqldriver", "relational"},
+	},
+	{
+		name:       "embedded",
+		candidates: []string{"pkg/relational/core/embedded", "internal/relational/embedded"},
+	},
+}
+
+// corpusTreeRoot is scanned recursively: every package of the end-to-end SQL
+// suite (//pkg/relational/sqltest:corpus or //tests/sql:corpus).
+var corpusTreeRoot = logicalRoot{
+	name:       "sqltest",
+	candidates: []string{"pkg/relational/sqltest", "tests/sql"},
+}
 
 // Floors that make a zero MEAN something. A census over an empty runfiles tree
 // reports a perfect zero, and so does a census whose BeginTx detection broke —
@@ -356,6 +372,46 @@ const (
 	minHandled   = 3   // measured 4; a collapse means the markers stopped matching
 )
 
+func resolveLogicalRoots(root string, lr logicalRoot) ([]string, error) {
+	var found []string
+	for _, rel := range lr.candidates {
+		p := filepath.Join(root, rel)
+		if dirExists(p) {
+			found = append(found, p)
+		}
+	}
+	if len(found) == 0 {
+		return nil, fmt.Errorf("could not resolve %s root under %s: none of %v exists on disk", lr.name, root, lr.candidates)
+	}
+	return found, nil
+}
+
+func resolveCorpusDirs(root string) ([]string, error) {
+	var dirs []string
+	for _, lr := range corpusDirRoots {
+		resolved, err := resolveLogicalRoots(root, lr)
+		if err != nil {
+			return nil, err
+		}
+		dirs = append(dirs, resolved...)
+	}
+	treeDirs, err := resolveLogicalRoots(root, corpusTreeRoot)
+	if err != nil {
+		return nil, err
+	}
+	for _, treeDir := range treeDirs {
+		if err := filepath.WalkDir(treeDir, func(p string, e fs.DirEntry, err error) error {
+			if err == nil && e.IsDir() {
+				dirs = append(dirs, p)
+			}
+			return err
+		}); err != nil {
+			return nil, fmt.Errorf("walking %s: %w", treeDir, err)
+		}
+	}
+	return dirs, nil
+}
+
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	// Under Bazel the runfiles tree root is TEST_SRCDIR/TEST_WORKSPACE and holds
@@ -363,7 +419,10 @@ func repoRoot(t *testing.T) string {
 	// walk up to the module root. Both are tried, and a miss is a LOUD failure
 	// rather than an empty scan.
 	if sd, ws := os.Getenv("TEST_SRCDIR"), os.Getenv("TEST_WORKSPACE"); sd != "" && ws != "" {
-		if p := filepath.Join(sd, ws); dirExists(filepath.Join(p, corpusDirs[0])) {
+		if p := filepath.Join(sd, ws); func() bool {
+			_, err := resolveLogicalRoots(p, corpusDirRoots[0])
+			return err == nil
+		}() {
 			return p
 		}
 	}
@@ -372,8 +431,10 @@ func repoRoot(t *testing.T) string {
 		t.Fatalf("getwd: %v", err)
 	}
 	for i := 0; i < 12; i++ {
-		if dirExists(filepath.Join(dir, corpusDirs[0])) {
-			return dir
+		if _, statErr := os.Stat(filepath.Join(dir, "go.mod")); statErr == nil {
+			if _, err := resolveLogicalRoots(dir, corpusDirRoots[0]); err == nil {
+				return dir
+			}
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -381,18 +442,158 @@ func repoRoot(t *testing.T) string {
 		}
 		dir = parent
 	}
-	t.Fatalf("could not locate %s from TEST_SRCDIR=%q TEST_WORKSPACE=%q or cwd.\n"+
+	t.Fatalf("could not locate any of %v from TEST_SRCDIR=%q TEST_WORKSPACE=%q or cwd.\n"+
 		"THE INSTRUMENT IS DEAD, NOT THE SUITE CLEAN. Under Bazel a test sees only "+
 		"its declared inputs, so if the corpus filegroups were dropped from this "+
 		"target's `data` the scan below would read zero files and report zero "+
 		"exposed transactions — a perfect green over an empty set.",
-		corpusDirs[0], os.Getenv("TEST_SRCDIR"), os.Getenv("TEST_WORKSPACE"))
+		corpusDirRoots[0].candidates, os.Getenv("TEST_SRCDIR"), os.Getenv("TEST_WORKSPACE"))
 	return ""
 }
 
 func dirExists(p string) bool {
 	fi, err := os.Stat(p)
 	return err == nil && fi.IsDir()
+}
+
+func TestResolveLogicalRoots(t *testing.T) {
+	t.Parallel()
+
+	t.Run("legacy layout", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		for _, rel := range []string{
+			"pkg/relational/sqldriver",
+			"pkg/relational/core/embedded",
+			"pkg/relational/sqltest/core",
+		} {
+			if err := os.MkdirAll(filepath.Join(root, rel), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		dirs, err := resolveCorpusDirs(root)
+		if err != nil {
+			t.Fatalf("resolveCorpusDirs(legacy): %v", err)
+		}
+		want := []string{
+			filepath.Join(root, "pkg/relational/sqldriver"),
+			filepath.Join(root, "pkg/relational/core/embedded"),
+			filepath.Join(root, "pkg/relational/sqltest"),
+			filepath.Join(root, "pkg/relational/sqltest/core"),
+		}
+		if len(dirs) != len(want) {
+			t.Fatalf("dirs = %v, want %v", dirs, want)
+		}
+		for i := range want {
+			if dirs[i] != want[i] {
+				t.Errorf("dirs[%d] = %q, want %q", i, dirs[i], want[i])
+			}
+		}
+	})
+
+	t.Run("future layout", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		for _, rel := range []string{
+			"relational",
+			"internal/relational/embedded",
+			"tests/sql/core",
+		} {
+			if err := os.MkdirAll(filepath.Join(root, rel), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		dirs, err := resolveCorpusDirs(root)
+		if err != nil {
+			t.Fatalf("resolveCorpusDirs(future): %v", err)
+		}
+		want := []string{
+			filepath.Join(root, "relational"),
+			filepath.Join(root, "internal/relational/embedded"),
+			filepath.Join(root, "tests/sql"),
+			filepath.Join(root, "tests/sql/core"),
+		}
+		if len(dirs) != len(want) {
+			t.Fatalf("dirs = %v, want %v", dirs, want)
+		}
+		for i := range want {
+			if dirs[i] != want[i] {
+				t.Errorf("dirs[%d] = %q, want %q", i, dirs[i], want[i])
+			}
+		}
+	})
+
+	t.Run("both layouts present returns union", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		for _, rel := range []string{
+			"pkg/relational/sqldriver",
+			"relational",
+			"pkg/relational/core/embedded",
+			"internal/relational/embedded",
+			"pkg/relational/sqltest/core",
+			"tests/sql/core",
+		} {
+			if err := os.MkdirAll(filepath.Join(root, rel), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		dirs, err := resolveCorpusDirs(root)
+		if err != nil {
+			t.Fatalf("resolveCorpusDirs(both): %v", err)
+		}
+		want := []string{
+			filepath.Join(root, "pkg/relational/sqldriver"),
+			filepath.Join(root, "relational"),
+			filepath.Join(root, "pkg/relational/core/embedded"),
+			filepath.Join(root, "internal/relational/embedded"),
+			filepath.Join(root, "pkg/relational/sqltest"),
+			filepath.Join(root, "pkg/relational/sqltest/core"),
+			filepath.Join(root, "tests/sql"),
+			filepath.Join(root, "tests/sql/core"),
+		}
+		if len(dirs) != len(want) {
+			t.Fatalf("dirs = %v, want %v", dirs, want)
+		}
+		for i := range want {
+			if dirs[i] != want[i] {
+				t.Errorf("dirs[%d] = %q, want %q", i, dirs[i], want[i])
+			}
+		}
+	})
+
+	t.Run("missing root fails loudly", func(t *testing.T) {
+		t.Parallel()
+		empty := t.TempDir()
+		for _, lr := range append(append([]logicalRoot{}, corpusDirRoots...), corpusTreeRoot) {
+			if got, err := resolveLogicalRoots(empty, lr); err == nil {
+				t.Errorf("resolveLogicalRoots(%s) = %q, want error when no candidate exists", lr.name, got)
+			}
+		}
+		if _, err := resolveCorpusDirs(empty); err == nil {
+			t.Fatal("resolveCorpusDirs(empty) succeeded, want loud error")
+		}
+
+		// File instead of directory must also fail loudly.
+		fileRoot := t.TempDir()
+		if err := os.WriteFile(filepath.Join(fileRoot, "relational"), []byte("not a dir"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := resolveLogicalRoots(fileRoot, corpusDirRoots[0]); err == nil {
+			t.Errorf("resolveLogicalRoots(file) = %q, want error when candidate is a file", got)
+		}
+
+		// Missing just one logical root (sqltest) must fail loudly rather than skipping.
+		partial := t.TempDir()
+		for _, rel := range []string{"relational", "internal/relational/embedded"} {
+			if err := os.MkdirAll(filepath.Join(partial, rel), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := resolveCorpusDirs(partial); err == nil {
+			t.Fatal("resolveCorpusDirs(partial) succeeded without sqltest root, want loud error")
+		}
+	})
 }
 
 // TestNoExposedTransactionsRemain is the guard.
@@ -406,17 +607,9 @@ func dirExists(p string) bool {
 func TestNoExposedTransactionsRemain(t *testing.T) {
 	t.Parallel()
 	root := repoRoot(t)
-	dirs := make([]string, len(corpusDirs))
-	for i, d := range corpusDirs {
-		dirs[i] = filepath.Join(root, d)
-	}
-	if err := filepath.WalkDir(filepath.Join(root, corpusTree), func(p string, e fs.DirEntry, err error) error {
-		if err == nil && e.IsDir() {
-			dirs = append(dirs, p)
-		}
-		return err
-	}); err != nil {
-		t.Fatalf("walking %s: %v", corpusTree, err)
+	dirs, err := resolveCorpusDirs(root)
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	sites, filesRead, err := txbudgetcensus.ScanDirs(dirs...)

@@ -22,17 +22,22 @@ type Site struct {
 
 func (s Site) String() string { return s.File + " " + s.Func + " " + s.Callee }
 
-// entryPoints maps each entry point to the package directory that defines it:
-// an unqualified call counts only inside that directory, and a qualified one
-// only through that package's name.
-var entryPoints = map[string]struct{ pkgName, dir string }{
-	"SimplifyValue":               {"values", "pkg/recordlayer/query/plan/cascades/values"},
-	"SimplifyPredicateValue":      {"values", "pkg/recordlayer/query/plan/cascades/values"},
-	"EvaluateConstantComparand":   {"values", "pkg/recordlayer/query/plan/cascades/values"},
-	"EvaluateConstant":            {"values", "pkg/recordlayer/query/plan/cascades/values"},
-	"SimplifyPredicateValues":     {"predicates", "pkg/recordlayer/query/plan/cascades/predicates"},
-	"EvaluatePredicateComparands": {"predicates", "pkg/recordlayer/query/plan/cascades/predicates"},
-	"Simplify":                    {"cascades", "pkg/recordlayer/query/plan/cascades"},
+// entryPoints maps each entry point to the package directory suffix that
+// defines it (under pkg/, internal/, or top-level): an unqualified call counts
+// only inside that directory, and a qualified one only through that package's
+// name.
+var entryPoints = map[string]struct{ pkgName, suffix string }{
+	"SimplifyValue":               {"values", "recordlayer/query/plan/cascades/values"},
+	"SimplifyPredicateValue":      {"values", "recordlayer/query/plan/cascades/values"},
+	"EvaluateConstantComparand":   {"values", "recordlayer/query/plan/cascades/values"},
+	"EvaluateConstant":            {"values", "recordlayer/query/plan/cascades/values"},
+	"SimplifyPredicateValues":     {"predicates", "recordlayer/query/plan/cascades/predicates"},
+	"EvaluatePredicateComparands": {"predicates", "recordlayer/query/plan/cascades/predicates"},
+	"Simplify":                    {"cascades", "recordlayer/query/plan/cascades"},
+}
+
+func inDefiningPkg(dir, suffix string) bool {
+	return dir == "pkg/"+suffix || dir == "internal/"+suffix || dir == suffix
 }
 
 // ScanSource returns the census sites of one non-test Go file. file is its
@@ -77,7 +82,7 @@ func ScanSource(file string, src []byte) ([]Site, error) {
 				return false
 			case *ast.Ident:
 				// An unqualified reference inside the defining package.
-				if ep, ok := entryPoints[n.Name]; ok && dir == ep.dir {
+				if ep, ok := entryPoints[n.Name]; ok && inDefiningPkg(dir, ep.suffix) {
 					add(ep.pkgName + "." + n.Name)
 				}
 			}
@@ -126,10 +131,27 @@ func Sorted(counts map[Site]int) []Site {
 	return keys
 }
 
+var populationRoots = []string{
+	"pkg/",
+	"internal/",
+	"recordlayer/",
+	"relational/",
+}
+
+func inPopulationRoot(file string) bool {
+	for _, root := range populationRoots {
+		if strings.HasPrefix(file, root) {
+			return true
+		}
+	}
+	return false
+}
+
 // InPopulation reports whether a module-relative slash path is a census
-// file: a non-test, non-generated Go file under pkg/.
+// file: a non-test, non-generated Go file under pkg/, internal/, recordlayer/,
+// or relational/.
 func InPopulation(file string) bool {
-	return strings.HasPrefix(file, "pkg/") && strings.HasSuffix(file, ".go") &&
+	return inPopulationRoot(file) && strings.HasSuffix(file, ".go") &&
 		!strings.HasSuffix(file, "_test.go") && !strings.HasSuffix(file, ".pb.go") &&
 		!strings.Contains(file, "/testdata/")
 }
