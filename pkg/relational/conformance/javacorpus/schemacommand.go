@@ -29,7 +29,6 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
-	apiddl "fdb.dev/pkg/relational/api/ddl"
 	"fdb.dev/pkg/relational/conformance/javayamsql"
 	"fdb.dev/pkg/relational/core/ddl"
 	"fdb.dev/pkg/relational/core/embedded"
@@ -495,14 +494,14 @@ func dynamicResolver(files *protoregistry.Files) *protoregistry.Types {
 // step on conn, Java's Command.applyMetadataOperationEmbedded: one transaction
 // on the connection's backing catalog.
 func (r *runner) runSchemaCommand(ctx context.Context, conn *sql.Conn, cmd *javayamsql.Command) error {
-	var op func(apiddl.MetadataOperationsFactory, api.Transaction) error
+	var op func(api.MetadataOperationsFactory, api.Transaction) error
 	switch cmd.Kind {
 	case javayamsql.CommandLoadSchemaTemplate:
 		tmpl, err := schemaTemplateFromLoadCommand(cmd.Payload, r.cfg.WorkingDir)
 		if err != nil {
 			return err
 		}
-		op = func(f apiddl.MetadataOperationsFactory, txn api.Transaction) error {
+		op = func(f api.MetadataOperationsFactory, txn api.Transaction) error {
 			return f.SaveSchemaTemplate(tmpl, *api.NoOptions()).Execute(txn)
 		}
 	case javayamsql.CommandSetSchemaState:
@@ -510,7 +509,7 @@ func (r *runner) runSchemaCommand(ctx context.Context, conn *sql.Conn, cmd *java
 		if err != nil {
 			return err
 		}
-		op = func(f apiddl.MetadataOperationsFactory, txn api.Transaction) error {
+		op = func(f api.MetadataOperationsFactory, txn api.Transaction) error {
 			rl, ok := f.(*ddl.RecordLayerMetadataOperationsFactory)
 			if !ok {
 				return fmt.Errorf("set schema state needs the record-layer metadata factory, got %T", f)

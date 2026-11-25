@@ -1,9 +1,33 @@
-// Package fdbgo is the root of the pure-Go FoundationDB client. It contains no
-// code; the importable packages are the subdirectories — [fdb.dev/pkg/fdbgo/fdb]
-// (the API modeled on Apple's Go binding, which most callers want), fdbgo/client (the
-// lower-level client), fdbgo/transport, fdbgo/wire and fdbgo/tuple.
+// Package fdb provides a pure-Go client for FoundationDB.
 //
-// This doc exists to put one operational fact where a migrator will find it.
+// Its API is modeled on Apple's FoundationDB Go binding
+// (github.com/apple/foundationdb/bindings/go/src/fdb) but requires no
+// C library (libfdb_c). It uses a native Go wire protocol implementation.
+//
+// Basic usage:
+//
+//	fdb.MustAPIVersion(730)
+//	db := fdb.MustOpenDefault()
+//	defer db.Close()
+//
+//	ret, err := db.Transact(func(tr fdb.WritableTransaction) (interface{}, error) {
+//	    tr.Set(fdb.Key("hello"), []byte("world"))
+//	    return tr.Get(fdb.Key("foo")).MustGet(), nil
+//	})
+//
+// Known differences from the Apple binding:
+//   - Transact and Transactor take func(WritableTransaction), not
+//     func(Transaction): an Apple-style closure needs its parameter type changed.
+//   - Error messages: Error.Error() returns "<description> (<code>)", or
+//     "FoundationDB error: <code>" for a code without a description, where the
+//     Apple binding returns "FoundationDB error code <code> (<description>)".
+//     Use Error.Code for programmatic matching.
+//   - Future.Cancel() completes the future with operation_cancelled (1101); the
+//     operation behind it continues, except a watch, which is cancelled.
+//   - As in the Apple binding, methods like Get/GetRange take no context.
+//     TransactCtx and ReadTransactCtx bound the retry loop, backoff and reads
+//     with an explicit context. Transact, ReadTransact and CreateTransaction reads inherit context.Background()
+//     or the WrapDatabaseContext context. SetTimeout and Cancel() also bound transactions.
 //
 // # Retries and timeouts are UNBOUNDED by default — in this client and in libfdb_c
 //
@@ -34,7 +58,7 @@
 // Bootstrap — the initial coordinator connection — is internally bounded here at
 // defaultBootstrapTimeout (60s, fdb/database.go:139-153) whenever the caller
 // supplies no deadline of its own. libfdb_c has no equivalent bound: a C-client
-// open against an unreachable cluster waits indefinitely. So [fdb.OpenDatabase]
+// open against an unreachable cluster waits indefinitely. So [OpenDatabase]
 // fails fast where libfdb_c would not. Only the LIVE database (post-open
 // reconnection, and the transaction retry loop) is unbounded.
 //
@@ -51,8 +75,8 @@
 //   - A retry limit — Transaction.SetRetryLimit or
 //     DatabaseOptions.SetTransactionRetryLimit. Caps retries; the most recent
 //     error escapes once the cap is hit.
-//   - A context deadline — [fdb.Database.TransactCtx] or
-//     [fdb.Database.ReadTransactCtx].
+//   - A context deadline — [Database.TransactCtx] or
+//     [Database.ReadTransactCtx].
 //
 // The context form is Go's EXTRA bound (RFC-090), not a substitute for a
 // libfdb_c mechanism that does not exist. A migrator porting from libfdb_c who
@@ -61,5 +85,5 @@
 // unbounded here.
 //
 // Ordinary databases use context.Background(): bound retries with a timeout, retry limit or TransactCtx/ReadTransactCtx.
-// [fdb.WrapDatabaseContext] instead supplies the inherited context for retries, CreateTransaction reads and snapshots.
-package fdbgo
+// [WrapDatabaseContext] instead supplies the inherited context for retries, CreateTransaction reads and snapshots.
+package fdb

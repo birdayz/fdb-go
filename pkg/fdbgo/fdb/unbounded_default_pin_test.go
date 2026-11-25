@@ -29,7 +29,7 @@ func TestWrappedDatabaseContextReachesTransactionsAndSnapshots(t *testing.T) {
 	}
 }
 
-// The fdb-layer half of the claim the package doc at fdb.dev/pkg/fdbgo makes: the
+// The fdb-layer half of the claim the package doc at fdb.dev/pkg/fdbgo/fdb makes: the
 // no-context Transact / ReadTransact carry NO internal deadline. Together with the
 // client-layer pins (client/unbounded_default_pin_test.go) this fixes the whole
 // documented contract — nothing internal bounds a default transaction, so the caller
@@ -51,7 +51,7 @@ func TestBareTransactHasNoInternalDeadline(t *testing.T) {
 	}
 	if dl, ok := db.d.ctx.Deadline(); ok {
 		t.Fatalf("the no-context Transact path must carry NO internal deadline, got %v.\n"+
-			"The package doc at fdb.dev/pkg/fdbgo tells migrators the default is unbounded "+
+			"The package doc at fdb.dev/pkg/fdbgo/fdb tells migrators the default is unbounded "+
 			"(matching libfdb_c's timeoutInSeconds=0.0 / maxRetries=-1, "+
 			"ReadYourWrites.actor.cpp:2078-2082) and that they must supply a bound. "+
 			"If an internal deadline is added here, update doc.go, key.go and database.go too.", dl)

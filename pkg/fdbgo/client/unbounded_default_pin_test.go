@@ -9,7 +9,7 @@ import (
 	"fdb.dev/pkg/fdbgo/wire"
 )
 
-// The package doc at fdb.dev/pkg/fdbgo makes one central factual claim to migrators:
+// The package doc at fdb.dev/pkg/fdbgo/fdb makes one central factual claim to migrators:
 // a default transaction is UNBOUNDED (no internal timeout, no internal max-retry,
 // matching libfdb_c's timeoutInSeconds=0.0 / maxRetries=-1 at
 // ReadYourWrites.actor.cpp:2078-2082), and ONLY an explicit bound the caller chooses
@@ -55,7 +55,7 @@ func TestDefaultTransactionIsUnbounded(t *testing.T) {
 		t.Fatalf("default (unbounded) transaction stopped retrying at retryCount=%d: %v\n"+
 			"An internal retry cap has been introduced. libfdb_c has none "+
 			"(maxRetries=-1, ReadYourWrites.actor.cpp:2078-2082) and the package doc at "+
-			"fdb.dev/pkg/fdbgo tells migrators this client has none either. "+
+			"fdb.dev/pkg/fdbgo/fdb tells migrators this client has none either. "+
 			"Update the doc, key.go and fdb/database.go together with this change.",
 			tx.retryCount, err)
 	}
@@ -73,7 +73,7 @@ func TestExplicitRetryLimitBounds(t *testing.T) {
 	err := tx.OnError(context.Background(), retryableErr())
 	if err == nil {
 		t.Fatal("SetRetryLimit(3) at retryCount=3 must STOP the retry loop, but OnError granted another retry.\n" +
-			"The package doc at fdb.dev/pkg/fdbgo names SetRetryLimit as a bound a caller may rely on.")
+			"The package doc at fdb.dev/pkg/fdbgo/fdb names SetRetryLimit as a bound a caller may rely on.")
 	}
 	var fe *wire.FDBError
 	if !errors.As(err, &fe) || fe.Code != ErrNotCommitted {
@@ -96,7 +96,7 @@ func TestExplicitTimeoutBounds(t *testing.T) {
 		defer cancel()
 		if dl, ok := ctx.Deadline(); ok {
 			t.Fatalf("a default transaction must put NO deadline on its operations, got %v.\n"+
-				"The package doc at fdb.dev/pkg/fdbgo tells migrators the default is unbounded.", dl)
+				"The package doc at fdb.dev/pkg/fdbgo/fdb tells migrators the default is unbounded.", dl)
 		}
 	})
 
@@ -150,7 +150,7 @@ func TestExplicitContextBounds(t *testing.T) {
 		err := tx.OnError(ctx, retryableErr())
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("a cancelled ctx must stop the retry loop with context.Canceled, got %v.\n"+
-				"The package doc at fdb.dev/pkg/fdbgo names TransactCtx as a bound a caller may rely on.", err)
+				"The package doc at fdb.dev/pkg/fdbgo/fdb names TransactCtx as a bound a caller may rely on.", err)
 		}
 	})
 

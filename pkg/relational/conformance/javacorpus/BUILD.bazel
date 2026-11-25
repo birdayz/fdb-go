@@ -30,7 +30,6 @@ go_library(
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/vectorcodec",
         "//pkg/relational/api",
-        "//pkg/relational/api/ddl",
         "//pkg/relational/conformance/javayamsql",
         "//pkg/relational/conformance/yamsql",
         "//pkg/relational/core/ddl",

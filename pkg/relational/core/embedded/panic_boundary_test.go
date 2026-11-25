@@ -9,7 +9,6 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
-	apiddl "fdb.dev/pkg/relational/api/ddl"
 	"fdb.dev/pkg/relational/internal/simgate"
 )
 
@@ -162,7 +161,7 @@ func TestExportedEntriesRecoverPanics(t *testing.T) {
 			return err
 		},
 		"ApplyMetadataOperation": func(_ *testing.T, c *EmbeddedConnection, _ *simgate.Backend) error {
-			return c.ApplyMetadataOperation(ctx, func(apiddl.MetadataOperationsFactory, api.Transaction) error {
+			return c.ApplyMetadataOperation(ctx, func(api.MetadataOperationsFactory, api.Transaction) error {
 				panic("metadata operation")
 			})
 		},

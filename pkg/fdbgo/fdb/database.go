@@ -373,7 +373,7 @@ func bootstrapContext(ctx context.Context) (context.Context, context.CancelFunc)
 // run until the cluster returns. So against a permanently down cluster a subsequent
 // bare Transact (which uses context.Background()) does not return on its own — bound
 // it with TransactCtx, SetTimeout, or SetRetryLimit, as you would have had to in
-// libfdb_c. See the package doc at fdb.dev/pkg/fdbgo. Use OpenDatabaseFromConfig to
+// libfdb_c. See the package doc at fdb.dev/pkg/fdbgo/fdb. Use OpenDatabaseFromConfig to
 // pass a context for bootstrap itself.
 func OpenDatabase(clusterFile string, opts ...Option) (Database, error) {
 	if apiVersion.Load() == 0 {

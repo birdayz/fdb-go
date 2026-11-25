@@ -29,7 +29,6 @@ import (
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 
-	apiddl "fdb.dev/pkg/relational/api/ddl"
 	"fdb.dev/pkg/relational/core/catalog"
 	"fdb.dev/pkg/relational/core/keyspace"
 	"fdb.dev/pkg/relational/core/metadata"
@@ -1073,7 +1072,7 @@ func New(
 	dbPath string,
 	fdbDB *recordlayer.FDBDatabase,
 	cat *catalog.RecordLayerStoreCatalog,
-	factory apiddl.MetadataOperationsFactory,
+	factory api.MetadataOperationsFactory,
 	ks *keyspace.RelationalKeyspace,
 ) *EmbeddedConnection {
 	sess := session.New(fdbDB, cat, ks, factory)
@@ -1759,7 +1758,8 @@ func (c *EmbeddedConnection) CollectStatistics(
 			&recordlayer.SyntheticRecordTypesNotModeledError{
 				TypeNames: md.SyntheticRecordTypeNames(),
 			},
-			api.ErrCodeUnsupportedOperation, "schema %q", c.sess.Schema)
+			api.ErrCodeUnsupportedOperation, "schema %q", c.sess.Schema,
+		)
 	}
 	if pair, ambiguous := md.AmbiguousDeclaredNames(); ambiguous {
 		// Refuse BEFORE scanning, for the same reason as the synthetic check

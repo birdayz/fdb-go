@@ -22,7 +22,6 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
-	apiddl "fdb.dev/pkg/relational/api/ddl"
 	"fdb.dev/pkg/relational/core/catalog"
 	"fdb.dev/pkg/relational/core/functions"
 	"fdb.dev/pkg/relational/core/metadata"
@@ -37,7 +36,7 @@ import (
 // DDL execution: CREATE / DROP DATABASE / SCHEMA / SCHEMA TEMPLATE +
 // parseTableDefinition / parseIndexDefinition / parseColumnType.
 //
-// Every DDL statement resolves to an apiddl.ConstantAction obtained
+// Every DDL statement resolves to an api.ConstantAction obtained
 // from c.sess.Factory and executed in its own auto-commit
 // transaction via runDDL, which also gates on ensureCatalogInit to
 // make sure the root catalog state is bootstrapped before the
@@ -1260,7 +1259,7 @@ func (c *EmbeddedConnection) Ping(ctx context.Context) (err error) {
 }
 
 // runDDL bootstraps the catalog on first call, then executes action.
-func (c *EmbeddedConnection) runDDL(ctx context.Context, action apiddl.ConstantAction) error {
+func (c *EmbeddedConnection) runDDL(ctx context.Context, action api.ConstantAction) error {
 	if err := c.ensureCatalogInit(ctx); err != nil {
 		return err
 	}
@@ -1280,7 +1279,7 @@ func (c *EmbeddedConnection) runDDL(ctx context.Context, action apiddl.ConstantA
 // yaml-tests Command.applyMetadataOperationEmbedded, which the `load schema
 // template` and `set schema state` commands use to reach the catalog without
 // SQL. The catalog is bootstrapped first, as any DDL on the connection is.
-func (c *EmbeddedConnection) ApplyMetadataOperation(ctx context.Context, op func(factory apiddl.MetadataOperationsFactory, txn api.Transaction) error) (err error) {
+func (c *EmbeddedConnection) ApplyMetadataOperation(ctx context.Context, op func(factory api.MetadataOperationsFactory, txn api.Transaction) error) (err error) {
 	defer c.recoverInto(&err)
 	if c.readOnly {
 		return errReadOnlyOperation("a metadata operation")
