@@ -789,7 +789,7 @@ func TestAbsolutizeFieldTypeNamesResolvesAShadowedCompoundExtendee(t *testing.T)
 // The symbol table is seeded from three sources -- this file's types, its
 // dependencies' types, and every package prefix -- and that seeding is the
 // central production change here. Yet deleting it whole left the entire package
-// GREEN: measured, by no-op'ing addPackage, by dropping the dependency collect,
+// GREEN: measured, by no-op'ing addDeclaredPackage, by dropping the dependency collect,
 // and by dropping both.
 //
 // The reason is a degeneracy that is easy to miss and shows up in most natural
@@ -1326,7 +1326,7 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 // tally is pinned by TestSecondLevelShapesArePairwiseDistinct, so it cannot go
 // stale here the way its two predecessors did. It is not "work" in general:
 //
-//   - Cost inside a single step is invisible. A change making importsOf itself
+//   - Cost inside a single step is invisible. A change making fileImportInfo itself
 //     expensive keeps the step count at 3n+6 and passes here.
 //
 //   - Allocation is invisible. The traversal-only regression allocates ~430x
@@ -1373,14 +1373,14 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 //     planting a panic in each and running the guard, and it is explicitly not
 //     a partition:
 //
-//     importsOf's global-registry arm         ZERO -- every path here is stored
+//     fileImportInfo's global-registry arm    ZERO -- every path here is stored
 //     the level-1 loop's onGlobal arm         ZERO -- same reason
-//     importsOf's malformed-index skip        ZERO -- every index here is valid
+//     fileImportInfo's malformed-index skip   ZERO -- every index here is valid
 //     the emission loop's fullyExposed skip   REACHED, once per walk, via cg_p
 //     the emission loop's empty-package arm   REACHED, once per walk, via cg_n
 //
 //     The three not-found arms (`!ok` in the emission loop, in the union build,
-//     and inside visibleFrom) are also zero here, because every path this
+//     and inside collectVisibleClosure) are also zero here, because every path this
 //     fixture names is declared. Those and the malformed-index skip are
 //     exercised by TestUnionSecondLevelMatchesPerFileSecondLevel's corpus
 //     instead -- the latter by the two boundary descriptors that corpus now
@@ -1418,7 +1418,7 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 // map-lookup shape, so it is blind to it too; and on the traversal-only
 // regression it separates 430x where the step count separates 534x. It is also
 // a PROXY -- it depends on which sink the arm installs and on slices allocated
-// inside importsOf, so a benign pooling change disarms it silently. Two exact
+// inside fileImportInfo, so a benign pooling change disarms it silently. Two exact
 // counters plus a stated gap beats a third inexact one.
 //
 // An earlier version of this arm counted onPackageOnly EMISSIONS and was named
@@ -1426,7 +1426,7 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 // quadratically and still emit linearly, because the final walk deduplicates.
 //
 // The regression this guards is real and severe: the level once called
-// visibleFrom once per visible file, each walk covering the remaining suffix of
+// collectVisibleClosure once per visible file, each walk covering the remaining suffix of
 // a public-import chain, so O(n^2) per file -- and rebuildFileDescriptor runs
 // the whole pass once per dependency, making it O(n^3). A few hundred
 // descriptors then cost seconds, which turns VALID stored metadata into a CPU
@@ -1459,7 +1459,7 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 // B_0 repeated n times, the two leaves, cg_p and cg_q: n+5 entries.
 //
 //	union form     dedups via `seen`, walking the B chain once   -> 3n+6 visits
-//	per-file form  calls visibleFrom once per A_i, re-walking B  -> n^2+2n+6
+//	per-file form  calls collectVisibleClosure once per A_i, re-walking B  -> n^2+2n+6
 //
 // CONTENTION CANNOT MOVE EITHER COUNT, which is a stronger statement than the
 // contention measurement that used to sit here. That figure -- 192/192 both
@@ -1524,7 +1524,7 @@ func buildSecondLevelFixtureOpts(n int, diamond bool) (*descriptorpb.FileDescrip
 		// the same count: moving onVisit after the dedup check (a defect --
 		// the counter stops seeing repeats) and de-duplicating `union`
 		// before the walk (a behaviour-preserving refactor, since
-		// visibleFrom already set-dedups). A guard that cannot tell those
+		// collectVisibleClosure already set-dedups). A guard that cannot tell those
 		// apart must either accuse or excuse, and both are wrong half the
 		// time.
 		//
@@ -1643,7 +1643,7 @@ func buildSecondLevelFixtureOpts(n int, diamond bool) (*descriptorpb.FileDescrip
 //
 // The final walk over the union deduplicates, so a regression that computes
 // a closure PER VISIBLE FILE and still feeds the union -- `union = append(
-// union, visibleFrom(direct)...)` -- traverses the B chain O(n^2) times and
+// union, collectVisibleClosure(direct)...)` -- traverses the B chain O(n^2) times and
 // yet emits only n packages. Measured: that mutation leaves an
 // emission-counting guard reporting exactly 53/103/203 and passing, which
 // is a gate inert on a shape inside its own claim.
@@ -1733,7 +1733,7 @@ func replaySecondLevel(
 		byPath[d.GetName()] = d
 	}
 	// The fixture is entirely STORED, so this mirrors only the byPath arm of
-	// production's importsOf. The global-registry arm runs zero times here --
+	// production's fileImportInfo. The global-registry arm runs zero times here --
 	// see the never-executed-code bullet on the guard above.
 	importsOf := func(path string) (pkg string, direct, public []string, ok bool) {
 		d, found := byPath[path]
@@ -2286,13 +2286,13 @@ var secondLevelSignatures = []struct {
 	{
 		slUnionDedup, secondLevelUnionDedup,
 		"That is the union de-duplicated before the walk -- BEHAVIOUR-PRESERVING, since " +
-			"visibleFrom already set-dedups, and still linear. Nothing is broken; this " +
+			"collectVisibleClosure already set-dedups, and still linear. Nothing is broken; this " +
 			"expectation is simply stale. Re-derive it deliberately.",
 	},
 	{
 		slNoPublic, secondLevelNoPublic,
 		"Emissions have collapsed to a CONSTANT -- one package per DISTINCT union entry and " +
-			"nothing beyond. The public-import recursion in visibleFrom is gone, so the closure " +
+			"nothing beyond. The public-import recursion in collectVisibleClosure is gone, so the closure " +
 			"never extends past a file's direct imports. Java resolves against the recursive " +
 			"public closure; dropping it makes Go refuse metadata Java loads.",
 	},
@@ -2320,7 +2320,7 @@ var secondLevelSignatures = []struct {
 	{
 		slEmissionHoist, secondLevelQuadEmit,
 		"Emissions have gone quadratic while the closure walk has NOT -- visits are exactly " +
-			"pristine. The emission loop is re-running over an already-walked set. addPackage is " +
+			"pristine. The emission loop is re-running over an already-walked set. addDeclaredPackage is " +
 			"idempotent, so no correctness arm can see this.",
 	},
 	{
@@ -2328,9 +2328,9 @@ var secondLevelSignatures = []struct {
 		"Emissions have gone quadratic and so has the closure walk, but not in the per-file " +
 			"pattern -- the emission loop is re-running over the union and re-walking it every " +
 			"time. This is the emission-hoist defect written the way it would actually be " +
-			"written: production's loop reads `for _, q := range visibleFrom(union)`, so " +
+			"written: production's loop reads `for _, q := range collectVisibleClosure(union, ...)`, so " +
 			"wrapping THAT re-evaluates the walk, where lifting it into a variable first is a " +
-			"refactor plus a bug. addPackage is idempotent, so no correctness arm sees the " +
+			"refactor plus a bug. addDeclaredPackage is idempotent, so no correctness arm sees the " +
 			"duplicate emissions.",
 	},
 	{
@@ -2400,7 +2400,7 @@ func secondLevelDeclaredShape(v secondLevelVariant) (secondLevelShape, bool) {
 // most expensive kind of wrong.
 //
 // The misnaming case, by contrast, is cheap and survives: resetting
-// visibleFrom's `seen` memo per entry of `directs` measures (n^2+2n+6, n^2+3)
+// collectVisibleClosure's `seen` memo per entry of `directs` measures (n^2+2n+6, n^2+3)
 // -- 2606/2503 at n=50, byte-identical to slPerFile -- and is told "the single
 // union traversal has been replaced by a per-visible-file one", which is not
 // what happened. The union traversal is intact; the memo is broken. That one
@@ -2644,7 +2644,7 @@ func TestAbsolutizeFieldTypeNamesHidesTypesReachedThroughTheGlobalRegistry(t *te
 // import's package, not merely withhold its types.
 //
 // The sibling arm above pins the withhold half and is structurally blind to
-// this one -- deleting the registry resolution from `importsOf` outright leaves
+// this one -- deleting the registry resolution from `fileImportInfo` outright leaves
 // it green, measured across the whole package. The reason is analytic, not
 // incidental: that fixture puts `main` in `google.protobuf`, so
 // `.google.protobuf` is already in `declared` from the file's own package and
@@ -2744,7 +2744,7 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesReachedThroughTheGlobalRegistry(t *
 // THE GLOBAL BRANCH'S IMPORT ENUMERATION, which both arms above are blind to
 // because they use a LEAF.
 //
-// `importsOf`'s global branch does three separable things: it returns the
+// `fileImportInfo`'s global branch does three separable things: it returns the
 // file's package, it enumerates that file's DIRECT imports into the level-2
 // union, and it selects the PUBLIC subset for the closure walk. Both sibling
 // arms resolve `google/protobuf/descriptor.proto`, which has ZERO imports
@@ -2882,7 +2882,7 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 		for _, v := range visible {
 			// ONE CLOSURE WALK PER VISIBLE FILE -- the quadratic shape. Driving
 			// it through a synthetic file whose imports are v's gives exactly
-			// visibleFrom(v's directs) in the level-1 callbacks.
+			// collectVisibleClosure(v's directs) in the level-1 callbacks.
 			sub := &descriptorpb.FileDescriptorProto{
 				Name:             proto.String("synthetic_" + v.GetName()),
 				Dependency:       v.GetDependency(),
@@ -2973,7 +2973,7 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 			pool = append(pool, f)
 		}
 		// DETERMINISTIC, REACHABLE boundary cases -- one pair per seed, both
-		// placed in main's directs so production's importsOf is called on them
+		// placed in main's directs so production's fileImportInfo is called on them
 		// on every single graph.
 		//
 		// The randomized switch above is a coverage LOTTERY: main takes 1-4 of
@@ -3016,7 +3016,7 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 			main.Dependency = append(main.Dependency,
 				fmt.Sprintf("eq_%d_%d.proto", seed, roll(n)))
 		}
-		// Both boundary files are ALWAYS direct dependencies, so importsOf
+		// Both boundary files are ALWAYS direct dependencies, so fileImportInfo
 		// evaluates their malformed indices on every graph.
 		main.Dependency = append(main.Dependency, atFile.GetName(), belowFile.GetName())
 		return main, pool
@@ -3145,7 +3145,7 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 	// WHAT THIS COUNTS IS REACHABILITY PLUS THE BOUNDARY PROPERTY, and the
 	// second half is not decoration. Being named in main's directs does NOT
 	// entail the guard evaluating anything: the bounds check lives only in the
-	// stored arm of importsOf, so a direct that is absent from `pool` falls
+	// stored arm of fileImportInfo, so a direct that is absent from `pool` falls
 	// through to the registry arm and returns not-found without evaluating an
 	// index at all. An earlier version counted name matches alone and was
 	// satisfied at 500/500 with both sentinels deleted from the pool -- the
@@ -3154,8 +3154,8 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 	//
 	// So each reached sentinel is resolved in `pool` and its index property
 	// checked. Resolved-in-pool AND named-in-directs does entail evaluation:
-	// visibleFrom visits every direct, and the first arrival at a path always
-	// reaches importsOf before `seen` can short-circuit it.
+	// collectVisibleClosure visits every direct, and the first arrival at a path always
+	// reaches fileImportInfo before `seen` can short-circuit it.
 	//
 	// It still does not observe production directly, and does not need to: if
 	// the guard is relaxed the corpus arm dies by PANIC inside the seed loop
@@ -3781,7 +3781,7 @@ func TestSecondLevelDetailsMatchTheirShapes(t *testing.T) {
 		secondLevelDedupMoved:  "dedup check",
 		secondLevelTruncated:   "TRUNCATED",
 		secondLevelUnionDedup:  "BEHAVIOUR-PRESERVING",
-		secondLevelNoPublic:    "public-import recursion in visibleFrom is gone",
+		secondLevelNoPublic:    "public-import recursion in collectVisibleClosure is gone",
 		secondLevelQuadWalk:    "single union traversal has been replaced",
 		secondLevelQuadSink:    "absorbed by the SINK",
 		secondLevelQuadTravers: "final walk then de-duplicates",

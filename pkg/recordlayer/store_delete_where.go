@@ -18,6 +18,11 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
+type deleteWhereIndexAction struct {
+	index  *Index
+	prefix tuple.Tuple
+}
+
 // DeleteRecordsWhere deletes all records whose primary key starts with the
 // given prefix, along with all associated index entries, record versions,
 // and record counts. This is a pure range-clear operation — no scanning.
@@ -49,8 +54,6 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 	store.indexStateView.maintenance.RLock()
 	defer store.indexStateView.maintenance.RUnlock()
 
-	tx := store.context.Transaction()
-
 	// Determine which record types match this prefix.
 	// A record type matches if the prefix length <= its PK column count.
 	matchingTypeNames := store.findMatchingRecordTypes(prefix)
@@ -58,17 +61,42 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 		return fmt.Errorf("deleteRecordsWhere: prefix length %d exceeds all record type PK sizes", len(prefix))
 	}
 
-	// Validate all active indexes and compute their delete prefixes.
-	type indexAction struct {
-		index  *Index
-		prefix tuple.Tuple
+	actions, err := store.planDeleteWhereIndexActions(prefix, matchingTypeNames)
+	if err != nil {
+		return err
 	}
-	var actions []indexAction
+	if err := store.clearDeletedRecordRanges(prefix); err != nil {
+		return err
+	}
 
+	// Clear record counts.
+	tx := store.context.Transaction()
+	countKeyExpr := store.metaData.GetRecordCountKey()
+	if countKeyExpr != nil && !store.isRecordCountDisabled() {
+		countSub := store.subspace.Sub(RecordCountKey)
+		countColSize := countKeyExpr.ColumnSize()
+		if len(prefix) == countColSize {
+			// Delete exact count entry.
+			tx.Clear(fdb.Key(countSub.Pack(prefix)))
+		} else if len(prefix) < countColSize {
+			// Delete range of count entries under this prefix.
+			tx.ClearRange(countSub.Sub(prefix...))
+		}
+		// If prefix > countColSize, the count key is coarser than the
+		// prefix — we can't adjust it. This matches Java which simply
+		// skips when the prefix doesn't align with the count key.
+	}
+
+	return store.applyDeleteWhereIndexActions(actions)
+}
+
+// planDeleteWhereIndexActions validates all active indexes and computes their delete prefixes.
+func (store *FDBRecordStore) planDeleteWhereIndexActions(prefix tuple.Tuple, matchingTypeNames []string) ([]deleteWhereIndexAction, error) {
+	var actions []deleteWhereIndexAction
 	for _, idx := range store.metaData.GetAllIndexes() {
 		state, err := store.readIndexState(idx.Name)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if state.IsDisabled() {
 			continue
@@ -99,67 +127,9 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 			}
 		}
 
-		var (
-			idxPrefix tuple.Tuple
-			// pkOffset is how many leading primary-key columns idxPrefix skips.
-			// The prefix alone does not say: (typeKey, quantity) and (quantity)
-			// are both plausible readings of the same tuple, and only the offset
-			// distinguishes them. The sliding-window check below needs it to know
-			// WHICH primary-key column each element of idxPrefix came from.
-			pkOffset int
-			ok       bool
-		)
-
-		if !isUniversal {
-			if len(indexTypeNames) > 1 && !hasRecordTypeKeyPrefix(idx.RootExpression) {
-				// Multi-type index without RecordTypeKey prefix: can't scope
-				// the clear to a single type. Matches Java's
-				// canDeleteWhereForIndexOnStoredTypes which throws
-				// "Index X applies to more record types than just Y".
-				return &QueryInvalidExpressionError{Message: fmt.Sprintf("deleteRecordsWhere: index %q applies to more record types than just the target; "+
-					"add RecordTypeKey() prefix to enable scoped delete", idx.Name)}
-			}
-
-			if len(indexTypeNames) > 1 {
-				// Multi-type index with RecordTypeKey prefix: scope the clear
-				// to entries for the matching type(s) using the PK prefix.
-				// Matches Java's hasRecordTypePrefix branch in
-				// canDeleteWhereForIndexOnStoredTypes.
-				idxPrefix, ok = computeIndexDeletePrefix(idx, prefix, store.metaData, coveredTypeNames)
-				if !ok {
-					return &QueryInvalidExpressionError{Message: fmt.Sprintf("deleteRecordsWhere: multi-type index %q cannot be cleared with prefix %v", idx.Name, prefix)}
-				}
-			} else {
-				// Single-type index. Clearing ALL of it is correct ONLY when the
-				// delete-where selects the whole record type — Java's
-				// `indexMatcher == null` arm of canDeleteWhereForIndexOnStoredTypes
-				// (FDBRecordStore.java:2050-2051), reached when the delete-where
-				// component is exactly a RecordTypeKeyComparison and the derived
-				// index prefix is empty by construction.
-				//
-				// For any narrower prefix Java instead requires the query to
-				// match a PREFIX of the index's own key expression and THROWS
-				// when it does not. Clearing the whole index there destroys
-				// entries for records that still exist: with PK
-				// (customer_id, order_id) and an index on `total`,
-				// DeleteRecordsWhere((cust1)) would empty `total` for cust2 as
-				// well, leaving their records unindexed and silently missing
-				// from every query served by that index.
-				idxPrefix, pkOffset, ok = computeSingleTypeIndexDeletePrefix(idx, prefix, store.metaData, coveredTypeNames)
-				if !ok {
-					return &QueryInvalidExpressionError{Message: fmt.Sprintf("deleteRecordsWhere: index %q cannot be cleared with prefix %v — "+
-						"the prefix does not match the index's leading key expression columns, so the "+
-						"clear cannot be scoped to the deleted records", idx.Name, prefix)}
-				}
-			}
-		} else {
-			// Universal index: the PK prefix must match leading index
-			// expression columns so we can do a range clear.
-			idxPrefix, ok = computeIndexDeletePrefix(idx, prefix, store.metaData, coveredTypeNames)
-			if !ok {
-				return &QueryInvalidExpressionError{Message: fmt.Sprintf("deleteRecordsWhere: index %q cannot be cleared with prefix %v — "+
-					"leading index expression does not match PK prefix", idx.Name, prefix)}
-			}
+		idxPrefix, pkOffset, err := store.resolveDeleteWhereIndexPrefix(idx, prefix, indexTypeNames, coveredTypeNames)
+		if err != nil {
+			return nil, err
 		}
 
 		// A sliding-window index has a SECOND thing to satisfy, and it is not
@@ -193,9 +163,8 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 		//     queued on the transaction by then, so a caller that commits
 		//     anyway loses the records while the index keeps them.
 		if isSlidingWindowIndex(idx) {
-			if err := checkSlidingWindowDeleteWhere(
-				idx, prefix, idxPrefix, pkOffset, store.metaData, coveredTypeNames); err != nil {
-				return err
+			if err := checkSlidingWindowDeleteWhere(idx, prefix, idxPrefix, pkOffset, store.metaData, coveredTypeNames); err != nil {
+				return nil, err
 			}
 		}
 
@@ -214,7 +183,7 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 		// discovering that before the clear is the whole point.
 		maintainer, mErr := store.getIndexMaintainerForRawAccess(idx)
 		if mErr != nil {
-			return mErr
+			return nil, mErr
 		}
 		// Every maintainer answers. CanDeleteWhere is part of IndexMaintainer,
 		// so there is no "did not implement it" case to fall through — which is
@@ -225,12 +194,72 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 		// the aggregates and TEXT in turn, because "does not implement it" and
 		// "can clear any prefix" are the same answer to a type assertion.
 		if err := maintainer.CanDeleteWhere(idxPrefix); err != nil {
-			return fmt.Errorf("deleteRecordsWhere: %w", err)
+			return nil, fmt.Errorf("deleteRecordsWhere: %w", err)
 		}
 
-		actions = append(actions, indexAction{index: idx, prefix: idxPrefix})
+		actions = append(actions, deleteWhereIndexAction{index: idx, prefix: idxPrefix})
 	}
+	return actions, nil
+}
 
+func (store *FDBRecordStore) resolveDeleteWhereIndexPrefix(idx *Index, prefix tuple.Tuple, indexTypeNames, coveredTypeNames []string) (tuple.Tuple, int, error) {
+	if len(indexTypeNames) == 0 {
+		// Universal index: the PK prefix must match leading index
+		// expression columns so we can do a range clear.
+		idxPrefix, ok := computeIndexDeletePrefix(idx, prefix, store.metaData, coveredTypeNames)
+		if !ok {
+			return nil, 0, &QueryInvalidExpressionError{Message: fmt.Sprintf("deleteRecordsWhere: index %q cannot be cleared with prefix %v — leading index expression does not match PK prefix", idx.Name, prefix)}
+		}
+		return idxPrefix, 0, nil
+	}
+	if len(indexTypeNames) > 1 && !hasRecordTypeKeyPrefix(idx.RootExpression) {
+		// Multi-type index without RecordTypeKey prefix: can't scope
+		// the clear to a single type. Matches Java's
+		// canDeleteWhereForIndexOnStoredTypes which throws
+		// "Index X applies to more record types than just Y".
+		return nil, 0, &QueryInvalidExpressionError{Message: fmt.Sprintf("deleteRecordsWhere: index %q applies to more record types than just the target; add RecordTypeKey() prefix to enable scoped delete", idx.Name)}
+	}
+	if len(indexTypeNames) > 1 {
+		// Multi-type index with RecordTypeKey prefix: scope the clear
+		// to entries for the matching type(s) using the PK prefix.
+		// Matches Java's hasRecordTypePrefix branch in
+		// canDeleteWhereForIndexOnStoredTypes.
+		idxPrefix, ok := computeIndexDeletePrefix(idx, prefix, store.metaData, coveredTypeNames)
+		if !ok {
+			return nil, 0, &QueryInvalidExpressionError{Message: fmt.Sprintf("deleteRecordsWhere: multi-type index %q cannot be cleared with prefix %v", idx.Name, prefix)}
+		}
+		return idxPrefix, 0, nil
+	}
+	// Single-type index. Clearing ALL of it is correct ONLY when the
+	// delete-where selects the whole record type — Java's
+	// `indexMatcher == null` arm of canDeleteWhereForIndexOnStoredTypes
+	// (FDBRecordStore.java:2050-2051), reached when the delete-where
+	// component is exactly a RecordTypeKeyComparison and the derived
+	// index prefix is empty by construction.
+	//
+	// For any narrower prefix Java instead requires the query to
+	// match a PREFIX of the index's own key expression and THROWS
+	// when it does not. Clearing the whole index there destroys
+	// entries for records that still exist: with PK
+	// (customer_id, order_id) and an index on `total`,
+	// DeleteRecordsWhere((cust1)) would empty `total` for cust2 as
+	// well, leaving their records unindexed and silently missing
+	// from every query served by that index.
+	//
+	// pkOffset is how many leading primary-key columns idxPrefix skips.
+	// The prefix alone does not say: (typeKey, quantity) and (quantity)
+	// are both plausible readings of the same tuple, and only the offset
+	// distinguishes them. The sliding-window check needs it to know
+	// WHICH primary-key column each element of idxPrefix came from.
+	idxPrefix, pkOffset, ok := computeSingleTypeIndexDeletePrefix(idx, prefix, store.metaData, coveredTypeNames)
+	if !ok {
+		return nil, 0, &QueryInvalidExpressionError{Message: fmt.Sprintf("deleteRecordsWhere: index %q cannot be cleared with prefix %v — the prefix does not match the index's leading key expression columns, so the clear cannot be scoped to the deleted records", idx.Name, prefix)}
+	}
+	return idxPrefix, pkOffset, nil
+}
+
+func (store *FDBRecordStore) clearDeletedRecordRanges(prefix tuple.Tuple) error {
+	tx := store.context.Transaction()
 	// Records, legacy versions and counts clear Java's subspace(prefix).range(),
 	// which excludes a prefix that extends this one ("a\x00b").
 	recordBegin, recordEnd := store.subspace.Sub(RecordKey).Sub(prefix...).FDBRangeKeys()
@@ -241,47 +270,31 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 	if err != nil {
 		return err
 	}
-	func() {
-		defer finishPhysical()
-		tx.ClearRange(recordRange)
+	defer finishPhysical()
+	tx.ClearRange(recordRange)
 
-		// Clear legacy record versions in the separate RecordVersionKey(8) subspace.
-		// Only the legacy layout stores versions there; in the modern layout versions
-		// are inline (pk+-1) within the RecordKey subspace cleared above. Matches Java's
-		// deleteRecordsWhereAsync: `useOldVersionFormat() && isStoreRecordVersions()`.
-		if store.useOldVersionFormat() && store.metaData.IsStoreRecordVersions() {
-			tx.ClearRange(versionRange)
-		}
-
-		// Remove pending version mutations and local version cache entries for
-		// the cleared ranges. Without this, orphaned SET_VERSIONSTAMPED_VALUE
-		// mutations for deleted records' version keys would still be flushed
-		// at commit. Matches Java's context.clear → removeVersionMutationRange().
-		store.removeVersionDataInRange(recordRange)
-		if store.useOldVersionFormat() {
-			// Pending explicit versions must not resurrect a deleted body, even
-			// when metadata intentionally ignores committed legacy version bytes.
-			store.removeVersionDataInRange(versionRange)
-		}
-	}()
-
-	// Clear record counts.
-	countKeyExpr := store.metaData.GetRecordCountKey()
-	if countKeyExpr != nil && !store.isRecordCountDisabled() {
-		countSub := store.subspace.Sub(RecordCountKey)
-		countColSize := countKeyExpr.ColumnSize()
-		if len(prefix) == countColSize {
-			// Delete exact count entry.
-			tx.Clear(fdb.Key(countSub.Pack(prefix)))
-		} else if len(prefix) < countColSize {
-			// Delete range of count entries under this prefix.
-			tx.ClearRange(countSub.Sub(prefix...))
-		}
-		// If prefix > countColSize, the count key is coarser than the
-		// prefix — we can't adjust it. This matches Java which simply
-		// skips when the prefix doesn't align with the count key.
+	// Clear legacy record versions in the separate RecordVersionKey(8) subspace.
+	// Only the legacy layout stores versions there; in the modern layout versions
+	// are inline (pk+-1) within the RecordKey subspace cleared above. Matches Java's
+	// deleteRecordsWhereAsync: `useOldVersionFormat() && isStoreRecordVersions()`.
+	if store.useOldVersionFormat() && store.metaData.IsStoreRecordVersions() {
+		tx.ClearRange(versionRange)
 	}
 
+	// Remove pending version mutations and local version cache entries for
+	// the cleared ranges. Without this, orphaned SET_VERSIONSTAMPED_VALUE
+	// mutations for deleted records' version keys would still be flushed
+	// at commit. Matches Java's context.clear → removeVersionMutationRange().
+	store.removeVersionDataInRange(recordRange)
+	if store.useOldVersionFormat() {
+		// Pending explicit versions must not resurrect a deleted body, even
+		// when metadata intentionally ignores committed legacy version bytes.
+		store.removeVersionDataInRange(versionRange)
+	}
+	return nil
+}
+
+func (store *FDBRecordStore) applyDeleteWhereIndexActions(actions []deleteWhereIndexAction) error {
 	// Delete index entries via each maintainer.
 	for _, action := range actions {
 		maintainer, mErr := store.getIndexMaintainerForRawAccess(action.index)
@@ -315,7 +328,6 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 		}
 		store.removeVersionDataInRange(idxRange)
 	}
-
 	return nil
 }
 

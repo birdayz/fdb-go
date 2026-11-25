@@ -4045,7 +4045,7 @@ No wire bytes differ.
 
 ### An index over a synthetic record type is refused on load; the target loads it (RFC-257 WS-J)
 
-Java resolves an index's record types among the stored types and also among the joined and unnested (synthetic) types (RecordMetaDataBuilder.java:178-185 collects the synthetic types, :187-219 resolves each index). Go carries synthetic types verbatim and does not model them. So Go refuses an index whose record type is synthetic on load, as an unknown record type ("Unknown record type <name>", `pkg/recordlayer/metadata_proto.go:292-300`). A store whose metadata carries one does not open in Go. This predates RFC-257: the loader before the upgrade refused the same index (`e48f5b496:pkg/recordlayer/metadata_proto.go:285-296`). Synthetic record types are outside the port's scope (CLAUDE.md), and the SQL layer creates none. No wire bytes differ.
+Java resolves an index's record types among the stored types and also among the joined and unnested (synthetic) types (RecordMetaDataBuilder.java:178-185 collects the synthetic types, :187-219 resolves each index). Go carries synthetic types verbatim and does not model them. So Go refuses an index whose record type is synthetic on load, as an unknown record type ("Unknown record type <name>", `pkg/recordlayer/metadata_proto_parse.go`). A store whose metadata carries one does not open in Go. This predates RFC-257: the loader before the upgrade refused the same index (`e48f5b496:pkg/recordlayer/metadata_proto.go:285-296`). Synthetic record types are outside the port's scope (CLAUDE.md), and the SQL layer creates none. No wire bytes differ.
 
 ### DeleteTemplateVersion refuses a version schemas still bind; DROP SCHEMA TEMPLATE does not (RFC-257 WS-J)
 
@@ -4182,7 +4182,7 @@ would have thrown. The call site is `Index.SetSubspaceKey`.
 Java's `Index` constructors take a `@Nonnull` root, and an index built with a null one fails
 Java's meta-data validation with a `NullPointerException`. A Go struct-literal `Index` can have
 no root. `Build` refuses it ("Index X has no root expression", `pkg/recordlayer/metadata.go:969-978`),
-and `indexToProto` refuses to serialize it (`pkg/recordlayer/metadata_proto.go:476-480`). So Go
+and `indexToProto` refuses to serialize it (`pkg/recordlayer/metadata_proto_indexes.go`). So Go
 never stores an index every reader refuses ("Exactly one root must be specified for an index",
 `key_expression_proto.go:148`). The refusal's class and text are Go's, where Java's is an NPE.
 
