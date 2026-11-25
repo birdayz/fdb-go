@@ -1,0 +1,596 @@
+package client
+
+import (
+	"context"
+	"errors"
+	"math"
+	"strings"
+	"testing"
+	"time"
+
+	"fdb.dev/internal/fdbwire"
+)
+
+func deferredCodeOf(err error) int {
+	var fe *wire.FDBError
+	if errors.As(err, &fe) {
+		return fe.Code
+	}
+	return -1
+}
+
+type deferredEntryCase struct {
+	name string
+	run  func(context.Context, *Transaction) error
+}
+
+func deferredEntryCases(key, end []byte) []deferredEntryCase {
+	return []deferredEntryCase{
+		{"read-version", func(ctx context.Context, tx *Transaction) error { _, err := tx.GetReadVersion(ctx); return err }},
+		{"get", func(ctx context.Context, tx *Transaction) error { _, err := tx.Get(ctx, key); return err }},
+		{"snapshot-get", func(ctx context.Context, tx *Transaction) error { _, err := tx.Snapshot().Get(ctx, key); return err }},
+		{"pipelined-get", func(ctx context.Context, tx *Transaction) error { _, _, err := tx.GetPipelined(ctx, key); return err }},
+		{"get-key", func(ctx context.Context, tx *Transaction) error { _, err := tx.GetKey(ctx, key, false, 1); return err }},
+		{"get-range", func(ctx context.Context, tx *Transaction) error {
+			_, _, err := tx.GetRange(ctx, key, end, 10)
+			return err
+		}},
+		{"mapped-range", func(ctx context.Context, tx *Transaction) error {
+			_, _, err := tx.GetMappedRange(ctx, key, end, nil, 10, false)
+			return err
+		}},
+		{"get-range-selectors", func(ctx context.Context, tx *Transaction) error {
+			_, _, err := tx.GetRangeSelectors(ctx, firstGreaterOrEqual(key), firstGreaterOrEqual(end), 10, 0, false)
+			return err
+		}},
+		{"start-get-range-selectors", func(ctx context.Context, tx *Transaction) error {
+			_, _, err := tx.StartGetRangeSelectors(ctx, firstGreaterOrEqual(key), firstGreaterOrEqual(end), 10, 0, false).Get()
+			return err
+		}},
+		{"start-get-range-selectors-local", func(ctx context.Context, tx *Transaction) error {
+			_ = tx.ClearRange(key, end) // admitted, the read would be answered at issue
+			_, _, err := tx.Snapshot().StartGetRangeSelectors(ctx, firstGreaterThan(key), firstGreaterOrEqual(end), 10, 0, false).Get()
+			return err
+		}},
+		{"mapped-special-key", func(ctx context.Context, tx *Transaction) error {
+			_, _, err := tx.GetMappedRange(ctx, []byte("\xff\xff/status/json"), []byte("\xff\xff/status/json\x00"), nil, 10, false)
+			return err
+		}},
+		{"estimated-size", func(ctx context.Context, tx *Transaction) error {
+			_, err := tx.GetEstimatedRangeSizeBytes(ctx, key, end)
+			return err
+		}},
+		{"split-points", func(ctx context.Context, tx *Transaction) error {
+			_, err := tx.GetRangeSplitPoints(ctx, key, end, 100)
+			return err
+		}},
+		{"watch", func(ctx context.Context, tx *Transaction) error {
+			_, _, _, _, _, err := tx.WatchSetup(ctx, key)
+			return err
+		}},
+		{"versionstamp", func(_ context.Context, tx *Transaction) error { _, err := tx.GetVersionstamp(); return err }},
+		{"approximate-size", func(_ context.Context, tx *Transaction) error { _, err := tx.GetApproximateSize(); return err }},
+		{"commit", func(ctx context.Context, tx *Transaction) error { return tx.Commit(ctx) }},
+	}
+}
+
+func TestDeferredErrorOutranksExpiredTimeoutAtReadEntry(t *testing.T) {
+	t.Parallel()
+	key, end := []byte("deferred-timeout"), []byte("deferred-timeout-end")
+	for _, tc := range deferredEntryCases(key, end) {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tx := newTestTx()
+			defer tx.Cancel()
+			tx.SetTimeout(60000)
+			// Literal mutation type 1 is ClearRange, never a legal atomic op.
+			tx.Atomic(MutationType(1), key, []byte("value"))
+			tx.readErrMu.Lock()
+			inc, arm := tx.readLife, tx.timeoutArm
+			tx.readErrMu.Unlock()
+			tx.fireTimeout(arm)
+			if fdbCodeOf(tx.readIncarnationCause(inc)) != 1031 {
+				t.Fatal("timeout precondition was not established")
+			}
+			if err := tc.run(context.Background(), tx); fdbCodeOf(err) != 2018 {
+				t.Fatalf("deferred atomic error with expired timeout: got %v, want 2018", err)
+			}
+		})
+	}
+}
+
+func TestDeferredErrorOutranksCancelAtReadEntry(t *testing.T) {
+	t.Parallel()
+	for _, poisonFirst := range []bool{false, true} {
+		name := "cancel-before-poison"
+		if poisonFirst {
+			name = "poison-before-cancel"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			key, end := []byte(t.Name()), []byte(t.Name()+"\xff")
+			for _, tc := range deferredEntryCases(key, end) {
+				t.Run(tc.name, func(t *testing.T) {
+					t.Parallel()
+					tx := newTestTx()
+					defer tx.Cancel()
+					if !poisonFirst {
+						tx.Cancel()
+					}
+					tx.Atomic(MutationType(1), key, []byte("value"))
+					if poisonFirst {
+						tx.Cancel()
+					}
+					if fdbCodeOf(tx.checkCancelled()) != 1025 {
+						t.Fatal("Cancel precondition was not established")
+					}
+					if _, err := tx.GetApproximateSize(); fdbCodeOf(err) != 2018 {
+						t.Fatalf("deferred error precondition: %v, want 2018", err)
+					}
+					if err := tc.run(context.Background(), tx); fdbCodeOf(err) != 2018 {
+						t.Fatalf("deferred error with Cancel: %v, want 2018", err)
+					}
+				})
+			}
+		})
+	}
+}
+
+// A selector range read is admitted as an exact one: after Cancel, with a
+// cancelled caller, and with both, it fails at entry with the exact read's error.
+func TestSelectorRangeEntryMatchesExactRange(t *testing.T) {
+	t.Parallel()
+	key, end := []byte(t.Name()), []byte(t.Name()+"\xff")
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	exact := func(ctx context.Context, tx *Transaction) error {
+		_, _, err := tx.GetRange(ctx, key, end, 10)
+		return err
+	}
+	var reads []deferredEntryCase
+	for _, tc := range deferredEntryCases(key, end) {
+		if strings.Contains(tc.name, "range-selectors") {
+			reads = append(reads, tc)
+		}
+	}
+	if len(reads) != 3 {
+		t.Fatalf("%d selector read cases, want 3", len(reads))
+	}
+	for _, entry := range []struct {
+		name     string
+		cancelTx bool
+		ctx      context.Context
+		want     func(error) bool
+	}{
+		{"cancel", true, context.Background(), func(err error) bool { return fdbCodeOf(err) == ErrTransactionCancelled }},
+		{"cancelled-caller", false, cancelled, func(err error) bool { return errors.Is(err, context.Canceled) }},
+		{"both", true, cancelled, func(err error) bool { return fdbCodeOf(err) == ErrTransactionCancelled }},
+	} {
+		for _, read := range reads {
+			t.Run(entry.name+"/"+read.name, func(t *testing.T) {
+				t.Parallel()
+				setup := func() *Transaction {
+					tx := newTestTx()
+					if entry.cancelTx {
+						tx.Cancel()
+					}
+					return tx
+				}
+				control := setup()
+				defer control.Cancel()
+				if err := exact(entry.ctx, control); !entry.want(err) {
+					t.Fatalf("precondition: the exact read failed with %v", err)
+				}
+				tx := setup()
+				defer tx.Cancel()
+				if err := read.run(entry.ctx, tx); !entry.want(err) {
+					t.Fatalf("selector read entry: %v, want the exact read's error", err)
+				}
+			})
+		}
+	}
+}
+
+func TestDeferredErrorEntryCaptureSurvivesNestedLease(t *testing.T) {
+	t.Parallel()
+	for _, reacquire := range []bool{false, true} {
+		name := "borrow"
+		if reacquire {
+			name = "reacquire"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			tx := newTestTx()
+			defer tx.Cancel()
+			tx.SetReadVersion(42)
+			ctx, release := tx.opContext(context.Background())
+			defer release()
+			if reacquire {
+				tx.readOperation(ctx).lease.release()
+			}
+			// The admitted operation was clean. A later void-operation error
+			// gates the next operation, not nested work of the admitted one.
+			tx.Atomic(MutationType(1), []byte(t.Name()), []byte("value"))
+			version, err := tx.GetReadVersion(ctx)
+			if err != nil || version != 42 {
+				t.Errorf("late poison rewrote admitted read: version=%d error=%v, want 42/nil", version, err)
+			}
+			if _, err := tx.GetReadVersion(context.Background()); fdbCodeOf(err) != 2018 {
+				t.Fatalf("new operation did not observe deferred error: %v, want 2018", err)
+			}
+		})
+	}
+}
+
+func TestDeferredErrorEntryCaptureDoesNotReadReplacement(t *testing.T) {
+	t.Parallel()
+	for _, oldPoison := range []bool{false, true} {
+		name, want := "clean-old-entry", 1025
+		if oldPoison {
+			name, want = "poisoned-old-entry", 2018
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			tx := newTestTx()
+			defer tx.Cancel()
+			key := []byte(t.Name())
+			if oldPoison {
+				tx.Atomic(MutationType(1), key, []byte("value"))
+			}
+			old, release := tx.opContext(context.Background())
+			release()
+			tx.Reset()
+			tx.Set(key, []byte("replacement"))
+			tx.SetReadYourWritesDisable()
+			if _, err := tx.GetApproximateSize(); fdbCodeOf(err) != 2000 {
+				t.Fatalf("replacement poison precondition: %v, want 2000", err)
+			}
+			if _, err := tx.GetReadVersion(old); fdbCodeOf(err) != want {
+				t.Fatalf("old entry outcome changed after replacement: %v, want %d", err, want)
+			}
+			if _, err := tx.GetReadVersion(context.Background()); fdbCodeOf(err) != 2000 {
+				t.Fatalf("new entry lost replacement failure: %v, want 2000", err)
+			}
+		})
+	}
+}
+
+// TestDeferredError_BadAtomicGatesReads pins the single-slot deferred-error model
+// (RFC-175 E2): in libfdb_c a bad Atomic op-code throws on the network thread into
+// ISingleThreadTransaction::deferredError, and EVERY subsequent future-returning op
+// re-throws it via checkDeferredError (ThreadSafeTransaction.cpp: get :431, getKey
+// :441, getReadVersion :421, commit :669, getApproximateSize :715) — reads are
+// poisoned, not just Commit, and the transaction stays alive-but-poisoned (a second
+// Commit returns the same 2018, never "transaction not active") until reset.
+// Revert-proof: gating only Commit (the pre-E2 shape) reds every read assertion here.
+func TestDeferredError_BadAtomicGatesReads(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	prefix := t.Name() + "_"
+	k := []byte(prefix + "k")
+
+	tx := db.CreateTransaction()
+	tx.Atomic(MutClearRange, k, []byte("v")) // op-code 1 — NOT an atomic op → deferred 2018
+
+	if _, err := tx.Get(ctx, k); deferredCodeOf(err) != ErrInvalidMutationType {
+		t.Fatalf("Get after bad Atomic: want 2018, got %v", err)
+	}
+	if _, _, err := tx.GetRange(ctx, k, append(k, 0xff), 10); deferredCodeOf(err) != ErrInvalidMutationType {
+		t.Fatalf("GetRange after bad Atomic: want 2018, got %v", err)
+	}
+	if _, err := tx.GetReadVersion(ctx); deferredCodeOf(err) != ErrInvalidMutationType {
+		t.Fatalf("GetReadVersion after bad Atomic: want 2018, got %v", err)
+	}
+	if _, err := tx.GetApproximateSize(); deferredCodeOf(err) != ErrInvalidMutationType {
+		t.Fatalf("GetApproximateSize after bad Atomic: want 2018, got %v", err)
+	}
+	if _, err := tx.GetVersionstamp(); deferredCodeOf(err) != ErrInvalidMutationType {
+		t.Fatalf("GetVersionstamp after bad Atomic: want 2018, got %v", err)
+	}
+	if err := tx.Commit(ctx); deferredCodeOf(err) != ErrInvalidMutationType {
+		t.Fatalf("Commit after bad Atomic: want 2018, got %v", err)
+	}
+	// Poisoned-but-alive: the SECOND commit surfaces the SAME deferred error (C++
+	// re-throws deferredError until reset) — NOT "transaction not active".
+	if err := tx.Commit(ctx); deferredCodeOf(err) != ErrInvalidMutationType {
+		t.Fatalf("second Commit after bad Atomic: want 2018 again, got %v", err)
+	}
+	// OnError(2018) is non-retryable: it returns the error and does NOT reset the txn.
+	if err := tx.OnError(ctx, &wire.FDBError{Code: ErrInvalidMutationType}); deferredCodeOf(err) != ErrInvalidMutationType {
+		t.Fatalf("OnError(2018): want 2018 back (non-retryable), got %v", err)
+	}
+	// Reset clears the slot (C++ resetRyow, ReadYourWrites.actor.cpp:2719): the handle
+	// is fully usable again.
+	tx.Reset()
+	tx.Set(k, []byte("v"))
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("Commit after Reset: %v", err)
+	}
+	got, err := db.Transact(ctx, func(tx *Transaction) (any, error) { return tx.Get(ctx, k) })
+	if err != nil || string(got.([]byte)) != "v" {
+		t.Fatalf("read-back after Reset: got %v / %v, want \"v\"", got, err)
+	}
+}
+
+// TestSetRYWDisable_PoisonDoesNotApplyOption pins the C++ throw-before-assign order:
+// RYW setOptionImpl throws client_invalid_operation BEFORE options.readYourWritesDisabled
+// is set (ReadYourWrites.actor.cpp:2534-2542), so a poisoning disable leaves the option
+// UNAPPLIED (and via the ensureReadVersion gate, a Watch on the poisoned txn surfaces the
+// deferred 2000 — not watches_disabled 1034, which would require the option to be live).
+func TestSetRYWDisable_PoisonDoesNotApplyOption(t *testing.T) {
+	t.Parallel()
+
+	// Poisoning call: option NOT applied.
+	tx := newTestTx()
+	tx.hadRead.Store(true)
+	tx.SetReadYourWritesDisable()
+	if e := tx.deferredErr.Load(); e == nil || e.Code != 2000 {
+		t.Fatalf("poisoning disable: want deferred 2000, got %v", e)
+	}
+	if tx.rywDisabled {
+		t.Fatal("poisoning disable must NOT apply rywDisabled (C++ throws before assigning)")
+	}
+
+	// Clean call: option applied, no poison.
+	tx2 := newTestTx()
+	tx2.SetReadYourWritesDisable()
+	if e := tx2.deferredErr.Load(); e != nil {
+		t.Fatalf("clean disable must not poison, got %v", e)
+	}
+	if !tx2.rywDisabled {
+		t.Fatal("clean disable must apply rywDisabled")
+	}
+
+	// Clean-then-poisoning: the first (valid) application SURVIVES the second call's
+	// poison — C++ applied the option on call 1; call 2 only records the error.
+	tx3 := newTestTx()
+	tx3.SetReadYourWritesDisable()
+	tx3.hadRead.Store(true)
+	tx3.SetReadYourWritesDisable()
+	if !tx3.rywDisabled {
+		t.Fatal("re-disable poison must not UNDO the earlier valid application")
+	}
+	if e := tx3.deferredErr.Load(); e == nil || e.Code != 2000 {
+		t.Fatalf("re-disable after a read must poison, got %v", e)
+	}
+}
+
+// TestDeferredError_FirstWinsAcrossSources pins the ONE-slot property: C++ has a single
+// ISingleThreadTransaction::deferredError shared by every source, and doOnMainThreadVoid
+// never overwrites it — so whichever of {bad Atomic, poisoning RYW-disable} happens FIRST
+// is what every gate surfaces, in both orders.
+func TestDeferredError_FirstWinsAcrossSources(t *testing.T) {
+	t.Parallel()
+
+	// Bad Atomic first → 2018 wins; the later poisoning disable is a no-op on the slot.
+	tx := newTestTx()
+	tx.Atomic(MutClearRange, []byte("k"), []byte("v"))
+	tx.hadRead.Store(true)
+	tx.SetReadYourWritesDisable()
+	if e := tx.deferredErr.Load(); e == nil || e.Code != ErrInvalidMutationType {
+		t.Fatalf("bad-Atomic-then-disable: want 2018 (first wins), got %v", e)
+	}
+
+	// Poisoning disable first → 2000 wins; the later bad Atomic is a no-op on the slot.
+	tx2 := newTestTx()
+	tx2.hadRead.Store(true)
+	tx2.SetReadYourWritesDisable()
+	tx2.Atomic(MutClearRange, []byte("k"), []byte("v"))
+	if e := tx2.deferredErr.Load(); e == nil || e.Code != 2000 {
+		t.Fatalf("disable-then-bad-Atomic: want 2000 (first wins), got %v", e)
+	}
+}
+
+// TestWatch_DeferredErrorBeatsWatchesDisabled pins the C++ watch gate order: the
+// deferred error is checked at the ThreadSafeTransaction::watch lambda (:654) BEFORE
+// RYW::watch's options.readYourWritesDisabled throw (ReadYourWrites.actor.cpp:2448-2449).
+// A cleanly-RYW-disabled txn that then records a deferred error (bad Atomic op-code)
+// must surface the stored 2018 from Watch — not watches_disabled (1034).
+func TestWatch_DeferredErrorBeatsWatchesDisabled(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	db := openTestDB(t, ctx)
+	defer db.Close()
+	k := []byte(t.Name() + "_k")
+
+	tx := db.CreateTransaction()
+	tx.SetReadYourWritesDisable()            // clean (pre-op) → the option applies
+	tx.Atomic(MutClearRange, k, []byte("v")) // deferred 2018
+	if err := tx.Watch(ctx, k); deferredCodeOf(err) != ErrInvalidMutationType {
+		t.Fatalf("Watch on RYW-disabled + poisoned txn: want 2018 (deferred beats 1034), got %v", err)
+	}
+
+	// Control: the same disabled txn WITHOUT a deferred error still gets 1034.
+	tx2 := db.CreateTransaction()
+	tx2.SetReadYourWritesDisable()
+	if err := tx2.Watch(ctx, k); deferredCodeOf(err) != 1034 {
+		t.Fatalf("Watch on RYW-disabled txn: want watches_disabled (1034), got %v", err)
+	}
+}
+
+func TestMappedRangeSpecialKeyOutranksLifetimeWithoutDeferredError(t *testing.T) {
+	t.Parallel()
+	for _, terminal := range []string{"cancel", "timeout"} {
+		t.Run(terminal, func(t *testing.T) {
+			t.Parallel()
+			tx := newTestTx()
+			defer tx.Cancel()
+			if terminal == "cancel" {
+				tx.Cancel()
+			} else {
+				tx.SetTimeout(60000)
+				tx.readErrMu.Lock()
+				arm := tx.timeoutArm
+				tx.readErrMu.Unlock()
+				tx.fireTimeout(arm)
+			}
+			if tx.checkCancelled() == nil {
+				t.Fatal("terminal precondition not established")
+			}
+			_, _, err := tx.GetMappedRange(context.Background(), []byte("\xff\xff/status/json"), []byte("\xff\xff/status/json\x00"), nil, 10, false)
+			if fdbCodeOf(err) != 2000 {
+				t.Fatalf("special-key rejection must precede %s: got %v, want 2000", terminal, err)
+			}
+			want := 1025
+			if terminal == "timeout" {
+				want = 1031
+			}
+			_, _, err = tx.GetMappedRange(context.Background(), []byte("a"), []byte("b"), nil, 10, false)
+			if fdbCodeOf(err) != want {
+				t.Fatalf("ordinary mapped read lost %s: got %v, want %d", terminal, err, want)
+			}
+		})
+	}
+}
+
+func TestMappedRangeDeferredEntryDoesNotSampleLaterPoison(t *testing.T) {
+	t.Parallel()
+	for _, reacquire := range []bool{false, true} {
+		name := "borrow"
+		if reacquire {
+			name = "reacquire"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			tx := newTestTx()
+			defer tx.Cancel()
+			tx.SetReadVersion(42)
+			ctx, release := tx.opContext(context.Background())
+			defer release()
+			if reacquire {
+				tx.readOperation(ctx).lease.release()
+			}
+			key := []byte(t.Name())
+			tx.Atomic(MutationType(1), key, []byte("value"))
+			if rows, more, err := tx.GetMappedRange(ctx, key, key, nil, 10, false); err != nil || len(rows) != 0 || more {
+				t.Fatalf("clean admitted ordinary entry lost empty-range result: rows=%v more=%v err=%v", rows, more, err)
+			}
+			begin, end := []byte("\xff\xff/status/json"), []byte("\xff\xff/status/json\x00")
+			if _, _, err := tx.GetMappedRange(ctx, begin, end, nil, 10, false); fdbCodeOf(err) != 2000 {
+				t.Fatalf("clean admitted entry sampled later poison: got %v, want special-key 2000", err)
+			}
+			if _, _, err := tx.GetMappedRange(context.Background(), begin, end, nil, 10, false); fdbCodeOf(err) != 2018 {
+				t.Fatalf("new entry lost deferred error: got %v, want 2018", err)
+			}
+			if _, _, err := tx.GetMappedRange(context.Background(), key, key, nil, 10, false); fdbCodeOf(err) != 2018 {
+				t.Fatalf("new ordinary entry lost deferred error: got %v, want 2018", err)
+			}
+		})
+	}
+}
+
+func TestMappedRangeDeferredEntryDoesNotReadReplacement(t *testing.T) {
+	t.Parallel()
+	for _, oldPoison := range []bool{false, true} {
+		name, want := "clean-old-entry", 2000
+		if oldPoison {
+			name, want = "poisoned-old-entry", 2018
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			tx := newTestTx()
+			defer tx.Cancel()
+			key := []byte(t.Name())
+			if oldPoison {
+				tx.Atomic(MutationType(1), key, []byte("value"))
+			}
+			old, release := tx.opContext(context.Background())
+			release()
+			tx.Reset()
+			// An invalid atomic op on a system key records 2004 before checking
+			// the op code, distinct from both the old 2018 and special-key 2000.
+			tx.Atomic(MutationType(1), []byte("\xff/replacement-poison"), []byte("value"))
+			if _, err := tx.GetApproximateSize(); fdbCodeOf(err) != 2004 {
+				t.Fatalf("replacement poison precondition: got %v, want 2004", err)
+			}
+			begin, end := []byte("\xff\xff/status/json"), []byte("\xff\xff/status/json\x00")
+			if _, _, err := tx.GetMappedRange(old, begin, end, nil, 10, false); fdbCodeOf(err) != want {
+				t.Fatalf("old entry outcome changed after reset: got %v, want %d", err, want)
+			}
+			if _, _, err := tx.GetMappedRange(context.Background(), begin, end, nil, 10, false); fdbCodeOf(err) != 2004 {
+				t.Fatalf("new entry lost replacement failure: got %v, want 2004", err)
+			}
+			ordinaryWant := 1025
+			if oldPoison {
+				ordinaryWant = 2018
+			}
+			if _, _, err := tx.GetMappedRange(old, key, key, nil, 10, false); fdbCodeOf(err) != ordinaryWant {
+				t.Fatalf("old ordinary entry changed after reset: got %v, want %d", err, ordinaryWant)
+			}
+			if _, _, err := tx.GetMappedRange(context.Background(), key, key, nil, 10, false); fdbCodeOf(err) != 2004 {
+				t.Fatalf("new ordinary entry lost replacement failure: got %v, want 2004", err)
+			}
+		})
+	}
+}
+
+// TestSetTimeout_OutOfRangePoisons pins RYW setOption(TIMEOUT): extractIntOption(value,
+// 0, INT_MAX) throws invalid_option_value (2006) into deferredError before the timeout
+// is applied, so every later op fails 2006; a poisoned transaction skips the option.
+func TestSetTimeout_OutOfRangePoisons(t *testing.T) {
+	t.Parallel()
+	for _, ms := range []int64{-1, math.MaxInt32 + 1, math.MaxInt64} {
+		tx := newTestTx()
+		tx.SetTimeout(500)
+		deadline := tx.deadlineNs.Load()
+		tx.SetTimeout(ms)
+		if e := tx.deferredErr.Load(); e == nil || e.Code != 2006 {
+			t.Fatalf("SetTimeout(%d): want deferred 2006, got %v", ms, e)
+		}
+		if tx.timeoutNs.Load() != int64(500*time.Millisecond) || tx.deadlineNs.Load() != deadline {
+			t.Fatalf("SetTimeout(%d) changed the applied timeout to %v", ms, time.Duration(tx.timeoutNs.Load()))
+		}
+	}
+	for _, ms := range []int64{0, 1, math.MaxInt32} {
+		tx := newTestTx()
+		tx.SetTimeout(ms)
+		if e := tx.deferredErr.Load(); e != nil {
+			t.Fatalf("SetTimeout(%d) poisoned: %v", ms, e)
+		}
+		if tx.timeoutNs.Load() != int64(time.Duration(ms)*time.Millisecond) {
+			t.Fatalf("SetTimeout(%d) not applied", ms)
+		}
+	}
+	tx := newTestTx()
+	tx.deferredErr.Store(&wire.FDBError{Code: ErrInvalidMutationType})
+	tx.SetTimeout(500)
+	if tx.timeoutNs.Load() != 0 || tx.deferredErr.Load().Code != ErrInvalidMutationType {
+		t.Fatal("a poisoned transaction applied a timeout or lost its first error")
+	}
+}
+
+// TestSetTimeout_OutOfRangeFailsEveryOp is the libfdb_c behaviour end to end: the
+// option call succeeds, every later read and the commit fail 2006, Reset clears it.
+func TestSetTimeout_OutOfRangeFailsEveryOp(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+	k := []byte(t.Name() + "_k")
+
+	tx := db.CreateTransaction()
+	tx.SetTimeout(math.MaxInt32 + 1)
+	if _, err := tx.Get(ctx, k); deferredCodeOf(err) != 2006 {
+		t.Fatalf("Get after SetTimeout(INT_MAX+1): want 2006, got %v", err)
+	}
+	tx.Set(k, []byte("v"))
+	if err := tx.Commit(ctx); deferredCodeOf(err) != 2006 {
+		t.Fatalf("Commit after SetTimeout(INT_MAX+1): want 2006, got %v", err)
+	}
+	tx.Reset()
+	tx.SetTimeout(math.MaxInt32)
+	tx.Set(k, []byte("v"))
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("Commit after Reset with SetTimeout(INT_MAX): %v", err)
+	}
+}

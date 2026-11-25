@@ -1,0 +1,84 @@
+package client
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"fdb.dev/internal/fdbwire"
+)
+
+// TestCommit_RYWPoisonBeatsTimeout pins the RFC-059 precedence point: a transaction
+// poisoned by SetReadYourWritesDisable-after-an-op AND past its timeout must report
+// client_invalid_operation (2000), NOT transaction_timed_out (1031). Reads check the poison
+// before the timeout, and libfdb_c's checkDeferredError runs before any commit logic, so the
+// Commit gate must out-rank the recorded timeout. White-box: the poison check returns before any DB
+// interaction, so no container is needed and it is deterministic (deadline set in the past, no
+// sleep).
+func TestCommit_RYWPoisonBeatsTimeout(t *testing.T) {
+	t.Parallel()
+	tx := &Transaction{}
+	tx.state.Store(int32(txStateActive))
+	// Expired at arm, so 1031 is recorded; the option must precede the poison,
+	// which makes later options no-ops.
+	tx.creationTime = time.Now().Add(-time.Hour)
+	tx.SetTimeout(1)
+	tx.deferredErr.Store(&wire.FDBError{Code: 2000})
+
+	err := tx.Commit(context.Background())
+	var fe *wire.FDBError
+	if !errors.As(err, &fe) || fe.Code != 2000 {
+		t.Fatalf("poisoned + timed-out Commit: want client_invalid_operation (2000), got %v", err)
+	}
+}
+
+// TestAddGetKeyConflictRange_RYWDisabledFullSpan pins the RFC-058 full-span rule: when RYW is
+// disabled, GetKey resolves against STORAGE only (Transaction.GetKey uses tx.getKey, not
+// the RYW walk), so the local write-map did NOT satisfy the read — the read-conflict must be the
+// FULL base↔resolved span, NOT filtered through the bypassed write-map. Filtering would
+// subtract a local Set/Clear segment and MISS a conflict from a concurrent insert into that
+// gap (an unsafe under-conflict).
+//
+// White-box because this is not differential-testable: libfdb_c rejects reading a range that
+// overlaps a locally-written key under RYW-disabled with client_invalid_operation (2000), so
+// the under-conflict is unreachable via the legal API. (That go does not itself raise 2000 is
+// a separate option-semantics divergence tracked under TODO item 3.)
+func TestAddGetKeyConflictRange_RYWDisabledFullSpan(t *testing.T) {
+	t.Parallel()
+
+	// getKey(firstGreaterThan("a")) resolved to "z" → span [keyAfter("a"), keyAfter("z")) =
+	// ["a\x00", "z\x00"). A local INDEPENDENT write sits at "c", inside that span.
+	wantBegin := keyAfterBytes([]byte("a"))
+	wantEnd := keyAfterBytes([]byte("z"))
+
+	// RYW DISABLED → full span, "c" NOT subtracted.
+	txDisabled := &Transaction{txOptions: txOptions{rywDisabled: true}}
+	txDisabled.ryw.set([]byte("c"), []byte("v"))
+	txDisabled.addGetKeyConflictRange([]byte("a"), true, 1, []byte("z"))
+	disabled := txDisabled.readConflictRanges()
+	if len(disabled) != 1 {
+		t.Fatalf("rywDisabled: want 1 full-span conflict, got %d: %v", len(disabled), disabled)
+	}
+	if !bytes.Equal(disabled[0].Begin, wantBegin) || !bytes.Equal(disabled[0].End, wantEnd) {
+		t.Fatalf("rywDisabled span: got [%q,%q) want [%q,%q)",
+			disabled[0].Begin, disabled[0].End, wantBegin, wantEnd)
+	}
+
+	// CONTRAST — RYW ENABLED → the same independent write at "c" IS filtered out
+	// (updateConflictMap subtracts INDEPENDENT writes), so no conflict range covers "c".
+	txEnabled := &Transaction{}
+	txEnabled.ryw.set([]byte("c"), []byte("v"))
+	txEnabled.addGetKeyConflictRange([]byte("a"), true, 1, []byte("z"))
+	enabled := txEnabled.readConflictRanges()
+	if len(enabled) == 0 {
+		t.Fatalf("RYW-enabled: expected unmodified-gap conflicts, got none")
+	}
+	for _, r := range enabled {
+		if bytes.Compare(r.Begin, []byte("c")) <= 0 && bytes.Compare([]byte("c"), r.End) < 0 {
+			t.Fatalf("RYW-enabled: independent write \"c\" must be filtered out of the conflict, "+
+				"but it is covered by [%q,%q)", r.Begin, r.End)
+		}
+	}
+}

@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/internal/fdbgo/client"
 	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/directory"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"

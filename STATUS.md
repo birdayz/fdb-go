@@ -62,7 +62,7 @@ planned for v0.3.0; each has a mitigation where one exists.
   every extended seed, race or active-fuzz configuration.
 - `conformance/` tests shared record-store data with Java;
   `pkg/relational/conformance/` tests SQL behavior;
-  `pkg/fdbgo/bench/` contains client differentials against libfdb_c.
+  `bench/fdbgo/` contains client differentials against libfdb_c.
   A passing case establishes its tested scope, not universal parity.
 - [CI](https://github.com/birdayz/fdb-go/actions/workflows/ci.yml) and its artifacts
   are evidence for their **exact commit and executed lanes**. A badge alone does

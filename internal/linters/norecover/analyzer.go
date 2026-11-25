@@ -33,15 +33,15 @@ import (
 // CI if the doc and this allowlist diverge — RFC-134 "keep panic-audit.md current").
 var Allowlist = map[string]int{
 	// client / fdb facade: Transact closure + goroutine + Must* backstops
-	"pkg/fdbgo/client/panicbackstop.go": 1,
-	"pkg/fdbgo/client/database.go":      2,
-	"pkg/fdbgo/client/grv.go":           1,
-	"pkg/fdbgo/client/native_commit.go": 1,
-	"pkg/fdbgo/transport/conn.go":       2,
-	"pkg/fdbgo/fdb/panic.go":            1,
-	"pkg/fdbgo/fdb/transaction.go":      1,
+	"internal/fdbgo/client/panicbackstop.go": 1,
+	"internal/fdbgo/client/database.go":      2,
+	"internal/fdbgo/client/grv.go":           1,
+	"internal/fdbgo/client/native_commit.go": 1,
+	"internal/fdbgo/transport/conn.go":       2,
+	"pkg/fdbgo/fdb/panic.go":                 1,
+	"pkg/fdbgo/fdb/transaction.go":           1,
 	// libfdbc cgo backend — analyzed only under `cgo && libfdbc`; 1 real recover (backend.go:354).
-	"pkg/fdbgo/libfdbc/backend.go": 1,
+	"internal/fdbclient/libfdbc/backend.go": 1,
 	// SQL engine: parse / connection / driver boundaries
 	"pkg/relational/core/parser/parser.go":       4,
 	"pkg/relational/core/embedded/connection.go": 2,

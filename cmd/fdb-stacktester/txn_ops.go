@@ -5,7 +5,7 @@ package main
 import (
 	"context"
 
-	"fdb.dev/pkg/fdbgo/wire"
+	"fdb.dev/internal/fdbwire"
 )
 
 func (sm *StackMachine) executeTxnOp(ctx context.Context, idx int, baseOp string, _, isSnapshot bool) (bool, error) {

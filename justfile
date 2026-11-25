@@ -115,7 +115,7 @@ build:
 # Bazel schedules tests in command-line order and has no priority knob, so a
 # 5-10 minute target listed by label order starts minutes late and becomes the
 # tail. Ordering only; a stale entry is harmless.
-test_full_first := "//conformance:rfc257_oracle_test //pkg/relational/conformance/factorycorpus/full:full_test //conformance:rfc257_guardiann_java_test //conformance:conformance_probes_test //conformance:conformance_test //pkg/fdbgo/client:client_test //pkg/relational/conformance/factory:factory_test //conformance:conformance_corpora_test //pkg/recordlayer:million_record_test //internal/recordlayer/chaos:chaos_test"
+test_full_first := "//conformance:rfc257_oracle_test //pkg/relational/conformance/factorycorpus/full:full_test //conformance:rfc257_guardiann_java_test //conformance:conformance_probes_test //conformance:conformance_test //internal/fdbgo/client:client_test //pkg/relational/conformance/factory:factory_test //conformance:conformance_corpora_test //pkg/recordlayer:million_record_test //internal/recordlayer/chaos:chaos_test"
 
 # Standard edit/commit loop: unit tests and bounded integration tests, with nogo.
 # Heavy suites are tagged test-full (or conformance_java/stress/manual).
@@ -307,7 +307,7 @@ bench-ci:
     # benches produce output. Track exit codes manually.
     set -uo pipefail
     rm -f bench-raw.txt bench-results.txt
-    bazelisk build //pkg/recordlayer:recordlayer_test //pkg/fdbgo/wire/types:types_test //pkg/recordlayer/query/plan/cascades:cascades_test //pkg/recordlayer/query/plan/cascades/expressions:expressions_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/keyspace:keyspace_test //pkg/relational/api:api_test //pkg/simfdb/hunt/sqlhunt:sqlhunt_test
+    bazelisk build //pkg/recordlayer:recordlayer_test //internal/fdbwire/types:types_test //pkg/recordlayer/query/plan/cascades:cascades_test //pkg/recordlayer/query/plan/cascades/expressions:expressions_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/keyspace:keyspace_test //pkg/relational/api:api_test //pkg/simfdb/hunt/sqlhunt:sqlhunt_test
     BAZEL_BIN=$(bazelisk info bazel-bin)
     fail_count=0
     {
@@ -323,8 +323,8 @@ bench-ci:
             echo "!!! recordlayer_test bench binary exited with $rc (124 = timeout)"
             fail_count=$((fail_count + 1))
         fi
-        echo "=== Running benchmarks: //pkg/fdbgo/wire/types:types_test ==="
-        timeout 60 "$BAZEL_BIN/pkg/fdbgo/wire/types/types_test_/types_test" \
+        echo "=== Running benchmarks: //internal/fdbwire/types:types_test ==="
+        timeout 60 "$BAZEL_BIN/internal/fdbwire/types/types_test_/types_test" \
             -test.run='^$' \
             -test.bench=. \
             -test.benchmem \
@@ -466,13 +466,13 @@ generate-wire-types:
     set -euo pipefail
     bazelisk build //cmd/fdb-schema-extract:generate_wire_types
     BAZEL_BIN=$(bazelisk info bazel-bin)
-    rm -f pkg/fdbgo/wire/types/*_generated.go
-    tar xf "$BAZEL_BIN/cmd/fdb-schema-extract/wire_types.tar" -C pkg/fdbgo/wire/types/ --strip-components=1
+    rm -f internal/fdbwire/types/*_generated.go
+    tar xf "$BAZEL_BIN/cmd/fdb-schema-extract/wire_types.tar" -C internal/fdbwire/types/ --strip-components=1
     # The emitter writes compact Go; the committed files are gofmt'ed. Without
     # this step every regen shows pure-formatting churn.
-    gofmt -w pkg/fdbgo/wire/types/*_generated.go
+    gofmt -w internal/fdbwire/types/*_generated.go
     just gazelle
-    echo "Generated: $(ls pkg/fdbgo/wire/types/*_generated.go | wc -l) files"
+    echo "Generated: $(ls internal/fdbwire/types/*_generated.go | wc -l) files"
 
 # Run FDB binding tester (stack machine conformance via Bazel + testcontainers).
 binding-test:
@@ -527,7 +527,7 @@ coverage:
 # never thrashes (and is never thrashed by) the normal `just test` cache — the race cache
 # stays warm, so re-runs are fast instead of a full instrumented recompile each time.
 race:
-    bazelisk --output_base={{race_base}} test //pkg/fdbgo/client:client_test --@rules_go//go/config:race --test_timeout=300
+    bazelisk --output_base={{race_base}} test //internal/fdbgo/client:client_test --@rules_go//go/config:race --test_timeout=300
 
 # Run all tests with race detector. Dedicated output_base (see `race`). First run on a
 # cold race cache recompiles instrumented (~3 min); subsequent runs are warm.
@@ -553,7 +553,7 @@ race:
 # run_sql / yamsql / fault-inject specs split out of conformance_test into
 # conformance_corpora_test are raced wherever conformance_test is.
 race-all:
-    bazelisk --output_base={{race_base}} test //pkg/fdbgo/client:client_test //pkg/recordlayer:recordlayer_test //pkg/fdbgo/fdb:fdb_test //internal/recordlayer/chaos:chaos_test //conformance:conformance_test //conformance:conformance_corpora_test //pkg/recordlayer/query/plan/cascades/... --@rules_go//go/config:race --test_timeout=900
+    bazelisk --output_base={{race_base}} test //internal/fdbgo/client:client_test //pkg/recordlayer:recordlayer_test //pkg/fdbgo/fdb:fdb_test //internal/recordlayer/chaos:chaos_test //conformance:conformance_test //conformance:conformance_corpora_test //pkg/recordlayer/query/plan/cascades/... --@rules_go//go/config:race --test_timeout=900
 
 # Extended verification: full suite + race detector + bounded fuzz smoke.
 # No CI lane runs active fuzzing; this recipe's smoke is the only routine one.
@@ -586,7 +586,7 @@ verify:
     "$FUZZRUN" -label FuzzReadJCEKSEntries -- bazelisk run //pkg/recordlayer:recordlayer_test -- \
         -test.run='^$' -test.fuzz='^FuzzReadJCEKSEntries$' \
         -test.fuzzcachedir=/tmp/fuzz_verify -test.fuzztime=10s
-    "$FUZZRUN" -label FuzzRYWCache -- bazelisk run //pkg/fdbgo/client:client_test -- \
+    "$FUZZRUN" -label FuzzRYWCache -- bazelisk run //internal/fdbgo/client:client_test -- \
         -test.run='^$' -test.fuzz='^FuzzRYWCache$' \
         -test.fuzzcachedir=/tmp/fuzz_verify -test.fuzztime=10s
     echo "=== All verification passed ==="

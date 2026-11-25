@@ -94,10 +94,10 @@ sequential, on a host also running other work.
 Reproduce (needs Docker):
 
 ```sh
-bazelisk build //pkg/fdbgo/bench:bench_test //pkg/recordlayer:recordlayer_test \
+bazelisk build //bench/fdbgo:fdbgo_test //pkg/recordlayer:recordlayer_test \
   //pkg/relational/sqltest/metamorphic:metamorphic_test
 flags='-test.run=^$ -test.benchtime=3s -test.count=5 -test.benchmem'
-bazel-bin/pkg/fdbgo/bench/bench_test_/bench_test $flags \
+bazel-bin/bench/fdbgo/fdbgo_test_/fdbgo_test $flags \
   -test.bench='^Benchmark(Get|Set|GetRange)$'
 bazel-bin/pkg/recordlayer/recordlayer_test_/recordlayer_test $flags --ginkgo.skip='.*' \
   -test.bench='^Benchmark(SaveRecord|LoadRecord|SaveRecordWithIndex|ScanIndexRecords)$'

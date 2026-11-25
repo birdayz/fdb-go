@@ -637,7 +637,7 @@ func dumpRange(t *testing.T, db fdb.BackendDatabase, prefix string) []string {
 // this arm stays green. It did exactly that: 2210-from-GetSlice was modelled as unreachable on
 // both, on a source argument about Apple's binding rewriting the streaming mode, and both were
 // wrong together. The cgo arm that settles it is
-// pkg/fdbgo/bench:TestDifferential_ExactModeWithoutLimits.
+// bench/fdbgo:TestDifferential_ExactModeWithoutLimits.
 func TestDifferential_RangeOptionValidation(t *testing.T) {
 	t.Parallel()
 	real := getRealDB(t)

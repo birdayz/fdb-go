@@ -8,7 +8,7 @@
 //     protoscope, protovalue, tupleordering, vectorcodec).
 //   - L1/L2 (fdbClientRoots): FDB client, wire, transport, and low-level
 //     libraries (pkg/fdbgo, internal/fdbgo, internal/fdbwire,
-//     internal/fdbclient, pkg/internal/fdbclient, fdb).
+//     internal/fdbclient, fdb).
 //   - L3: Record Layer storage (recordLayerRoots excluding L0 leaves, L4
 //     plannerRoots, and L5 executorRoots).
 //   - L4 (plannerRoots): Record Layer pure query planner (recordlayer/query/plan).
@@ -103,19 +103,19 @@ var (
 		"fdb.dev/internal/fdbgo",
 		"fdb.dev/internal/fdbwire",
 		"fdb.dev/internal/fdbclient",
-		"fdb.dev/pkg/internal/fdbclient",
 		"fdb.dev/fdb",
 	}
 	coreRuntimeRoots = []string{
 		"fdb.dev/pkg/fdbgo/fdb",
-		"fdb.dev/pkg/fdbgo/client",
-		"fdb.dev/pkg/fdbgo/transport",
-		"fdb.dev/pkg/fdbgo/wire",
 		"fdb.dev/pkg/fdbgo/fdbmetrics",
 		"fdb.dev/internal/fdbgo/fdb",
 		"fdb.dev/internal/fdbgo/client",
 		"fdb.dev/internal/fdbgo/transport",
-		"fdb.dev/internal/fdbgo/wire",
+		"fdb.dev/internal/fdbgo/diag",
+		"fdb.dev/internal/fdbgo/hrtimer",
+		"fdb.dev/internal/fdbgo/sendqueue",
+		"fdb.dev/internal/fdbwire",
+		"fdb.dev/internal/fdbclient",
 		"fdb.dev/internal/fdbgo/fdbmetrics",
 		"fdb.dev/fdb/fdb",
 		"fdb.dev/fdb/client",
@@ -196,6 +196,7 @@ var (
 		"fdb.dev/recordlayer/vectorcodec",
 	}
 	repoTopDirs = []string{
+		"bench/",
 		"cmd/",
 		"conformance/",
 		"example/",
@@ -207,6 +208,7 @@ var (
 		"pkg/",
 		"recordlayer/",
 		"relational/",
+		"tests/",
 		"tools/",
 	}
 )
@@ -227,7 +229,7 @@ var (
 		"pkg/recordlayer/query/plan/plans/new_plans_test.go":                          {"fdb.dev/pkg/fdbgo/fdb/tuple": true},
 	}
 	r3Allow = map[string]map[string]bool{
-		"pkg/fdbgo/libfdbc/differential_test.go": {"fdb.dev/pkg/recordlayer": true},
+		"internal/fdbclient/libfdbc/differential_test.go": {"fdb.dev/pkg/recordlayer": true},
 	}
 	r4Allow = map[string]map[string]bool{}
 	// r5Allow freezes the exact set of normalized packages allowed to import
@@ -235,13 +237,13 @@ var (
 	r5Allow = map[string]bool{
 		"fdb.dev/cmd/bench-report":                           true,
 		"fdb.dev/conformance":                                true,
+		"fdb.dev/internal/fdbgo/client":                      true,
+		"fdb.dev/internal/fdbgo/transport":                   true,
 		"fdb.dev/internal/recordlayer/query/executor":        true,
 		"fdb.dev/internal/recordlayer/rtree":                 true,
-		"fdb.dev/pkg/fdbgo/client":                           true,
 		"fdb.dev/pkg/fdbgo/fdb":                              true,
 		"fdb.dev/pkg/fdbgo/fdb/subspace":                     true,
 		"fdb.dev/pkg/fdbgo/fdb/tuple":                        true,
-		"fdb.dev/pkg/fdbgo/transport":                        true,
 		"fdb.dev/pkg/recordlayer":                            true,
 		"fdb.dev/pkg/recordlayer/keyspace":                   true,
 		"fdb.dev/pkg/recordlayer/query/plan/cascades/values": true,
@@ -261,11 +263,11 @@ var (
 	// r6Allow freezes the 5 existing fdbClientRoots production files that
 	// import go.opentelemetry.io/otel/trace.
 	r6Allow = map[string]map[string]bool{
-		"pkg/fdbgo/client/database.go":    {"go.opentelemetry.io/otel/trace": true},
-		"pkg/fdbgo/client/options.go":     {"go.opentelemetry.io/otel/trace": true},
-		"pkg/fdbgo/client/span.go":        {"go.opentelemetry.io/otel/trace": true},
-		"pkg/fdbgo/client/transaction.go": {"go.opentelemetry.io/otel/trace": true},
-		"pkg/fdbgo/fdb/database.go":       {"go.opentelemetry.io/otel/trace": true},
+		"internal/fdbgo/client/database.go":    {"go.opentelemetry.io/otel/trace": true},
+		"internal/fdbgo/client/options.go":     {"go.opentelemetry.io/otel/trace": true},
+		"internal/fdbgo/client/span.go":        {"go.opentelemetry.io/otel/trace": true},
+		"internal/fdbgo/client/transaction.go": {"go.opentelemetry.io/otel/trace": true},
+		"pkg/fdbgo/fdb/database.go":            {"go.opentelemetry.io/otel/trace": true},
 	}
 	// l0Allow freezes the single existing upward dependency from an L0 leaf.
 	l0Allow = map[string]map[string]bool{

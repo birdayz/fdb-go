@@ -77,10 +77,10 @@ go_test(
     deps = [
         "//gen",
         "//gen/demopb",
+        "//internal/fdbwire",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
-        "//pkg/fdbgo/wire",
         "//pkg/recordlayer",
         "//pkg/recordlayer/metadatapb",
         "//pkg/relational/api",

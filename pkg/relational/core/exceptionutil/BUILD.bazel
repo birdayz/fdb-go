@@ -6,8 +6,8 @@ go_library(
     importpath = "fdb.dev/pkg/relational/core/exceptionutil",
     visibility = ["//visibility:public"],
     deps = [
+        "//internal/fdbwire",
         "//pkg/fdbgo/fdb",
-        "//pkg/fdbgo/wire",
         "//pkg/relational/api",
     ],
 )

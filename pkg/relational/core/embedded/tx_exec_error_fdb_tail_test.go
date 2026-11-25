@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/internal/fdbwire"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/relational/api"
 )
 

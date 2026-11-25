@@ -62,10 +62,10 @@ import (
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/fdbwire"
 	"fdb.dev/internal/recordlayer/query/executor"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
-	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/api"

@@ -37,11 +37,11 @@ go_test(
     deps = [
         "//internal/dst",
         "//internal/dstwire",
+        "//internal/fdbclient",
         "//internal/recordlayer/query/executor",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
-        "//pkg/internal/fdbclient",
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/rlmetrics",

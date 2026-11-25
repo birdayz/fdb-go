@@ -40,7 +40,7 @@ func cModeIndex(mode StreamingMode) int { return int(mode) - 1 }
 
 // ModeTargetBytes exposes the per-fetch byte target for a streaming mode and iteration.
 // Exported for the same reason BatchSize is: the batching rule must have ONE definition. The
-// cross-client differential in pkg/fdbgo/libfdbc drives the production range path with it to
+// cross-client differential in internal/fdbclient/libfdbc drives the production range path with it to
 // compare this client's division against libfdb_c's, and a second copy of the table there
 // would let the two drift while still agreeing with each other.
 func ModeTargetBytes(mode StreamingMode, iteration int) (int, error) {

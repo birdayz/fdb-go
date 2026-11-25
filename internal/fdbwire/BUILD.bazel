@@ -1,0 +1,32 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+package(default_visibility = ["//:__subpackages__"])
+
+go_library(
+    name = "fdbwire",
+    srcs = [
+        "decode_budget.go",
+        "reader.go",
+        "serializer.go",
+        "vtable.go",
+        "writer.go",
+        "writer_direct.go",
+    ],
+    importpath = "fdb.dev/internal/fdbwire",
+    visibility = ["//:__subpackages__"],
+)
+
+go_test(
+    name = "fdbwire_test",
+    srcs = [
+        "decode_budget_test.go",
+        "fdberror_test.go",
+        "reader_bug_test.go",
+        "reader_fuzz_test.go",
+        "reader_reuse_test.go",
+        "reader_vector_count_test.go",
+        "vtable_test.go",
+        "writer_vtable_offset_test.go",
+    ],
+    embed = [":fdbwire"],
+)

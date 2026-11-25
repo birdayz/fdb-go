@@ -12,11 +12,11 @@ go_library(
     importpath = "fdb.dev/pkg/relational/sqldriver",
     visibility = ["//visibility:public"],
     deps = [
+        "//internal/fdbclient",
+        "//internal/fdbgo/client",
         "//internal/unicode15",
-        "//pkg/fdbgo/client",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
-        "//pkg/internal/fdbclient",
         "//pkg/recordlayer",
         "//pkg/relational/api",
         "//pkg/relational/core/catalog",
@@ -92,8 +92,8 @@ go_test(
     deps = [
         "//internal/dst",
         "//internal/dstwire",
+        "//internal/fdbgo/client",
         "//internal/recordlayer/keystoretest",
-        "//pkg/fdbgo/client",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",

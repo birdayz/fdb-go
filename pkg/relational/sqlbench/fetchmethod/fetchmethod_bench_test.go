@@ -20,8 +20,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"fdb.dev/internal/fdbclient"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
-	"fdb.dev/pkg/internal/fdbclient"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"

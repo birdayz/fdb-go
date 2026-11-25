@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	"fdb.dev/pkg/fdbgo/client"
-	"fdb.dev/pkg/fdbgo/wire"
+	"fdb.dev/internal/fdbgo/client"
+	"fdb.dev/internal/fdbwire"
 )
 
 // TestDatabaseDefaults_ConcurrentSetAndApply pins the concurrency contract the

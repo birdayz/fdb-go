@@ -26,10 +26,10 @@ go_library(
     importpath = "fdb.dev/pkg/fdbgo/fdb",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/fdbgo/client",
-        "//pkg/fdbgo/internal/diag",
-        "//pkg/fdbgo/wire",
-        "//pkg/fdbgo/wire/types",
+        "//internal/fdbgo/client",
+        "//internal/fdbgo/diag",
+        "//internal/fdbwire",
+        "//internal/fdbwire/types",
         "@io_opentelemetry_go_otel_trace//:trace",
     ],
 )
@@ -105,13 +105,13 @@ go_test(
     ],
     tags = ["resources:memory:1400"],
     deps = [
-        "//pkg/fdbgo/client",
+        "//internal/fdbgo/client",
+        "//internal/fdbgo/transport",
+        "//internal/fdbwire",
+        "//internal/fdbwire/types",
         "//pkg/fdbgo/fdb/directory",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
-        "//pkg/fdbgo/transport",
-        "//pkg/fdbgo/wire",
-        "//pkg/fdbgo/wire/types",
         "//pkg/testcontainers/foundationdb",
         "@com_github_onsi_gomega//:gomega",
         "@io_opentelemetry_go_otel_trace//:trace",
@@ -123,7 +123,7 @@ go_test(
     name = "get_issue_unit_test",
     srcs = ["get_issue_unit_test.go"],
     embed = [":fdb"],
-    deps = ["//pkg/fdbgo/client"],
+    deps = ["//internal/fdbgo/client"],
 )
 
 # gazelle:exclude range_result_alloc_unit_test.go
@@ -131,5 +131,5 @@ go_test(
     name = "range_result_alloc_unit_test",
     srcs = ["range_result_alloc_unit_test.go"],
     embed = [":fdb"],
-    deps = ["//pkg/fdbgo/client"],
+    deps = ["//internal/fdbgo/client"],
 )

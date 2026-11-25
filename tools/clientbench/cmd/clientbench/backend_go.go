@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/internal/fdbgo/client"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/tools/clientbench/internal/bench"
 )

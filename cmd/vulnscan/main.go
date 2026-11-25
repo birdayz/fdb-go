@@ -105,6 +105,7 @@ var excludePrefixes = []string{
 	"fdb.dev/internal/recordlayer/keystoretest",
 	"fdb.dev/tests",
 	"fdb.dev/bench",
+	"fdb.dev/internal/fdbgo/bindingtest",
 }
 
 func excluded(pkg string) bool {

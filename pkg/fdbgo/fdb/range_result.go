@@ -6,7 +6,7 @@ import (
 	"math"
 	"unsafe"
 
-	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/internal/fdbgo/client"
 )
 
 // RangeMaterializationLimitError is returned by a GetRange that would materialize

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"fdb.dev/pkg/internal/fdbclient"
+	"fdb.dev/internal/fdbclient"
 )
 
 // TestClientKnobValidation pins Java's FDBDatabaseFactoryImpl.validateKnobValue

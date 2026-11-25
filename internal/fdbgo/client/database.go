@@ -1,0 +1,1311 @@
+// Package client implements the FDB client transaction lifecycle.
+// This is the Go equivalent of NativeAPI.actor.cpp.
+package client
+
+import (
+	"bufio"
+	"context"
+	"crypto/tls"
+	"fmt"
+	"log/slog"
+	"os"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	oteltrace "go.opentelemetry.io/otel/trace"
+
+	"fdb.dev/internal/fdbgo/sendqueue"
+	"fdb.dev/internal/fdbgo/transport"
+	"fdb.dev/internal/fdbwire"
+)
+
+// ClusterFile represents an fdb.cluster file.
+// Format: "<description>:<id>@<host>:<port>[,<host>:<port>...]"
+type ClusterFile struct {
+	Description  string
+	ID           string
+	Coordinators []string // "host:port" addresses for TCP connection (":tls" suffix stripped)
+	// UseTLS is true when the coordinators carry the ":tls" suffix (FDB
+	// FLAG_TLS). A real cluster is uniformly TLS, so this is a single flag;
+	// mixed TLS/non-TLS coordinators are rejected at parse time.
+	UseTLS bool
+}
+
+// ParseClusterFile reads and parses an fdb.cluster file.
+func ParseClusterFile(path string) (*ClusterFile, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open cluster file: %w", err)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		return ParseClusterString(line)
+	}
+	return nil, fmt.Errorf("empty cluster file: %s", path)
+}
+
+// trimConnString strips all whitespace and `#…`-to-end-of-line comments from a connection
+// string, matching C++ ClusterConnectionString's trim() (MonitorLeader.actor.cpp:34-50), which
+// runs before parsing. This makes "desc : id @ host:port" and inline `# comments` parse
+// identically to libfdb_c/Java instead of being rejected.
+func trimConnString(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '#' {
+			// Skip the comment up to and including the next newline (the outer i++ consumes it).
+			i++
+			for i < len(s) && s[i] != '\n' && s[i] != '\r' {
+				i++
+			}
+		} else if c != ' ' && c != '\n' && c != '\r' && c != '\t' {
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// ParseClusterString parses a cluster connection string.
+func ParseClusterString(s string) (*ClusterFile, error) {
+	// Format: "description:id@host1:port1,host2:port2,host3:port3"
+	s = trimConnString(s) // C++ trim() before parsing (MonitorLeader.actor.cpp:34)
+	atIdx := strings.LastIndex(s, "@")
+	if atIdx < 0 {
+		return nil, fmt.Errorf("invalid cluster string: missing '@': %q", s)
+	}
+
+	prefix := s[:atIdx]
+	addrs := s[atIdx+1:]
+	if addrs == "" {
+		return nil, fmt.Errorf("no coordinators in cluster string: %q", s)
+	}
+
+	colonIdx := strings.Index(prefix, ":")
+	if colonIdx < 0 {
+		return nil, fmt.Errorf("invalid cluster string: missing ':' in prefix: %q", s)
+	}
+
+	cf := &ClusterFile{
+		Description: prefix[:colonIdx],
+		ID:          prefix[colonIdx+1:],
+	}
+
+	// Validate the description:id key to C++'s parseKey acceptance set so a
+	// persisted cluster key is always parseable by a C++/Java client (RFC-111 §8).
+	if !validClusterKeyPart(cf.Description, true) || !validClusterKeyPart(cf.ID, false) {
+		return nil, fmt.Errorf("invalid cluster key %q: description must be [a-zA-Z0-9_], id must be [a-zA-Z0-9]", prefix)
+	}
+
+	tlsCount := 0
+	seenCoords := make(map[string]bool)
+	for _, addr := range strings.Split(addrs, ",") {
+		addr = strings.TrimSpace(addr)
+		if addr == "" {
+			// C++ NetworkAddress::parse("") throws connection_string_invalid on an empty
+			// coordinator segment — a leading/trailing/double comma, or a comma left dangling
+			// after trim() removed an inline comment (e.g. "h:4500, # disabled" → "h:4500,").
+			// (MonitorLeader.actor.cpp:92.) Do NOT silently skip it — that accepts strings C++
+			// rejects, breaking cross-tool cluster-file compatibility.
+			return nil, fmt.Errorf("empty coordinator in cluster string: %q", s)
+		}
+		// Faithful to C++ NetworkAddress::parse (flow/network.cpp): strip a
+		// trailing "(fromHostname)" marker, then a trailing ":tls" — but only
+		// when the string is longer than 4 chars (a bare ":tls" is not a flag,
+		// it's an invalid address). The remaining text is host:port.
+		addr = strings.TrimSuffix(addr, "(fromHostname)")
+		isTLS := false
+		if len(addr) > 4 && strings.HasSuffix(addr, ":tls") {
+			isTLS = true
+			addr = addr[:len(addr)-len(":tls")]
+		}
+		// Validate the token to C++'s acceptance set: a coordinator is valid iff
+		// isHostname(tok) || NetworkAddress::parse(tok) (RFC-111 §8). This is
+		// stricter than a bare net.SplitHostPort (which accepts foo:abc, :1234,
+		// 1.2.3.4.5:port, ...): the cluster file is cross-tool shared state, and the
+		// re-watch persist path must never write a token a C++/Java client can't
+		// parse.
+		if !isHostnameToken(addr) && !isNetworkAddressToken(addr) {
+			return nil, fmt.Errorf("invalid coordinator address %q", addr)
+		}
+		// Reject duplicate coordinators — C++ ClusterConnectionString throws
+		// connection_string_invalid on a duplicate address/hostname
+		// (MonitorLeader.actor.cpp:109/117). Dedup on the CANONICAL parsed form
+		// (coordDedupKey) so normalized duplicates (leading-zero port,
+		// compressed-vs-expanded IPv6) collide the way C++'s NetworkAddress set
+		// does — keeping Go-accept a subset of C++-accept so the persist path never
+		// writes a dup-coordinator file C++/Java can't read.
+		dedupKey := coordDedupKey(addr)
+		if seenCoords[dedupKey] {
+			return nil, fmt.Errorf("duplicate coordinator address %q", addr)
+		}
+		seenCoords[dedupKey] = true
+		cf.Coordinators = append(cf.Coordinators, addr)
+		if isTLS {
+			tlsCount++
+		}
+	}
+
+	// A real cluster is uniformly TLS or uniformly plaintext. A database-level
+	// flag can't represent a mix, so reject it rather than silently dialing some
+	// coordinators plaintext.
+	if tlsCount > 0 && tlsCount != len(cf.Coordinators) {
+		return nil, fmt.Errorf("mixed TLS and non-TLS coordinators not supported: %q", s)
+	}
+	cf.UseTLS = tlsCount > 0
+
+	return cf, nil
+}
+
+// DBInfo holds the current cluster topology.
+// Received from coordinators via OpenDatabaseCoordRequest.
+type DBInfo struct {
+	ID            transport.UID
+	GRVProxies    []ProxyInfo
+	CommitProxies []ProxyInfo
+	ClusterID     transport.UID
+	// Forward, when non-empty, is the serialized new ClusterConnectionString the
+	// coordinators handed back instead of proxies — the C++ ClientDBInfo.forward
+	// field (CommitProxyInterface.h:132). Set during a `coordinators auto`/`change`
+	// rotation; the proxies on a forward reply are ignored (RFC-111 Path A).
+	Forward string
+
+	// Epoch is the cluster epoch these proxies belong to. It rides the SNAPSHOT
+	// rather than living beside it, so a caller that loads the proxies gets the
+	// epoch of the very set it is about to talk to — the epoch a request binds
+	// to cannot describe a proxy set the request did not use, because there is
+	// no second load in which the two could disagree.
+	//
+	// Set exclusively by installProxySet, which also owns the ordering against
+	// grvCache's fence word. See the coherence rule documented there.
+	Epoch int64
+}
+
+// ProxyInfo holds addressing info for a proxy.
+type ProxyInfo struct {
+	Address string // "host:port"
+	Token   transport.UID
+}
+
+// TransactionDefaults holds database-level defaults applied to every new
+// transaction. Matches C++ DatabaseContext::transactionDefaults.
+type TransactionDefaults struct {
+	Timeout        int64 // FDB_DB_OPTION_TRANSACTION_TIMEOUT (ms), 0 = disabled
+	RetryLimit     int   // FDB_DB_OPTION_TRANSACTION_RETRY_LIMIT
+	MaxRetryDelay  int64 // FDB_DB_OPTION_TRANSACTION_MAX_RETRY_DELAY (ms), 0 = use default
+	SizeLimit      int64 // FDB_DB_OPTION_TRANSACTION_SIZE_LIMIT; 0/unset → 10 MB default (C++ has no "disabled" state)
+	HasRetryLimit  bool
+	ReadSystemKeys bool // read \xff/* keys by default
+	AccessSysKeys  bool // read+write \xff/* keys by default
+	// ReportConflictingKeys is FDB_DB_OPTION_TRANSACTION_REPORT_CONFLICTING_KEYS (702).
+	ReportConflictingKeys bool
+}
+
+// database is the per-database state container (unexported).
+// Matches C++ DatabaseContext in fdbclient/DatabaseContext.h.
+// All per-database state lives here: topology, caches, connections, batchers.
+//
+// Safe for concurrent use by multiple goroutines after creation.
+type database struct {
+	// connRecord owns the mutable active connection string (coordinator set +
+	// cluster key) and its on-disk persistence — the C++ IClusterConnectionRecord
+	// analog. Coordinator rotations are followed here (RFC-111): a forwarded
+	// connection string (Path A) or an externally-rewritten cluster file (Path B)
+	// swaps the active set so a `coordinators auto`/`change` no longer strands us.
+	connRecord *connRecord
+	// forwardHops bounds a pathological coordinator-forward cycle (Go-only
+	// divergence — C++ has no hop bound; RFC-111 §5). Written only by the single
+	// active follow path: bootstrap first, then exclusively the topology-monitor
+	// goroutine (the two never run concurrently, so no atomic is needed). Reset to
+	// 0 on every successful non-forward connect.
+	forwardHops int
+	// bootstrapCoordinator answered bootstrap; the monitor long-polls it first so
+	// a lagging coordinator cannot reinstall older info. Set before the monitor starts.
+	bootstrapCoordinator string
+	dialFn               transport.DialFunc // nil = net.DialTimeout
+	dialOpts             []transport.DialOption
+	// tlsConfig is the single source of truth for transport security: non-nil =>
+	// every connection (coordinators, proxies, storage) is dialed over TLS with
+	// this *tls.Config; nil => plaintext. Set at open from WithTLSConfig (which
+	// wins) or the cluster ":tls" suffix + FDB_TLS_* resolution.
+	tlsConfig *tls.Config
+
+	// Topology: atomically swapped on coordinator refresh.
+	// C++: clientInfo (AsyncVar<ClientDBInfo>)
+	dbInfo atomic.Pointer[DBInfo]
+	// installMu serialises installProxySet's read-modify-write of dbInfo. The
+	// sequence loads dbInfo, derives the next epoch from it, possibly bumps the
+	// fence, and stores — and atomic.Pointer gives atomicity of each step, never
+	// of the sequence. A lost update here is not a stale read that self-corrects
+	// on the next poll: the losing writer publishes DBInfo.Epoch=N after the fence
+	// moved to N+1 with clusterSwitchPending ALREADY consumed, so nothing will
+	// ever bump DBInfo.Epoch again. Every request from then on binds an epoch the
+	// fence has passed, every publication is refused, and the refresher pins at
+	// its 1ms clamp — permanently, on a handle that merely polled topology twice.
+	//
+	// Production has one writer today (bootstrap completes before topologyMonitor
+	// starts), but that is an emergent property of the startup order rather than
+	// anything this function can rely on, and tests already call it from a second
+	// goroutine while the monitor is live.
+	installMu sync.Mutex
+	hooks     atomic.Pointer[dbTestHooks]
+	// Broadcast: closed when proxy list changes, then replaced with a fresh channel.
+	// Commit monitors this to detect mid-commit proxy changes (C++ onProxiesChanged).
+	proxiesChangedMu sync.Mutex
+	proxiesChanged   chan struct{}
+
+	// Connection pool. C++ uses FlowTransport; we need explicit pool.
+	connMu        sync.RWMutex
+	connPool      map[string]*transport.Conn
+	hasConnLinger bool
+	lastMinDelay  time.Duration
+	lastMaxDelay  time.Duration
+	lastAdaptive  time.Duration
+	lastWaits     bool
+	// dialing coalesces concurrent dials to the same address (singleflight): the
+	// first miss dials, later misses to the same address wait on its result rather
+	// than each running a redundant TCP/TLS/ConnectPacket handshake. Guarded by
+	// connMu. Mirrors C++ FlowTransport, where one Peer (one connectionKeeper) owns
+	// the single dial per NetworkAddress.
+	dialing map[string]*dialCall
+
+	// Location cache. C++: CoalescedKeyRangeMap<Reference<LocationInfo>>.
+	locCache locationCache
+
+	// Per-endpoint health tracking. Wakes GRV backoff on recovery.
+	failMon *failureMonitor
+
+	// Load balancing: QueueModel for storage servers, round-robin for proxies.
+	queueModel *QueueModel
+	proxyRR    proxyRoundRobin
+
+	// GRV cache + per-priority batchers. C++: cachedReadVersion, versionBatcher.
+	// One batcher per priority level: [BATCH, DEFAULT, SYSTEM_IMMEDIATE].
+	grvCache    grvCache
+	grvBatchers [3]*grvBatcher
+
+	// minAcceptableReadVersion is the observed floor for storage/commit validation,
+	// not an MVCC boundary or a check on the explicit-pin setter/getter.
+	//
+	// It carries the EPOCH it was observed in, in the same value, for the reason
+	// grvCacheEntry does: a floor is a claim about a VERSION SPACE, and the two
+	// clusters' spaces are unrelated. Stamped, a value written just before a
+	// handoff becomes inert the moment the fence moves — a reader validates the
+	// epoch in the same load that produced the version, so there is no window in
+	// which the two disagree, and no reliance on anyone remembering to clear it.
+	minAcceptableReadVersion atomic.Pointer[minAcceptableStamp]
+
+	// clusterSwitchPending is set when a coordinator set is adopted and cleared
+	// at the proxy handoff that completes it. See onCoordinatorSetAdopted.
+	clusterSwitchPending atomic.Bool
+
+	// Tag throttle state — updated from GRV reply tagThrottleInfo.
+	// Maps priority -> (tag -> throttle limits). Matches C++ cx->throttledTags.
+	tagThrottles tagThrottleState
+
+	// Transaction defaults — applied to every new transaction.
+	// Matches C++ DatabaseContext::transactionDefaults.
+	//
+	// Published as an IMMUTABLE snapshot. C++ does NOT achieve this by thread
+	// confinement — fdb_database_set_option and fdb_database_create_transaction both
+	// run on the caller's thread — but by same-priority FIFO onto the network thread
+	// plus a bulk, non-yielding copy of the whole option list when a transaction is
+	// built. See the fuller citation chain on internalDB.txDefaults in
+	// pkg/fdbgo/fdb/database.go.
+	//
+	// Go has no equivalent, and the SetTransaction*/SetDefault* setters below are
+	// exported, so any goroutine may set a default while another creates a
+	// transaction. Swapping the whole snapshot (rather than per-field atomics) is what
+	// keeps the set coherent: a transaction must not pick up the new timeout alongside
+	// the old retry limit.
+	//
+	// nil means "nothing ever set" and reads as the zero TransactionDefaults.
+	txDefaults atomic.Pointer[TransactionDefaults]
+	// txDefaultsMu serializes the read-modify-write in the setters.
+	txDefaultsMu sync.Mutex
+
+	// Operational counters — the C++ DatabaseContext CounterCollection subset.
+	// Exposed via Database.Metrics(). RFC-097.
+	metrics ClientMetrics
+
+	// Per-handle operational-event logger (WithLogger; nil-resolved to
+	// slog.Default() at open). RFC-097 / P1.2.
+	logger *slog.Logger
+
+	// Speculative second request (hedge) control: when true, a read may send a hedge
+	// to a second server, timed and paid for by queueModel as libfdb_c does.
+	hedgeEnabled atomic.Bool
+
+	// Opt-in GetRange materialization ceiling in bytes (WithRangeByteCeiling,
+	// RFC-115 §2). 0 = unlimited (default, oracle-matching). Read-only after open
+	// (set once in the constructor), so no atomic needed.
+	rangeByteCeiling int64
+
+	// Distributed-trace sample rate (WithTracingSampleRate, RFC-115 §4). 0.0 =
+	// unsampled (default, matches C++ TRACING_SAMPLE_RATE). Read-only after open.
+	tracingSampleRate float64
+
+	// Read tag sampling (sampleReadTags): READ_TAG_SAMPLE_RATE unless a test
+	// overrides it. The zero value never samples. Read-only after open.
+	readTags readTagSampling
+
+	// A nil tracer disables export without constructing OTel contexts or spans.
+	// Wire propagation and sampling remain independent of the export backend.
+	tracer oteltrace.Tracer
+
+	// Selected FDB API version (WithAPIVersion, RFC-149) — the C++
+	// DatabaseContext::apiVersion analog. Mandatory-set: OpenDatabase rejects an
+	// unset (0) version, so apiVersionAtLeast can never silently no-op. Gates
+	// version-dependent wire behaviour (e.g. the Min→MinV2/And→AndV2 atomic upgrade
+	// at >=510). Read-only after open.
+	apiVersion int
+
+	// outstandingWatches/maxWatches: per-Database cap on concurrently-outstanding (not-yet-fired,
+	// not-yet-cancelled) watches — C++ DatabaseContext::increaseWatchCounter (NativeAPI.actor.cpp:5694)
+	// throws too_many_watches (1032) once outstandingWatches >= maxWatches. maxWatches defaults to
+	// DEFAULT_MAX_OUTSTANDING_WATCHES (10000, ClientKnobs.cpp:120) and is lowerable via the
+	// max_watches database option (SetMaxWatches). 0 means unlimited.
+	outstandingWatches atomic.Int64
+
+	// rangeReadPanics is the RFC-110 backstop shared by this database's range reads.
+	rangeReadPanics panicBackstop
+	// resolveKeyPanics is the getRange fallback resolveKey goroutines' backstop.
+	resolveKeyPanics panicBackstop
+	maxWatches       atomic.Int64
+
+	// Lifecycle.
+	ctx       context.Context
+	cancel    context.CancelFunc
+	closeOnce sync.Once
+	connected chan struct{}
+	// timeouts delivers its transactions' TIMEOUT expiries; Close leaves it running.
+	timeouts *timeoutQueue
+	wg       sync.WaitGroup
+	// GRV refreshers enroll under closeMu; dials and connections enroll under connMu.
+	// Close seals both paths before wg.Wait, including zero-count shutdown.
+	closeMu sync.Mutex
+	closed  bool
+}
+
+type dbTestHooks struct {
+	// beforeCommitProxySelect runs at the top of Transaction.commit, immediately
+	// before it binds to a commit proxy. A deterministic seam for the
+	// handoff-inside-the-commit-window case, which is a few instructions wide and
+	// therefore untestable by racing. Always nil in production.
+	beforeCommitProxySelect atomic.Pointer[func()]
+	// duringProxyInstall runs inside installProxySet, immediately before the dbInfo
+	// publication. It exists so a test can hold an installer inside the critical
+	// section (see installMu) and observe the fence at publication. Always nil in
+	// production.
+	//
+	// IT RUNS UNDER installMu, which is not reentrant: a hook that calls back into
+	// installProxySet deadlocks the calling goroutine against itself. Hooks here
+	// may observe and block; they may not install.
+	duringProxyInstall atomic.Pointer[func()]
+	// afterLocationSend observes a sent location query before its reply wait (test seam).
+	afterLocationSend atomic.Pointer[func()]
+	// beforeConnFailureMark runs in handleConnError just before it marks the address
+	// failed (test seam). Nil in production.
+	beforeConnFailureMark atomic.Pointer[func()]
+	// Test seams observe dial publication, shutdown joining and disconnect/reply races.
+	afterDialBeforePool          atomic.Pointer[func()]
+	beforeCloseJoin              atomic.Pointer[func()]
+	beforeMetricsDisconnectReply atomic.Pointer[func()]
+	beforeMetricsReplyWait       atomic.Pointer[func()]
+	afterMetricsShardResult      atomic.Pointer[func(int)]
+	// beforeAltFailureWait runs when a request starts waiting for an excluded replica (tests).
+	beforeAltFailureWait atomic.Pointer[func()]
+	// onReadBackoff observes Get/Watch retry accounting before the delay (tests).
+	onReadBackoff atomic.Pointer[func(attempts int, delay time.Duration)]
+	// Test seams: set the delay before dispatch; observe actual-live recovery checks.
+	altFailureDelayOverride atomic.Int64
+	afterAltRecoveryCheck   atomic.Pointer[func(bool)]
+}
+
+func (db *database) testHooks() *dbTestHooks {
+	if h := db.hooks.Load(); h != nil {
+		return h
+	}
+	h := &dbTestHooks{}
+	if db.hooks.CompareAndSwap(nil, h) {
+		return h
+	}
+	return db.hooks.Load()
+}
+
+func (db *database) readBackoffObserver() *func(attempts int, delay time.Duration) {
+	if h := db.hooks.Load(); h != nil {
+		return h.onReadBackoff.Load()
+	}
+	return nil
+}
+
+func (db *database) metricsShardResultHook() *func(int) {
+	if h := db.hooks.Load(); h != nil {
+		return h.afterMetricsShardResult.Load()
+	}
+	return nil
+}
+
+// defaultMaxOutstandingWatches mirrors CLIENT_KNOBS->DEFAULT_MAX_OUTSTANDING_WATCHES (ClientKnobs.cpp:120).
+const defaultMaxOutstandingWatches = 10000
+
+// absoluteMaxWatches mirrors CLIENT_KNOBS->ABSOLUTE_MAX_WATCHES (ClientKnobs.cpp:121) — the upper
+// bound MAX_WATCHES accepts; a higher (or negative) value is rejected with invalid_option_value.
+const absoluteMaxWatches = 1_000_000
+
+// tryAcquireWatch reserves an outstanding-watch slot, returning too_many_watches (1032) when the
+// cap is exceeded — C++ increaseWatchCounter (NativeAPI.actor.cpp:2175-2179, called from
+// Transaction::watch :5694). Each successful acquire MUST be matched by exactly one releaseWatch.
+func (db *database) tryAcquireWatch() error {
+	// C++ DatabaseContext::increaseWatchCounter (NativeAPI.actor.cpp:2175-2177) throws when
+	// `outstandingWatches >= maxOutstandingWatches`. n is the post-increment count
+	// (outstandingWatches+1), so `n > max` is exactly `outstandingWatches >= max`. maxWatches is
+	// NOT an unlimited sentinel: MAX_WATCHES=0 (and any negative, which SetMaxWatches/C++
+	// extractIntOption clamp to 0 — NativeAPI:2139) is a HARD 0-cap, so the FIRST watch fails 1032.
+	n := db.outstandingWatches.Add(1)
+	if n > db.maxWatches.Load() {
+		db.outstandingWatches.Add(-1)
+		return &wire.FDBError{Code: ErrTooManyWatches}
+	}
+	return nil
+}
+
+// releaseWatch frees an outstanding-watch slot (C++ decreaseWatchCounter).
+func (db *database) releaseWatch() { db.outstandingWatches.Add(-1) }
+
+// apiVersionAtLeast reports whether the selected API version is >= v. Mirrors
+// C++ DatabaseContext::apiVersionAtLeast (Transaction::apiVersionAtLeast →
+// trState->cx->apiVersionAtLeast). Gates version-dependent wire behaviour.
+func (db *database) apiVersionAtLeast(v int) bool { return db.apiVersion >= v }
+
+// getGRVProxy returns a GRV proxy address using round-robin selection.
+func (db *database) getGRVProxy() (*ProxyInfo, error) {
+	info := db.dbInfo.Load()
+	if info == nil || len(info.GRVProxies) == 0 {
+		return nil, fmt.Errorf("no GRV proxies available")
+	}
+	idx := db.proxyRR.nextGRV(len(info.GRVProxies))
+	return &info.GRVProxies[idx], nil
+}
+
+// getCommitProxy returns a commit proxy address using round-robin selection,
+// together with the cluster epoch that proxy belongs to. ONE load: the epoch a
+// commit binds to is the epoch of the proxy set it is about to use, never one
+// sampled separately and overtaken by a handoff in between.
+func (db *database) getCommitProxy() (*ProxyInfo, int64, error) {
+	info := db.dbInfo.Load()
+	if info == nil || len(info.CommitProxies) == 0 {
+		return nil, 0, fmt.Errorf("no commit proxies available")
+	}
+	n := len(info.CommitProxies)
+	idx := db.proxyRR.nextCommit(n)
+	// basicLoadBalance skips failed endpoints and addresses (LoadBalance.actor.h:779-805); with
+	// every address failed, Go's dial of the first is C++'s wait for one to come back.
+	now := nowSeconds()
+	var probe *ProxyInfo
+	for i := 0; i < n; i++ {
+		p := &info.CommitProxies[(idx+i)%n]
+		if db.failMon.endpointFailed(p.Address, p.Token) {
+			continue
+		}
+		if db.failMon == nil || !db.failMon.excluded(p.Address, now) {
+			return p, info.Epoch, nil
+		}
+		if probe == nil {
+			probe = p
+		}
+	}
+	if probe != nil {
+		return probe, info.Epoch, nil
+	}
+	return nil, 0, fmt.Errorf("no live commit proxies")
+}
+
+// getGRVProxies returns all GRV proxies from the current topology and the
+// cluster epoch they belong to, from ONE load — see getCommitProxy.
+func (db *database) getGRVProxies() ([]ProxyInfo, int64) {
+	info := db.dbInfo.Load()
+	if info == nil {
+		return nil, 0
+	}
+	return info.GRVProxies, info.Epoch
+}
+
+// getCommitProxies returns all commit proxies from the current topology.
+func (db *database) getCommitProxies() []ProxyInfo {
+	info := db.dbInfo.Load()
+	if info == nil {
+		return nil
+	}
+	return info.CommitProxies
+}
+
+func (db *database) getOrDial(ctx context.Context, addr string) (*transport.Conn, error) {
+	conn, _, err := db.getOrDialConn(ctx, addr)
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
+}
+
+// handleDialError reacts to a getOrDial error. A context cancellation is the
+// caller giving up, not the endpoint failing, so only a dial failure with a live
+// ctx is reported; it has no connection to name.
+func (db *database) handleDialError(ctx context.Context, addr string) {
+	if ctx.Err() == nil {
+		db.handleConnError(addr, nil)
+	}
+}
+
+// dialCall is one in-flight singleflight dial. Waiters block on done, then read
+// conn/err — written by the dialer before close(done), so the channel close
+// establishes the happens-before.
+type dialCall struct {
+	done  chan struct{}
+	conn  *transport.Conn
+	err   error
+	sends sendqueue.Queue
+}
+
+// getOrDialConn returns a pooled or freshly-dialed connection.
+// dialed is true when THIS call is the cache miss that started the dial (the
+// "owner"); callers that coalesced onto an in-flight dial get dialed=false.
+//
+// The dial runs WITHOUT holding connMu — holding the pool lock across the dial
+// (TCP connect + TLS upgrade + ConnectPacket handshake) is a deadlock amplifier:
+// one stalled dial would block every goroutine acquiring ANY connection and wedge
+// the whole client. And concurrent misses to the SAME address are coalesced
+// (singleflight), so a burst to one cold proxy opens ONE socket, not O(requests).
+// Both mirror C++ FlowTransport: one Peer per NetworkAddress, its single
+// connectionKeeper owning the dial, no global dial lock.
+//
+// The dial itself runs on a goroutine bound to db.ctx (+ RPC timeout), NOT to any
+// one caller's context, so a caller whose ctx cancels merely abandons its own wait
+// — it never aborts the dial that the other waiters share (matching C++, where the
+// connectionKeeper's dial outlives any single request).
+func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *transport.Conn, dialed bool, err error) {
+	conn, dialed, _, err = db.getOrDialConnFor(ctx, addr, false)
+	return conn, dialed, err
+}
+
+// dialAndPool runs the single shared dial for addr and publishes the result to all
+// waiters via call. It is bound to db.ctx (not a caller ctx); on database close
+// (db.ctx canceled) the dial aborts and any connection that nonetheless completed
+// is discarded rather than pooled past Close()'s pool drain.
+//
+// TODO: C++ FlowTransport deduplicates bidirectional connections via ConnectionID
+// exchange in ConnectPacket. We don't need this as a pure client (we never accept
+// incoming connections), but should implement it if we ever add server-side
+// functionality.
+func (db *database) dialAndPool(addr string, call *dialCall) {
+	// RFC-110: a panic in transport.Dial (or the pooling section)
+	// skips the normal delete(db.dialing)+close(call.done) below, leaving the
+	// singleflight entry for addr in db.dialing with call.done NEVER closed —
+	// every later caller in getOrDialConn coalesces onto it and blocks until its
+	// own ctx expires, and no fresh dial ever starts: a permanently poisoned
+	// entry. The backstop publishes the failure so waiters wake and the next
+	// caller re-dials. The connMu section below is closure-scoped so a panic in
+	// it unwinds the lock (else this recover's Lock would deadlock).
+	pb := &panicBackstop{name: "dialAndPool", db: db}
+	var c *transport.Conn // owned here until the result is published
+	defer func() {
+		r := recover()
+		if !pb.recovered(r) {
+			return
+		}
+		closeConn := false
+		func() {
+			db.connMu.Lock()
+			defer db.connMu.Unlock()
+			select {
+			case <-call.done:
+				return
+			default:
+			}
+			if db.dialing[addr] == call {
+				delete(db.dialing, addr)
+			}
+			if c != nil {
+				if db.connPool[addr] == c {
+					delete(db.connPool, addr)
+				}
+				closeConn = true
+			}
+			call.err = fmt.Errorf("fdbgo: panic dialing %s: %v", addr, r)
+			call.sends.Seal()
+			close(call.done)
+		}()
+		if closeConn {
+			_ = c.Close()
+		}
+	}()
+
+	dialCtx, cancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
+	defer cancel() // RFC-110: release the dial timer even if transport.Dial panics
+	dialOpts := append([]transport.DialOption{}, db.dialOpts...)
+	dialOpts = append(dialOpts, transport.WithSendOrder(&call.sends))
+	var dialErr error
+	c, dialErr = transport.Dial(dialCtx, addr, db.tlsConfig, db.dialFn, dialOpts...)
+	if h := db.hooks.Load(); h != nil {
+		if hook := h.afterDialBeforePool.Load(); hook != nil {
+			(*hook)()
+		}
+	}
+
+	discard := false
+	func() {
+		db.connMu.Lock()
+		defer db.connMu.Unlock()
+		switch {
+		case dialErr != nil && db.ctx.Err() != nil:
+			call.err = db.ctx.Err() // the database closed; no peer failed
+		case dialErr != nil:
+			// A failed connect, including the dial ctx's expiry, is C++'s peer disconnect:
+			// request_maybe_delivered, not the raw dial error (FlowTransport.actor.cpp:852-869).
+			call.err = transport.NewConnectFailedError(addr, dialErr)
+		case db.ctx.Err() != nil:
+			// The database closed while we dialed: Close() drains the pool under connMu,
+			// so a conn pooled now would never be reaped (leaking its read/write/monitor
+			// goroutines). Discard it and fail the call.
+			call.err = db.ctx.Err()
+			discard = true
+		default:
+			c.SetEndpointNotFoundHandler(func(token transport.UID) { db.failMon.markEndpointNotFound(addr, token) })
+			db.connPool[addr] = c
+			db.lastMinDelay, db.lastMaxDelay, db.lastWaits = c.CoalesceDelay()
+			db.lastAdaptive = c.AdaptiveLinger()
+			db.hasConnLinger = true
+			// Enroll before publication, while Close's pool-drain barrier is
+			// excluded. Ownership survives eviction, leases and stale cohorts.
+			db.wg.Add(1)
+			go func(conn *transport.Conn) {
+				defer db.wg.Done()
+				<-conn.Done()
+				_ = conn.Close()
+			}(c)
+			call.conn = c
+			// Clear the failed state on a successful dial HERE — not in a caller (so a
+			// reconnect wakes failure-monitor recovery even if every caller abandoned
+			// its wait), and BEFORE the connection becomes visible (connMu unlock +
+			// close(call.done)). Marking after exposure would race: a waiter could grab
+			// the conn, fail its first RPC and markFailed, and this stale markAlive would
+			// then overwrite that real failure. failureMonitor uses only its own lock
+			// (it never reaches connMu/db), so nesting it here is lock-order-safe.
+			db.failMon.markAlive(addr)
+		}
+		call.sends.Seal() // no arrival after dial completion can extend this cohort
+		drained := !call.sends.Pending()
+		if call.err != nil || drained {
+			if db.dialing[addr] == call {
+				delete(db.dialing, addr)
+			}
+			if call.conn != nil && drained {
+				call.conn.ClearSendOrder(&call.sends)
+			}
+		}
+		close(call.done) // membership and result become visible atomically under connMu
+	}()
+	if discard {
+		_ = c.Close()
+	}
+}
+
+// warmConnections pre-establishes TCP connections to all known proxies.
+// Called after bootstrap to eliminate cold-start latency on first transaction.
+// Dials GRV and commit proxies in parallel. Errors are silently ignored —
+// connections will be established on demand if pre-warming fails.
+func (db *database) warmConnections(ctx context.Context) {
+	info := db.dbInfo.Load()
+	if info == nil {
+		return
+	}
+
+	// Collect unique addresses from all proxy types.
+	seen := make(map[string]bool)
+	var addrs []string
+	for _, p := range info.GRVProxies {
+		if !seen[p.Address] {
+			seen[p.Address] = true
+			addrs = append(addrs, p.Address)
+		}
+	}
+	for _, p := range info.CommitProxies {
+		if !seen[p.Address] {
+			seen[p.Address] = true
+			addrs = append(addrs, p.Address)
+		}
+	}
+
+	// Dial all in parallel.
+	var wg sync.WaitGroup
+	for _, addr := range addrs {
+		wg.Add(1)
+		go func(a string) {
+			defer wg.Done()
+			db.getOrDial(ctx, a)
+		}(addr)
+	}
+	wg.Wait()
+}
+
+// bootstrap connects to coordinators and fetches initial cluster topology.
+// Tries all coordinators in parallel — first success wins. Retries with
+// backoff on transient errors (e.g., failed_to_progress 1216).
+func (db *database) bootstrap(ctx context.Context) error {
+	backoff := 500 * time.Millisecond
+	for {
+		snap := db.connRecord.get()
+		info, addr, err := db.tryAllCoordinators(ctx, snap)
+		switch {
+		case err == nil && info.Forward != "":
+			// Path A: a coordinator forwarded us to a new set. Adopt + retry now.
+			if db.followForward(snap, info.Forward) {
+				db.onCoordinatorSetAdopted()
+				continue
+			}
+			// self/empty/over-bound forward → fall through to backoff.
+			err = fmt.Errorf("coordinator forward could not be followed")
+		case err == nil:
+			db.forwardHops = 0
+			// New coordinators answered — persist a forward adopted in memory on a
+			// previous iteration now that the set is confirmed reachable (Path A).
+			db.connRecord.persistIfDirty()
+			db.installProxySet(info)
+			db.bootstrapCoordinator = addr
+			close(db.connected)
+			return nil
+		default:
+			// Path B: all coordinators unreachable — another process may have
+			// rotated the set and rewritten the cluster file. Re-read it.
+			if db.connRecord.adoptStoredIfChanged() {
+				db.onCoordinatorSetAdopted()
+				continue
+			}
+		}
+
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("failed to connect to any coordinator: %w", err)
+		case <-timer.C:
+			if backoff < BootstrapMaxBackoff {
+				backoff *= 2
+			}
+		}
+	}
+}
+
+// tryAllCoordinators races all coordinators in parallel, returning the first
+// successful response.
+//
+// First-reply-wins is C++-FAITHFUL, not a divergence. The libfdb_c client adopts
+// cluster topology on the FIRST successful coordinator reply, NOT on a majority
+// quorum: monitorProxiesOneGeneration probes coordinators round-robin and adopts
+// the first successful OpenDatabaseCoordRequest reply (MonitorLeader.actor.cpp:919-937);
+// the `majority` bool that getLeader() computes (:578, `bestCount >= nominees.size()/2+1`)
+// is SERVER-SIDE leader-election metadata and does NOT gate the client's topology
+// adoption (monitorLeaderOneGeneration calls getLeader() on whatever nominees have
+// arrived, with no quorum wait, :604/:634). Adding a coordinator quorum here would
+// make Go STRICTER than libfdb_c — a conformance violation, not a robustness fix
+// (RFC-115 §3, FDB-C-dev verified). The ONLY Go-vs-C++ difference is the probing
+// shape: Go races the set in parallel where C++ goes sequential round-robin — benign
+// (identical first-success outcome, lower latency) and never contacts more than the
+// coordinator set. (Cluster-file re-read stays failure-gated to match C++'s
+// allConnectionsFailed path, :888-900 — RFC-111; do not add a periodic timer.)
+func (db *database) tryAllCoordinators(ctx context.Context, snap *ClusterFile) (*DBInfo, string, error) {
+	if snap == nil || len(snap.Coordinators) == 0 {
+		// Defensive — production cluster-file parsing rejects empty
+		// coordinator lists, but a hand-constructed *database in tests can
+		// reach this path. Without the guard, the for-loop below returns
+		// (nil, nil) and bootstrap nil-derefs the info.
+		return nil, "", fmt.Errorf("no coordinators configured")
+	}
+	if len(snap.Coordinators) == 1 {
+		// Fast path: single coordinator, no goroutine overhead.
+		info, err := db.tryOneCoordinator(ctx, snap, snap.Coordinators[0])
+		return info, snap.Coordinators[0], err
+	}
+
+	type result struct {
+		info *DBInfo
+		addr string
+		err  error
+	}
+	ch := make(chan result, len(snap.Coordinators))
+	raceCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	for _, addr := range snap.Coordinators {
+		go func(addr string) {
+			info, err := db.tryOneCoordinator(raceCtx, snap, addr)
+			ch <- result{info, addr, err}
+		}(addr)
+	}
+
+	var lastErr error
+	for range snap.Coordinators {
+		r := <-ch
+		if r.err == nil {
+			cancel() // cancel remaining attempts
+			return r.info, r.addr, nil
+		}
+		lastErr = r.err
+	}
+	return nil, "", lastErr
+}
+
+func (db *database) tryOneCoordinator(ctx context.Context, snap *ClusterFile, addr string) (info *DBInfo, err error) {
+	// RFC-110: recover on the WORKER. tryAllCoordinators calls this
+	// both from the parallel fan-out goroutines AND directly on the caller's
+	// goroutine for a single coordinator (the common test/dev shape), so a panic
+	// in the dial / openDatabaseCoord decode must become a returned error here to
+	// cover both paths — a recover only on the fan-out closure would miss the
+	// single-coordinator fast path. The fan-out leg then forwards this error like
+	// a failed quorum(ok,1) leg; the direct call returns it to its caller.
+	pb := &panicBackstop{name: "tryOneCoordinator", db: db}
+	defer func() {
+		if r := recover(); pb.recovered(r) {
+			info, err = nil, fmt.Errorf("fdbgo: panic contacting coordinator %s: %v", addr, r)
+		}
+	}()
+	conn, permit, dialErr := db.getOrDialForSend(ctx, addr)
+	if dialErr != nil {
+		return nil, dialErr
+	}
+	defer permit.Release()
+	info, err = db.openDatabaseCoord(ctx, conn, snap, transport.UID{}, CoordinatorTimeout, permit)
+	if err != nil {
+		return nil, fmt.Errorf("coordinator %s: %w", addr, err)
+	}
+	return info, nil
+}
+
+// Database is the public API entry point.
+// C++: Database is a Reference<DatabaseContext> — a handle, not state.
+//
+// Safe for concurrent use by multiple goroutines.
+type Database struct {
+	db *database
+}
+
+// Metrics returns a point-in-time snapshot of this handle's operational
+// counters (RFC-097) — the C++ DatabaseContext TransactionMetrics subset.
+// Counters are monotonic; poll and diff for rates. This is the export hook:
+// Prometheus/OTel consumers are pull-based readers of exactly this shape
+// (see pkg/fdbgo/fdbmetrics for a ready-made scrape handler).
+func (d *Database) Metrics() ClientMetricsSnapshot {
+	return d.db.metrics.Snapshot()
+}
+
+// SetHedgeEnabled enables budget-funded speculative read requests (default on).
+// Disabled, no read hedges; lone replies still accrue budget (RFC-281).
+func (d *Database) SetHedgeEnabled(enabled bool) {
+	d.db.hedgeEnabled.Store(enabled)
+}
+
+// HedgeEnabled returns whether speculative second requests are active.
+func (d *Database) HedgeEnabled() bool {
+	return d.db.hedgeEnabled.Load()
+}
+
+// OpenDatabase opens a database connection using a cluster file.
+// The provided ctx is used for the initial bootstrap (coordinator connection).
+// Background goroutines use an internal context cancelled by Close().
+func OpenDatabase(ctx context.Context, clusterFilePath string, opts ...Option) (*Database, error) {
+	clusterFilePath, err := LookupClusterFileName(clusterFilePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve cluster file: %w", err)
+	}
+	cf, err := ParseClusterFile(clusterFilePath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Remember the file path so coordinator-set changes can be persisted back to it
+	// (RFC-111). OpenDatabaseFromConfig (no path) is memory-only.
+	opts = append(opts, withClusterFilePath(clusterFilePath))
+	return OpenDatabaseFromConfig(ctx, cf, opts...)
+}
+
+// checkAPIVersion validates a WithAPIVersion value: unset is api_version_unset
+// (2200), outside [MinAPIVersion, MaxAPIVersion] api_version_not_supported (2203).
+func checkAPIVersion(v int) error {
+	if v == 0 {
+		return &wire.FDBError{Code: 2200} // api_version_unset
+	}
+	if v < MinAPIVersion || v > MaxAPIVersion {
+		return &wire.FDBError{Code: 2203} // api_version_not_supported
+	}
+	return nil
+}
+
+// OpenDatabaseFromConfig creates and bootstraps a Database from a ClusterFile.
+// See WithDialFunc / WithTLSConfig for options.
+func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option) (*Database, error) {
+	o := applyOptions(opts)
+
+	// Mandatory-set API version (RFC-149): C++ cannot open a DB without
+	// fdb_select_api_version, so "unset" never occurs there. Reject an unset
+	// version here so the apiVersionAtLeast gate can never silently no-op.
+	if err := checkAPIVersion(o.apiVersion); err != nil {
+		return nil, err
+	}
+
+	// Resolve transport security (WithTLSConfig > ":tls"+FDB_TLS_* > plaintext).
+	// A non-nil tlsConfig is the only "use TLS" signal. The default-config-dir
+	// stat inside resolveTLSConfig is reached only for a TLS cluster, so a
+	// plaintext open never touches /etc/foundationdb.
+	tlsConfig, err := openTLSConfig(o, cf)
+	if err != nil {
+		return nil, err
+	}
+
+	logger := o.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	bgCtx, cancel := context.WithCancel(context.Background())
+	// Create the failure monitor first so the QueueModel can consult it for the
+	// read load-balancing exclusion gate (RFC-115 §1; C++ loadBalance gates on
+	// IFailureMonitor.failed before the QueueModel).
+	failMon := newFailureMonitor()
+	queueModel := newQueueModel()
+	queueModel.failMon = failMon
+	db := &database{
+		connRecord:        newConnRecord(cf, o.clusterFilePath, logger),
+		dialFn:            o.dialFn,
+		dialOpts:          o.dialOpts,
+		tlsConfig:         tlsConfig,
+		logger:            logger,
+		rangeByteCeiling:  o.rangeByteCeiling,
+		tracingSampleRate: o.tracingSampleRate,
+		tracer:            o.tracer,
+		apiVersion:        o.apiVersion,
+		connPool:          make(map[string]*transport.Conn),
+		dialing:           make(map[string]*dialCall),
+		proxiesChanged:    make(chan struct{}),
+		connected:         make(chan struct{}),
+		ctx:               bgCtx,
+		cancel:            cancel,
+		timeouts:          newTimeoutQueue(),
+		failMon:           failMon,
+		queueModel:        queueModel,
+		// hedgeEnabled default: set after struct init (atomic.Bool zero = false)
+		locCache: locationCache{
+			maxSize: 600_000,
+		},
+		grvBatchers: [3]*grvBatcher{
+			grvBatcherBatch:           {priority: grvPriorityBatch},
+			grvBatcherDefault:         {priority: grvPriorityDefault},
+			grvBatcherSystemImmediate: {priority: grvPrioritySystemImmediate},
+		},
+	}
+
+	db.rangeReadPanics.name, db.rangeReadPanics.db = "rangeRead", db
+	db.resolveKeyPanics.name, db.resolveKeyPanics.db = "resolveKey", db
+	db.readTags = readTagSampling{rate: readTagSampleRate}
+	if o.readTagSampling != nil {
+		db.readTags = *o.readTagSampling
+	}
+	db.hedgeEnabled.Store(true)                       // default: hedge on
+	db.maxWatches.Store(defaultMaxOutstandingWatches) // C++ DEFAULT_MAX_OUTSTANDING_WATCHES (10000)
+
+	if err := db.bootstrap(ctx); err != nil {
+		cancel()
+		return nil, fmt.Errorf("connect to cluster: %w", err)
+	}
+
+	// Pre-warm connections to all known proxies. The first transaction
+	// would dial lazily, but pre-warming saves ~5-10ms on first RPC.
+	// Errors are ignored — connections will be established on demand.
+	db.warmConnections(ctx)
+
+	// Start topology monitor goroutine.
+	db.wg.Add(1)
+	go db.topologyMonitor()
+
+	return &Database{db: db}, nil
+}
+
+// SetDialFunc sets a custom dialer for all new connections.
+// Must be called before OpenDatabase or any transactions.
+func (d *Database) SetDialFunc(fn transport.DialFunc) {
+	d.db.dialFn = fn
+}
+
+// ConnectionLinger reports the active write-delay and adaptive-linger settings
+// of a pooled or most recently dialed connection.
+func (d *Database) ConnectionLinger() (minDelay, maxDelay, adaptive time.Duration, waits bool) {
+	d.db.connMu.Lock()
+	defer d.db.connMu.Unlock()
+	for _, c := range d.db.connPool {
+		minDelay, maxDelay, waits = c.CoalesceDelay()
+		return minDelay, maxDelay, c.AdaptiveLinger(), waits
+	}
+	if d.db.hasConnLinger {
+		return d.db.lastMinDelay, d.db.lastMaxDelay, d.db.lastAdaptive, d.db.lastWaits
+	}
+	return 0, 0, 0, false
+}
+
+// Transact runs a function in a transaction with automatic retry.
+// This is the primary API for interacting with FDB.
+// The transaction is reused across retries — retryCount and backoff escalate.
+func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, error)) (any, error) {
+	tx := d.createTransaction(true)
+	defer tx.endTxSpan()
+	defer tx.releaseTransactTimeout()
+	for {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
+		result, err := fn(tx)
+		if err != nil {
+			if retryErr := tx.OnError(ctx, err); retryErr != nil {
+				return nil, retryErr // non-retryable
+			}
+			continue // tx has been reset in place, retryCount/backoff preserved
+		}
+
+		// A caller cancellation during fn must not start a new commit.
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
+		// Commit owns the cancellable GRV / detached-native split; prefetching here
+		// would force a GRV on the no-write fast path.
+		tx.transactFinalCommit.Store(true)
+		err = tx.Commit(ctx)
+		tx.transactFinalCommit.Store(false)
+		if err != nil {
+			if retryErr := tx.OnError(ctx, err); retryErr != nil {
+				return nil, retryErr
+			}
+			continue // for commit_unknown_result: self-conflicting applied
+		}
+
+		return result, nil
+	}
+}
+
+// ReadTransact runs a read-only function in a transaction with automatic retry.
+// The transaction is never committed — only reads are performed.
+func (d *Database) ReadTransact(ctx context.Context, fn func(tx *Transaction) (any, error)) (any, error) {
+	tx := d.createTransaction(true)
+	defer tx.endTxSpan()
+	defer tx.releaseTransactTimeout()
+	for {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
+		result, err := fn(tx)
+		if err != nil {
+			if retryErr := tx.OnError(ctx, err); retryErr != nil {
+				return nil, retryErr
+			}
+			continue
+		}
+		return result, nil
+	}
+}
+
+// CreateTransaction creates a new transaction.
+// Database-level defaults (timeout, retry limit, system key access) are applied.
+func (d *Database) CreateTransaction() *Transaction {
+	return d.createTransaction(false)
+}
+
+func (d *Database) createTransaction(transactScoped bool) *Transaction {
+	tx := &Transaction{
+		committedVersion: -1, // C++ TransactionState::committedVersion starts at invalidVersion.
+		readVersionState: &readVersionState{},
+		db:               d.db,
+		txOptions:        txOptions{tenantId: NoTenantID},
+		creationTime:     time.Now(),
+		transactScoped:   transactScoped,
+	}
+	// Apply database-level defaults (matches C++ applyTxDefaults). One Load, so every
+	// option below comes from the SAME snapshot.
+	td := d.db.defaults()
+	if td.Timeout > 0 {
+		tx.SetTimeout(td.Timeout)
+	}
+	if td.HasRetryLimit {
+		tx.SetRetryLimit(int64(td.RetryLimit))
+	}
+	if td.MaxRetryDelay > 0 {
+		tx.SetMaxRetryDelay(td.MaxRetryDelay)
+	}
+	// C++ defaults EVERY transaction's sizeLimit to CLIENT_KNOBS->TRANSACTION_SIZE_LIMIT
+	// (NativeAPI.actor.cpp:6133) — there is no "disabled" state: the SIZE_LIMIT option
+	// floor is 32 and its default/ceiling is 10 MB. A 0/unset DB default must therefore
+	// still enforce 10 MB, otherwise the Go client commits an oversized transaction that
+	// libfdb_c rejects client-side with transaction_too_large (2101) — a wire divergence.
+	// The DB option, when set (>0), lowers the limit; an out-of-range one leaves
+	// 10 MB and poisons the txn with 2006, as the tx-level option does.
+	tx.SetSizeLimit(transactionSizeLimit)
+	if td.SizeLimit > 0 {
+		tx.SetSizeLimit(td.SizeLimit)
+	}
+	if td.ReadSystemKeys {
+		tx.SetReadSystemKeys()
+	}
+	if td.AccessSysKeys {
+		tx.SetAccessSystemKeys()
+	}
+	tx.reportConflictingKeys = td.ReportConflictingKeys
+	// Generate the per-transaction trace span (RFC-115 §4) — a real, default-unsampled
+	// SpanContext stamped on every request, matching C++ (which never sends a zero span).
+	// No SPAN_PARENT can be set yet, so this is regenerateSpan's fresh-span branch.
+	tx.initialSpan = newSpanContext(d.db.tracingSampleRate)
+	tx.spanContext.Store(&tx.initialSpan)
+	return tx
+}
+
+// defaults returns the current immutable snapshot of the database-level
+// transaction defaults. Safe to call from any goroutine.
+func (d *database) defaults() TransactionDefaults {
+	if p := d.txDefaults.Load(); p != nil {
+		return *p
+	}
+	return TransactionDefaults{}
+}
+
+// mutateDefaults applies fn to a COPY of the current defaults and publishes the
+// result atomically, so a concurrent defaults() reader sees either the whole old
+// snapshot or the whole new one — never a half-applied option.
+func (d *database) mutateDefaults(fn func(*TransactionDefaults)) {
+	d.txDefaultsMu.Lock()
+	defer d.txDefaultsMu.Unlock()
+	next := d.defaults()
+	fn(&next)
+	d.txDefaults.Store(&next)
+}
+
+// SetTransactionTimeout sets the default timeout (in milliseconds) for all
+// transactions created from this database. Matches FDB_DB_OPTION_TRANSACTION_TIMEOUT.
+func (d *Database) SetTransactionTimeout(ms int64) {
+	d.db.mutateDefaults(func(td *TransactionDefaults) { td.Timeout = ms })
+}
+
+// SetTransactionRetryLimit sets the default retry limit for all transactions.
+// Matches FDB_DB_OPTION_TRANSACTION_RETRY_LIMIT.
+func (d *Database) SetTransactionRetryLimit(retries int64) {
+	d.db.mutateDefaults(func(td *TransactionDefaults) { td.RetryLimit, td.HasRetryLimit = int(retries), true })
+}
+
+// SetTransactionMaxRetryDelay sets the default max retry delay (ms) for all
+// transactions. Matches FDB_DB_OPTION_TRANSACTION_MAX_RETRY_DELAY.
+func (d *Database) SetTransactionMaxRetryDelay(ms int64) {
+	d.db.mutateDefaults(func(td *TransactionDefaults) { td.MaxRetryDelay = ms })
+}
+
+// SetTransactionSizeLimit sets the default size limit for all transactions.
+// Matches FDB_DB_OPTION_TRANSACTION_SIZE_LIMIT.
+func (d *Database) SetTransactionSizeLimit(limit int64) {
+	d.db.mutateDefaults(func(td *TransactionDefaults) { td.SizeLimit = limit })
+}
+
+// SetDefaultReadSystemKeys makes all new transactions automatically call
+// SetReadSystemKeys(), allowing reads of \xff-prefixed system keys.
+func (d *Database) SetDefaultReadSystemKeys() {
+	d.db.mutateDefaults(func(td *TransactionDefaults) { td.ReadSystemKeys = true })
+}
+
+// SetDefaultAccessSystemKeys makes all new transactions automatically call
+// SetAccessSystemKeys(), allowing reads AND writes of \xff-prefixed system keys.
+func (d *Database) SetDefaultAccessSystemKeys() {
+	d.db.mutateDefaults(func(td *TransactionDefaults) { td.AccessSysKeys = true })
+}
+
+// SetMaxWatches sets the cap on concurrently-outstanding watches for this Database
+// (FDB_DB_OPTION_MAX_WATCHES). Once the count would exceed it, a new watch fails with
+// too_many_watches (1032). Matches C++ DatabaseContext maxOutstandingWatches; default 10000.
+// 0 is a REAL cap (no watches allowed — the first fails), NOT "unlimited". An out-of-range value
+// (< 0 or > ABSOLUTE_MAX_WATCHES) is REJECTED with invalid_option_value (2006) and the cap is left
+// UNCHANGED — C++ extractIntOption(value, 0, ABSOLUTE_MAX_WATCHES) throws on out-of-range, it does
+// NOT clamp (NativeAPI.actor.cpp:2092-2102 / :2139).
+func (d *Database) SetMaxWatches(n int64) error {
+	if n < 0 || n > absoluteMaxWatches {
+		return &wire.FDBError{Code: ErrInvalidOptionValue} // cap unchanged
+	}
+	d.db.maxWatches.Store(n)
+	return nil
+}
+
+// InvalidateGRVCache resets the GRV cache so the next transaction fetches
+// a fresh read version from the GRV proxy. Use after external writes.
+func (d *Database) InvalidateGRVCache() {
+	d.db.grvCache.invalidate()
+}
+
+// GetDBInfo returns the current cluster topology (proxy lists, cluster ID).
+// Returns nil if not yet connected.
+func (d *Database) GetDBInfo() *DBInfo {
+	return d.db.dbInfo.Load()
+}
+
+// registerBackgroundGoroutine reserves a db.wg slot for a lazily-started background goroutine (the
+// GRV-cache refresher), returning true iff it was reserved. It returns FALSE once Close() has begun, so
+// a slot is never Add()ed after Close's db.wg.Wait() is (or is about to be) waiting — which, once the
+// topology-monitor slot has drained the counter toward zero, would panic with
+// "sync: WaitGroup misuse: Add called concurrently with Wait". The closed check and the Add share
+// closeMu with Close's `closed = true`, so the check-and-Add is atomic w.r.t. that store: either the
+// Add happens before closed is set (so the counter is still ≥1 from the topology monitor and Close's
+// Wait observes this slot) or closed is already set (so we skip). The caller's goroutine MUST
+// db.wg.Done() on exit.
+func (db *database) registerBackgroundGoroutine() bool {
+	db.closeMu.Lock()
+	defer db.closeMu.Unlock()
+	if db.closed {
+		return false
+	}
+	db.wg.Add(1)
+	return true
+}
+
+// Close is idempotent. It joins database workers, shared dials and all connection
+// teardown, including transports already evicted from the pool.
+func (d *Database) Close() error {
+	d.db.closeOnce.Do(func() {
+		// Set closed BEFORE cancel()/Wait() so a concurrent GRV-cache opt-in can't start the background
+		// refresher (register a new wg slot) after we've begun waiting. The refresher launch checks
+		// `closed` under closeMu and skips its Add when set (grv.go); taking the same lock here makes the
+		// check-and-Add atomic w.r.t. this store, so the Add never races Wait at a zero counter.
+		d.db.closeMu.Lock()
+		d.db.closed = true
+		d.db.closeMu.Unlock()
+		d.db.cancel()
+		// Native commits may be blocked in SendFrame: close their sockets before joining.
+		d.db.connMu.Lock()
+		connections := make([]*transport.Conn, 0, len(d.db.connPool))
+		for addr, conn := range d.db.connPool {
+			connections = append(connections, conn)
+			delete(d.db.connPool, addr)
+		}
+		d.db.connMu.Unlock()
+		for _, conn := range connections {
+			conn.Close()
+		}
+		if h := d.db.hooks.Load(); h != nil {
+			if hook := h.beforeCloseJoin.Load(); hook != nil {
+				(*hook)()
+			}
+		}
+		d.db.wg.Wait()
+	})
+	return nil
+}

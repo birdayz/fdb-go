@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+package(default_visibility = ["//visibility:private"])
+
+go_test(
+    name = "rywlocal_test",
+    srcs = [
+        "cache_test.go",
+        "fallback_test.go",
+        "local_test.go",
+        "range_test.go",
+    ],
+    deps = [
+        "//internal/fdbgo/client",
+        "//internal/fdbgo/transport",
+        "//internal/fdbwire",
+        "//pkg/testcontainers/foundationdb",
+    ],
+)

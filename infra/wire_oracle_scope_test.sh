@@ -42,10 +42,10 @@ grep -v "^//$skip:" <<EOF | while IFS= read -r l; do
 //cmd/fdb-diff-oracle:BUILD.bazel
 //cmd/fdb-diff-oracle:oracle.go
 //cmd/fdb-diff-oracle:cpp/main.cpp
-//pkg/fdbgo/wire:BUILD.bazel
-//pkg/fdbgo/wire:reader.go
-//pkg/fdbgo/wire/types:BUILD.bazel
-//pkg/fdbgo/wire/types:types.go
+//internal/fdbwire:BUILD.bazel
+//internal/fdbwire:reader.go
+//internal/fdbwire/types:BUILD.bazel
+//internal/fdbwire/types:types.go
 //cmd/fdb-schema-extract:BUILD.bazel
 //cmd/fdb-schema-extract:fdb_cpp_build.bzl
 @foundationdb//:CMakeLists.txt
@@ -66,8 +66,8 @@ git init -q -b base
 for f in BUILD.bazel nogo_config.json README.md MODULE.bazel sift_repo.bzl patches/BUILD.bazel \
   patches/x.patch .github/workflows/ci.yml cmd/fdb-diff-oracle/BUILD.bazel cmd/fdb-diff-oracle/oracle.go \
   cmd/fdb-diff-oracle/cpp/main.cpp cmd/fdb-diff-oracle/testdata/fuzz/FuzzX/seed \
-  pkg/fdbgo/wire/BUILD.bazel pkg/fdbgo/wire/reader.go pkg/fdbgo/wire/vtables/BUILD.bazel \
-  pkg/fdbgo/wire/vtables/v.go pkg/fdbgo/wire/types/BUILD.bazel pkg/fdbgo/wire/types/types.go \
+  internal/fdbwire/BUILD.bazel internal/fdbwire/reader.go internal/fdbwire/vtables/BUILD.bazel \
+  internal/fdbwire/vtables/v.go internal/fdbwire/types/BUILD.bazel internal/fdbwire/types/types.go \
   cmd/fdb-schema-extract/BUILD.bazel cmd/fdb-schema-extract/fdb_cpp_build.bzl \
   pkg/relational/BUILD.bazel pkg/relational/x.go; do
   mkdir -p "$(dirname "$f")"
@@ -127,18 +127,18 @@ run_case "push to master" push pkg/relational/x.go ok true "push event: full run
 run_case "unrelated package" merge pkg/relational/x.go ok false "none of the 1 changed files"
 run_case "root file outside the oracle" merge README.md ok false "::notice::wire-type oracle skipped"
 run_case "several unrelated files" merge "README.md pkg/relational/x.go moved2.txt" ok false "none of the 3 changed files"
-run_case "sibling package not depended on" merge pkg/fdbgo/wire/vtables/v.go ok false "skipped"
+run_case "sibling package not depended on" merge internal/fdbwire/vtables/v.go ok false "skipped"
 # README.md sorts before pkg/, so the relevant file is not the first one seen.
-run_case "oracle input after an unrelated file" merge "README.md pkg/fdbgo/wire/reader.go" ok true "pkg/fdbgo/wire/reader.go is an oracle input"
+run_case "oracle input after an unrelated file" merge "README.md internal/fdbwire/reader.go" ok true "internal/fdbwire/reader.go is an oracle input"
 run_case "C++ oracle source" merge cmd/fdb-diff-oracle/cpp/main.cpp ok true "is an oracle input"
 run_case "root file the oracle reads" merge nogo_config.json ok true "is an oracle input"
 run_case "fuzz seed corpus" merge cmd/fdb-diff-oracle/testdata/fuzz/FuzzX/seed ok true "in oracle package cmd/fdb-diff-oracle"
-run_case "new file in an oracle package" merge pkg/fdbgo/wire/new.go ok true "in oracle package pkg/fdbgo/wire"
-run_case "non-ASCII name in an oracle package" merge "pkg/fdbgo/wire/ä.go" ok true "in oracle package pkg/fdbgo/wire"
+run_case "new file in an oracle package" merge internal/fdbwire/new.go ok true "in oracle package internal/fdbwire"
+run_case "non-ASCII name in an oracle package" merge "internal/fdbwire/ä.go" ok true "in oracle package internal/fdbwire"
 # Deleted and moved-away files are gone from the merged tree's query: owner() must place them.
-run_case "oracle input moved out" merge mv:pkg/fdbgo/wire/reader.go:pkg/relational/reader.go ok true "pkg/fdbgo/wire/reader.go is in oracle package pkg/fdbgo/wire"
+run_case "oracle input moved out" merge mv:internal/fdbwire/reader.go:pkg/relational/reader.go ok true "internal/fdbwire/reader.go is in oracle package internal/fdbwire"
 run_case "root BUILD the oracle loads" merge BUILD.bazel ok true "BUILD.bazel is an oracle input"
-run_case "oracle input deleted" merge rm:pkg/fdbgo/wire/reader.go ok true "pkg/fdbgo/wire/reader.go is in oracle package pkg/fdbgo/wire"
+run_case "oracle input deleted" merge rm:internal/fdbwire/reader.go ok true "internal/fdbwire/reader.go is in oracle package internal/fdbwire"
 run_case "last seed deleted, its directory gone" merge rm:cmd/fdb-diff-oracle/testdata/fuzz/FuzzX/seed ok true "in oracle package cmd/fdb-diff-oracle"
 run_case "C++ build rule" merge cmd/fdb-schema-extract/fdb_cpp_build.bzl ok true "is an oracle input"
 run_case "FDB source pin" merge MODULE.bazel ok true "pins the toolchain, module layout"
@@ -151,7 +151,7 @@ run_case "PR head, not a merge" head pkg/relational/x.go ok true "not a PR merge
 run_case "query fails, and says why" merge pkg/relational/x.go fail true "query exploded|::warning::wire-type oracle scope gate broken"
 run_case "query output unreadable" merge pkg/relational/x.go foreign true "::warning::wire-type oracle scope gate broken|did not return oracle package cmd/fdb-diff-oracle"
 run_case "query lost the C++ edge" merge pkg/relational/x.go drop:cmd/fdb-schema-extract true "::warning::|did not return oracle package cmd/fdb-schema-extract"
-run_case "query lost the Go edge" merge pkg/relational/x.go drop:pkg/fdbgo/wire/types true "::warning::|did not return oracle package pkg/fdbgo/wire/types"
+run_case "query lost the Go edge" merge pkg/relational/x.go drop:internal/fdbwire/types true "::warning::|did not return oracle package internal/fdbwire/types"
 
 if [ "$fail" -ne 0 ]; then
   echo "FAILURES"

@@ -32,7 +32,7 @@ go_binary(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/fdbgo/fdb",
-        "//pkg/fdbgo/libfdbc:libfdbc_native",
+        "//internal/fdbclient/libfdbc:libfdbc_native",
         "//tools/clientbench/internal/wgscenarios",
     ],
 )

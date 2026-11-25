@@ -448,7 +448,7 @@ jobs:
 
   libfdbc-differential:
     # The libfdb_c (cgo) backend is behind the `libfdbc` build tag
-    # (pkg/internal/fdbclient), so the Bazel lanes build and test only the pure-Go
+    # (internal/fdbclient), so the Bazel lanes build and test only the pure-Go
     # client. This job builds the real cgo backend and runs the cross-client
     # differential: the pure-Go client and libfdb_c against one real FoundationDB,
     # asserting byte-identical records, index entries, split records and
@@ -493,13 +493,13 @@ jobs:
       - name: Build the libfdb_c backend (-tags libfdbc)
         run: |
           GO_BIN="${{ steps.go-sdk.outputs.go-bin }}"
-          "$GO_BIN" build -tags libfdbc ./pkg/fdbgo/libfdbc/... ./pkg/internal/fdbclient/...
+          "$GO_BIN" build -tags libfdbc ./internal/fdbclient/...
 
       - name: Cross-client differential + libfdbc unit tests (-tags libfdbc, cgo + Docker)
         run: |
           GO_BIN="${{ steps.go-sdk.outputs.go-bin }}"
           "$GO_BIN" test -tags libfdbc -count=1 -timeout 30m -v \
-            ./pkg/fdbgo/libfdbc/... ./pkg/internal/fdbclient/...
+            ./internal/fdbclient/...
 
   race:
     name: Race detector (SQL layer + client + cascades)
@@ -607,7 +607,7 @@ jobs:
           bazelisk shutdown
           RACE_BASE="$HOME/.cache/bazel/_race_output_base"
           REL_SCOPE="//pkg/relational/... -//pkg/relational/conformance/... -//pkg/relational/sqltest/..."
-          CLIENT_SCOPE="//pkg/fdbgo/client/... //pkg/fdbgo/transport/... //pkg/fdbgo/fdb/..."
+          CLIENT_SCOPE="//internal/fdbgo/client/... //internal/fdbgo/transport/... //pkg/fdbgo/fdb/... //tests/fdbgo/rywlocal/..."
           CASCADES_SCOPE="//pkg/recordlayer/query/plan/cascades/..."
           # No-op guard PER SCOPE: count each gate independently. Counting the
           # UNION would let one side silently drop to zero (e.g. the client packages stop

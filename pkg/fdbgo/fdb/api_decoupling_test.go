@@ -18,7 +18,7 @@ import (
 
 	oteltrace "go.opentelemetry.io/otel/trace"
 
-	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/internal/fdbgo/client"
 )
 
 func TestMetricsSnapshotMatchesClient(t *testing.T) {
@@ -243,9 +243,9 @@ func TestPublicAPINoClientLeakage(t *testing.T) {
 	t.Parallel()
 
 	forbiddenPrefixes := []string{
-		"fdb.dev/pkg/fdbgo/client",
-		"fdb.dev/pkg/fdbgo/transport",
-		"fdb.dev/pkg/fdbgo/wire",
+		"fdb.dev/internal/fdbgo/client",
+		"fdb.dev/internal/fdbgo/transport",
+		"fdb.dev/internal/fdbwire",
 	}
 
 	visited := make(map[reflect.Type]bool)

@@ -8,8 +8,8 @@ go_library(
     importpath = "fdb.dev/tools/clientbench/internal/wiregolden",
     visibility = ["//tools/clientbench:__subpackages__"],
     deps = [
-        "//pkg/fdbgo/wire",
-        "//pkg/fdbgo/wire/types",
+        "//internal/fdbwire",
+        "//internal/fdbwire/types",
         "//tools/clientbench/internal/wiretrace",
     ],
 )
@@ -19,8 +19,8 @@ go_test(
     srcs = ["wiregolden_test.go"],
     embed = [":wiregolden"],
     deps = [
-        "//pkg/fdbgo/wire",
-        "//pkg/fdbgo/wire/types",
+        "//internal/fdbwire",
+        "//internal/fdbwire/types",
         "@com_github_zeebo_xxh3//:xxh3",
     ],
 )

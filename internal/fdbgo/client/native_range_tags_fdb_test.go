@@ -1,0 +1,254 @@
+package client
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"net"
+	"sync"
+	"testing"
+	"time"
+
+	"fdb.dev/internal/fdbgo/transport"
+	"fdb.dev/internal/fdbwire"
+	"fdb.dev/internal/fdbwire/types"
+)
+
+// These are the RFC-262 callers of the shared RPC sender, not the old exact
+// range loop already covered by TestReadTagSamplingOneDrawPerRequest.
+func TestNativeReadTagSampling(t *testing.T) {
+	t.Parallel()
+	// Seed before scheduling the parallel cases. Their deadlines start only
+	// after each child's t.Parallel returns, not while it waits to run.
+	seedCtx, cancelSeed := context.WithTimeout(context.Background(), 3*time.Minute)
+	t.Cleanup(cancelSeed)
+	prefix := t.Name() + "/"
+	seed := newTestDatabase(t, seedCtx, sharedClusterFile, plainDial)
+	for _, k := range []string{"a", "b", "c", "d", "e"} {
+		setKey(t, seedCtx, seed, []byte(prefix+k), []byte("v"))
+		setKey(t, seedCtx, seed, []byte(prefix+"large/"+k), bytes.Repeat([]byte("v"), 40000))
+	}
+	seed.Close()
+	cancelSeed()
+
+	setup := func(t *testing.T, ctx context.Context) (*Transaction, *sendRecorder, *simDialer, *readTagDraws, int64, *sync.Map) {
+		t.Helper()
+		sim, draws, aliases := newSimDialer(), &readTagDraws{}, &sync.Map{}
+		dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if real, ok := aliases.Load(addr); ok {
+				addr = real.(string)
+			}
+			return sim.dial(ctx, network, addr)
+		}
+		db, rec := openReadTagDB(t, ctx, sharedClusterFile, dial, 0.5, draws.draw)
+		tx := db.CreateTransaction()
+		t.Cleanup(tx.Cancel)
+		if err := tx.SetAutoThrottleTag("rt"); err != nil {
+			t.Fatal(err)
+		}
+		rv, err := tx.GetReadVersion(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.db.locCache.locateRange(tx.db, ctx, []byte(prefix), []byte(prefix+"\xff"), 100, false, NoTenantID, types.SpanContext{}); err != nil {
+			t.Fatal(err)
+		}
+		return tx, rec, sim, draws, rv, aliases
+	}
+	tagged := taggedRequest{kind: "GetKeyValuesRequest", has: true, tags: string(encodeTagSet([]string{"rt"}))}
+	for _, route := range []string{"native-range", "ryw-getKey"} {
+		for _, fault := range []string{"hedge", "alternative", "reply-timeout", "maybe-delivered", "wrong-shard", "all-alternatives-failed"} {
+			t.Run(route+"/"+fault, func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+				t.Cleanup(cancel)
+				tx, rec, sim, draws, _, aliases := setup(t, ctx)
+				tx.testHooks().rpcTimeoutOverride = 300 * time.Millisecond
+				var reply []byte
+				var alternative ServerInfo
+				wantDraws := 1
+				second := tagged
+				switch fault {
+				case "hedge":
+					duplicateServers(&Database{db: tx.db}, 2)
+					setSecondBudget(tx.db.queueModel, 1)
+				case "alternative":
+					loc, err := tx.db.locCache.locate(tx.db, ctx, []byte(prefix+"a"), NoTenantID, types.SpanContext{}, false)
+					if err != nil || len(loc.Servers) == 0 {
+						t.Fatalf("alternative precondition: location %+v, %v; want a real server", loc, err)
+					}
+					real := loc.Servers[0]
+					alias := "rfc262-alternative.invalid:1"
+					aliases.Store(alias, real.Address)
+					alternative = deadEndpoint(alias)
+					servers := []ServerInfo{alternative, real}
+					setServers(&Database{db: tx.db}, servers)
+					q := tx.db.queueModel
+					delta := q.startRequest(real.Address)
+					defer q.endRequest(real.Address, delta, 0, false)
+					withServer(q, real.Address, func(d *queueData) { d.smoothOutstanding.estimate = 1 })
+					// A new database has no second-request budget, so the dead primary is
+					// never hedged: its failure moves on to the real server.
+					if best, next := q.chooseTopTwo(servers); best != 0 || next != 1 {
+						t.Fatalf("alternative selection = %d,%d; want dead primary then real", best, next)
+					}
+				case "maybe-delivered":
+					reply = inlineErrorReply(uint16(ErrRequestMaybeDelivered), injectPenalty)
+				case "wrong-shard":
+					reply = inlineErrorReply(uint16(ErrWrongShardServer), injectPenalty)
+					wantDraws, second = 2, taggedRequest{kind: "GetKeyValuesRequest"}
+				case "all-alternatives-failed":
+					reply = inlineErrorReply(uint16(ErrAllAlternativesFailed), injectPenalty)
+					wantDraws, second = 2, taggedRequest{kind: "GetKeyValuesRequest"}
+				}
+				plan := &replyPlan{rec: rec}
+				if fault != "alternative" {
+					plan.entries = []plannedReply{replaceReply("GetKeyValuesRequest", reply)}
+				}
+				sim.setIntercept(plan.intercept)
+				sim.armEverything()
+				draws.script(drawHit, drawMiss)
+				rec.start()
+				if route == "native-range" {
+					r, err := tx.nativeGetRange(ctx, firstGreaterOrEqual([]byte(prefix+"a")), firstGreaterOrEqual([]byte(prefix+"f")), newRangeLimits(0, -1), true, false)
+					if err != nil || len(r.kvs) != 5 {
+						t.Fatalf("native range = %d rows, %v; want 5", len(r.kvs), err)
+					}
+				} else {
+					k, err := tx.StartGetKey(ctx, KeySelector{Key: []byte(prefix + "a"), Offset: 3}).Get()
+					if err != nil || string(k) != prefix+"c" {
+						t.Fatalf("walk getKey = %q, %v; want c", k, err)
+					}
+				}
+				got := taggedRequests(t, rec.stop())
+				plan.check(t)
+				if alternative.Address != "" && !tx.db.failMon.endpointFailed(alternative.Address, getAdjustedEndpoint(alternative.Token, EndpointGetKeyValues)) {
+					t.Fatal("alternative case did not observe ENDPOINT_NOT_FOUND")
+				}
+				want := []taggedRequest{tagged, second}
+				if fmt.Sprint(got) != fmt.Sprint(want) || draws.count() != wantDraws {
+					t.Fatalf("requests %v after %d draws, want %v after %d", got, draws.count(), want, wantDraws)
+				}
+			})
+		}
+	}
+
+	for _, route := range []string{"native-progress", "walk-storage-progress"} {
+		t.Run(route, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			t.Cleanup(cancel)
+			tx, rec, _, draws, _, _ := setup(t, ctx)
+			tx.db.hedgeEnabled.Store(false)
+			draws.script(alternatingDraws(100)...)
+			rec.start()
+			if route == "native-progress" {
+				r, err := tx.nativeGetRange(ctx, firstGreaterOrEqual([]byte(prefix+"large/")), firstGreaterOrEqual([]byte(prefix+"large/\xff")), newRangeLimits(0, -1), true, false)
+				if err != nil || len(r.kvs) != 5 {
+					t.Fatalf("native continuation = %d rows, %v; want 5", len(r.kvs), err)
+				}
+			} else {
+				tx.Clear([]byte(prefix + "b")) // request 1 returns a cleared row; the walk needs storage again
+				k, err := tx.StartGetKey(ctx, KeySelector{Key: []byte(prefix + "a"), Offset: 4}).Get()
+				if err != nil || string(k) != prefix+"e" {
+					t.Fatalf("walk continuation = %q, %v; want e", k, err)
+				}
+			}
+			got := taggedRequests(t, rec.stop())
+			for i := range got {
+				if got[i].kind != "GetKeyValuesRequest" {
+					t.Fatalf("unexpected progress request %v", got[i])
+				}
+				got[i].kind = ""
+			}
+			checkNewRequests(t, got, draws.count(), 2, taggedRequest{has: true, tags: tagged.tags})
+		})
+	}
+
+	for _, hedge := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fallback-two-nontrivial-selectors/hedge=%t", hedge), func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			t.Cleanup(cancel)
+			tx, rec, sim, draws, rv, _ := setup(t, ctx)
+			tx.db.hedgeEnabled.Store(hedge)
+			tx.testHooks().rpcTimeoutOverride = time.Minute
+			plan := &replyPlan{rec: rec}
+			if hedge {
+				// Both selectors overlap: fund each, then fund the exact read after
+				// they finish. An incidental selector hedge cannot steal its budget.
+				duplicateServers(&Database{db: tx.db}, 2)
+				setSecondBudget(tx.db.queueModel, 2)
+				tx.db.readTags.testHooks().draw = func() float64 {
+					draw := draws.draw()
+					if draws.count() == 3 {
+						setSecondBudget(tx.db.queueModel, 1)
+					}
+					return draw
+				}
+				plan.entries = []plannedReply{dropReply("GetKeyRequest"), dropReply("GetKeyValuesRequest")}
+				sim.setIntercept(func(idx int, token transport.UID, body []byte) ([]byte, bool) {
+					if rec.replyKind(token) == "GetKeyRequest" {
+						beginReply := false
+						for _, msg := range rec.messages() {
+							if req, ok := msg.(*types.GetKeyRequest); ok && req.Reply.Token == wire.UIDFromParts(token.First, token.Second) {
+								beginReply = string(req.Sel.Key) == prefix+"a"
+								break
+							}
+						}
+						if !beginReply {
+							return body, false
+						}
+					}
+					return plan.intercept(idx, token, body)
+				})
+				sim.armEverything()
+			}
+			draws.script(drawHit, drawMiss, drawHit)
+			rec.start()
+			r, err := tx.nativeGetRangeFallback(ctx, KeySelector{Key: []byte(prefix + "a"), Offset: 2}, KeySelector{Key: []byte(prefix + "d"), Offset: 2}, newRangeLimits(0, -1), rv, false)
+			if err != nil || len(r.kvs) != 3 || string(r.kvs[0].Key) != prefix+"b" || string(r.kvs[2].Key) != prefix+"d" {
+				t.Fatalf("resolved fallback = %+v, %v; want b,c,d", r.kvs, err)
+			}
+			recorded := rec.stop()
+			got := taggedRequests(t, recorded)
+			plan.check(t)
+			// A hedge resends its request with its tags (LoadBalance.actor.h:660-662).
+			sends := map[string]int{}
+			for _, r := range got {
+				sends[r.kind]++
+			}
+			// Separate selector/exact budgets force both planned drops to hedge,
+			// without relying on short timeouts for successful replies.
+			wantExact, maxPerSelector := 1, 1
+			if hedge {
+				wantExact, maxPerSelector = 2, 2
+			}
+			if draws.count() != 3 || len(got) != sends["GetKeyRequest"]+sends["GetKeyValuesRequest"] || sends["GetKeyValuesRequest"] != wantExact {
+				t.Fatalf("fallback requests %v after %d draws; want 3 draws and %d exact sends", got, draws.count(), wantExact)
+			}
+			perSelector := map[string]int{}
+			for _, msg := range recorded.msgs {
+				switch q := msg.(type) {
+				case *types.GetKeyRequest:
+					perSelector[string(q.Sel.Key)]++
+					want := string(q.Sel.Key) == prefix+"a"
+					if string(q.Sel.Key) != prefix+"a" && string(q.Sel.Key) != prefix+"d" {
+						t.Fatalf("unexpected fallback selector %+v", q.Sel)
+					}
+					if q.HasTags != want || (want && string(q.Tags) != tagged.tags) || (!want && len(q.Tags) != 0) {
+						t.Errorf("fallback selector %q HasTags=%t Tags=%q, want sampled=%t", q.Sel.Key, q.HasTags, q.Tags, want)
+					}
+				case *types.GetKeyValuesRequest:
+					if !q.HasTags || string(q.Tags) != tagged.tags {
+						t.Errorf("fallback exact request HasTags=%t Tags=%q, want new third sample", q.HasTags, q.Tags)
+					}
+				}
+			}
+			a, d := perSelector[prefix+"a"], perSelector[prefix+"d"]
+			if a != maxPerSelector || d < 1 || d > maxPerSelector {
+				t.Errorf("selector sends a=%d d=%d, want exactly %d and 1-%d", a, d, maxPerSelector, maxPerSelector)
+			}
+		})
+	}
+}

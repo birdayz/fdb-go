@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/fdbgo/client"
-	"fdb.dev/pkg/fdbgo/wire"
+	"fdb.dev/internal/fdbgo/client"
+	"fdb.dev/internal/fdbwire"
 )
 
 // TestSetMaxWatches_FacadeConvertsError pins that the public DatabaseOptions.SetMaxWatches returns a

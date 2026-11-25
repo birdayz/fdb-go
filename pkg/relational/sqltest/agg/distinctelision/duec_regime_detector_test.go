@@ -28,8 +28,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/internal/fdbwire"
 	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/relational/api"
 )
 

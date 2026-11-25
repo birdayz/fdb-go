@@ -1,0 +1,351 @@
+package client
+
+import (
+	"context"
+	"errors"
+	"math"
+	"math/rand/v2"
+	"time"
+
+	"fdb.dev/internal/fdbgo/sendqueue"
+	"fdb.dev/internal/fdbgo/transport"
+	"fdb.dev/internal/fdbwire"
+)
+
+// sendReadFrame owns a copy of the encoding through eventual writer completion.
+// A caller interrupted during the flush must still observe an already-published
+// reply (the server can reply before the socket writer acknowledges its batch).
+func sendReadFrame(ctx context.Context, conn *transport.Conn, token transport.UID, body []byte, reply *transport.ReplyHandle, permit *sendqueue.Permit, replyWait func(context.Context)) error {
+	_, err := conn.SendFrameContextOrdered(ctx, token, body, permit)
+	if err != nil && ctx.Err() != nil {
+		if !reply.KeepReadyOrCancel() {
+			return ctx.Err()
+		}
+		err = nil
+	}
+	if err == nil {
+		if replyWait != nil {
+			replyWait(ctx)
+		} else {
+			reply.NotifyWait(ctx)
+		}
+	}
+	return err
+}
+
+func (db *database) handleReadConnError(addr string, conn *transport.Conn, err error) {
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && !isEndpointNotFound(err) {
+		db.handleConnError(addr, conn)
+	}
+}
+
+// endOther ends a started request that did not win the hedge, reporting the
+// transport failure it carried.
+func (db *database) endOther(o rpcAccount) {
+	if o.err == nil {
+		db.queueModel.endRequest(o.addr, o.delta, 0, false)
+		return
+	}
+	db.handleReadConnError(o.addr, o.conn, o.err)
+	db.queueModel.endRequest(o.addr, o.delta, readFailureLatency(o.err, o.start), false)
+}
+
+// lbRetry paces a read that C++ loadBalance would retry itself: every alternative
+// tried failed maybe-delivered (a failed connect, a torn-down connection or an
+// in-band 1030/1100). checkAndProcessResultImpl returns false for that outcome at
+// AtMostOnce::False (LoadBalance.actor.h:344-377), so loadBalance takes the next
+// alternative at once and, after a full pass, backs off from
+// LOAD_BALANCE_START_BACKOFF by LOAD_BALANCE_BACKOFF_RATE up to
+// LOAD_BALANCE_MAX_BACKOFF (LoadBalance.actor.h:682-686, 721-725; flow/Knobs.cpp:274-276).
+// There is no retry bound: the read waits for a replica to answer or for the
+// transaction to end, so the failure never reaches the application.
+type lbRetry struct {
+	attempts int
+	backoff  time.Duration
+	observe  *func(int, time.Duration)
+}
+
+// next records a failed attempt over n alternatives and returns the delay
+// before the next one.
+func (r *lbRetry) next(n int) time.Duration {
+	r.attempts++
+	if r.attempts >= n {
+		r.backoff = min(loadBalanceMaxBackoff, max(loadBalanceStartBackoff, time.Duration(float64(r.backoff)*loadBalanceBackoffRate)))
+	}
+	return r.backoff
+}
+
+// wait records a failed attempt over n alternatives and sleeps its delay.
+func (r *lbRetry) wait(ctx context.Context, n int) error { return r.pace(ctx, n, 1) }
+
+// pace records k failed requests over n alternatives, one loadBalance attempt each
+// (LoadBalance.actor.h:682-686, 721-725), and sleeps the delay before the next request.
+func (r *lbRetry) pace(ctx context.Context, n, k int) error {
+	for range k {
+		r.next(n)
+	}
+	if r.observe != nil {
+		(*r.observe)(r.attempts, r.backoff)
+	}
+	if r.backoff > 0 {
+		return sleepCtx(ctx, r.backoff)
+	}
+	return ctx.Err()
+}
+
+// readAlternatives keeps one loadBalance pass from reselecting its best replica
+// after a maybe-delivered reply (LoadBalance.actor.h:728).
+type readAlternatives struct {
+	db                 *database
+	servers            []ServerInfo
+	tried              []bool
+	best, second, next int
+	alternatives       int
+	lb                 *lbRetry
+}
+
+func newReadAlternatives(db *database, servers []ServerInfo, alternatives int, lb *lbRetry) *readAlternatives {
+	best, second := db.queueModel.chooseTopTwo(servers)
+	next := second
+	if !db.hedgeEnabled.Load() {
+		second = -1
+	}
+	return &readAlternatives{db: db, servers: servers, tried: make([]bool, len(servers)), best: best, second: second, next: next, alternatives: alternatives, lb: lb}
+}
+
+func (a *readAlternatives) fail(ctx context.Context, err error) {
+	if a.lb != nil && isMaybeDelivered(err) {
+		_ = a.lb.pace(ctx, a.alternatives, 1)
+	}
+}
+
+func (a *readAlternatives) sender(i int, makeSender func(ServerInfo) sendFunc) sendFunc {
+	return func() inFlightRPC {
+		a.tried[i] = true
+		return makeSender(a.servers[i])()
+	}
+}
+
+func (a *readAlternatives) start(ctx context.Context, makeSender func(ServerInfo) sendFunc, timeout time.Duration) hedgeResult {
+	var secondary sendFunc
+	var delay time.Duration
+	if a.second >= 0 {
+		secondary = a.sender(a.second, makeSender)
+		delay = a.db.queueModel.secondDelay(a.servers[a.best].Address, a.servers[a.second].Address)
+	}
+	return sendFrameWithHedgePaced(ctx, a.db.queueModel, delay, a.sender(a.best, makeSender), secondary, timeout, func(err error) { a.fail(ctx, err) })
+}
+
+func (a *readAlternatives) advance(ctx context.Context, makeSender func(ServerInfo) sendFunc, timeout time.Duration) (hedgeResult, bool) {
+	if ctx.Err() != nil {
+		return hedgeResult{err: ctx.Err()}, false
+	}
+	i := a.next
+	if i < 0 || a.tried[i] {
+		i = -1
+		for j := range a.servers {
+			if !a.tried[j] {
+				i = j
+				break
+			}
+		}
+	}
+	if i < 0 {
+		return hedgeResult{}, false
+	}
+	return sendFrameWithHedgePaced(ctx, a.db.queueModel, 0, a.sender(i, makeSender), nil, timeout, func(err error) { a.fail(ctx, err) }), true
+}
+
+// finishReadRPC releases every started hedge request exactly once.
+func (db *database) finishReadRPC(result hedgeResult) {
+	for _, other := range result.others {
+		db.endOther(other)
+	}
+	if result.addr != "" && result.err != nil {
+		if result.connErr {
+			db.handleReadConnError(result.addr, result.conn, result.err)
+		}
+		db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
+	}
+}
+
+// altFailureDelay is C++'s allAlternativesFailedDelay, jittered like delayJittered
+// (flow.h:1481-1484).
+func (db *database) altFailureDelay() time.Duration {
+	if h := db.hooks.Load(); h != nil {
+		if d := time.Duration(h.altFailureDelayOverride.Load()); d > 0 {
+			return d
+		}
+	}
+	d := db.failMon.allAlternativesFailedDelay(nowSeconds())
+	return time.Duration(float64(d) * (0.9 + 0.2*rand.Float64()))
+}
+
+// awaitAlternative waits for one of its own replicas to become actually live,
+// as okFuture does; exclusion expiry only permits a probe, not a successful return.
+func (db *database) awaitAlternative(ctx context.Context, closed <-chan struct{}, servers []ServerInfo, recovered <-chan struct{}, wait time.Duration) error {
+	if h := db.hooks.Load(); h != nil {
+		if hook := h.beforeAltFailureWait.Load(); hook != nil {
+			(*hook)()
+		}
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	// connectionKeeper re-probes a failed peer while it waits (FlowTransport.actor.cpp:784-797);
+	// a probe that connects marks the address alive, which ends the wait.
+	probe := time.NewTimer(db.untilReadmission(servers))
+	defer probe.Stop()
+	probeCtx, cancelProbe := context.WithCancel(ctx)
+	var probing chan struct{}
+	defer func() {
+		cancelProbe()
+		if probing != nil {
+			<-probing
+		}
+	}()
+	for {
+		notifyParked(ctx)
+		select {
+		case <-recovered:
+			// Any address's recovery signals; only these replicas end the wait.
+			recovered = db.failMon.waitForRecovery()
+			if db.hasLiveAlternative(servers) {
+				return nil
+			}
+		case <-probe.C:
+			probing = make(chan struct{})
+			go db.probeReadmitted(probeCtx, servers, probing)
+		case <-probing:
+			probing = nil
+			if db.hasLiveAlternative(servers) {
+				return nil
+			}
+			probe.Reset(db.untilReadmission(servers))
+		case <-timer.C:
+			return &wire.FDBError{Code: ErrAllAlternativesFailed}
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-closed:
+			return db.ctx.Err()
+		}
+	}
+}
+
+// untilReadmission is the time until the first of servers leaves its exclusion window.
+func (db *database) untilReadmission(servers []ServerInfo) time.Duration {
+	now, soonest := nowSeconds(), math.Inf(1)
+	for _, s := range servers {
+		soonest = math.Min(soonest, db.failMon.excludedUntil(s.Address))
+	}
+	if math.IsInf(soonest, 1) {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(math.Max(soonest-now, 0) * float64(time.Second))
+}
+
+// probeReadmitted dials the replicas whose exclusion window has ended, then closes done.
+func (db *database) probeReadmitted(ctx context.Context, servers []ServerInfo, done chan struct{}) {
+	defer close(done)
+	now := nowSeconds()
+	for _, s := range servers {
+		if db.failMon.excluded(s.Address, now) {
+			continue
+		}
+		if _, err := db.getOrDial(ctx, s.Address); err != nil {
+			db.handleDialError(ctx, s.Address)
+		}
+	}
+}
+
+// notExcluded returns the replicas the failure monitor does not exclude.
+func (db *database) notExcluded(servers []ServerInfo) []ServerInfo {
+	if db.failMon == nil {
+		return servers
+	}
+	now := nowSeconds()
+	live := make([]ServerInfo, 0, len(servers))
+	for _, s := range servers {
+		if !db.failMon.excluded(s.Address, now) {
+			live = append(live, s)
+		}
+	}
+	return live
+}
+
+// Exclusion expiry only permits a probe; recovery requires an actual live state,
+// as onStateEqual(FailureStatus(false)) does (LoadBalance.actor.h:620-626).
+func (db *database) hasLiveAlternative(servers []ServerInfo) bool {
+	live := false
+	for _, s := range servers {
+		if db.failMon == nil || !db.failMon.isFailed(s.Address) {
+			live = true
+			break
+		}
+	}
+	if h := db.hooks.Load(); h != nil {
+		if hook := h.afterAltRecoveryCheck.Load(); hook != nil {
+			(*hook)(live)
+		}
+	}
+	return live
+}
+
+// allAlternativesFailed waits C++'s allAlternativesFailedDelay, jittered like
+// delayJittered (flow.h:1481-1484), before reporting all_alternatives_failed,
+// so a dead-endpoint storm cannot spin location lookups.
+func (db *database) allAlternativesFailed(ctx context.Context) error {
+	var closed <-chan struct{}
+	if db.ctx != nil {
+		closed = db.ctx.Done()
+	}
+	timer := time.NewTimer(db.altFailureDelay())
+	defer timer.Stop()
+	notifyParked(ctx)
+	select {
+	case <-timer.C:
+		return &wire.FDBError{Code: ErrAllAlternativesFailed}
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-closed:
+		return db.ctx.Err()
+	}
+}
+
+// isEndpointNotFound reports a reply failed by ENDPOINT_NOT_FOUND. The connection
+// is healthy: C++ fails only that endpoint, never the address
+// (FailureMonitor.actor.cpp:117-139), so callers must not close or mark it.
+func isEndpointNotFound(err error) bool {
+	return errors.Is(err, transport.ErrEndpointNotFound)
+}
+
+// noteBrokenPromise marks the replying endpoint not found on an in-band
+// broken_promise, as C++ waitValueOrSignal does (genericactors.actor.h:397-402).
+func (db *database) noteBrokenPromise(err error, addr string, token transport.UID) {
+	var fdbErr *wire.FDBError
+	if err != nil && errors.As(err, &fdbErr) && fdbErr.Code == ErrBrokenPromise {
+		db.failMon.markEndpointNotFound(addr, token)
+	}
+}
+
+// noteReadBrokenPromise is noteBrokenPromise for a storage read answered by the
+// replica at addr on the given interface stream.
+func (db *database) noteReadBrokenPromise(err error, servers []ServerInfo, addr string, endpoint int) {
+	if err == nil {
+		return
+	}
+	for _, s := range servers {
+		if s.Address == addr {
+			db.noteBrokenPromise(err, addr, getAdjustedEndpoint(s.Token, endpoint))
+			return
+		}
+	}
+}
+
+// A cancelled ModelHolder removes its outstanding delta without a latency
+// sample (LoadBalance.actor.h:67, release(false, false, -1, false)).
+func readFailureLatency(err error, start time.Time) time.Duration {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return 0
+	}
+	return time.Since(start)
+}

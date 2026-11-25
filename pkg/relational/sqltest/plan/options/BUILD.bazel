@@ -16,8 +16,8 @@ go_test(
         "test-full",
     ],
     deps = [
+        "//internal/fdbclient",
         "//pkg/fdbgo/fdb",
-        "//pkg/internal/fdbclient",
         "//pkg/recordlayer",
         "//pkg/relational/api",
         "//pkg/relational/core/embedded",

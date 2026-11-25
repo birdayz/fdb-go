@@ -3,7 +3,7 @@ package fdb
 import (
 	"context"
 
-	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/internal/fdbgo/client"
 )
 
 // Tenant is a handle to a FoundationDB tenant.

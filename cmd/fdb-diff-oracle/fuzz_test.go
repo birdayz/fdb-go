@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"fdb.dev/pkg/fdbgo/wire/types"
+	"fdb.dev/internal/fdbwire/types"
 )
 
 // oracleBinaryPath is set by the DIFF_ORACLE_BIN environment variable.
@@ -644,7 +644,7 @@ func FuzzGetKeyValuesReply(f *testing.F) {
 // The deterministic TestDiffGetKeyServerLocationsReply covers the empty-message
 // case. Round-trip coverage is provided by
 // FuzzGetKeyServerLocationsReply_RoundTrip in
-// pkg/fdbgo/wire/types/marshal_fuzz_test.go (the four fields are opaque []byte
+// internal/fdbwire/types/marshal_fuzz_test.go (the four fields are opaque []byte
 // blobs at the outer-wrapper layer; round-trip catches vtable/slot/padding bugs
 // in the wrapper without needing the inner payload to be valid).
 // Re-add a differential variant here when the oracle supports structured

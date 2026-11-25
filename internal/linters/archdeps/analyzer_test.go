@@ -39,7 +39,7 @@ var stubPkgSources = map[string]string{
 	"fdb.dev/recordlayer/query/executor":            "package executor\nfunc Execute() {}\n",
 	"fdb.dev/recordlayer":                           "package recordlayer\ntype Store struct{}\n",
 	"fdb.dev/pkg/fdbgo/fdb/tuple":                   "package tuple\ntype Tuple []any\n",
-	"fdb.dev/pkg/fdbgo/client":                      "package client\ntype DB struct{}\n",
+	"fdb.dev/internal/fdbgo/client":                 "package client\ntype DB struct{}\n",
 	"fdb.dev/fdb/client":                            "package client\ntype DB struct{}\n",
 	"fdb.dev/pkg/simfdb":                            "package simfdb\nfunc Start() {}\n",
 	"fdb.dev/pkg/testcontainers/foundationdb":       "package foundationdb\nfunc Run() {}\n",
@@ -289,8 +289,8 @@ func TestRules(t *testing.T) {
 		// R3: FDB Client _|_ Upper Layers
 		{
 			name:     "R3 fdbgo prod importing recordlayer fails",
-			pkgPath:  "fdb.dev/pkg/fdbgo/client",
-			filename: "pkg/fdbgo/client/x.go",
+			pkgPath:  "fdb.dev/internal/fdbgo/client",
+			filename: "internal/fdbgo/client/x.go",
 			src:      srcImporting("client", "fdb.dev/pkg/recordlayer"),
 			want:     1,
 		},
@@ -310,15 +310,15 @@ func TestRules(t *testing.T) {
 		},
 		{
 			name:     "R3 allowlisted libfdbc differential_test external pkg passes",
-			pkgPath:  "fdb.dev/pkg/fdbgo/libfdbc_test",
-			filename: "/execroot/_main/pkg/fdbgo/libfdbc/differential_test.go",
+			pkgPath:  "fdb.dev/internal/fdbclient/libfdbc_test",
+			filename: "/execroot/_main/internal/fdbclient/libfdbc/differential_test.go",
 			src:      srcImporting("libfdbc_test", "fdb.dev/pkg/recordlayer"),
 			want:     0,
 		},
 		{
 			name:     "R3 allowlisted libfdbc differential_test importing relational fails",
-			pkgPath:  "fdb.dev/pkg/fdbgo/libfdbc_test",
-			filename: "pkg/fdbgo/libfdbc/differential_test.go",
+			pkgPath:  "fdb.dev/internal/fdbclient/libfdbc_test",
+			filename: "internal/fdbclient/libfdbc/differential_test.go",
 			src:      srcImporting("libfdbc_test", "fdb.dev/pkg/relational/api"),
 			want:     1,
 		},
@@ -326,8 +326,8 @@ func TestRules(t *testing.T) {
 		// R4: Core Runtime Production Libraries
 		{
 			name:     "R4 prod fdbgo importing simfdb fails",
-			pkgPath:  "fdb.dev/pkg/fdbgo/transport",
-			filename: "pkg/fdbgo/transport/x.go",
+			pkgPath:  "fdb.dev/internal/fdbgo/transport",
+			filename: "internal/fdbgo/transport/x.go",
 			src:      srcImporting("transport", "fdb.dev/pkg/simfdb"),
 			want:     1,
 		},
@@ -442,15 +442,15 @@ func TestRules(t *testing.T) {
 		// R6: FDB Client Production _|_ OpenTelemetry
 		{
 			name:     "R6 unallowlisted fdbgo prod file importing otel fails",
-			pkgPath:  "fdb.dev/pkg/fdbgo/client",
-			filename: "pkg/fdbgo/client/other.go",
+			pkgPath:  "fdb.dev/internal/fdbgo/client",
+			filename: "internal/fdbgo/client/other.go",
 			src:      srcImporting("client", "go.opentelemetry.io/otel"),
 			want:     1,
 		},
 		{
 			name:     "R6 unallowlisted fdbgo prod file importing otel/trace fails",
-			pkgPath:  "fdb.dev/pkg/fdbgo/transport",
-			filename: "pkg/fdbgo/transport/conn.go",
+			pkgPath:  "fdb.dev/internal/fdbgo/transport",
+			filename: "internal/fdbgo/transport/conn.go",
 			src:      srcImporting("transport", "go.opentelemetry.io/otel/trace"),
 			want:     1,
 		},
@@ -463,29 +463,29 @@ func TestRules(t *testing.T) {
 		},
 		{
 			name:     "R6 allowlisted fdbgo client span.go importing otel/trace passes",
-			pkgPath:  "fdb.dev/pkg/fdbgo/client",
-			filename: "/execroot/_main/pkg/fdbgo/client/span.go",
+			pkgPath:  "fdb.dev/internal/fdbgo/client",
+			filename: "/execroot/_main/internal/fdbgo/client/span.go",
 			src:      srcImporting("client", "go.opentelemetry.io/otel/trace"),
 			want:     0,
 		},
 		{
 			name:     "R6 allowlisted fdbgo client database.go importing otel/sdk/trace fails",
-			pkgPath:  "fdb.dev/pkg/fdbgo/client",
-			filename: "pkg/fdbgo/client/database.go",
+			pkgPath:  "fdb.dev/internal/fdbgo/client",
+			filename: "internal/fdbgo/client/database.go",
 			src:      srcImporting("client", "go.opentelemetry.io/otel/sdk/trace"),
 			want:     1,
 		},
 		{
 			name:     "R6 fdbgo test file importing otel/sdk/trace passes",
-			pkgPath:  "fdb.dev/pkg/fdbgo/client",
-			filename: "pkg/fdbgo/client/span_otel_test.go",
+			pkgPath:  "fdb.dev/internal/fdbgo/client",
+			filename: "internal/fdbgo/client/span_otel_test.go",
 			src:      srcImporting("client", "go.opentelemetry.io/otel/sdk/trace"),
 			want:     0,
 		},
 		{
 			name:     "R6 proto otlp is not go.opentelemetry.io/otel",
-			pkgPath:  "fdb.dev/pkg/fdbgo/client",
-			filename: "pkg/fdbgo/client/other.go",
+			pkgPath:  "fdb.dev/internal/fdbgo/client",
+			filename: "internal/fdbgo/client/other.go",
 			src:      srcImporting("client", "go.opentelemetry.io/proto/otlp/trace/v1"),
 			want:     0,
 		},
@@ -689,7 +689,7 @@ func TestAnalyzerEndToEndMultiFileAndPositions(t *testing.T) {
 			t.Fatalf("L6 diagnostic missing valid Pos/End: %+v", l6Diags[0])
 		}
 
-		r6Diags := analyze(t, "fdb.dev/pkg/fdbgo/client", "pkg/fdbgo/client/bad.go",
+		r6Diags := analyze(t, "fdb.dev/internal/fdbgo/client", "internal/fdbgo/client/bad.go",
 			"package client\n\nimport \"go.opentelemetry.io/otel/trace\"\n\nvar _ trace.Span\n")
 		if len(r6Diags) != 1 || !strings.Contains(r6Diags[0].Message, "archdeps (R6):") {
 			t.Fatalf("R6 diagnostics = %+v, want 1 R6 diagnostic", r6Diags)

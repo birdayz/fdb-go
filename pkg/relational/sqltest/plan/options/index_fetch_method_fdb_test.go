@@ -9,8 +9,8 @@ import (
 	"sync"
 	"testing"
 
+	"fdb.dev/internal/fdbclient"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/internal/fdbclient"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"

@@ -34,8 +34,8 @@ import (
 
 	"fdb.dev/internal/dst"
 
+	"fdb.dev/internal/fdbclient"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/internal/fdbclient"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/rlmetrics"
 	"fdb.dev/pkg/relational/sqldriver"

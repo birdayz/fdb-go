@@ -469,7 +469,7 @@ if [ "$cmd" = query ]; then
     *--output=xml*) printf '<query/>\n'; exit 0 ;;
     *conformance_java*) scope="java" ;;
     *//pkg/relational/*) scope="relational" ;;
-    *//pkg/fdbgo/client/*) scope="client" ;;
+    *//internal/fdbgo/client/*) scope="client" ;;
     *//pkg/recordlayer/query/plan/cascades/*) scope="cascades" ;;
     *) echo "unexpected query: $*" >&2; exit 91 ;;
   esac

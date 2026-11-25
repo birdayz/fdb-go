@@ -6,7 +6,7 @@ import (
 	"math"
 	"testing"
 
-	"fdb.dev/pkg/fdbgo/wire"
+	"fdb.dev/internal/fdbwire"
 )
 
 // RFC-133: the database-level SetSnapshotRywDisable and SetTransactionBypassUnreadable

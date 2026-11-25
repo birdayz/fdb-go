@@ -10,12 +10,12 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/fdbgo/wire"
-	"fdb.dev/pkg/fdbgo/wire/types"
+	"fdb.dev/internal/fdbwire"
+	"fdb.dev/internal/fdbwire/types"
 	"github.com/zeebo/xxh3"
 )
 
-// vector is a C++-encoded message from //pkg/fdbgo/wire/types:testdata.json.
+// vector is a C++-encoded message from //internal/fdbwire/types:testdata.json.
 type vector struct {
 	Name       string `json:"name"`
 	Hex        string `json:"hex"`
@@ -24,7 +24,7 @@ type vector struct {
 
 func loadVectors(t *testing.T) map[string]vector {
 	t.Helper()
-	data, err := os.ReadFile("../../../../pkg/fdbgo/wire/types/testdata.json")
+	data, err := os.ReadFile("../../../../internal/fdbwire/types/testdata.json")
 	if err != nil {
 		t.Fatalf("testdata.json (bazel data dependency): %v", err)
 	}

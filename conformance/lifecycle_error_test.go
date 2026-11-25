@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/internal/fdbgo/transport"
+	"fdb.dev/internal/fdbwire"
 	gofdb "fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/fdbgo/transport"
-	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/plandiff"
 )

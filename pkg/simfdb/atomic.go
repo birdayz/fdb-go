@@ -10,7 +10,7 @@ import "bytes"
 //   - C++ spec: fdbclient/include/fdbclient/Atomic.h — doLittleEndianAdd, doAnd,
 //     doAndV2, doOr, doXor, doMax, doMin, doMinV2, doByteMax, doByteMin,
 //     doAppendIfFits, doCompareAndClear.
-//   - The pure-Go client's differential-tested port: pkg/fdbgo/client/ryw.go
+//   - The pure-Go client's differential-tested port: internal/fdbgo/client/ryw.go
 //     (applyAtomic + do* helpers, lines ~1401-1656), which is proven byte-identical
 //     to libfdb_c by the client differential.
 //

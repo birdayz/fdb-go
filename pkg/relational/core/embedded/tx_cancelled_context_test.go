@@ -8,7 +8,7 @@ package embedded
 // terminal flag and is asserted BEFORE the page runs. The 1025 lane covers the
 // path the flag cannot — the FDB-level cancellation of the underlying
 // transaction with no door involved (the client resolves every op on a
-// cancelled handle with 1025; see pkg/fdbgo/client checkCancelled, matching
+// cancelled handle with 1025; see internal/fdbgo/client checkCancelled, matching
 // C++ ReadYourWrites cancel()). An internal test, because reaching a live
 // *embeddedTx's record context without tripping a door requires package
 // access; the door-covered shapes live in

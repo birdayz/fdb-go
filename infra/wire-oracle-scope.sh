@@ -49,7 +49,7 @@ fi
 sed -n 's|^//\([^:]*\):|\1/|p' "$tmp/labels" | sed 's|^/||' >"$tmp/files"
 sed -n 's|^//\([^:][^:]*\):.*|\1|p' "$tmp/labels" | sort -u >"$tmp/pkgs"
 # The oracle, its Go wire types and its C++ build: missing any means the query was misread.
-for p in cmd/fdb-diff-oracle pkg/fdbgo/wire/types cmd/fdb-schema-extract; do
+for p in cmd/fdb-diff-oracle internal/fdbwire/types cmd/fdb-schema-extract; do
   grep -qxF -e "$p" "$tmp/pkgs" || broken "query did not return oracle package $p"
 done
 

@@ -1,0 +1,11 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+package(default_visibility = ["//:__subpackages__"])
+
+go_library(
+    name = "stringarray",
+    srcs = ["fixture.go"],
+    cgo = True,
+    importpath = "fdb.dev/internal/fdbgo/bindingtest/stringarray",
+    visibility = ["//tests/fdbgo/bindingtest:__pkg__"],
+)

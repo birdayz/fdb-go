@@ -364,6 +364,7 @@ func TestExcludedTestInfraPackages(t *testing.T) {
 		"fdb.dev/tests/sql/core",
 		"fdb.dev/bench",
 		"fdb.dev/bench/recordlayer",
+		"fdb.dev/internal/fdbgo/bindingtest/stringarray",
 	} {
 		if !excluded(pkg) {
 			t.Errorf("excluded(%q) = false, want true", pkg)

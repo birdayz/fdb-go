@@ -9,9 +9,9 @@ import (
 	"reflect"
 	"testing"
 
+	"fdb.dev/internal/fdbwire"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"

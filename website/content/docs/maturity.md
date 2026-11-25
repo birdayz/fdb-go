@@ -40,7 +40,7 @@ migrated. Rehearse backup, migration, and rollback before allowing new writers.
 
 Three suites compare against external references:
 
-- [Client differentials](https://github.com/birdayz/fdb-go/tree/master/pkg/fdbgo/bench)
+- [Client differentials](https://github.com/birdayz/fdb-go/tree/master/bench/fdbgo)
   compare pure Go with `libfdb_c` against the same FoundationDB cluster.
 - [Record Layer conformance](https://github.com/birdayz/fdb-go/tree/master/conformance)
   exercises shared record-store data with Java.
@@ -58,7 +58,7 @@ every extended fuzz, race, or recovery configuration has run. No fresh full-suit
 or production-workload result is asserted by this page.
 
 Earlier Go-vs-libfdb_c speedup and write-parity claims were withdrawn. See the
-[benchmark correction and methodology](https://github.com/birdayz/fdb-go/blob/master/pkg/fdbgo/bench/PERFORMANCE.md),
+[benchmark correction and methodology](https://github.com/birdayz/fdb-go/blob/master/bench/fdbgo/PERFORMANCE.md),
 and review the preregistered single-node and 4-node VPC campaign measurements in
 [Benchmarks](/docs/benchmarks/).
 

@@ -36,7 +36,7 @@ not affiliated with Apple or the FoundationDB project.
 
 [`fdb.dev/pkg/fdbgo/fdb`](pkg/fdbgo/fdb) implements FoundationDB's 7.3 client
 protocol without cgo or `libfdb_c`, with an API modeled on Apple's Go binding.
-[Differential tests](pkg/fdbgo/bench/) compare results, stored bytes and error codes
+[Differential tests](bench/fdbgo/) compare results, stored bytes and error codes
 against libfdb_c 7.3.77 on every pull request.
 
 ```go

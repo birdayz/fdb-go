@@ -19,9 +19,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"fdb.dev/internal/fdbclient"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/internal/fdbclient"
 )
 
 // WeakReadSemantics configures relaxed read consistency for a transaction.

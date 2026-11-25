@@ -7,8 +7,8 @@ import (
 	"io"
 	"sort"
 
-	"fdb.dev/pkg/fdbgo/wire"
-	"fdb.dev/pkg/fdbgo/wire/types"
+	"fdb.dev/internal/fdbwire"
+	"fdb.dev/internal/fdbwire/types"
 )
 
 // Kind is a request type the analyzer follows.

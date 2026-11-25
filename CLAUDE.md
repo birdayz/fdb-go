@@ -107,7 +107,7 @@ success does not establish correctness or authorize a merge.
 
 ## Wire types and store boundaries
 
-Do not hand-write FDB wire structs in `pkg/fdbgo/wire/types/`. Register types in
+Do not hand-write FDB wire structs in `internal/fdbwire/types/`. Register types in
 `cmd/fdb-schema-extract/extract.h` and `main.cpp`, then run
 `just generate-wire-types && just gazelle`. `keyrangeref_custom.go` is the
 existing documented exception.
@@ -120,7 +120,7 @@ need scan/time limiters and continuations; large values need split records.
 
 ## Repository map and tooling
 
-- `pkg/fdbgo/`: pure-Go FoundationDB client, transport and differentials.
+- `pkg/fdbgo/`: public pure-Go FoundationDB client facade (`fdb`, `fdbmetrics`); internals live in `internal/fdbgo/`, wire codecs in `internal/fdbwire/`, C-client adapter in `internal/fdbclient/`, suites in `tests/fdbgo/`, benchmarks/differentials in `bench/fdbgo/`.
 - `pkg/recordlayer/`: records, indexes, cursors and query planning.
 - `pkg/relational/`: embedded SQL engine, driver and cross-engine tests.
 - `conformance/`: Java record-layer harness.

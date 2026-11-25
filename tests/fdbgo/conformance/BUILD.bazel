@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+package(default_visibility = ["//visibility:private"])
+
+go_test(
+    name = "conformance_test",
+    timeout = "long",
+    srcs = ["consistencycheck_test.go"],
+    tags = [
+        "resources:memory:1000",
+        "test-full",
+    ],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_testcontainers_testcontainers_go//exec",
+    ],
+)

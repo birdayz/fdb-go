@@ -13,7 +13,7 @@ an arbitrary Java query plan can resume in Go. See [status](../STATUS.md) and
 |---|---|
 | Java Record Layer and Relational | **4.14.2.0**, pinned artifacts in `MODULE.bazel` |
 | FoundationDB | **7.3.77**, the client source and test-cluster pin |
-| Pure-Go transport | FDB **7.3 protocol** (`ProtocolVersion73` in `pkg/fdbgo/transport/handshake.go`); not a multi-version client |
+| Pure-Go transport | FDB **7.3 protocol** (`ProtocolVersion73` in `internal/fdbgo/transport/handshake.go`); not a multi-version client |
 | Store format | Go default **14**, Java default **7**; both support through **15** in the pinned reference |
 | Go/tooling | Exact versions in `go.mod`, `MODULE.bazel` and `.bazelversion` |
 
@@ -379,7 +379,7 @@ cannot resolve.
 Both clients resolve the skipped selector inside the range read (RFC-262 D10).
 An overshooting Skip is therefore bounded by the range as in `libfdb_c`, and the
 read-conflict range is the same. Pinned against libfdb_c by
-`//pkg/fdbgo/client:selector_range_conformance_test` and
+`//internal/fdbgo/client:selector_range_conformance_test` and
 `TestDifferential_GetRangeSelectorRYW`. Ordinary, covering and fetch query index
 plans pass Skip to the index cursor when binding a single physical range without a residual key filter, so
 skipped entries are neither scan-limit charges nor record loads. Multi-range

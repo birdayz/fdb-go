@@ -1,7 +1,7 @@
 blocking: medium
 ignore:
   - "gen/**"
-  - "pkg/fdbgo/wire/types/*_generated.go"
+  - "internal/fdbwire/types/*_generated.go"
   - "pkg/relational/core/parser/gen/**"
   - "**/*.pb.go"
   - "third_party/**"

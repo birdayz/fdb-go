@@ -10,9 +10,9 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"golang.org/x/net/proxy"
 
-	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/internal/fdbgo/client"
+	"fdb.dev/internal/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/recordlayer"
 )
 

@@ -35,7 +35,7 @@ FAIL	fdb.dev/cmd/fdb-diff-oracle	120.093s
 // sets `test --test_arg="-test.v"` globally, so every bazel-run target emits the
 // VERBOSE shape. A non-verbose fixture here would claim to pin this path while
 // pinning output it never produces.
-const bazelDeadlineRace = `==================== Test output for //pkg/fdbgo/client:client_test:
+const bazelDeadlineRace = `==================== Test output for //internal/fdbgo/client:client_test:
 === RUN   FuzzRYWCache
 fuzz: elapsed: 1m27s, execs: 2210544 (25000/sec), new interesting: 0 (total: 41)
 fuzz: elapsed: 1m30s, execs: 2284412 (0/sec), new interesting: 0 (total: 41)
@@ -44,8 +44,8 @@ fuzz: elapsed: 1m30s, execs: 2284412 (0/sec), new interesting: 0 (total: 41)
 === NAME  
 FAIL
 ================================================================================
-FAILED: //pkg/fdbgo/client:client_test (Exit 1) (see /home/x/.cache/bazel/.../test.log)
-//pkg/fdbgo/client:client_test                                           FAILED in 95.0s
+FAILED: //internal/fdbgo/client:client_test (Exit 1) (see /home/x/.cache/bazel/.../test.log)
+//internal/fdbgo/client:client_test                                           FAILED in 95.0s
 
 Executed 1 out of 1 test: 1 fails locally.
 `
@@ -74,7 +74,7 @@ func TestClassify_DeadlineTextWithoutTheBudgetShapeIsNeverRetried(t *testing.T) 
 		// this repo also starts an FDB testcontainer under a context.WithTimeout
 		// (CLAUDE.md mandates it). A slow Docker start dies before fuzzing begins,
 		// printing the identical error string with no fuzz output at all.
-		// See pkg/fdbgo/client/testmain_test.go TestMain.
+		// See internal/fdbgo/client/testmain_test.go TestMain.
 		"container start timed out before fuzzing": {
 			output:   "start FDB container: context deadline exceeded\n",
 			exitCode: 1,
@@ -151,7 +151,7 @@ fuzz: elapsed: 1m30s, minimizing
 		},
 		// ...and through bazel's verbose framing at exit 3.
 		"minimization swallow through bazel framing": {
-			output: `==================== Test output for //pkg/fdbgo/client:client_test:
+			output: `==================== Test output for //internal/fdbgo/client:client_test:
 === RUN   FuzzRYWCache
 fuzz: elapsed: 1m27s, execs: 2210544 (25000/sec), new interesting: 3 (total: 41)
 fuzz: minimizing 37-byte failing input file

@@ -4,7 +4,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/internal/fdbgo/client"
 )
 
 // Future represents a value (or error) available at some later time.

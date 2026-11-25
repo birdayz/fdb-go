@@ -297,7 +297,7 @@ func (tx *simTxn) selectorFetch(begin, end fdb.KeySelector, limit, byteTarget in
 // rywRangeConflictSpan is addConflictRange(GetRangeReq<false>) (RYW:245-281) and
 // addConflictRange(GetRangeReq<true>) (:284-319) before updateConflictMap, from the request's
 // selectors (after removeOrEqual) and its result in scan order. It is the client's
-// rywRangeConflictSpan (pkg/fdbgo/client/range_selector_issue.go).
+// rywRangeConflictSpan (internal/fdbgo/client/range_selector_issue.go).
 func rywRangeConflictSpan(begin, end fdb.KeySelector, kvs []fdb.KeyValue, more, readToBegin, readThroughEnd, reverse bool, maxKey []byte) (rangeBegin, rangeEnd []byte) {
 	bk, ek := []byte(begin.Key.FDBKey()), []byte(end.Key.FDBKey())
 	if bytes.Compare(bk, ek) < 0 {
@@ -345,7 +345,7 @@ var allKeysEnd = []byte{0xff, 0xff}
 
 // getRangeFinishedConflict is getRangeFinished's read-conflict range (NAPI:4558-4586), from the
 // call's selectors (after removeOrEqual) and its result in scan order. It is the client's
-// getRangeFinishedConflict (pkg/fdbgo/client/native_range.go).
+// getRangeFinishedConflict (internal/fdbgo/client/native_range.go).
 func getRangeFinishedConflict(begin, end fdb.KeySelector, kvs []fdb.KeyValue, more, readToBegin, readThroughEnd, reverse bool) (rangeBegin, rangeEnd []byte) {
 	bk, ek := []byte(begin.Key.FDBKey()), []byte(end.Key.FDBKey())
 	n := len(kvs)

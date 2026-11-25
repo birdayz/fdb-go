@@ -102,7 +102,7 @@ rdb := recordlayer.NewFDBDatabase(db)
 The client is **pure Go by default** (no cgo). To run the Record Layer against Apple's `libfdb_c`
 instead, for example the battle-tested C client on a bet-the-company write path, open through the
 **factory** and build with the tag. The factory routes through an internal, build-tag-selected
-backend seam (`pkg/internal/fdbclient`), so no source change is needed:
+backend seam (`internal/fdbclient`), so no source change is needed:
 
 ```go
 rdb, _ := recordlayer.NewFDBDatabaseFactory().GetDatabase(clusterFile) // pure-Go OR libfdb_c, per build tag
