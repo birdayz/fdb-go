@@ -18,7 +18,7 @@ import (
 
 	"fdb.dev/pkg/fdbgo/fdb"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // IndexingValidationError matches Java's IndexingBase.ValidationException: a
@@ -268,7 +268,7 @@ func (oi *OnlineIndexer) drainPendingIndexWritesForIndex(ctx context.Context, in
 	}
 	var store *FDBRecordStore
 	iterator := newThrottledRetryingIterator(NewFDBDatabaseRunner(oi.db),
-		func(_ context.Context, rc *FDBRecordContext, continuation []byte, limit int) (RecordCursor[*PendingWritesQueueEntry[*gen.PendingWritesQueueEntry]], error) {
+		func(_ context.Context, rc *FDBRecordContext, continuation []byte, limit int) (RecordCursor[*PendingWritesQueueEntry[*metadatapb.PendingWritesQueueEntry]], error) {
 			var err error
 			store, err = oi.openStore(rc)
 			if err != nil {
@@ -297,7 +297,7 @@ func (oi *OnlineIndexer) drainPendingIndexWritesForIndex(ctx context.Context, in
 			props.ExecuteProperties.ReturnedRowLimit = limit
 			return store.indexingPendingWriteQueue(index, 0).GetQueueCursor(rc, props, continuation), nil
 		},
-		func(_ context.Context, _ *FDBRecordContext, entry *PendingWritesQueueEntry[*gen.PendingWritesQueueEntry], quota *iterationQuota) error {
+		func(_ context.Context, _ *FDBRecordContext, entry *PendingWritesQueueEntry[*metadatapb.PendingWritesQueueEntry], quota *iterationQuota) error {
 			if err := store.replayPendingIndexWrite(index, entry); err != nil {
 				return err
 			}
@@ -406,9 +406,9 @@ func (oi *OnlineIndexer) cleanupHeartbeatAttempt(ctx context.Context, heartbeat 
 // validateBuildStamp follows IndexingBase.validateTypeStamp: a missing stamp is
 // legacy BY_RECORDS, and ongoing validation compares the method, not ancillary
 // takeover-policy fields. A live block always prevents progress.
-func (oi *OnlineIndexer) validateBuildStamp(store *FDBRecordStore, index *Index, stamp *gen.IndexBuildIndexingStamp) error {
+func (oi *OnlineIndexer) validateBuildStamp(store *FDBRecordStore, index *Index, stamp *metadatapb.IndexBuildIndexingStamp) error {
 	expected := oi.buildIndexingStamp()
-	if stamp == nil && expected.GetMethod() == gen.IndexBuildIndexingStamp_BY_RECORDS {
+	if stamp == nil && expected.GetMethod() == metadatapb.IndexBuildIndexingStamp_BY_RECORDS {
 		return nil
 	}
 	if stamp == nil || stamp.GetMethod() != expected.GetMethod() || isTypeStampBlocked(stamp, store.context.Env().Now()) {

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	"fdb.dev/gen"
 	"fdb.dev/gen/demopb"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -106,7 +106,7 @@ func TestMetadataRejectsDeclaredVersionPrimaryKeys(t *testing.T) {
 			}
 		}
 		laterName := "rfc275_unknown_later_record"
-		raw.RecordTypes = append(raw.RecordTypes, &gen.RecordType{Name: &laterName})
+		raw.RecordTypes = append(raw.RecordTypes, &metadatapb.RecordType{Name: &laterName})
 		_, err = RecordMetaDataFromProto(raw)
 		var metadataError *MetaDataError
 		if !errors.As(err, &metadataError) || metadataError.Message != "Version in primary key not supported" {

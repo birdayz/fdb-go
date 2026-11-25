@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -241,7 +241,7 @@ func TestValueToProtoRoundtrip(t *testing.T) {
 // record_type_key option SetRecords reads.
 func TestValueFromProto_MoreThanOneValue(t *testing.T) {
 	t.Parallel()
-	two := &gen.Value{LongValue: proto.Int64(1), IntValue: proto.Int32(1)}
+	two := &metadatapb.Value{LongValue: proto.Int64(1), IntValue: proto.Int32(1)}
 	wantRCE := func(t *testing.T, err error) {
 		t.Helper()
 		var rce *RecordCoreError
@@ -251,9 +251,9 @@ func TestValueFromProto_MoreThanOneValue(t *testing.T) {
 	}
 	_, err := valueFromProto(two)
 	wantRCE(t, err)
-	_, err = KeyExpressionFromProto(&gen.KeyExpression{Value: two})
+	_, err = KeyExpressionFromProto(&metadatapb.KeyExpression{Value: two})
 	wantRCE(t, err)
-	if v, err := valueFromProto(&gen.Value{}); v != nil || err != nil {
+	if v, err := valueFromProto(&metadatapb.Value{}); v != nil || err != nil {
 		t.Fatalf("an empty Value is (%v, %v), want (nil, nil)", v, err)
 	}
 	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
@@ -274,7 +274,7 @@ func TestValueFromProto_MoreThanOneValue(t *testing.T) {
 
 	// The record_type_key option of a message, which SetRecords reads.
 	opts := &descriptorpb.MessageOptions{}
-	proto.SetExtension(opts, gen.E_Record, &gen.RecordTypeOptions{RecordTypeKey: two})
+	proto.SetExtension(opts, metadatapb.E_Record, &metadatapb.RecordTypeOptions{RecordTypeKey: two})
 	fd, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
 		Name: proto.String("two_values.proto"), Package: proto.String("twovalues"), Syntax: proto.String("proto2"),
 		Dependency: []string{"record_metadata_options.proto"},
@@ -354,7 +354,7 @@ func TestMetaDataToProtoRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var restored gen.MetaData
+	var restored metadatapb.MetaData
 	if err := proto.Unmarshal(data, &restored); err != nil {
 		t.Fatal(err)
 	}
@@ -715,7 +715,7 @@ func TestMetaDataProtoRoundtripMultiTypeIndex(t *testing.T) {
 	}
 
 	// Multi-type index should list both record types
-	var sharedProto *gen.Index
+	var sharedProto *metadatapb.Index
 	for _, ip := range mdProto.Indexes {
 		if ip.GetName() == "shared_idx" {
 			sharedProto = ip
@@ -805,13 +805,13 @@ func TestStoredIndexSubspaceKeyIsReadAsJavaReadsIt(t *testing.T) {
 				t.Fatal(err)
 			}
 			md.Version = proto.Int32(2)
-			idx := &gen.Index{
+			idx := &metadatapb.Index{
 				Name: proto.String("SK_IDX"), RecordType: []string{"Order"},
 				RootExpression: Field("price").ToKeyExpression(), Type: proto.String("value"),
 				AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1), SubspaceKey: c.key,
 			}
 			if c.repeatOption {
-				idx.Options = []*gen.Index_Option{{Key: proto.String("a"), Value: proto.String("1")}, {Key: proto.String("a"), Value: proto.String("2")}}
+				idx.Options = []*metadatapb.Index_Option{{Key: proto.String("a"), Value: proto.String("1")}, {Key: proto.String("a"), Value: proto.String("2")}}
 			}
 			if c.noRoot {
 				idx.RootExpression = nil
@@ -823,7 +823,7 @@ func TestStoredIndexSubspaceKeyIsReadAsJavaReadsIt(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var decoded gen.MetaData
+			var decoded metadatapb.MetaData
 			if err := proto.Unmarshal(stored, &decoded); err != nil {
 				t.Fatal(err)
 			}
@@ -878,7 +878,7 @@ func TestStoredIndexSubspaceKeyIsReadAsJavaReadsIt(t *testing.T) {
 // one would do: refuse loudly, never read another index's key.
 func TestReusedIndexMessageKeepsAnEmptySubspaceKey(t *testing.T) {
 	t.Parallel()
-	withoutKey, err := proto.Marshal(&gen.Index{
+	withoutKey, err := proto.Marshal(&metadatapb.Index{
 		Name: proto.String("SK_IDX"), RecordType: []string{"Order"},
 		RootExpression: Field("price").ToKeyExpression(), Type: proto.String("value"),
 		AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1),
@@ -886,7 +886,7 @@ func TestReusedIndexMessageKeepsAnEmptySubspaceKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var fresh gen.Index
+	var fresh metadatapb.Index
 	if err := fresh.UnmarshalVT(withoutKey); err != nil {
 		t.Fatal(err)
 	}
@@ -894,7 +894,7 @@ func TestReusedIndexMessageKeepsAnEmptySubspaceKey(t *testing.T) {
 		t.Fatalf("a fresh message read an absent key as %#v", fresh.SubspaceKey)
 	}
 
-	reused := &gen.Index{SubspaceKey: tuple.Tuple{"elsewhere"}.Pack()}
+	reused := &metadatapb.Index{SubspaceKey: tuple.Tuple{"elsewhere"}.Pack()}
 	reused.ResetVT()
 	if err := reused.UnmarshalVT(withoutKey); err != nil {
 		t.Fatal(err)

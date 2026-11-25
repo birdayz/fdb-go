@@ -12,7 +12,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -77,7 +77,7 @@ func TestMetaDataDependenciesUseJavaFilenameOrder(t *testing.T) {
 		{"traversal_order", []*descriptorpb.FileDescriptorProto{z, middle, a}},
 	} {
 		t.Run(inputOrder.name, func(t *testing.T) {
-			input := proto.Clone(want).(*gen.MetaData)
+			input := proto.Clone(want).(*metadatapb.MetaData)
 			input.Dependencies = inputOrder.files
 			md, err := RecordMetaDataFromProto(input)
 			if err != nil {
@@ -112,7 +112,7 @@ func TestMetaDataDependenciesUseJavaFilenameOrder(t *testing.T) {
 // This test class did not exist, and its absence is why six MetaData fields
 // could be dropped in silence. The round trip the suite did have —
 // metadata_store_test.go's "saves and loads metadata proto" — is a BYTES round
-// trip: it hands a *gen.MetaData to FDBMetaDataStore, reads it back, and
+// trip: it hands a *metadatapb.MetaData to FDBMetaDataStore, reads it back, and
 // compares with proto.Equal. That path stores the serialized bytes verbatim and
 // never constructs a RecordMetaData at all, so every field survives it by
 // construction, including fields no Go code has ever heard of. It can prove the
@@ -249,7 +249,7 @@ func TestMetaDataProtoRoundTripPreservesUnmodelledContents(t *testing.T) {
 			t.Errorf("stored query %d lost content: got %v, want %v", i, got.GetStoredQueries()[i], want)
 		}
 	}
-	storedQuery := proto.Clone(original.StoredQueries[0]).(*gen.PStoredQuery)
+	storedQuery := proto.Clone(original.StoredQueries[0]).(*metadatapb.PStoredQuery)
 
 	// The carried protos must be COPIES. Mutating the caller's original after
 	// the load, or the emitted result afterwards, must not reach the metadata's
@@ -285,12 +285,12 @@ func TestStoredQueryPreservationPresenceAndUnknownFields(t *testing.T) {
 	unknown = protowire.AppendString(unknown, "future stored-query field")
 	for _, tc := range []struct {
 		name    string
-		queries []*gen.PStoredQuery
+		queries []*metadatapb.PStoredQuery
 	}{
 		{name: "absent"},
-		{name: "unset_fields", queries: []*gen.PStoredQuery{{}}},
-		{name: "explicit_empty_fields", queries: []*gen.PStoredQuery{{Name: proto.String(""), Query: proto.String("")}}},
-		{name: "ordered_functions", queries: []*gen.PStoredQuery{{
+		{name: "unset_fields", queries: []*metadatapb.PStoredQuery{{}}},
+		{name: "explicit_empty_fields", queries: []*metadatapb.PStoredQuery{{Name: proto.String(""), Query: proto.String("")}}},
+		{name: "ordered_functions", queries: []*metadatapb.PStoredQuery{{
 			Name: proto.String("q"), Query: proto.String("SELECT helper()"),
 			TempFunctions: []string{"", "CREATE TEMPORARY FUNCTION helper() AS 1", ""},
 		}}},
@@ -302,7 +302,7 @@ func TestStoredQueryPreservationPresenceAndUnknownFields(t *testing.T) {
 			for _, query := range input.StoredQueries {
 				query.ProtoReflect().SetUnknown(bytes.Clone(unknown))
 			}
-			want := proto.Clone(input).(*gen.MetaData)
+			want := proto.Clone(input).(*metadatapb.MetaData)
 			first, err := RecordMetaDataFromProto(input)
 			if err != nil {
 				t.Fatal(err)
@@ -353,12 +353,12 @@ func TestSubspaceKeyCounterPairValidation(t *testing.T) {
 
 	for _, tc := range []struct {
 		name    string
-		mutate  func(*gen.MetaData)
+		mutate  func(*metadatapb.MetaData)
 		wantErr string
 	}{
 		{
 			name: "counter_without_flag",
-			mutate: func(md *gen.MetaData) {
+			mutate: func(md *metadatapb.MetaData) {
 				md.SubspaceKeyCounter = proto.Int64(7)
 				md.UsesSubspaceKeyCounter = nil
 			},
@@ -366,7 +366,7 @@ func TestSubspaceKeyCounterPairValidation(t *testing.T) {
 		},
 		{
 			name: "flag_without_counter",
-			mutate: func(md *gen.MetaData) {
+			mutate: func(md *metadatapb.MetaData) {
 				md.SubspaceKeyCounter = nil
 				md.UsesSubspaceKeyCounter = proto.Bool(true)
 			},
@@ -573,7 +573,7 @@ func TestDeclaredSyntheticTypesAreVisibleAndIndexesOverThemRefused(t *testing.T)
 
 	// An index over the joined type must be refused rather than dropped.
 	withIndex := fidelityMetaDataProto(t)
-	withIndex.Indexes = append(withIndex.Indexes, &gen.Index{
+	withIndex.Indexes = append(withIndex.Indexes, &metadatapb.Index{
 		Name:           proto.String("joined_idx"),
 		Type:           proto.String(IndexTypeValue),
 		RecordType:     []string{"OrderWithCustomer"},
@@ -604,7 +604,7 @@ func fidelityBuilder(t *testing.T) *RecordMetaDataBuilder {
 
 // fidelityBuilderFrom rebuilds a builder from a stored proto, the way a tool
 // that loads metadata and then edits it does.
-func fidelityBuilderFrom(t *testing.T, p *gen.MetaData) *RecordMetaDataBuilder {
+func fidelityBuilderFrom(t *testing.T, p *metadatapb.MetaData) *RecordMetaDataBuilder {
 	t.Helper()
 	md, err := RecordMetaDataFromProto(p)
 	if err != nil {
@@ -634,7 +634,7 @@ func fidelityBuilderFrom(t *testing.T, p *gen.MetaData) *RecordMetaDataBuilder {
 // It is written in proto form rather than through the builder because the
 // builder cannot express fields 12-16 — a fixture built through the Go API could never have caught
 // them being dropped, which is how they stayed dropped.
-func fidelityMetaDataProto(t *testing.T) *gen.MetaData {
+func fidelityMetaDataProto(t *testing.T) *metadatapb.MetaData {
 	t.Helper()
 
 	builder := fidelityBuilder(t).EnableCounterBasedSubspaceKeys()
@@ -669,7 +669,7 @@ func fidelityMetaDataProto(t *testing.T) *gen.MetaData {
 	// A former index, so field 6 is non-empty.
 	// Its subspace key is required: Java's FormerIndex(proto) refuses an absent
 	// key, and so does Go's reader.
-	p.FormerIndexes = append(p.FormerIndexes, &gen.FormerIndex{
+	p.FormerIndexes = append(p.FormerIndexes, &metadatapb.FormerIndex{
 		FormerName:     proto.String("gone_idx"),
 		SubspaceKey:    tuple.Tuple{"gone_idx"}.Pack(),
 		RemovedVersion: proto.Int32(3),
@@ -679,38 +679,38 @@ func fidelityMetaDataProto(t *testing.T) *gen.MetaData {
 	p.RecordCountKey = Field("order_id").ToKeyExpression()
 
 	// Fields 12-16: what a Java application writes and the Go port does not model.
-	p.JoinedRecordTypes = append(p.JoinedRecordTypes, &gen.JoinedRecordType{
+	p.JoinedRecordTypes = append(p.JoinedRecordTypes, &metadatapb.JoinedRecordType{
 		Name: proto.String("OrderWithCustomer"),
-		JoinConstituents: []*gen.JoinedRecordType_JoinConstituent{
+		JoinConstituents: []*metadatapb.JoinedRecordType_JoinConstituent{
 			{Name: proto.String("o"), RecordType: proto.String("Order")},
 			{Name: proto.String("c"), RecordType: proto.String("Customer"), OuterJoined: proto.Bool(true)},
 		},
-		Joins: []*gen.JoinedRecordType_Join{{
+		Joins: []*metadatapb.JoinedRecordType_Join{{
 			Left:            proto.String("o"),
 			LeftExpression:  Field("customer_id").ToKeyExpression(),
 			Right:           proto.String("c"),
 			RightExpression: Field("customer_id").ToKeyExpression(),
 		}},
 	})
-	p.UnnestedRecordTypes = append(p.UnnestedRecordTypes, &gen.UnnestedRecordType{
+	p.UnnestedRecordTypes = append(p.UnnestedRecordTypes, &metadatapb.UnnestedRecordType{
 		Name: proto.String("UnnestedOrder"),
-		NestedConstituents: []*gen.UnnestedRecordType_NestedConstituent{
+		NestedConstituents: []*metadatapb.UnnestedRecordType_NestedConstituent{
 			{Name: proto.String("parent"), TypeName: proto.String("Order")},
 		},
 	})
-	p.UserDefinedFunctions = append(p.UserDefinedFunctions, &gen.PUserDefinedFunction{
-		SpecificFunction: &gen.PUserDefinedFunction_SqlFunction{
-			SqlFunction: &gen.PRawSqlFunction{
+	p.UserDefinedFunctions = append(p.UserDefinedFunctions, &metadatapb.PUserDefinedFunction{
+		SpecificFunction: &metadatapb.PUserDefinedFunction_SqlFunction{
+			SqlFunction: &metadatapb.PRawSqlFunction{
 				Name:       proto.String("double_it"),
 				Definition: proto.String("CREATE FUNCTION double_it(x BIGINT) AS SELECT x * 2"),
 			},
 		},
 	})
-	p.Views = append(p.Views, &gen.PView{
+	p.Views = append(p.Views, &metadatapb.PView{
 		Name:       proto.String("big_orders"),
 		Definition: proto.String("SELECT * FROM Order WHERE price > 100"),
 	})
-	p.StoredQueries = []*gen.PStoredQuery{
+	p.StoredQueries = []*metadatapb.PStoredQuery{
 		{
 			Name:  proto.String("warm_orders"),
 			Query: proto.String("SELECT * FROM Order WHERE price > minimum_price()"),
@@ -753,7 +753,7 @@ var exemptFromFidelityFixture = map[string]bool{
 // the fixture. Reflective rather than a hand-written list, so that a field added
 // to the proto by a later Java version arrives here as a FAILURE rather than as
 // silence — which is the same defect this file exists to close, one version on.
-func assertEveryMetaDataFieldPopulated(t *testing.T, p *gen.MetaData) {
+func assertEveryMetaDataFieldPopulated(t *testing.T, p *metadatapb.MetaData) {
 	t.Helper()
 	desc := p.ProtoReflect().Descriptor()
 	fields := desc.Fields()

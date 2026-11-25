@@ -9,7 +9,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 )
@@ -60,7 +60,7 @@ var _ = Describe("Store state management", func() {
 				if err != nil {
 					return nil, err
 				}
-				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test lock")
+				return nil, store.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test lock")
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -96,7 +96,7 @@ var _ = Describe("Store state management", func() {
 				if err != nil {
 					return nil, err
 				}
-				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test lock")
+				return nil, store.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test lock")
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -157,7 +157,7 @@ var _ = Describe("Store state management", func() {
 				if err != nil {
 					return nil, err
 				}
-				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "")
+				return nil, store.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "")
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -199,7 +199,7 @@ var _ = Describe("Store state management", func() {
 				if err != nil {
 					return nil, err
 				}
-				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FULL_STORE, "maintenance")
+				return nil, store.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FULL_STORE, "maintenance")
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -225,7 +225,7 @@ var _ = Describe("Store state management", func() {
 				if err != nil {
 					return nil, err
 				}
-				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FULL_STORE, "maintenance")
+				return nil, store.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FULL_STORE, "maintenance")
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -251,7 +251,7 @@ var _ = Describe("Store state management", func() {
 				if err != nil {
 					return nil, err
 				}
-				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FULL_STORE, "maintenance")
+				return nil, store.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FULL_STORE, "maintenance")
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -279,7 +279,7 @@ var _ = Describe("Store state management", func() {
 				if err != nil {
 					return nil, err
 				}
-				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FULL_STORE, "maintenance")
+				return nil, store.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FULL_STORE, "maintenance")
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -306,7 +306,7 @@ var _ = Describe("Store state management", func() {
 				if err != nil {
 					return nil, err
 				}
-				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FULL_STORE, "maintenance")
+				return nil, store.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FULL_STORE, "maintenance")
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -347,7 +347,7 @@ var _ = Describe("Store state management", func() {
 				if err != nil {
 					return nil, err
 				}
-				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "")
+				return nil, store.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "")
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -382,7 +382,7 @@ var _ = Describe("Store state management", func() {
 				if err != nil {
 					return nil, err
 				}
-				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "")
+				return nil, store.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "")
 			})
 			Expect(err).NotTo(HaveOccurred())
 

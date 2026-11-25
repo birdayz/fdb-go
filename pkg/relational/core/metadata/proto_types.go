@@ -12,7 +12,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/protoscope"
 	"fdb.dev/pkg/relational/api"
 )
@@ -243,12 +243,12 @@ func StructTypeFromDescriptor(md protoreflect.MessageDescriptor, nullable bool) 
 
 // vectorOptions is the field's vector options, when its options carry the
 // record-layer field extension with them.
-func vectorOptions(fd protoreflect.FieldDescriptor) (*gen.FieldOptions_VectorOptions, bool) {
+func vectorOptions(fd protoreflect.FieldDescriptor) (*metadatapb.FieldOptions_VectorOptions, bool) {
 	opts, ok := fd.Options().(*descriptorpb.FieldOptions)
-	if !ok || opts == nil || !proto.HasExtension(opts, gen.E_Field) {
+	if !ok || opts == nil || !proto.HasExtension(opts, metadatapb.E_Field) {
 		return nil, false
 	}
-	field, ok := proto.GetExtension(opts, gen.E_Field).(*gen.FieldOptions)
+	field, ok := proto.GetExtension(opts, metadatapb.E_Field).(*metadatapb.FieldOptions)
 	if !ok || field.GetVectorOptions() == nil {
 		return nil, false
 	}

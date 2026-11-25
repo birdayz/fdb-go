@@ -5,8 +5,8 @@
 package recordlayer
 
 import (
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	proto "google.golang.org/protobuf/proto"
 )
 
@@ -44,10 +44,10 @@ func (d *DimensionsKeyExpression) FieldNames() []string {
 }
 
 // ToKeyExpression serializes to proto.
-func (d *DimensionsKeyExpression) ToKeyExpression() *gen.KeyExpression {
+func (d *DimensionsKeyExpression) ToKeyExpression() *metadatapb.KeyExpression {
 	inner := d.WholeKey.ToKeyExpression()
-	return &gen.KeyExpression{
-		Dimensions: &gen.Dimensions{
+	return &metadatapb.KeyExpression{
+		Dimensions: &metadatapb.Dimensions{
 			WholeKey:       inner,
 			PrefixSize:     proto.Int32(int32(d.PrefixSize)),
 			DimensionsSize: proto.Int32(int32(d.DimensionsSize)),

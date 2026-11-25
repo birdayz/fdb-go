@@ -7,8 +7,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/cmd/fdb/internal/meta"
-	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // newMetaApplyCmd is the schema-evolution write (RFC-174 §3.3): validate
@@ -125,7 +125,7 @@ func newMetaApplyCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("read current metadata from %s: %w", ksPath, err)
 			}
-			oldProto, _ := result.(*gen.MetaData)
+			oldProto, _ := result.(*metadatapb.MetaData)
 			switch {
 			case oldProto != nil && proto.Equal(oldProto, newProto):
 				fmt.Fprintf(cmd.OutOrStdout(), "metadata version %d already current at %s — nothing to do\n", newMeta.Version(), ksPath)
@@ -205,7 +205,7 @@ const (
 //
 // confirmed is the metadata the preview showed the operator (nil for a
 // --force-initial bootstrap of an empty store).
-func metaApplySave(rtx *recordlayer.FDBRecordContext, metaStore *recordlayer.FDBMetaDataStore, confirmed, newProto *gen.MetaData) (metaApplyOutcome, error) {
+func metaApplySave(rtx *recordlayer.FDBRecordContext, metaStore *recordlayer.FDBMetaDataStore, confirmed, newProto *metadatapb.MetaData) (metaApplyOutcome, error) {
 	current, err := metaStore.LoadRecordMetaDataProto(rtx.Transaction())
 	if err != nil {
 		return 0, err

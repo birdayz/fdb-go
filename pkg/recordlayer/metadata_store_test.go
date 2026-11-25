@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -24,7 +24,7 @@ var _ = Describe("FDBMetaDataStore", func() {
 	// buildMDProto builds a real, buildable MetaData proto —
 	// SaveRecordMetaData validates like Java's saveAndSetCurrent, so bare
 	// version-only protos are rejected ("new metadata does not build").
-	buildMDProto := func(version int, configure func(b *RecordMetaDataBuilder)) *gen.MetaData {
+	buildMDProto := func(version int, configure func(b *RecordMetaDataBuilder)) *metadatapb.MetaData {
 		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -40,15 +40,15 @@ var _ = Describe("FDBMetaDataStore", func() {
 		return mdProto
 	}
 
-	saveMD := func(store *FDBMetaDataStore, mdProto *gen.MetaData) error {
+	saveMD := func(store *FDBMetaDataStore, mdProto *metadatapb.MetaData) error {
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			return nil, store.SaveRecordMetaData(rtx.Transaction(), mdProto)
 		})
 		return err
 	}
 
-	loadCurrent := func(store *FDBMetaDataStore) *gen.MetaData {
-		var loaded *gen.MetaData
+	loadCurrent := func(store *FDBMetaDataStore) *metadatapb.MetaData {
+		var loaded *metadatapb.MetaData
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			var loadErr error
 			loaded, loadErr = store.LoadRecordMetaDataProto(rtx.Transaction())
@@ -58,8 +58,8 @@ var _ = Describe("FDBMetaDataStore", func() {
 		return loaded
 	}
 
-	loadAtVersion := func(store *FDBMetaDataStore, version int32) *gen.MetaData {
-		var loaded *gen.MetaData
+	loadAtVersion := func(store *FDBMetaDataStore, version int32) *metadatapb.MetaData {
+		var loaded *metadatapb.MetaData
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			var loadErr error
 			loaded, loadErr = store.LoadRecordMetaDataProtoAtVersion(rtx.Transaction(), version)
@@ -157,7 +157,7 @@ var _ = Describe("FDBMetaDataStore", func() {
 		alt := buildMDProto(1, func(b *RecordMetaDataBuilder) {
 			b.AddIndex("Order", NewIndex("Order$flex", Field("quantity")))
 		})
-		v2 := proto.Clone(v1).(*gen.MetaData)
+		v2 := proto.Clone(v1).(*metadatapb.MetaData)
 		v2.Version = proto.Int32(2)
 		v2.GetIndexes()[0].RootExpression = alt.GetIndexes()[0].GetRootExpression()
 		v2.GetIndexes()[0].LastModifiedVersion = proto.Int32(2)
@@ -180,9 +180,9 @@ var _ = Describe("FDBMetaDataStore", func() {
 			b.AddIndex("Order", NewIndex("price", Field("price")))
 		})
 		Expect(saveMD(store, v1)).To(Succeed())
-		v2 := proto.Clone(v1).(*gen.MetaData)
+		v2 := proto.Clone(v1).(*metadatapb.MetaData)
 		v2.Version = proto.Int32(2)
-		v2.Indexes[0].Options = append(v2.Indexes[0].Options, &gen.Index_Option{
+		v2.Indexes[0].Options = append(v2.Indexes[0].Options, &metadatapb.Index_Option{
 			Key: proto.String("applicationTag"), Value: proto.String("new"),
 		})
 		Expect(saveMD(store, v2)).To(MatchError(ContainSubstring("applicationTag")))
@@ -193,9 +193,9 @@ var _ = Describe("FDBMetaDataStore", func() {
 		reopened := NewFDBMetaDataStore(ss)
 		Expect(proto.Equal(loadCurrent(reopened), v2)).To(BeTrue())
 		Expect(proto.Equal(loadAtVersion(reopened, 1), v1)).To(BeTrue())
-		v3 := proto.Clone(v2).(*gen.MetaData)
+		v3 := proto.Clone(v2).(*metadatapb.MetaData)
 		v3.Version = proto.Int32(3)
-		v3.Indexes[0].Options = append(v3.Indexes[0].Options, &gen.Index_Option{
+		v3.Indexes[0].Options = append(v3.Indexes[0].Options, &metadatapb.Index_Option{
 			Key: proto.String(IndexOptionUnique), Value: proto.String("true"),
 		})
 		Expect(saveMD(store, v3)).To(MatchError(ContainSubstring("index adds uniqueness constraint")))
@@ -207,7 +207,7 @@ var _ = Describe("FDBMetaDataStore", func() {
 		ss := specSubspace()
 		store := NewFDBMetaDataStore(ss)
 
-		err := saveMD(store, &gen.MetaData{Version: proto.Int32(1)})
+		err := saveMD(store, &metadatapb.MetaData{Version: proto.Int32(1)})
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("new metadata does not build"))
 		Expect(loadCurrent(store)).To(BeNil())
@@ -225,7 +225,7 @@ var _ = Describe("FDBMetaDataStore", func() {
 					return nil
 				}
 				o := &descriptorpb.MessageOptions{}
-				proto.SetExtension(o, gen.E_Record, &gen.RecordTypeOptions{Usage: gen.RecordTypeOptions_UNION.Enum()})
+				proto.SetExtension(o, metadatapb.E_Record, &metadatapb.RecordTypeOptions{Usage: metadatapb.RecordTypeOptions_UNION.Enum()})
 				return o
 			}
 			holdsT := func(name string, union bool) *descriptorpb.DescriptorProto {
@@ -249,7 +249,7 @@ var _ = Describe("FDBMetaDataStore", func() {
 			Expect(err).NotTo(HaveOccurred())
 			return fd
 		}
-		build := func(b *RecordMetaDataBuilder) *gen.MetaData {
+		build := func(b *RecordMetaDataBuilder) *metadatapb.MetaData {
 			b.GetRecordType("T").SetPrimaryKey(Field("id"))
 			b.SetVersion(1)
 			md, err := b.Build()

@@ -11,7 +11,7 @@ import (
 	"errors"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -122,7 +122,7 @@ func (s keyExpansionState) placeholderFor(value values.Value) (*predicates.Place
 
 // expandKeyExpression dispatches one key expression, as Java's
 // KeyExpression.expand does to the visitor.
-func expandKeyExpression(expression *gen.KeyExpression, s keyExpansionState) (*GraphExpansion, error) {
+func expandKeyExpression(expression *metadatapb.KeyExpression, s keyExpansionState) (*GraphExpansion, error) {
 	if keyExpressionShapeCount(expression) != 1 {
 		return nil, unsupportedKeyExpansion("key expression has no single shape")
 	}
@@ -169,7 +169,7 @@ func resolveKeyFieldPath(base values.Value, path []string) (values.Value, error)
 	return values.ResolveFieldAccess(base, requests)
 }
 
-func expandKeyField(field *gen.Field, s keyExpansionState) (*GraphExpansion, error) {
+func expandKeyField(field *metadatapb.Field, s keyExpansionState) (*GraphExpansion, error) {
 	if field == nil || field.FieldName == nil || field.FanType == nil {
 		return nil, unsupportedKeyExpansion("field without a name or fan type")
 	}
@@ -183,7 +183,7 @@ func expandKeyField(field *gen.Field, s keyExpansionState) (*GraphExpansion, err
 		return nil, err
 	}
 	switch field.GetFanType() {
-	case gen.Field_FAN_OUT:
+	case metadatapb.Field_FAN_OUT:
 		collection, err := resolveKeyFieldPath(baseObject, path)
 		if err != nil {
 			return nil, err
@@ -230,13 +230,13 @@ func expandKeyField(field *gen.Field, s keyExpansionState) (*GraphExpansion, err
 			child.GetPlaceholders(),
 		), nil
 
-	case gen.Field_SCALAR, gen.Field_CONCATENATE:
+	case metadatapb.Field_SCALAR, metadatapb.Field_CONCATENATE:
 		value, err := resolveKeyFieldPath(baseObject, path)
 		if err != nil {
 			return nil, err
 		}
 		s.registerValue(value, keyExpansionColumn{
-			name: name, path: path, concatenate: field.GetFanType() == gen.Field_CONCATENATE,
+			name: name, path: path, concatenate: field.GetFanType() == metadatapb.Field_CONCATENATE,
 		})
 		withPlaceholder := s.isKey() && !s.internal
 		var placeholder *predicates.Placeholder
@@ -264,14 +264,14 @@ func expandKeyField(field *gen.Field, s keyExpansionState) (*GraphExpansion, err
 	}
 }
 
-func describeKeyField(field *gen.Field, path []string, s keyExpansionState) (*GraphExpansion, error) {
+func describeKeyField(field *metadatapb.Field, path []string, s keyExpansionState) (*GraphExpansion, error) {
 	column := keyExpansionColumn{name: field.GetFieldName()}
 	switch field.GetFanType() {
-	case gen.Field_FAN_OUT:
+	case metadatapb.Field_FAN_OUT:
 		s.fanOut = true
-	case gen.Field_SCALAR, gen.Field_CONCATENATE:
+	case metadatapb.Field_SCALAR, metadatapb.Field_CONCATENATE:
 		column.path = path
-		column.concatenate = field.GetFanType() == gen.Field_CONCATENATE
+		column.concatenate = field.GetFanType() == metadatapb.Field_CONCATENATE
 	default:
 		return nil, unsupportedKeyExpansion("fan type %v", field.GetFanType())
 	}
@@ -284,7 +284,7 @@ func describeKeyField(field *gen.Field, path []string, s keyExpansionState) (*Gr
 	return EmptyGraphExpansion(), nil
 }
 
-func expandKeyThen(then *gen.Then, s keyExpansionState) (*GraphExpansion, error) {
+func expandKeyThen(then *metadatapb.Then, s keyExpansionState) (*GraphExpansion, error) {
 	ordinal := s.ordinal
 	expansions := make([]*GraphExpansion, 0, len(then.GetChild()))
 	for _, child := range then.GetChild() {
@@ -307,7 +307,7 @@ func expandKeyThen(then *gen.Then, s keyExpansionState) (*GraphExpansion, error)
 // matchArrayWrapper is NullableArrayTypeUtils.matchArrayWrapper: whether a
 // SCALAR nesting is the stored spelling of a nullable array column, and the fan
 // type of its "values" hop. The match is exact-case, as Java's equals is.
-func matchArrayWrapper(nesting *gen.Nesting) (gen.Field_FanType, bool) {
+func matchArrayWrapper(nesting *metadatapb.Nesting) (metadatapb.Field_FanType, bool) {
 	child := nesting.GetChild()
 	if field := child.GetField(); field != nil && field.GetFieldName() == values.WrappedArrayValuesFieldName {
 		return field.GetFanType(), true
@@ -318,28 +318,28 @@ func matchArrayWrapper(nesting *gen.Nesting) (gen.Field_FanType, bool) {
 	return 0, false
 }
 
-func expandKeyNesting(nesting *gen.Nesting, s keyExpansionState) (*GraphExpansion, error) {
+func expandKeyNesting(nesting *metadatapb.Nesting, s keyExpansionState) (*GraphExpansion, error) {
 	if nesting == nil || nesting.Parent == nil || nesting.Child == nil ||
 		nesting.Parent.FieldName == nil || nesting.Parent.FanType == nil {
 		return nil, unsupportedKeyExpansion("nesting without a parent or child")
 	}
 	parent := nesting.Parent
 	switch parent.GetFanType() {
-	case gen.Field_SCALAR:
+	case metadatapb.Field_SCALAR:
 		if wrapperFanType, wrapped := matchArrayWrapper(nesting); wrapped {
-			collapsed := &gen.Field{
+			collapsed := &metadatapb.Field{
 				FieldName:          parent.FieldName,
 				FanType:            wrapperFanType.Enum(),
 				NullInterpretation: parent.NullInterpretation,
 			}
 			childNesting := nesting.Child.GetNesting()
 			switch wrapperFanType {
-			case gen.Field_FAN_OUT:
+			case metadatapb.Field_FAN_OUT:
 				if childNesting != nil {
-					return expandKeyNesting(&gen.Nesting{Parent: collapsed, Child: childNesting.GetChild()}, s)
+					return expandKeyNesting(&metadatapb.Nesting{Parent: collapsed, Child: childNesting.GetChild()}, s)
 				}
 				return expandKeyField(collapsed, s)
-			case gen.Field_CONCATENATE:
+			case metadatapb.Field_CONCATENATE:
 				if childNesting != nil {
 					return nil, errors.New(`"values" field in a Concatenate array wrapper must be a leaf`)
 				}
@@ -352,7 +352,7 @@ func expandKeyNesting(nesting *gen.Nesting, s keyExpansionState) (*GraphExpansio
 		childState.prefix = appendPath(s.prefix, parent.GetFieldName())
 		return expandKeyExpression(nesting.Child, childState)
 
-	case gen.Field_FAN_OUT:
+	case metadatapb.Field_FAN_OUT:
 		if s.describe {
 			childState := s
 			childState.prefix = nil
@@ -452,7 +452,7 @@ func expandKeyNesting(nesting *gen.Nesting, s keyExpansionState) (*GraphExpansio
 
 // expandKeyFunction expands the arguments without registering them, then
 // registers the function's Value (FunctionKeyExpression.toValue).
-func expandKeyFunction(function *gen.Function, s keyExpansionState) (*GraphExpansion, error) {
+func expandKeyFunction(function *metadatapb.Function, s keyExpansionState) (*GraphExpansion, error) {
 	if function == nil || function.Name == nil || function.Arguments == nil {
 		return nil, unsupportedKeyExpansion("function without a name or arguments")
 	}
@@ -511,7 +511,7 @@ func expandKeyFunction(function *gen.Function, s keyExpansionState) (*GraphExpan
 // keyFunctionColumn describes a function key column by the field its single
 // argument reads (keyFunctionArgumentPath); a function of anything else has no
 // field and so no name.
-func keyFunctionColumn(function *gen.Function, prefix []string) keyExpansionColumn {
+func keyFunctionColumn(function *metadatapb.Function, prefix []string) keyExpansionColumn {
 	column := keyExpansionColumn{function: function.GetName()}
 	if path := keyFunctionArgumentPath(function.Arguments, prefix); len(path) > 0 {
 		column.name = path[len(path)-1]
@@ -522,7 +522,7 @@ func keyFunctionColumn(function *gen.Function, prefix []string) keyExpansionColu
 
 // FunctionKeyColumnName is the name index metadata gives a function key
 // column: the field its single argument reads, else none.
-func FunctionKeyColumnName(function *gen.Function) string {
+func FunctionKeyColumnName(function *metadatapb.Function) string {
 	if path := keyFunctionArgumentPath(function.GetArguments(), nil); len(path) > 0 {
 		return path[len(path)-1]
 	}
@@ -531,7 +531,7 @@ func FunctionKeyColumnName(function *gen.Function) string {
 
 // expandKeyLiteral is LiteralKeyExpression.toValue: LiteralValue.ofScalar of
 // the stored value, typed by its carrier as a query literal of that width is.
-func expandKeyLiteral(literal *gen.Value, s keyExpansionState) (*GraphExpansion, error) {
+func expandKeyLiteral(literal *metadatapb.Value, s keyExpansionState) (*GraphExpansion, error) {
 	var value values.Value
 	switch {
 	case literal.IntValue != nil:
@@ -568,12 +568,12 @@ func expandKeyLiteral(literal *gen.Value, s keyExpansionState) (*GraphExpansion,
 // keyFunctionArgumentPath is the field path a single-field function argument
 // reads: a direct field, a scalar nesting's child, or the parent of a
 // collapsed array wrapper.
-func keyFunctionArgumentPath(arguments *gen.KeyExpression, prefix []string) []string {
+func keyFunctionArgumentPath(arguments *metadatapb.KeyExpression, prefix []string) []string {
 	if field := arguments.GetField(); field != nil {
 		return appendPath(prefix, field.GetFieldName())
 	}
 	nesting := arguments.GetNesting()
-	if nesting == nil || nesting.GetParent().GetFanType() != gen.Field_SCALAR {
+	if nesting == nil || nesting.GetParent().GetFanType() != metadatapb.Field_SCALAR {
 		return nil
 	}
 	if _, wrapped := matchArrayWrapper(nesting); wrapped {
@@ -678,7 +678,7 @@ func expandKeyVersion(s keyExpansionState) (*GraphExpansion, error) {
 
 // keyExpressionColumnSize is KeyExpression.getColumnSize for the shapes the
 // expansion visits.
-func keyExpressionColumnSize(expression *gen.KeyExpression) (int, error) {
+func keyExpressionColumnSize(expression *metadatapb.KeyExpression) (int, error) {
 	if keyExpressionShapeCount(expression) != 1 {
 		return 0, unsupportedKeyExpansion("key expression has no single shape")
 	}
@@ -724,7 +724,7 @@ type valueIndexExpansion struct {
 
 // splitKeyWithValue unwraps a KeyWithValue root into its inner key and split
 // point; any other root has none (-1).
-func splitKeyWithValue(root *gen.KeyExpression) (*gen.KeyExpression, int) {
+func splitKeyWithValue(root *metadatapb.KeyExpression) (*metadatapb.KeyExpression, int) {
 	if root != nil && keyExpressionShapeCount(root) == 1 && root.KeyWithValue != nil {
 		return root.KeyWithValue.GetInnerKey(), int(root.KeyWithValue.GetSplitPoint())
 	}
@@ -742,7 +742,7 @@ func checkAllAliasesTaken(registry *keyExpansionRegistry) error {
 // describeValueIndexRoot walks a value index's columns without a base (see
 // keyExpansionState.describe): their names, functions, paths and fan-out,
 // in key and value order. The traversal and Values are nil.
-func describeValueIndexRoot(candidate MatchCandidate, root *gen.KeyExpression) (*valueIndexExpansion, error) {
+func describeValueIndexRoot(candidate MatchCandidate, root *metadatapb.KeyExpression) (*valueIndexExpansion, error) {
 	inner, splitPoint := splitKeyWithValue(root)
 	registry := &keyExpansionRegistry{aliases: candidate.GetSargableAliases()}
 	if _, err := expandKeyExpression(inner, keyExpansionState{
@@ -769,8 +769,8 @@ func describeValueIndexRoot(candidate MatchCandidate, root *gen.KeyExpression) (
 // sargable surface (GetPKColumnNames).
 func expandValueIndexRoot(
 	candidate MatchCandidate,
-	root *gen.KeyExpression,
-	predicateProto *gen.Predicate,
+	root *metadatapb.KeyExpression,
+	predicateProto *metadatapb.Predicate,
 ) (*valueIndexExpansion, error) {
 	baseType, ok := candidateBaseType(candidate)
 	if !ok {
@@ -840,7 +840,7 @@ func expandValueIndexRoot(
 // candidate identifies its columns by these paths, so a column that is not a
 // scalar field path (a function, a version, a fan-out or concatenated field)
 // is unsupported.
-func DescribeAggregateIndexKey(wholeKey *gen.KeyExpression, groupingCount int) (grouping, grouped [][]string, err error) {
+func DescribeAggregateIndexKey(wholeKey *metadatapb.KeyExpression, groupingCount int) (grouping, grouped [][]string, err error) {
 	registry := &keyExpansionRegistry{aliases: make([]values.CorrelationIdentifier, groupingCount)}
 	if _, err := expandKeyExpression(wholeKey, keyExpansionState{
 		reg:        registry,
@@ -875,27 +875,27 @@ func DescribeAggregateIndexKey(wholeKey *gen.KeyExpression, groupingCount int) (
 
 // pathColumnsRootKeyExpression spells a list of scalar field paths as the key
 // expression they are: a SCALAR field, nested under its SCALAR parents.
-func pathColumnsRootKeyExpression(paths [][]string) *gen.KeyExpression {
-	children := make([]*gen.KeyExpression, len(paths))
+func pathColumnsRootKeyExpression(paths [][]string) *metadatapb.KeyExpression {
+	children := make([]*metadatapb.KeyExpression, len(paths))
 	for i, path := range paths {
-		key := flatColumnField(path[len(path)-1], gen.Field_SCALAR)
+		key := flatColumnField(path[len(path)-1], metadatapb.Field_SCALAR)
 		for j := len(path) - 2; j >= 0; j-- {
 			parent := storedFieldName(path[j])
-			key = &gen.KeyExpression{Nesting: &gen.Nesting{
-				Parent: &gen.Field{FieldName: &parent, FanType: gen.Field_SCALAR.Enum()},
+			key = &metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{
+				Parent: &metadatapb.Field{FieldName: &parent, FanType: metadatapb.Field_SCALAR.Enum()},
 				Child:  key,
 			}}
 		}
 		children[i] = key
 	}
-	return &gen.KeyExpression{Then: &gen.Then{Child: children}}
+	return &metadatapb.KeyExpression{Then: &metadatapb.Then{Child: children}}
 }
 
 // flatColumnsRootKeyExpression spells a list of top-level columns as the key
 // expression they are: one SCALAR field per column, with a CARDINALITY or
 // order function where the column carries one.
-func flatColumnsRootKeyExpression(columns, functions []string) *gen.KeyExpression {
-	children := make([]*gen.KeyExpression, len(columns))
+func flatColumnsRootKeyExpression(columns, functions []string) *metadatapb.KeyExpression {
+	children := make([]*metadatapb.KeyExpression, len(columns))
 	for i, column := range columns {
 		function := ""
 		if i < len(functions) {
@@ -903,25 +903,25 @@ func flatColumnsRootKeyExpression(columns, functions []string) *gen.KeyExpressio
 		}
 		switch {
 		case function == FunctionKindCardinality:
-			children[i] = &gen.KeyExpression{Function: &gen.Function{
+			children[i] = &metadatapb.KeyExpression{Function: &metadatapb.Function{
 				Name:      &function,
-				Arguments: flatColumnField(column, gen.Field_CONCATENATE),
+				Arguments: flatColumnField(column, metadatapb.Field_CONCATENATE),
 			}}
 		case function != "":
-			children[i] = &gen.KeyExpression{Function: &gen.Function{
+			children[i] = &metadatapb.KeyExpression{Function: &metadatapb.Function{
 				Name:      &function,
-				Arguments: flatColumnField(column, gen.Field_SCALAR),
+				Arguments: flatColumnField(column, metadatapb.Field_SCALAR),
 			}}
 		default:
-			children[i] = flatColumnField(column, gen.Field_SCALAR)
+			children[i] = flatColumnField(column, metadatapb.Field_SCALAR)
 		}
 	}
-	return &gen.KeyExpression{Then: &gen.Then{Child: children}}
+	return &metadatapb.KeyExpression{Then: &metadatapb.Then{Child: children}}
 }
 
-func flatColumnField(name string, fanType gen.Field_FanType) *gen.KeyExpression {
+func flatColumnField(name string, fanType metadatapb.Field_FanType) *metadatapb.KeyExpression {
 	stored := storedFieldName(name)
-	return &gen.KeyExpression{Field: &gen.Field{FieldName: &stored, FanType: fanType.Enum()}}
+	return &metadatapb.KeyExpression{Field: &metadatapb.Field{FieldName: &stored, FanType: fanType.Enum()}}
 }
 
 // layoutFieldPath is a key expression's STORED field path in the names the row

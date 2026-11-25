@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"google.golang.org/protobuf/proto"
@@ -177,7 +177,7 @@ func TestSplitKeyExpressionProtoWireRoundtrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var restored gen.KeyExpression
+	var restored metadatapb.KeyExpression
 	if err := proto.Unmarshal(data, &restored); err != nil {
 		t.Fatal(err)
 	}

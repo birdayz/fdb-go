@@ -2,7 +2,7 @@
 // protoc-gen-go-vtproto version: v0.6.1-0.20250313105119-ba97887b0a25
 // source: record_key_expression.proto
 
-package gen
+package metadatapb
 
 import (
 	binary "encoding/binary"

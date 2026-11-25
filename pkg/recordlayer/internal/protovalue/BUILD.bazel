@@ -7,7 +7,7 @@ go_library(
     srcs = ["protovalue.go"],
     importpath = "fdb.dev/pkg/recordlayer/internal/protovalue",
     visibility = ["//pkg/recordlayer:__subpackages__"],
-    deps = ["//gen"],
+    deps = ["//pkg/recordlayer/metadatapb"],
 )
 
 go_test(
@@ -15,7 +15,7 @@ go_test(
     srcs = ["protovalue_test.go"],
     embed = [":protovalue"],
     deps = [
-        "//gen",
+        "//pkg/recordlayer/metadatapb",
         "@org_golang_google_protobuf//proto",
     ],
 )

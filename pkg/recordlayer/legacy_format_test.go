@@ -8,7 +8,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -60,7 +60,7 @@ var _ = Describe("Legacy format compatibility", func() {
 		fv := formatVersion
 		mdv := int32(md.Version())
 		uv := int32(0)
-		hdr := &gen.DataStoreInfo{FormatVersion: &fv, MetaDataversion: &mdv, UserVersion: &uv}
+		hdr := &metadatapb.DataStoreInfo{FormatVersion: &fv, MetaDataversion: &mdv, UserVersion: &uv}
 		if omit {
 			hdr.OmitUnsplitRecordSuffix = proto.Bool(true)
 		}
@@ -349,7 +349,7 @@ var _ = Describe("Legacy format compatibility", func() {
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				tx := rtx.Transaction()
 				fv, mdv, uv := int32(4), int32(md.Version()), int32(0)
-				hdr := &gen.DataStoreInfo{FormatVersion: &fv, MetaDataversion: &mdv, UserVersion: &uv, OmitUnsplitRecordSuffix: proto.Bool(true)}
+				hdr := &metadatapb.DataStoreInfo{FormatVersion: &fv, MetaDataversion: &mdv, UserVersion: &uv, OmitUnsplitRecordSuffix: proto.Bool(true)}
 				hb, _ := hdr.MarshalVT()
 				tx.Set(fdb.Key(ss.Pack(tuple.Tuple{StoreInfoKey})), hb)
 				rt := md.GetRecordType("Order")
@@ -498,7 +498,7 @@ var _ = Describe("Legacy format compatibility", func() {
 			// index-build path where Java performs the empty-store un-omit.
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				fv, mdv, uv := int32(4), int32(1), int32(0)
-				hdr := &gen.DataStoreInfo{FormatVersion: &fv, MetaDataversion: &mdv, UserVersion: &uv}
+				hdr := &metadatapb.DataStoreInfo{FormatVersion: &fv, MetaDataversion: &mdv, UserVersion: &uv}
 				hb, _ := hdr.MarshalVT()
 				rtx.Transaction().Set(fdb.Key(ss.Pack(tuple.Tuple{StoreInfoKey})), hb)
 				return nil, nil
@@ -549,7 +549,7 @@ var _ = Describe("Legacy format compatibility", func() {
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				tx := rtx.Transaction()
 				fv, mdv, uv := int32(4), int32(md.Version()), int32(0)
-				hdr := &gen.DataStoreInfo{FormatVersion: &fv, MetaDataversion: &mdv, UserVersion: &uv}
+				hdr := &metadatapb.DataStoreInfo{FormatVersion: &fv, MetaDataversion: &mdv, UserVersion: &uv}
 				hb, _ := hdr.MarshalVT()
 				tx.Set(fdb.Key(ss.Pack(tuple.Tuple{StoreInfoKey})), hb)
 				rt := md.GetRecordType("Order")

@@ -19,7 +19,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // RecordsSubspace returns the subspace where records are stored.
@@ -209,7 +209,7 @@ func DeleteStore(ctx *FDBRecordContext, ss subspace.Subspace) error {
 		return fmt.Errorf("delete store: read header: %w", err)
 	}
 	if headerBytes != nil {
-		header := &gen.DataStoreInfo{}
+		header := &metadatapb.DataStoreInfo{}
 		// Malformed headers must not prevent deletion or leave cached state
 		// valid. Unknown fields and unsupported format numbers remain deletable.
 		if err := UnmarshalAsJava(headerBytes, header); err != nil || header.GetCacheable() {
@@ -252,13 +252,13 @@ func (store *FDBRecordStore) IsCacheable() bool {
 // GetStoreHeader returns a copy of the current store header proto.
 // Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.getRecordStoreState().getStoreHeader().
-func (store *FDBRecordStore) GetStoreHeader() *gen.DataStoreInfo {
+func (store *FDBRecordStore) GetStoreHeader() *metadatapb.DataStoreInfo {
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	if store.storeHeader == nil {
 		return nil
 	}
-	return proto.Clone(store.storeHeader).(*gen.DataStoreInfo)
+	return proto.Clone(store.storeHeader).(*metadatapb.DataStoreInfo)
 }
 
 // GetAllIndexStatesMap returns a copy of the raw index states map (non-READABLE only).

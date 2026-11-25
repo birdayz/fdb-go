@@ -9,10 +9,10 @@ package recordlayer
 import (
 	"fmt"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -81,7 +81,7 @@ func (*MetaDataVersionMustIncreaseError) JavaRecordCoreException() {}
 //
 // Uses SplitHelper for wire compatibility with Java's FDBMetaDataStore,
 // which stores metadata with split support (unsplit suffix 0).
-func (s *FDBMetaDataStore) SaveRecordMetaData(tx fdb.WritableTransaction, metaDataProto *gen.MetaData) error {
+func (s *FDBMetaDataStore) SaveRecordMetaData(tx fdb.WritableTransaction, metaDataProto *metadatapb.MetaData) error {
 	// Java: buildMetaData(metaDataProto, true) — the new metadata must
 	// build before anything is written.
 	newMeta, err := RecordMetaDataFromProto(metaDataProto)
@@ -100,7 +100,7 @@ func (s *FDBMetaDataStore) SaveRecordMetaData(tx fdb.WritableTransaction, metaDa
 		return fmt.Errorf("load existing metadata: %w", err)
 	}
 	if len(existing) > 0 {
-		var oldProto gen.MetaData
+		var oldProto metadatapb.MetaData
 		if err := UnmarshalAsJava(existing, &oldProto); err != nil {
 			// Java's parseMetaDataProto throws here — corrupt current
 			// metadata must never be silently overwritten.
@@ -138,7 +138,7 @@ func (s *FDBMetaDataStore) SaveRecordMetaData(tx fdb.WritableTransaction, metaDa
 // Returns nil if no metadata has been stored.
 // Uses SplitHelper for wire compatibility with Java's FDBMetaDataStore.
 // Matches Java's FDBMetaDataStore.loadRecordMetaData().
-func (s *FDBMetaDataStore) LoadRecordMetaDataProto(tx fdb.WritableTransaction) (*gen.MetaData, error) {
+func (s *FDBMetaDataStore) LoadRecordMetaDataProto(tx fdb.WritableTransaction) (*metadatapb.MetaData, error) {
 	data, err := loadWithSplit(tx, s.subspace, currentKey, true, false, &sizeInfo{})
 	if err != nil {
 		return nil, fmt.Errorf("load metadata: %w", err)
@@ -147,7 +147,7 @@ func (s *FDBMetaDataStore) LoadRecordMetaDataProto(tx fdb.WritableTransaction) (
 		return nil, nil
 	}
 
-	var metaDataProto gen.MetaData
+	var metaDataProto metadatapb.MetaData
 	if err := UnmarshalAsJava(data, &metaDataProto); err != nil {
 		return nil, fmt.Errorf("unmarshal metadata: %w", err)
 	}
@@ -162,7 +162,7 @@ func (s *FDBMetaDataStore) Subspace() subspace.Subspace {
 // LoadRecordMetaDataProtoAtVersion loads a historical version of the metadata.
 // Returns nil if the version doesn't exist.
 // Uses SplitHelper for wire compatibility with Java's FDBMetaDataStore.
-func (s *FDBMetaDataStore) LoadRecordMetaDataProtoAtVersion(tx fdb.WritableTransaction, version int32) (*gen.MetaData, error) {
+func (s *FDBMetaDataStore) LoadRecordMetaDataProtoAtVersion(tx fdb.WritableTransaction, version int32) (*metadatapb.MetaData, error) {
 	historyKey := tuple.Tuple{"H", int64(version)}
 	data, err := loadWithSplit(tx, s.subspace, historyKey, true, false, &sizeInfo{})
 	if err != nil {
@@ -172,7 +172,7 @@ func (s *FDBMetaDataStore) LoadRecordMetaDataProtoAtVersion(tx fdb.WritableTrans
 		return nil, nil
 	}
 
-	var metaDataProto gen.MetaData
+	var metaDataProto metadatapb.MetaData
 	if err := UnmarshalAsJava(data, &metaDataProto); err != nil {
 		return nil, fmt.Errorf("unmarshal metadata v%d: %w", version, err)
 	}

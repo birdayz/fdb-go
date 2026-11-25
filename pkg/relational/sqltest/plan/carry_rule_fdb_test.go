@@ -24,6 +24,7 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/catalog"
 	"fdb.dev/pkg/relational/core/ddl"
@@ -78,7 +79,7 @@ func carrySetup(t *testing.T, h *testkit.FleetHarness, dbPath, name, body string
 
 // carrySave saves a new version through fleet.SaveTemplate and returns the
 // stored proto of it.
-func carrySave(t *testing.T, h *testkit.FleetHarness, tmpl api.SchemaTemplate) (*gen.MetaData, error) {
+func carrySave(t *testing.T, h *testkit.FleetHarness, tmpl api.SchemaTemplate) (*metadatapb.MetaData, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -89,7 +90,7 @@ func carrySave(t *testing.T, h *testkit.FleetHarness, tmpl api.SchemaTemplate) (
 	if stored.Version() != tmpl.Version() {
 		t.Fatalf("SaveTemplate returned version %d, want %d", stored.Version(), tmpl.Version())
 	}
-	var p *gen.MetaData
+	var p *metadatapb.MetaData
 	h.MustRun(t, "load stored", func(txn api.Transaction) error {
 		var lerr error
 		p, lerr = h.Cat.SchemaTemplateCatalog().LoadTemplateProto(txn, tmpl.MetadataName(), tmpl.Version())
@@ -115,7 +116,7 @@ func carryMigrate(t *testing.T, h *testkit.FleetHarness, dbPath, name string, ve
 	}
 }
 
-func carryRecordType(p *gen.MetaData, name string) *gen.RecordType {
+func carryRecordType(p *metadatapb.MetaData, name string) *metadatapb.RecordType {
 	for _, rt := range p.GetRecordTypes() {
 		if rt.GetName() == name {
 			return rt
@@ -124,7 +125,7 @@ func carryRecordType(p *gen.MetaData, name string) *gen.RecordType {
 	return nil
 }
 
-func carryIndex(p *gen.MetaData, name string) *gen.Index {
+func carryIndex(p *metadatapb.MetaData, name string) *metadatapb.Index {
 	for _, idx := range p.GetIndexes() {
 		if idx.GetName() == name {
 			return idx
@@ -133,7 +134,7 @@ func carryIndex(p *gen.MetaData, name string) *gen.Index {
 	return nil
 }
 
-func carryUnionNumber(p *gen.MetaData, typeName string) int32 {
+func carryUnionNumber(p *metadatapb.MetaData, typeName string) int32 {
 	for _, m := range p.GetRecords().GetMessageType() {
 		if m.GetName() != "RecordTypeUnion" {
 			continue
@@ -206,7 +207,7 @@ func TestFDB_Carry_AddedTableKeepsTheStoredNumbering(t *testing.T) {
 	carrySetup(t, h, dbPath, "CARRY_TABLE", v1, []string{"S"}, func(string) []string {
 		return []string{"INSERT INTO b VALUES (1, 10), (2, 20)"}
 	})
-	var stored1 *gen.MetaData
+	var stored1 *metadatapb.MetaData
 	h.MustRun(t, "load v1", func(txn api.Transaction) error {
 		var err error
 		stored1, err = h.Cat.SchemaTemplateCatalog().LoadTemplateProto(txn, "CARRY_TABLE", 1)
@@ -273,7 +274,7 @@ func TestFDB_Carry_ChangedIndexIsRebuiltOnOpen(t *testing.T) {
 			name := fmt.Sprintf("CARRY_CHANGED_%d", c.rows)
 			row := func(i int) string { return fmt.Sprintf("(%d, %d, %d)", i, i%7, i) }
 			carrySetup(t, h, dbPath, name, body("c"), []string{"S"}, func(string) []string { return carryInsert("t", c.rows, row) })
-			var stored1 *gen.MetaData
+			var stored1 *metadatapb.MetaData
 			h.MustRun(t, "load v1", func(txn api.Transaction) error {
 				var err error
 				stored1, err = h.Cat.SchemaTemplateCatalog().LoadTemplateProto(txn, name, 1)
@@ -442,7 +443,7 @@ func TestFDB_Carry_PredicateChangeIsAChangedIndex(t *testing.T) {
 	if n := carryIndexEntries(t, h, dbPath, "S", "IX"); n != 9 {
 		t.Fatalf("IX under WHERE c > 1 holds %d entries, want 9", n)
 	}
-	var stored1 *gen.MetaData
+	var stored1 *metadatapb.MetaData
 	h.MustRun(t, "load v1", func(txn api.Transaction) error {
 		var err error
 		stored1, err = h.Cat.SchemaTemplateCatalog().LoadTemplateProto(txn, "CARRY_PREDICATE", 1)
@@ -486,7 +487,7 @@ func TestFDB_Carry_EquivalentIndexIsNotRebuilt(t *testing.T) {
 	carrySetup(t, h, dbPath, "CARRY_EQUIVALENT", body, []string{"S"}, func(string) []string {
 		return carryInsert("t", 260, func(i int) string { return fmt.Sprintf("(%d, %d)", i, i%5) })
 	})
-	var stored1 *gen.MetaData
+	var stored1 *metadatapb.MetaData
 	h.MustRun(t, "load v1", func(txn api.Transaction) error {
 		var err error
 		stored1, err = h.Cat.SchemaTemplateCatalog().LoadTemplateProto(txn, "CARRY_EQUIVALENT", 1)
@@ -549,7 +550,7 @@ func TestFDB_Carry_OptionOnlyChangeIsRebuilt(t *testing.T) {
 			}
 			row := func(i int) string { return fmt.Sprintf("(%d, %d)", i, 100+i) }
 			carrySetup(t, h, dbPath, name, body(""), []string{"S"}, func(string) []string { return carryInsert("t", c.rows, row) })
-			var stored1 *gen.MetaData
+			var stored1 *metadatapb.MetaData
 			h.MustRun(t, "load v1", func(txn api.Transaction) error {
 				var err error
 				stored1, err = h.Cat.SchemaTemplateCatalog().LoadTemplateProto(txn, name, 1)
@@ -560,7 +561,7 @@ func TestFDB_Carry_OptionOnlyChangeIsRebuilt(t *testing.T) {
 				t.Fatal(err)
 			}
 			before, after := carryIndex(stored1, "IX"), carryIndex(stored2, "IX")
-			if !proto.Equal(before.GetRootExpression(), after.GetRootExpression()) || proto.Equal(&gen.Index{Options: before.GetOptions()}, &gen.Index{Options: after.GetOptions()}) {
+			if !proto.Equal(before.GetRootExpression(), after.GetRootExpression()) || proto.Equal(&metadatapb.Index{Options: before.GetOptions()}, &metadatapb.Index{Options: after.GetOptions()}) {
 				t.Fatalf("v2 must differ from v1 in IX's options alone: %v against %v", after, before)
 			}
 			if after.GetAddedVersion() != before.GetAddedVersion() || string(after.GetSubspaceKey()) != string(before.GetSubspaceKey()) ||
@@ -620,8 +621,8 @@ func TestFDB_Carry_LongValueBitmapKeyIsRebuiltWithItsRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	widened := 0
-	var widen func(k *gen.KeyExpression)
-	widen = func(k *gen.KeyExpression) {
+	var widen func(k *metadatapb.KeyExpression)
+	widen = func(k *metadatapb.KeyExpression) {
 		if k == nil {
 			return
 		}

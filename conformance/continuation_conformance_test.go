@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/internal/recordlayer/query/executor"
@@ -200,9 +201,9 @@ var _ = Describe("Continuation Token Conformance", func() {
 			kind    string
 			message proto.Message
 		}{
-			{"vector", &gen.OldAndNewIndexEntries{}},
-			{"sliding", &gen.SlidingWindowQueueEntry{}},
-			{"delete-where", &gen.DeleteWhere{Prefix: tuple.Tuple{int64(7)}.Pack()}},
+			{"vector", &metadatapb.OldAndNewIndexEntries{}},
+			{"sliding", &metadatapb.SlidingWindowQueueEntry{}},
+			{"delete-where", &metadatapb.DeleteWhere{Prefix: tuple.Tuple{int64(7)}.Pack()}},
 		} {
 			for _, prefix := range []string{"", "type.googleapis.com/", "custom.example/v1/", "/"} {
 				data, err := anypb.New(tc.message)
@@ -221,7 +222,7 @@ var _ = Describe("Continuation Token Conformance", func() {
 	It("pins Java pending queue envelope and Any validation", func() {
 		order, err := anypb.New(&demopb.Order{OrderId: proto.Int64(42)})
 		Expect(err).NotTo(HaveOccurred())
-		operation, err := anypb.New(&gen.PendingWritesQueueEntry{Operation: gen.PendingWritesQueueEntry_UPDATE.Enum()})
+		operation, err := anypb.New(&metadatapb.PendingWritesQueueEntry{Operation: metadatapb.PendingWritesQueueEntry_UPDATE.Enum()})
 		Expect(err).NotTo(HaveOccurred())
 		for _, tc := range []struct {
 			name         string
@@ -295,7 +296,7 @@ var _ = Describe("Continuation Token Conformance", func() {
 				var url string
 				var decodeErr error
 				if tc.indexPayload {
-					queue := recordlayer.NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 0, &gen.PendingWritesQueueEntry{})
+					queue := recordlayer.NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 0, &metadatapb.PendingWritesQueueEntry{})
 					cursor := queue.GetQueueCursor(rtx, recordlayer.ForwardScan(), nil)
 					defer cursor.Close()
 					item, err := cursor.OnNext(ctx)

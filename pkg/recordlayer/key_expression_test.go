@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -137,7 +137,7 @@ var _ = Describe("KeyExpression unit tests", func() {
 		Describe("Evaluate repeated fields", func() {
 			It("skips the scalar int64 fast path for repeated integer fields", func() {
 				expr := FanOut("ordinal_path")
-				msg := &gen.PIndexEntryObjectValue{OrdinalPath: []int32{9, 9, 8}}
+				msg := &metadatapb.PIndexEntryObjectValue{OrdinalPath: []int32{9, 9, 8}}
 
 				value, ok, err := expr.(int64Evaluator).EvaluateInt64(asStored(msg), msg)
 				Expect(err).NotTo(HaveOccurred())

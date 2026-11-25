@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
@@ -14,16 +14,16 @@ import (
 // protoEnumBiMap pins to the proto enums' order: entry i is proto number i+1.
 func TestRelOpOperatorTablesMatchTheProtoEnums(t *testing.T) {
 	t.Parallel()
-	if len(binaryRelOpOperators) != len(gen.PBinaryRelOpValue_PBinaryPhysicalOperator_name) {
-		t.Fatalf("%d binary operators, proto has %d", len(binaryRelOpOperators), len(gen.PBinaryRelOpValue_PBinaryPhysicalOperator_name))
+	if len(binaryRelOpOperators) != len(metadatapb.PBinaryRelOpValue_PBinaryPhysicalOperator_name) {
+		t.Fatalf("%d binary operators, proto has %d", len(binaryRelOpOperators), len(metadatapb.PBinaryRelOpValue_PBinaryPhysicalOperator_name))
 	}
 	for i, op := range binaryRelOpOperators {
 		if int(op.proto) != i+1 {
 			t.Errorf("binary operator %d is %v", i, op.proto)
 		}
 	}
-	if len(unaryRelOpOperators) != len(gen.PUnaryRelOpValue_PUnaryPhysicalOperator_name) {
-		t.Fatalf("%d unary operators, proto has %d", len(unaryRelOpOperators), len(gen.PUnaryRelOpValue_PUnaryPhysicalOperator_name))
+	if len(unaryRelOpOperators) != len(metadatapb.PUnaryRelOpValue_PUnaryPhysicalOperator_name) {
+		t.Fatalf("%d unary operators, proto has %d", len(unaryRelOpOperators), len(metadatapb.PUnaryRelOpValue_PUnaryPhysicalOperator_name))
 	}
 	for i, op := range unaryRelOpOperators {
 		if int(op.proto) != i+1 {
@@ -43,7 +43,7 @@ func TestRelOpValueEncapsulate(t *testing.T) {
 	lng := &ConstantValue{Value: int64(1), Typ: NotNullLong}
 	in := &ConstantValue{Value: int64(5), Typ: NotNullInt}
 	rel, err := NewBinaryRelOpValue(RelOpGreaterThan, lng, in)
-	if err != nil || rel.PhysicalOperator() != gen.PBinaryRelOpValue_GT_LI || rel.FunctionName != "gt" {
+	if err != nil || rel.PhysicalOperator() != metadatapb.PBinaryRelOpValue_GT_LI || rel.FunctionName != "gt" {
 		t.Fatalf("lng > int = %+v, %v", rel, err)
 	}
 	if _, err := NewBinaryRelOpValue(RelOpLessThan, NewBooleanValue(true), NewBooleanValue(false)); err == nil {
@@ -59,11 +59,11 @@ func TestRelOpValueEncapsulate(t *testing.T) {
 	}
 	arr := NewArrayConstructorValue(NotNullLong, []Value{lng})
 	rel, err = NewBinaryRelOpValue(RelOpEquals, arr, NewNullValue(NullType))
-	if err != nil || rel.PhysicalOperator() != gen.PBinaryRelOpValue_EQ_ARRAY_ARRAY {
+	if err != nil || rel.PhysicalOperator() != metadatapb.PBinaryRelOpValue_EQ_ARRAY_ARRAY {
 		t.Fatalf("array = NULL = %+v, %v", rel, err)
 	}
 	un, err := NewUnaryRelOpValue(RelOpIsNull, lng)
-	if err != nil || un.PhysicalOperator() != gen.PUnaryRelOpValue_IS_NULL_LI || un.FunctionName != "isNull" {
+	if err != nil || un.PhysicalOperator() != metadatapb.PUnaryRelOpValue_IS_NULL_LI || un.FunctionName != "isNull" {
 		t.Fatalf("IS NULL = %+v, %v", un, err)
 	}
 }
@@ -75,7 +75,7 @@ func TestJavaRelOpMacroBodyRoundTrips(t *testing.T) {
 	qov := func(alias string) string {
 		return `quantified_object_value: { alias: "` + alias + `" result_type: { primitive_type: { type_code: LONG is_nullable: true } } }`
 	}
-	var java gen.PUserDefinedFunction
+	var java metadatapb.PUserDefinedFunction
 	if err := prototext.Unmarshal([]byte(`user_defined_macro_function: {
 		function_name: "M"
 		arguments: { `+qov("x")+` }
@@ -111,8 +111,8 @@ func TestJavaRelOpMacroBodyRoundTrips(t *testing.T) {
 	if !proto.Equal(&java, again) {
 		t.Errorf("Java body changed on rewrite:\n%s\n%s", prototext.Format(&java), prototext.Format(again))
 	}
-	bad := proto.Clone(&java).(*gen.PUserDefinedFunction)
-	bad.GetUserDefinedMacroFunction().GetBody().GetAndOrValue().GetRightChild().GetBinaryRelOpValue().Operator = gen.PBinaryRelOpValue_LT_LL.Enum()
+	bad := proto.Clone(&java).(*metadatapb.PUserDefinedFunction)
+	bad.GetUserDefinedMacroFunction().GetBody().GetAndOrValue().GetRightChild().GetBinaryRelOpValue().Operator = metadatapb.PBinaryRelOpValue_LT_LL.Enum()
 	if _, err := MacroFunctionFromProto(bad.GetUserDefinedMacroFunction()); err == nil || !strings.Contains(err.Error(), "operator") {
 		t.Errorf("an operator of another comparison was accepted: %v", err)
 	}

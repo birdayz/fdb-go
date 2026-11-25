@@ -12,8 +12,8 @@ import (
 	"errors"
 	"math"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -32,7 +32,7 @@ import (
 // NON-normalized conjunction, a wire-visible branch. The conjuncts are the
 // graph's own, unresolved, as Java's are: a predicate over a field of the
 // scanned record reads it through the filter's quantifier over the scan.
-func generatePredicate(spec *indexSpec, res storageNames) (*gen.Predicate, error) {
+func generatePredicate(spec *indexSpec, res storageNames) (*metadatapb.Predicate, error) {
 	if len(spec.predicate) == 0 {
 		return nil, nil
 	}
@@ -332,37 +332,37 @@ func conjunctionHasRange(group predicates.QueryPredicate) bool {
 // indexPredicateToProto ports IndexPredicate.fromQueryPredicate
 // (IndexPredicate.java:131-150) fused with each PoJo's toProto: the stored
 // RecordMetaDataProto.Predicate bytes for the accepted predicate tree.
-func indexPredicateToProto(p predicates.QueryPredicate, res storageNames) (*gen.Predicate, error) {
+func indexPredicateToProto(p predicates.QueryPredicate, res storageNames) (*metadatapb.Predicate, error) {
 	switch q := p.(type) {
 	case *predicates.ConstantPredicate:
 		// IndexPredicate.ConstantPredicate (IndexPredicate.java:420-430,
 		// toProto :455-475): TRUE / FALSE / NULL.
-		v := gen.ConstantPredicate_NULL
+		v := metadatapb.ConstantPredicate_NULL
 		switch q.Value {
 		case predicates.TriTrue:
-			v = gen.ConstantPredicate_TRUE
+			v = metadatapb.ConstantPredicate_TRUE
 		case predicates.TriFalse:
-			v = gen.ConstantPredicate_FALSE
+			v = metadatapb.ConstantPredicate_FALSE
 		}
-		return &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{Value: v.Enum()}}, nil
+		return &metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{Value: v.Enum()}}, nil
 	case *predicates.NotPredicate:
 		child, err := indexPredicateToProto(q.Child, res)
 		if err != nil {
 			return nil, err
 		}
-		return &gen.Predicate{NotPredicate: &gen.NotPredicate{Child: child}}, nil
+		return &metadatapb.Predicate{NotPredicate: &metadatapb.NotPredicate{Child: child}}, nil
 	case *predicates.AndPredicate:
 		children, err := indexPredicateChildrenToProto(q.SubPredicates, res)
 		if err != nil {
 			return nil, err
 		}
-		return &gen.Predicate{AndPredicate: &gen.AndPredicate{Children: children}}, nil
+		return &metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{Children: children}}, nil
 	case *predicates.OrPredicate:
 		children, err := indexPredicateChildrenToProto(q.SubPredicates, res)
 		if err != nil {
 			return nil, err
 		}
-		return &gen.Predicate{OrPredicate: &gen.OrPredicate{Children: children}}, nil
+		return &metadatapb.Predicate{OrPredicate: &metadatapb.OrPredicate{Children: children}}, nil
 	case *predicates.ComparisonPredicate:
 		return comparisonPredicateToProto(q, res)
 	default:
@@ -372,8 +372,8 @@ func indexPredicateToProto(p predicates.QueryPredicate, res storageNames) (*gen.
 	}
 }
 
-func indexPredicateChildrenToProto(children []predicates.QueryPredicate, res storageNames) ([]*gen.Predicate, error) {
-	out := make([]*gen.Predicate, 0, len(children))
+func indexPredicateChildrenToProto(children []predicates.QueryPredicate, res storageNames) ([]*metadatapb.Predicate, error) {
+	out := make([]*metadatapb.Predicate, 0, len(children))
 	for _, c := range children {
 		p, err := indexPredicateToProto(c, res)
 		if err != nil {
@@ -387,7 +387,7 @@ func indexPredicateChildrenToProto(children []predicates.QueryPredicate, res sto
 // comparisonPredicateToProto is the ValuePredicate PoJo
 // (IndexPredicate.java:562-566: the value's field path names, the comparison
 // via IndexComparison.fromComparison) and its toProto (:587-594).
-func comparisonPredicateToProto(q *predicates.ComparisonPredicate, res storageNames) (*gen.Predicate, error) {
+func comparisonPredicateToProto(q *predicates.ComparisonPredicate, res storageNames) (*metadatapb.Predicate, error) {
 	fv, ok := values.AsFieldValue(q.Operand)
 	if !ok {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
@@ -410,7 +410,7 @@ func comparisonPredicateToProto(q *predicates.ComparisonPredicate, res storageNa
 	if err != nil {
 		return nil, err
 	}
-	return &gen.Predicate{ValuePredicate: &gen.ValuePredicate{
+	return &metadatapb.Predicate{ValuePredicate: &metadatapb.ValuePredicate{
 		Value:      path,
 		Comparison: cmp,
 	}}, nil
@@ -420,13 +420,13 @@ func comparisonPredicateToProto(q *predicates.ComparisonPredicate, res storageNa
 // the unary null checks (IndexComparison.java:324-327), otherwise a
 // SimpleComparison whose type maps per IndexComparison.java:221-249 and whose
 // operand is stored in LiteralKeyExpression.toProtoValue's encoding (:253).
-func indexComparisonToProto(c predicates.Comparison, columnType values.Type) (*gen.Comparison, error) {
+func indexComparisonToProto(c predicates.Comparison, columnType values.Type) (*metadatapb.Comparison, error) {
 	if c.Type.IsUnary() {
 		switch c.Type {
 		case predicates.ComparisonIsNull:
-			return &gen.Comparison{NullComparison: &gen.NullComparison{IsNull: protoBool(true)}}, nil
+			return &metadatapb.Comparison{NullComparison: &metadatapb.NullComparison{IsNull: protoBool(true)}}, nil
 		case predicates.ComparisonIsNotNull:
-			return &gen.Comparison{NullComparison: &gen.NullComparison{IsNull: protoBool(false)}}, nil
+			return &metadatapb.Comparison{NullComparison: &metadatapb.NullComparison{IsNull: protoBool(false)}}, nil
 		}
 	}
 	// An enum column's comparand is promoted to the enum, which no
@@ -438,22 +438,22 @@ func indexComparisonToProto(c predicates.Comparison, columnType values.Type) (*g
 		return nil, api.NewError(api.ErrCodeUnknown,
 			"attempt to create PoJo index comparison from unsupported comparison")
 	}
-	var typ gen.ComparisonType
+	var typ metadatapb.ComparisonType
 	switch c.Type {
 	case predicates.ComparisonEquals:
-		typ = gen.ComparisonType_EQUALS
+		typ = metadatapb.ComparisonType_EQUALS
 	case predicates.ComparisonNotEquals:
-		typ = gen.ComparisonType_NOT_EQUALS
+		typ = metadatapb.ComparisonType_NOT_EQUALS
 	case predicates.ComparisonLessThan:
-		typ = gen.ComparisonType_LESS_THAN
+		typ = metadatapb.ComparisonType_LESS_THAN
 	case predicates.ComparisonLessThanOrEq:
-		typ = gen.ComparisonType_LESS_THAN_OR_EQUALS
+		typ = metadatapb.ComparisonType_LESS_THAN_OR_EQUALS
 	case predicates.ComparisonGreaterThan:
-		typ = gen.ComparisonType_GREATER_THAN
+		typ = metadatapb.ComparisonType_GREATER_THAN
 	case predicates.ComparisonGreaterThanEq:
-		typ = gen.ComparisonType_GREATER_THAN_OR_EQUALS
+		typ = metadatapb.ComparisonType_GREATER_THAN_OR_EQUALS
 	case predicates.ComparisonStartsWith:
-		typ = gen.ComparisonType_STARTS_WITH
+		typ = metadatapb.ComparisonType_STARTS_WITH
 	default:
 		// Java's message (IndexComparison.java:76).
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
@@ -502,7 +502,7 @@ func indexComparisonToProto(c predicates.Comparison, columnType values.Type) (*g
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"attempt to create PoJo index comparison from unsupported comparison: %v", err)
 	}
-	return &gen.Comparison{SimpleComparison: &gen.SimpleComparison{
+	return &metadatapb.Comparison{SimpleComparison: &metadatapb.SimpleComparison{
 		Type:    typ.Enum(),
 		Operand: operand,
 	}}, nil

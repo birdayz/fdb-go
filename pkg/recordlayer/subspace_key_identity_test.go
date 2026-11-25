@@ -11,7 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -332,19 +332,19 @@ func TestIndexEqualsJavaFieldByField(t *testing.T) {
 		idx.primaryKeyComponentPositions = []int{-1, 0}
 		return idx
 	}
-	window := func(size int32) *gen.Predicate {
-		return &gen.Predicate{RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+	window := func(size int32) *metadatapb.Predicate {
+		return &metadatapb.Predicate{RowNumberWindowPredicate: &metadatapb.RowNumberWindowPredicate{
 			OrderingField: []string{"price"}, Size: &size,
-			Direction:       gen.RowNumberWindowPredicate_ASC.Enum(),
-			PartitionFields: []*gen.FieldPath{{Field: []string{"customer_id"}}},
+			Direction:       metadatapb.RowNumberWindowPredicate_ASC.Enum(),
+			PartitionFields: []*metadatapb.FieldPath{{Field: []string{"customer_id"}}},
 		}}
 	}
-	constant := &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}}
-	behindConstant := func(p *gen.Predicate) *gen.Predicate {
-		p.ConstantPredicate = &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}
+	constant := &metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_TRUE.Enum()}}
+	behindConstant := func(p *metadatapb.Predicate) *metadatapb.Predicate {
+		p.ConstantPredicate = &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_TRUE.Enum()}
 		return p
 	}
-	withProto := func(p *gen.Predicate) func(*Index) {
+	withProto := func(p *metadatapb.Predicate) func(*Index) {
 		return func(i *Index) { i.predicateProto = p }
 	}
 	sharedConstant := withProto(constant)
@@ -405,7 +405,7 @@ func TestIndexEqualsJavaFieldByField(t *testing.T) {
 		equal  bool
 	}{
 		{"one constant predicate", sharedConstant, sharedConstant, true},
-		{"two equal constant predicates", withProto(constant), withProto(&gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}}), false},
+		{"two equal constant predicates", withProto(constant), withProto(&metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_TRUE.Enum()}}), false},
 		{"two equal row-number windows", withProto(window(3)), withProto(window(3)), true},
 		{"two row-number windows of different sizes", withProto(window(3)), withProto(window(4)), false},
 		{"a window behind a constant field is Java's constant predicate", withProto(behindConstant(window(3))), withProto(behindConstant(window(3))), false},
@@ -509,12 +509,12 @@ func TestRecordCoreArgumentErrorRendersSetFields(t *testing.T) {
 // presence of an empty key is what the unmarshaller keeps.
 func TestFormerIndexProtoAsJava(t *testing.T) {
 	t.Parallel()
-	read := func(p *gen.FormerIndex) (*FormerIndex, error) {
+	read := func(p *metadatapb.FormerIndex) (*FormerIndex, error) {
 		data, err := proto.Marshal(p)
 		if err != nil {
 			t.Fatal(err)
 		}
-		var decoded gen.FormerIndex
+		var decoded metadatapb.FormerIndex
 		if err := proto.Unmarshal(data, &decoded); err != nil {
 			t.Fatal(err)
 		}
@@ -531,7 +531,7 @@ func TestFormerIndexProtoAsJava(t *testing.T) {
 		{"two items", tuple.Tuple{"a", "b"}.Pack(), "subspace key must encode a single item tuple", "core"},
 		{"a null item", tuple.Tuple{nil}.Pack(), "FormerIndex initialized with null subspace key", "argument"},
 	} {
-		_, err := read(&gen.FormerIndex{SubspaceKey: c.key, FormerName: proto.String("gone")})
+		_, err := read(&metadatapb.FormerIndex{SubspaceKey: c.key, FormerName: proto.String("gone")})
 		var core *RecordCoreError
 		var arg *RecordCoreArgumentError
 		switch {
@@ -825,8 +825,8 @@ func TestBuildFormerIndexVersionMessagesAreJavas(t *testing.T) {
 		{"gone", 6, 7, "Former index gone has added version 6 which is greater than the meta-data version 5"},
 		{"gone", 2, 7, "Former index gone has removed version 7 which is greater than the meta-data version 5"},
 	} {
-		p := proto.Clone(base).(*gen.MetaData)
-		fi := &gen.FormerIndex{SubspaceKey: tuple.Tuple{"gone"}.Pack(), AddedVersion: proto.Int32(c.added), RemovedVersion: proto.Int32(c.removed)}
+		p := proto.Clone(base).(*metadatapb.MetaData)
+		fi := &metadatapb.FormerIndex{SubspaceKey: tuple.Tuple{"gone"}.Pack(), AddedVersion: proto.Int32(c.added), RemovedVersion: proto.Int32(c.removed)}
 		if c.name != "" {
 			fi.FormerName = proto.String(c.name)
 		}
@@ -934,9 +934,9 @@ func TestEvolutionComparesRootsAsJavaDoes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	withIndex := func(version int32, edit func(*gen.Index)) *RecordMetaData {
+	withIndex := func(version int32, edit func(*metadatapb.Index)) *RecordMetaData {
 		t.Helper()
-		p := proto.Clone(oldProto).(*gen.MetaData)
+		p := proto.Clone(oldProto).(*metadatapb.MetaData)
 		p.Version = proto.Int32(version)
 		for _, idx := range p.GetIndexes() {
 			if idx.GetName() == "i" {
@@ -949,9 +949,9 @@ func TestEvolutionComparesRootsAsJavaDoes(t *testing.T) {
 		}
 		return out
 	}
-	old := withIndex(3, func(*gen.Index) {})
-	unique := withIndex(4, func(idx *gen.Index) {
-		idx.RootExpression.Field.NullInterpretation = gen.Field_UNIQUE.Enum()
+	old := withIndex(3, func(*metadatapb.Index) {})
+	unique := withIndex(4, func(idx *metadatapb.Index) {
+		idx.RootExpression.Field.NullInterpretation = metadatapb.Field_UNIQUE.Enum()
 	})
 	if err := DefaultMetaDataEvolutionValidator().Validate(old, unique); err != nil {
 		t.Errorf("a root changed only in its null interpretation: %v, want admitted", err)
@@ -970,7 +970,7 @@ func TestEvolutionComparesRootsAsJavaDoes(t *testing.T) {
 	if !withPositions.GetIndex("i").HasPrimaryKeyComponentPositions() {
 		t.Fatal("the forced positions did not survive Build")
 	}
-	dropped := withIndex(4, func(*gen.Index) {})
+	dropped := withIndex(4, func(*metadatapb.Index) {})
 	var evolErr *MetaDataEvolutionError
 	if err := DefaultMetaDataEvolutionValidator().Validate(withPositions, dropped); !errors.As(err, &evolErr) ||
 		!strings.HasPrefix(evolErr.Message, "new index drops primary key component positions") {
@@ -1000,7 +1000,7 @@ func TestSavedSourceIndexResolvesANestedTupleKey(t *testing.T) {
 		{tuple.Tuple{"a", int64(1)}, "nested"},
 		{"flat_key", "flat"},
 	} {
-		stamp := &gen.IndexBuildIndexingStamp{SourceIndexSubspaceKey: tuple.Tuple{c.key}.Pack()}
+		stamp := &metadatapb.IndexBuildIndexingStamp{SourceIndexSubspaceKey: tuple.Tuple{c.key}.Pack()}
 		got, err := oi.savedSourceIndex(stamp)
 		if err != nil || got == nil || got.Name != c.want {
 			t.Errorf("savedSourceIndex(%#v) = %v, %v, want %s", c.key, got, err, c.want)

@@ -9,7 +9,7 @@ go_library(
     importpath = "fdb.dev/gen/demopb",
     visibility = ["//visibility:public"],
     deps = [
-        "//gen",
+        "//pkg/recordlayer/metadatapb",
         "@com_github_planetscale_vtprotobuf//protohelpers",
         "@org_golang_google_protobuf//reflect/protoreflect",
         "@org_golang_google_protobuf//runtime/protoimpl",

@@ -10,9 +10,9 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // Persist this measurement: matching locale/strength does not make x/text keys
@@ -23,11 +23,11 @@ var _ = Describe("CollationKeyJavaProbe", func() {
 		{recordlayer.CollateFuncICU, "com.apple.foundationdb.record.icu.TextCollatorRegistryICU"},
 	} {
 		It("pins provider and incompatible bytes for "+provider.function, func() {
-			str := func(s string) *gen.KeyExpression {
-				return &gen.KeyExpression{Value: &gen.Value{StringValue: proto.String(s)}}
+			str := func(s string) *metadatapb.KeyExpression {
+				return &metadatapb.KeyExpression{Value: &metadatapb.Value{StringValue: proto.String(s)}}
 			}
-			long := func(v int64) *gen.KeyExpression {
-				return &gen.KeyExpression{Value: &gen.Value{LongValue: proto.Int64(v)}}
+			long := func(v int64) *metadatapb.KeyExpression {
+				return &metadatapb.KeyExpression{Value: &metadatapb.Value{LongValue: proto.Int64(v)}}
 			}
 			cases := []struct {
 				text, locale string
@@ -43,9 +43,9 @@ var _ = Describe("CollationKeyJavaProbe", func() {
 				{"", "", 0},
 			}
 			for _, c := range cases {
-				expr := &gen.KeyExpression{Function: &gen.Function{
+				expr := &metadatapb.KeyExpression{Function: &metadatapb.Function{
 					Name:      proto.String(provider.function),
-					Arguments: &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{str(c.text), str(c.locale), long(c.strength)}}},
+					Arguments: &metadatapb.KeyExpression{Then: &metadatapb.Then{Child: []*metadatapb.KeyExpression{str(c.text), str(c.locale), long(c.strength)}}},
 				}}
 				exprBytes, err := proto.Marshal(expr)
 				Expect(err).NotTo(HaveOccurred())

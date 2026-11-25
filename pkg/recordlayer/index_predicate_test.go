@@ -9,7 +9,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	gen "fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"google.golang.org/protobuf/proto"
@@ -21,9 +21,9 @@ import (
 
 func TestConstantPredicateTrue(t *testing.T) {
 	t.Parallel()
-	pred := &gen.Predicate{
-		ConstantPredicate: &gen.ConstantPredicate{
-			Value: gen.ConstantPredicate_TRUE.Enum(),
+	pred := &metadatapb.Predicate{
+		ConstantPredicate: &metadatapb.ConstantPredicate{
+			Value: metadatapb.ConstantPredicate_TRUE.Enum(),
 		},
 	}
 	fn, err := predicateFromProto(pred)
@@ -41,9 +41,9 @@ func TestConstantPredicateTrue(t *testing.T) {
 
 func TestConstantPredicateFalse(t *testing.T) {
 	t.Parallel()
-	pred := &gen.Predicate{
-		ConstantPredicate: &gen.ConstantPredicate{
-			Value: gen.ConstantPredicate_FALSE.Enum(),
+	pred := &metadatapb.Predicate{
+		ConstantPredicate: &metadatapb.ConstantPredicate{
+			Value: metadatapb.ConstantPredicate_FALSE.Enum(),
 		},
 	}
 	fn, err := predicateFromProto(pred)
@@ -57,9 +57,9 @@ func TestConstantPredicateFalse(t *testing.T) {
 
 func TestConstantPredicateNull(t *testing.T) {
 	t.Parallel()
-	pred := &gen.Predicate{
-		ConstantPredicate: &gen.ConstantPredicate{
-			Value: gen.ConstantPredicate_NULL.Enum(),
+	pred := &metadatapb.Predicate{
+		ConstantPredicate: &metadatapb.ConstantPredicate{
+			Value: metadatapb.ConstantPredicate_NULL.Enum(),
 		},
 	}
 	fn, err := predicateFromProto(pred)
@@ -77,13 +77,13 @@ func TestConstantPredicateNull(t *testing.T) {
 
 func TestValuePredicateEquals(t *testing.T) {
 	t.Parallel()
-	pred := &gen.Predicate{
-		ValuePredicate: &gen.ValuePredicate{
+	pred := &metadatapb.Predicate{
+		ValuePredicate: &metadatapb.ValuePredicate{
 			Value: []string{"price"},
-			Comparison: &gen.Comparison{
-				SimpleComparison: &gen.SimpleComparison{
-					Type:    gen.ComparisonType_EQUALS.Enum(),
-					Operand: &gen.Value{IntValue: proto.Int32(100)},
+			Comparison: &metadatapb.Comparison{
+				SimpleComparison: &metadatapb.SimpleComparison{
+					Type:    metadatapb.ComparisonType_EQUALS.Enum(),
+					Operand: &metadatapb.Value{IntValue: proto.Int32(100)},
 				},
 			},
 		},
@@ -104,13 +104,13 @@ func TestValuePredicateEquals(t *testing.T) {
 
 func TestValuePredicateNotEquals(t *testing.T) {
 	t.Parallel()
-	pred := &gen.Predicate{
-		ValuePredicate: &gen.ValuePredicate{
+	pred := &metadatapb.Predicate{
+		ValuePredicate: &metadatapb.ValuePredicate{
 			Value: []string{"price"},
-			Comparison: &gen.Comparison{
-				SimpleComparison: &gen.SimpleComparison{
-					Type:    gen.ComparisonType_NOT_EQUALS.Enum(),
-					Operand: &gen.Value{IntValue: proto.Int32(100)},
+			Comparison: &metadatapb.Comparison{
+				SimpleComparison: &metadatapb.SimpleComparison{
+					Type:    metadatapb.ComparisonType_NOT_EQUALS.Enum(),
+					Operand: &metadatapb.Value{IntValue: proto.Int32(100)},
 				},
 			},
 		},
@@ -129,13 +129,13 @@ func TestValuePredicateNotEquals(t *testing.T) {
 
 func TestValuePredicateLessThan(t *testing.T) {
 	t.Parallel()
-	pred := &gen.Predicate{
-		ValuePredicate: &gen.ValuePredicate{
+	pred := &metadatapb.Predicate{
+		ValuePredicate: &metadatapb.ValuePredicate{
 			Value: []string{"price"},
-			Comparison: &gen.Comparison{
-				SimpleComparison: &gen.SimpleComparison{
-					Type:    gen.ComparisonType_LESS_THAN.Enum(),
-					Operand: &gen.Value{IntValue: proto.Int32(500)},
+			Comparison: &metadatapb.Comparison{
+				SimpleComparison: &metadatapb.SimpleComparison{
+					Type:    metadatapb.ComparisonType_LESS_THAN.Enum(),
+					Operand: &metadatapb.Value{IntValue: proto.Int32(500)},
 				},
 			},
 		},
@@ -157,13 +157,13 @@ func TestValuePredicateLessThan(t *testing.T) {
 
 func TestValuePredicateGreaterThan(t *testing.T) {
 	t.Parallel()
-	pred := &gen.Predicate{
-		ValuePredicate: &gen.ValuePredicate{
+	pred := &metadatapb.Predicate{
+		ValuePredicate: &metadatapb.ValuePredicate{
 			Value: []string{"price"},
-			Comparison: &gen.Comparison{
-				SimpleComparison: &gen.SimpleComparison{
-					Type:    gen.ComparisonType_GREATER_THAN.Enum(),
-					Operand: &gen.Value{IntValue: proto.Int32(500)},
+			Comparison: &metadatapb.Comparison{
+				SimpleComparison: &metadatapb.SimpleComparison{
+					Type:    metadatapb.ComparisonType_GREATER_THAN.Enum(),
+					Operand: &metadatapb.Value{IntValue: proto.Int32(500)},
 				},
 			},
 		},
@@ -185,13 +185,13 @@ func TestValuePredicateGreaterThan(t *testing.T) {
 
 func TestValuePredicateLessThanOrEquals(t *testing.T) {
 	t.Parallel()
-	pred := &gen.Predicate{
-		ValuePredicate: &gen.ValuePredicate{
+	pred := &metadatapb.Predicate{
+		ValuePredicate: &metadatapb.ValuePredicate{
 			Value: []string{"price"},
-			Comparison: &gen.Comparison{
-				SimpleComparison: &gen.SimpleComparison{
-					Type:    gen.ComparisonType_LESS_THAN_OR_EQUALS.Enum(),
-					Operand: &gen.Value{IntValue: proto.Int32(500)},
+			Comparison: &metadatapb.Comparison{
+				SimpleComparison: &metadatapb.SimpleComparison{
+					Type:    metadatapb.ComparisonType_LESS_THAN_OR_EQUALS.Enum(),
+					Operand: &metadatapb.Value{IntValue: proto.Int32(500)},
 				},
 			},
 		},
@@ -213,13 +213,13 @@ func TestValuePredicateLessThanOrEquals(t *testing.T) {
 
 func TestValuePredicateGreaterThanOrEquals(t *testing.T) {
 	t.Parallel()
-	pred := &gen.Predicate{
-		ValuePredicate: &gen.ValuePredicate{
+	pred := &metadatapb.Predicate{
+		ValuePredicate: &metadatapb.ValuePredicate{
 			Value: []string{"price"},
-			Comparison: &gen.Comparison{
-				SimpleComparison: &gen.SimpleComparison{
-					Type:    gen.ComparisonType_GREATER_THAN_OR_EQUALS.Enum(),
-					Operand: &gen.Value{IntValue: proto.Int32(500)},
+			Comparison: &metadatapb.Comparison{
+				SimpleComparison: &metadatapb.SimpleComparison{
+					Type:    metadatapb.ComparisonType_GREATER_THAN_OR_EQUALS.Enum(),
+					Operand: &metadatapb.Value{IntValue: proto.Int32(500)},
 				},
 			},
 		},
@@ -241,16 +241,16 @@ func TestValuePredicateGreaterThanOrEquals(t *testing.T) {
 
 func TestValuePredicateIsNull(t *testing.T) {
 	t.Parallel()
-	pred := &gen.Predicate{
-		ValuePredicate: &gen.ValuePredicate{
+	pred := &metadatapb.Predicate{
+		ValuePredicate: &metadatapb.ValuePredicate{
 			Value: []string{"price"},
-			Comparison: &gen.Comparison{
+			Comparison: &metadatapb.Comparison{
 				// Java's SimpleComparison(proto) requires an operand of any
 				// type (Objects.requireNonNull, IndexComparison.java:175)
 				// and ignores it for a null check.
-				SimpleComparison: &gen.SimpleComparison{
-					Type:    gen.ComparisonType_IS_NULL.Enum(),
-					Operand: &gen.Value{IntValue: proto.Int32(0)},
+				SimpleComparison: &metadatapb.SimpleComparison{
+					Type:    metadatapb.ComparisonType_IS_NULL.Enum(),
+					Operand: &metadatapb.Value{IntValue: proto.Int32(0)},
 				},
 			},
 		},
@@ -271,16 +271,16 @@ func TestValuePredicateIsNull(t *testing.T) {
 
 func TestValuePredicateNotNull(t *testing.T) {
 	t.Parallel()
-	pred := &gen.Predicate{
-		ValuePredicate: &gen.ValuePredicate{
+	pred := &metadatapb.Predicate{
+		ValuePredicate: &metadatapb.ValuePredicate{
 			Value: []string{"price"},
-			Comparison: &gen.Comparison{
+			Comparison: &metadatapb.Comparison{
 				// Java's SimpleComparison(proto) requires an operand of any
 				// type (Objects.requireNonNull, IndexComparison.java:175)
 				// and ignores it for a null check.
-				SimpleComparison: &gen.SimpleComparison{
-					Type:    gen.ComparisonType_NOT_NULL.Enum(),
-					Operand: &gen.Value{IntValue: proto.Int32(0)},
+				SimpleComparison: &metadatapb.SimpleComparison{
+					Type:    metadatapb.ComparisonType_NOT_NULL.Enum(),
+					Operand: &metadatapb.Value{IntValue: proto.Int32(0)},
 				},
 			},
 		},
@@ -302,10 +302,10 @@ func TestValuePredicateNotNull(t *testing.T) {
 // NullComparison.
 func TestValuePredicateNullCheckWithoutOperandIsRefused(t *testing.T) {
 	t.Parallel()
-	for _, typ := range []gen.ComparisonType{gen.ComparisonType_IS_NULL, gen.ComparisonType_NOT_NULL} {
-		_, err := predicateFromProto(&gen.Predicate{ValuePredicate: &gen.ValuePredicate{
+	for _, typ := range []metadatapb.ComparisonType{metadatapb.ComparisonType_IS_NULL, metadatapb.ComparisonType_NOT_NULL} {
+		_, err := predicateFromProto(&metadatapb.Predicate{ValuePredicate: &metadatapb.ValuePredicate{
 			Value:      []string{"price"},
-			Comparison: &gen.Comparison{SimpleComparison: &gen.SimpleComparison{Type: typ.Enum()}},
+			Comparison: &metadatapb.Comparison{SimpleComparison: &metadatapb.SimpleComparison{Type: typ.Enum()}},
 		}})
 		var rce *RecordCoreError
 		if !errors.As(err, &rce) || rce.Message != "index comparison operand has no value" {
@@ -317,13 +317,13 @@ func TestValuePredicateNullCheckWithoutOperandIsRefused(t *testing.T) {
 func TestValuePredicateStartsWith(t *testing.T) {
 	t.Parallel()
 	// Test on flower.type which is a string field
-	pred := &gen.Predicate{
-		ValuePredicate: &gen.ValuePredicate{
+	pred := &metadatapb.Predicate{
+		ValuePredicate: &metadatapb.ValuePredicate{
 			Value: []string{"flower", "type"},
-			Comparison: &gen.Comparison{
-				SimpleComparison: &gen.SimpleComparison{
-					Type:    gen.ComparisonType_STARTS_WITH.Enum(),
-					Operand: &gen.Value{StringValue: proto.String("ros")},
+			Comparison: &metadatapb.Comparison{
+				SimpleComparison: &metadatapb.SimpleComparison{
+					Type:    metadatapb.ComparisonType_STARTS_WITH.Enum(),
+					Operand: &metadatapb.Value{StringValue: proto.String("ros")},
 				},
 			},
 		},
@@ -350,13 +350,13 @@ func TestValuePredicateStartsWith(t *testing.T) {
 func TestValuePredicateNestedFieldPath(t *testing.T) {
 	t.Parallel()
 	// flower.type == "rose"
-	pred := &gen.Predicate{
-		ValuePredicate: &gen.ValuePredicate{
+	pred := &metadatapb.Predicate{
+		ValuePredicate: &metadatapb.ValuePredicate{
 			Value: []string{"flower", "type"},
-			Comparison: &gen.Comparison{
-				SimpleComparison: &gen.SimpleComparison{
-					Type:    gen.ComparisonType_EQUALS.Enum(),
-					Operand: &gen.Value{StringValue: proto.String("rose")},
+			Comparison: &metadatapb.Comparison{
+				SimpleComparison: &metadatapb.SimpleComparison{
+					Type:    metadatapb.ComparisonType_EQUALS.Enum(),
+					Operand: &metadatapb.Value{StringValue: proto.String("rose")},
 				},
 			},
 		},
@@ -384,27 +384,27 @@ func TestValuePredicateNestedFieldPath(t *testing.T) {
 func TestAndPredicate(t *testing.T) {
 	t.Parallel()
 	// price > 100 AND price < 1000
-	pred := &gen.Predicate{
-		AndPredicate: &gen.AndPredicate{
-			Children: []*gen.Predicate{
+	pred := &metadatapb.Predicate{
+		AndPredicate: &metadatapb.AndPredicate{
+			Children: []*metadatapb.Predicate{
 				{
-					ValuePredicate: &gen.ValuePredicate{
+					ValuePredicate: &metadatapb.ValuePredicate{
 						Value: []string{"price"},
-						Comparison: &gen.Comparison{
-							SimpleComparison: &gen.SimpleComparison{
-								Type:    gen.ComparisonType_GREATER_THAN.Enum(),
-								Operand: &gen.Value{IntValue: proto.Int32(100)},
+						Comparison: &metadatapb.Comparison{
+							SimpleComparison: &metadatapb.SimpleComparison{
+								Type:    metadatapb.ComparisonType_GREATER_THAN.Enum(),
+								Operand: &metadatapb.Value{IntValue: proto.Int32(100)},
 							},
 						},
 					},
 				},
 				{
-					ValuePredicate: &gen.ValuePredicate{
+					ValuePredicate: &metadatapb.ValuePredicate{
 						Value: []string{"price"},
-						Comparison: &gen.Comparison{
-							SimpleComparison: &gen.SimpleComparison{
-								Type:    gen.ComparisonType_LESS_THAN.Enum(),
-								Operand: &gen.Value{IntValue: proto.Int32(1000)},
+						Comparison: &metadatapb.Comparison{
+							SimpleComparison: &metadatapb.SimpleComparison{
+								Type:    metadatapb.ComparisonType_LESS_THAN.Enum(),
+								Operand: &metadatapb.Value{IntValue: proto.Int32(1000)},
 							},
 						},
 					},
@@ -434,27 +434,27 @@ func TestAndPredicate(t *testing.T) {
 func TestOrPredicate(t *testing.T) {
 	t.Parallel()
 	// price == 100 OR price == 200
-	pred := &gen.Predicate{
-		OrPredicate: &gen.OrPredicate{
-			Children: []*gen.Predicate{
+	pred := &metadatapb.Predicate{
+		OrPredicate: &metadatapb.OrPredicate{
+			Children: []*metadatapb.Predicate{
 				{
-					ValuePredicate: &gen.ValuePredicate{
+					ValuePredicate: &metadatapb.ValuePredicate{
 						Value: []string{"price"},
-						Comparison: &gen.Comparison{
-							SimpleComparison: &gen.SimpleComparison{
-								Type:    gen.ComparisonType_EQUALS.Enum(),
-								Operand: &gen.Value{IntValue: proto.Int32(100)},
+						Comparison: &metadatapb.Comparison{
+							SimpleComparison: &metadatapb.SimpleComparison{
+								Type:    metadatapb.ComparisonType_EQUALS.Enum(),
+								Operand: &metadatapb.Value{IntValue: proto.Int32(100)},
 							},
 						},
 					},
 				},
 				{
-					ValuePredicate: &gen.ValuePredicate{
+					ValuePredicate: &metadatapb.ValuePredicate{
 						Value: []string{"price"},
-						Comparison: &gen.Comparison{
-							SimpleComparison: &gen.SimpleComparison{
-								Type:    gen.ComparisonType_EQUALS.Enum(),
-								Operand: &gen.Value{IntValue: proto.Int32(200)},
+						Comparison: &metadatapb.Comparison{
+							SimpleComparison: &metadatapb.SimpleComparison{
+								Type:    metadatapb.ComparisonType_EQUALS.Enum(),
+								Operand: &metadatapb.Value{IntValue: proto.Int32(200)},
 							},
 						},
 					},
@@ -484,15 +484,15 @@ func TestOrPredicate(t *testing.T) {
 func TestNotPredicate(t *testing.T) {
 	t.Parallel()
 	// NOT (price == 100)
-	pred := &gen.Predicate{
-		NotPredicate: &gen.NotPredicate{
-			Child: &gen.Predicate{
-				ValuePredicate: &gen.ValuePredicate{
+	pred := &metadatapb.Predicate{
+		NotPredicate: &metadatapb.NotPredicate{
+			Child: &metadatapb.Predicate{
+				ValuePredicate: &metadatapb.ValuePredicate{
 					Value: []string{"price"},
-					Comparison: &gen.Comparison{
-						SimpleComparison: &gen.SimpleComparison{
-							Type:    gen.ComparisonType_EQUALS.Enum(),
-							Operand: &gen.Value{IntValue: proto.Int32(100)},
+					Comparison: &metadatapb.Comparison{
+						SimpleComparison: &metadatapb.SimpleComparison{
+							Type:    metadatapb.ComparisonType_EQUALS.Enum(),
+							Operand: &metadatapb.Value{IntValue: proto.Int32(100)},
 						},
 					},
 				},
@@ -517,47 +517,47 @@ func TestNotPredicate(t *testing.T) {
 
 func TestComplexNestedPredicate(t *testing.T) {
 	t.Parallel()
-	pred := &gen.Predicate{
-		AndPredicate: &gen.AndPredicate{
-			Children: []*gen.Predicate{
+	pred := &metadatapb.Predicate{
+		AndPredicate: &metadatapb.AndPredicate{
+			Children: []*metadatapb.Predicate{
 				// price > 100
 				{
-					ValuePredicate: &gen.ValuePredicate{
+					ValuePredicate: &metadatapb.ValuePredicate{
 						Value: []string{"price"},
-						Comparison: &gen.Comparison{
-							SimpleComparison: &gen.SimpleComparison{
-								Type:    gen.ComparisonType_GREATER_THAN.Enum(),
-								Operand: &gen.Value{IntValue: proto.Int32(100)},
+						Comparison: &metadatapb.Comparison{
+							SimpleComparison: &metadatapb.SimpleComparison{
+								Type:    metadatapb.ComparisonType_GREATER_THAN.Enum(),
+								Operand: &metadatapb.Value{IntValue: proto.Int32(100)},
 							},
 						},
 					},
 				},
 				// OR(quantity > 5, NOT(IS_NULL flower.type))
 				{
-					OrPredicate: &gen.OrPredicate{
-						Children: []*gen.Predicate{
+					OrPredicate: &metadatapb.OrPredicate{
+						Children: []*metadatapb.Predicate{
 							// quantity > 5
 							{
-								ValuePredicate: &gen.ValuePredicate{
+								ValuePredicate: &metadatapb.ValuePredicate{
 									Value: []string{"quantity"},
-									Comparison: &gen.Comparison{
-										SimpleComparison: &gen.SimpleComparison{
-											Type:    gen.ComparisonType_GREATER_THAN.Enum(),
-											Operand: &gen.Value{IntValue: proto.Int32(5)},
+									Comparison: &metadatapb.Comparison{
+										SimpleComparison: &metadatapb.SimpleComparison{
+											Type:    metadatapb.ComparisonType_GREATER_THAN.Enum(),
+											Operand: &metadatapb.Value{IntValue: proto.Int32(5)},
 										},
 									},
 								},
 							},
 							// NOT(IS_NULL flower.type)
 							{
-								NotPredicate: &gen.NotPredicate{
-									Child: &gen.Predicate{
-										ValuePredicate: &gen.ValuePredicate{
+								NotPredicate: &metadatapb.NotPredicate{
+									Child: &metadatapb.Predicate{
+										ValuePredicate: &metadatapb.ValuePredicate{
 											Value: []string{"flower", "type"},
-											Comparison: &gen.Comparison{
-												SimpleComparison: &gen.SimpleComparison{
-													Type:    gen.ComparisonType_IS_NULL.Enum(),
-													Operand: &gen.Value{IntValue: proto.Int32(0)},
+											Comparison: &metadatapb.Comparison{
+												SimpleComparison: &metadatapb.SimpleComparison{
+													Type:    metadatapb.ComparisonType_IS_NULL.Enum(),
+													Operand: &metadatapb.Value{IntValue: proto.Int32(0)},
 												},
 											},
 										},
@@ -600,9 +600,9 @@ func TestComplexNestedPredicate(t *testing.T) {
 func TestIndexSetPredicateProto(t *testing.T) {
 	t.Parallel()
 	idx := NewIndex("test_idx", Field("price"))
-	pred := &gen.Predicate{
-		ConstantPredicate: &gen.ConstantPredicate{
-			Value: gen.ConstantPredicate_TRUE.Enum(),
+	pred := &metadatapb.Predicate{
+		ConstantPredicate: &metadatapb.ConstantPredicate{
+			Value: metadatapb.ConstantPredicate_TRUE.Enum(),
 		},
 	}
 	if err := idx.SetPredicateProto(pred); err != nil {
@@ -625,29 +625,29 @@ func TestIndexSetPredicateProto(t *testing.T) {
 func TestIndexSetPredicateProtoOwnsPublishedMessage(t *testing.T) {
 	t.Parallel()
 	idx := NewIndex("test_idx", Field("price"))
-	pred := &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
-		Value: gen.ConstantPredicate_FALSE.Enum(),
+	pred := &metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{
+		Value: metadatapb.ConstantPredicate_FALSE.Enum(),
 	}}
 	if err := idx.SetPredicateProto(pred); err != nil {
 		t.Fatalf("SetPredicateProto: %v", err)
 	}
 
 	// Mutating the caller's input after Set must affect neither representation.
-	pred.ConstantPredicate.Value = gen.ConstantPredicate_TRUE.Enum()
+	pred.ConstantPredicate.Value = metadatapb.ConstantPredicate_TRUE.Enum()
 	if idx.Predicate(&demopb.Order{}) {
 		t.Fatal("caller mutation changed compiled FALSE evaluator")
 	}
-	if got := idx.GetPredicateProto(); got.GetConstantPredicate().GetValue() != gen.ConstantPredicate_FALSE {
+	if got := idx.GetPredicateProto(); got.GetConstantPredicate().GetValue() != metadatapb.ConstantPredicate_FALSE {
 		t.Fatalf("caller mutation changed stored proto to %s", got.GetConstantPredicate().GetValue())
 	}
 
 	// The getter is also an ownership boundary.
 	got := idx.GetPredicateProto()
-	got.ConstantPredicate.Value = gen.ConstantPredicate_TRUE.Enum()
+	got.ConstantPredicate.Value = metadatapb.ConstantPredicate_TRUE.Enum()
 	if idx.Predicate(&demopb.Order{}) {
 		t.Fatal("getter-result mutation changed compiled FALSE evaluator")
 	}
-	if again := idx.GetPredicateProto(); again.GetConstantPredicate().GetValue() != gen.ConstantPredicate_FALSE {
+	if again := idx.GetPredicateProto(); again.GetConstantPredicate().GetValue() != metadatapb.ConstantPredicate_FALSE {
 		t.Fatalf("getter-result mutation changed stored proto to %s", again.GetConstantPredicate().GetValue())
 	}
 }
@@ -655,8 +655,8 @@ func TestIndexSetPredicateProtoOwnsPublishedMessage(t *testing.T) {
 func TestIndexPredicateMetadataProtoIsMutationIsolated(t *testing.T) {
 	t.Parallel()
 	idx := NewIndex("test_idx", Field("price"))
-	if err := idx.SetPredicateProto(&gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
-		Value: gen.ConstantPredicate_FALSE.Enum(),
+	if err := idx.SetPredicateProto(&metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{
+		Value: metadatapb.ConstantPredicate_FALSE.Enum(),
 	}}); err != nil {
 		t.Fatalf("SetPredicateProto: %v", err)
 	}
@@ -665,7 +665,7 @@ func TestIndexPredicateMetadataProtoIsMutationIsolated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("indexToProto: %v", err)
 	}
-	wire.Predicate.ConstantPredicate.Value = gen.ConstantPredicate_TRUE.Enum()
+	wire.Predicate.ConstantPredicate.Value = metadatapb.ConstantPredicate_TRUE.Enum()
 	if idx.Predicate(&demopb.Order{}) {
 		t.Fatal("serialized metadata mutation changed compiled FALSE evaluator")
 	}
@@ -673,7 +673,7 @@ func TestIndexPredicateMetadataProtoIsMutationIsolated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second indexToProto: %v", err)
 	}
-	if got := again.GetPredicate().GetConstantPredicate().GetValue(); got != gen.ConstantPredicate_FALSE {
+	if got := again.GetPredicate().GetConstantPredicate().GetValue(); got != metadatapb.ConstantPredicate_FALSE {
 		t.Fatalf("serialized metadata mutation changed internal proto to %s", got)
 	}
 }
@@ -682,9 +682,9 @@ func TestIndexSetPredicateProtoNil(t *testing.T) {
 	t.Parallel()
 	idx := NewIndex("test_idx", Field("price"))
 	// First set a predicate, then clear it
-	pred := &gen.Predicate{
-		ConstantPredicate: &gen.ConstantPredicate{
-			Value: gen.ConstantPredicate_TRUE.Enum(),
+	pred := &metadatapb.Predicate{
+		ConstantPredicate: &metadatapb.ConstantPredicate{
+			Value: metadatapb.ConstantPredicate_TRUE.Enum(),
 		},
 	}
 	if err := idx.SetPredicateProto(pred); err != nil {
@@ -707,8 +707,8 @@ func TestIndexPredicateRepresentationsStayAtomic(t *testing.T) {
 	if idx.HasPredicate() {
 		t.Fatal("new index unexpectedly reports a predicate")
 	}
-	valid := &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
-		Value: gen.ConstantPredicate_FALSE.Enum(),
+	valid := &metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{
+		Value: metadatapb.ConstantPredicate_FALSE.Enum(),
 	}}
 	if err := idx.SetPredicateProto(valid); err != nil {
 		t.Fatalf("SetPredicateProto(valid): %v", err)
@@ -720,7 +720,7 @@ func TestIndexPredicateRepresentationsStayAtomic(t *testing.T) {
 	// Compilation failure must leave both previously valid representations
 	// intact, rather than publishing a proto that HasPredicate sees while the
 	// evaluator still implements some other predicate.
-	if err := idx.SetPredicateProto(&gen.Predicate{}); err == nil {
+	if err := idx.SetPredicateProto(&metadatapb.Predicate{}); err == nil {
 		t.Fatal("empty predicate proto unexpectedly compiled")
 	}
 	if !proto.Equal(idx.GetPredicateProto(), valid) || idx.Predicate == nil || idx.Predicate(&demopb.Order{}) {
@@ -752,13 +752,13 @@ func TestIndexPredicateRepresentationsStayAtomic(t *testing.T) {
 func TestIndexPredicateProtoRoundTrip(t *testing.T) {
 	t.Parallel()
 	idx := NewIndex("price_idx", Field("price"))
-	pred := &gen.Predicate{
-		ValuePredicate: &gen.ValuePredicate{
+	pred := &metadatapb.Predicate{
+		ValuePredicate: &metadatapb.ValuePredicate{
 			Value: []string{"price"},
-			Comparison: &gen.Comparison{
-				SimpleComparison: &gen.SimpleComparison{
-					Type:    gen.ComparisonType_GREATER_THAN.Enum(),
-					Operand: &gen.Value{IntValue: proto.Int32(0)},
+			Comparison: &metadatapb.Comparison{
+				SimpleComparison: &metadatapb.SimpleComparison{
+					Type:    metadatapb.ComparisonType_GREATER_THAN.Enum(),
+					Operand: &metadatapb.Value{IntValue: proto.Int32(0)},
 				},
 			},
 		},
@@ -1002,7 +1002,7 @@ func TestCompareValuesFloat32Normalization(t *testing.T) {
 // --------------------------------------------------------------------------
 
 // mustExtract is extractValueOperand for an operand it admits.
-func mustExtract(t *testing.T, v *gen.Value) any {
+func mustExtract(t *testing.T, v *metadatapb.Value) any {
 	t.Helper()
 	got, err := extractValueOperand(v)
 	if err != nil {
@@ -1018,12 +1018,12 @@ func TestExtractValueOperandRefusesNoneOrTwo(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
 		name string
-		v    *gen.Value
+		v    *metadatapb.Value
 		want string
 	}{
 		{"nil", nil, "index comparison operand has no value"},
-		{"empty", &gen.Value{}, "index comparison operand has no value"},
-		{"two values", &gen.Value{LongValue: proto.Int64(1), StringValue: proto.String("a")}, "More than one value encoded in value"},
+		{"empty", &metadatapb.Value{}, "index comparison operand has no value"},
+		{"two values", &metadatapb.Value{LongValue: proto.Int64(1), StringValue: proto.String("a")}, "More than one value encoded in value"},
 	} {
 		_, err := extractValueOperand(c.v)
 		var rce *RecordCoreError
@@ -1035,7 +1035,7 @@ func TestExtractValueOperandRefusesNoneOrTwo(t *testing.T) {
 
 func TestExtractValueOperandLong(t *testing.T) {
 	t.Parallel()
-	v := mustExtract(t, &gen.Value{LongValue: proto.Int64(42)})
+	v := mustExtract(t, &metadatapb.Value{LongValue: proto.Int64(42)})
 	if v != int64(42) {
 		t.Fatalf("LongValue: got %v (%T), want int64(42)", v, v)
 	}
@@ -1043,7 +1043,7 @@ func TestExtractValueOperandLong(t *testing.T) {
 
 func TestExtractValueOperandInt(t *testing.T) {
 	t.Parallel()
-	v := mustExtract(t, &gen.Value{IntValue: proto.Int32(7)})
+	v := mustExtract(t, &metadatapb.Value{IntValue: proto.Int32(7)})
 	// IntValue is promoted to int64
 	if v != int64(7) {
 		t.Fatalf("IntValue: got %v (%T), want int64(7)", v, v)
@@ -1052,7 +1052,7 @@ func TestExtractValueOperandInt(t *testing.T) {
 
 func TestExtractValueOperandDouble(t *testing.T) {
 	t.Parallel()
-	v := mustExtract(t, &gen.Value{DoubleValue: proto.Float64(3.14)})
+	v := mustExtract(t, &metadatapb.Value{DoubleValue: proto.Float64(3.14)})
 	if v != float64(3.14) {
 		t.Fatalf("DoubleValue: got %v (%T), want float64(3.14)", v, v)
 	}
@@ -1060,7 +1060,7 @@ func TestExtractValueOperandDouble(t *testing.T) {
 
 func TestExtractValueOperandFloat(t *testing.T) {
 	t.Parallel()
-	v := mustExtract(t, &gen.Value{FloatValue: proto.Float32(2.5)})
+	v := mustExtract(t, &metadatapb.Value{FloatValue: proto.Float32(2.5)})
 	// FloatValue is promoted to float64
 	f, ok := v.(float64)
 	if !ok {
@@ -1073,11 +1073,11 @@ func TestExtractValueOperandFloat(t *testing.T) {
 
 func TestExtractValueOperandBool(t *testing.T) {
 	t.Parallel()
-	v := mustExtract(t, &gen.Value{BoolValue: proto.Bool(true)})
+	v := mustExtract(t, &metadatapb.Value{BoolValue: proto.Bool(true)})
 	if v != true {
 		t.Fatalf("BoolValue: got %v (%T), want true", v, v)
 	}
-	v = mustExtract(t, &gen.Value{BoolValue: proto.Bool(false)})
+	v = mustExtract(t, &metadatapb.Value{BoolValue: proto.Bool(false)})
 	if v != false {
 		t.Fatalf("BoolValue false: got %v (%T), want false", v, v)
 	}
@@ -1085,7 +1085,7 @@ func TestExtractValueOperandBool(t *testing.T) {
 
 func TestExtractValueOperandString(t *testing.T) {
 	t.Parallel()
-	v := mustExtract(t, &gen.Value{StringValue: proto.String("hello")})
+	v := mustExtract(t, &metadatapb.Value{StringValue: proto.String("hello")})
 	if v != "hello" {
 		t.Fatalf("StringValue: got %v (%T), want 'hello'", v, v)
 	}
@@ -1094,7 +1094,7 @@ func TestExtractValueOperandString(t *testing.T) {
 func TestExtractValueOperandBytes(t *testing.T) {
 	t.Parallel()
 	data := []byte{0xDE, 0xAD, 0xBE, 0xEF}
-	v := mustExtract(t, &gen.Value{BytesValue: data})
+	v := mustExtract(t, &metadatapb.Value{BytesValue: data})
 	bs, ok := v.([]byte)
 	if !ok {
 		t.Fatalf("BytesValue: got type %T, want []byte", v)
@@ -1110,11 +1110,11 @@ func TestExtractValueOperandBytes(t *testing.T) {
 
 func TestNullComparisonIsNull(t *testing.T) {
 	t.Parallel()
-	pred := &gen.Predicate{
-		ValuePredicate: &gen.ValuePredicate{
+	pred := &metadatapb.Predicate{
+		ValuePredicate: &metadatapb.ValuePredicate{
 			Value: []string{"price"},
-			Comparison: &gen.Comparison{
-				NullComparison: &gen.NullComparison{
+			Comparison: &metadatapb.Comparison{
+				NullComparison: &metadatapb.NullComparison{
 					IsNull: proto.Bool(true),
 				},
 			},
@@ -1136,11 +1136,11 @@ func TestNullComparisonIsNull(t *testing.T) {
 
 func TestNullComparisonNotNull(t *testing.T) {
 	t.Parallel()
-	pred := &gen.Predicate{
-		ValuePredicate: &gen.ValuePredicate{
+	pred := &metadatapb.Predicate{
+		ValuePredicate: &metadatapb.ValuePredicate{
 			Value: []string{"price"},
-			Comparison: &gen.Comparison{
-				NullComparison: &gen.NullComparison{
+			Comparison: &metadatapb.Comparison{
+				NullComparison: &metadatapb.NullComparison{
 					IsNull: proto.Bool(false),
 				},
 			},
@@ -1177,7 +1177,7 @@ func TestPredicateFromProtoNilReturnsNil(t *testing.T) {
 
 func TestPredicateFromProtoEmptyErrors(t *testing.T) {
 	t.Parallel()
-	_, err := predicateFromProto(&gen.Predicate{})
+	_, err := predicateFromProto(&metadatapb.Predicate{})
 	if err == nil {
 		t.Fatal("empty predicate message should return error")
 	}
@@ -1185,12 +1185,12 @@ func TestPredicateFromProtoEmptyErrors(t *testing.T) {
 
 func TestValuePredicateEmptyFieldPathErrors(t *testing.T) {
 	t.Parallel()
-	_, err := predicateFromProto(&gen.Predicate{
-		ValuePredicate: &gen.ValuePredicate{
+	_, err := predicateFromProto(&metadatapb.Predicate{
+		ValuePredicate: &metadatapb.ValuePredicate{
 			Value: []string{},
-			Comparison: &gen.Comparison{
-				SimpleComparison: &gen.SimpleComparison{
-					Type: gen.ComparisonType_EQUALS.Enum(),
+			Comparison: &metadatapb.Comparison{
+				SimpleComparison: &metadatapb.SimpleComparison{
+					Type: metadatapb.ComparisonType_EQUALS.Enum(),
 				},
 			},
 		},
@@ -1202,8 +1202,8 @@ func TestValuePredicateEmptyFieldPathErrors(t *testing.T) {
 
 func TestValuePredicateNoComparisonErrors(t *testing.T) {
 	t.Parallel()
-	_, err := predicateFromProto(&gen.Predicate{
-		ValuePredicate: &gen.ValuePredicate{
+	_, err := predicateFromProto(&metadatapb.Predicate{
+		ValuePredicate: &metadatapb.ValuePredicate{
 			Value: []string{"price"},
 		},
 	})
@@ -1214,10 +1214,10 @@ func TestValuePredicateNoComparisonErrors(t *testing.T) {
 
 func TestComparisonNoTypeErrors(t *testing.T) {
 	t.Parallel()
-	_, err := predicateFromProto(&gen.Predicate{
-		ValuePredicate: &gen.ValuePredicate{
+	_, err := predicateFromProto(&metadatapb.Predicate{
+		ValuePredicate: &metadatapb.ValuePredicate{
 			Value:      []string{"price"},
-			Comparison: &gen.Comparison{
+			Comparison: &metadatapb.Comparison{
 				// neither simple nor null
 			},
 		},
@@ -1233,13 +1233,13 @@ func TestComparisonNoTypeErrors(t *testing.T) {
 
 func TestValuePredicateUnsetFieldReturnsFalse(t *testing.T) {
 	t.Parallel()
-	pred := &gen.Predicate{
-		ValuePredicate: &gen.ValuePredicate{
+	pred := &metadatapb.Predicate{
+		ValuePredicate: &metadatapb.ValuePredicate{
 			Value: []string{"price"},
-			Comparison: &gen.Comparison{
-				SimpleComparison: &gen.SimpleComparison{
-					Type:    gen.ComparisonType_EQUALS.Enum(),
-					Operand: &gen.Value{IntValue: proto.Int32(100)},
+			Comparison: &metadatapb.Comparison{
+				SimpleComparison: &metadatapb.SimpleComparison{
+					Type:    metadatapb.ComparisonType_EQUALS.Enum(),
+					Operand: &metadatapb.Value{IntValue: proto.Int32(100)},
 				},
 			},
 		},
@@ -1261,13 +1261,13 @@ func TestValuePredicateUnsetFieldReturnsFalse(t *testing.T) {
 func TestValuePredicateLongValueOperand(t *testing.T) {
 	t.Parallel()
 	// Use LongValue (int64) to compare with order_id (int64 field)
-	pred := &gen.Predicate{
-		ValuePredicate: &gen.ValuePredicate{
+	pred := &metadatapb.Predicate{
+		ValuePredicate: &metadatapb.ValuePredicate{
 			Value: []string{"order_id"},
-			Comparison: &gen.Comparison{
-				SimpleComparison: &gen.SimpleComparison{
-					Type:    gen.ComparisonType_EQUALS.Enum(),
-					Operand: &gen.Value{LongValue: proto.Int64(42)},
+			Comparison: &metadatapb.Comparison{
+				SimpleComparison: &metadatapb.SimpleComparison{
+					Type:    metadatapb.ComparisonType_EQUALS.Enum(),
+					Operand: &metadatapb.Value{LongValue: proto.Int64(42)},
 				},
 			},
 		},
@@ -1301,46 +1301,46 @@ func TestValuePredicateLongValueOperand(t *testing.T) {
 func TestPredicateProtoTautologyProofFailsClosed(t *testing.T) {
 	t.Parallel()
 
-	valueArm := &gen.Predicate{ValuePredicate: &gen.ValuePredicate{
+	valueArm := &metadatapb.Predicate{ValuePredicate: &metadatapb.ValuePredicate{
 		Value: []string{"price"},
-		Comparison: &gen.Comparison{
-			SimpleComparison: &gen.SimpleComparison{
-				Type:    gen.ComparisonType_GREATER_THAN.Enum(),
-				Operand: &gen.Value{IntValue: proto.Int32(100)},
+		Comparison: &metadatapb.Comparison{
+			SimpleComparison: &metadatapb.SimpleComparison{
+				Type:    metadatapb.ComparisonType_GREATER_THAN.Enum(),
+				Operand: &metadatapb.Value{IntValue: proto.Int32(100)},
 			},
 		},
 	}}
 
 	for _, tc := range []struct {
 		name string
-		pred *gen.Predicate
+		pred *metadatapb.Predicate
 		want bool
 	}{
 		{"nil predicate", nil, false},
-		{"empty predicate message (no arm set)", &gen.Predicate{}, false},
+		{"empty predicate message (no arm set)", &metadatapb.Predicate{}, false},
 		{
 			"constant arm present but value unset — proto2 default is TRUE",
-			&gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{}},
+			&metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{}},
 			true,
 		},
 		{
 			"constant TRUE",
-			&gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
-				Value: gen.ConstantPredicate_TRUE.Enum(),
+			&metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{
+				Value: metadatapb.ConstantPredicate_TRUE.Enum(),
 			}},
 			true,
 		},
 		{
 			"constant FALSE",
-			&gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
-				Value: gen.ConstantPredicate_FALSE.Enum(),
+			&metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{
+				Value: metadatapb.ConstantPredicate_FALSE.Enum(),
 			}},
 			false,
 		},
 		{
 			"constant NULL",
-			&gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
-				Value: gen.ConstantPredicate_NULL.Enum(),
+			&metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{
+				Value: metadatapb.ConstantPredicate_NULL.Enum(),
 			}},
 			false,
 		},
@@ -1352,9 +1352,9 @@ func TestPredicateProtoTautologyProofFailsClosed(t *testing.T) {
 			// the constant. Normalizing the same way is what makes
 			// `WHERE TRUE AND TRUE` a complete index here too.
 			"AND of EXPLICIT tautologies folds to the constant",
-			&gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
-				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
-				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+			&metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{
+				{ConstantPredicate: &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_TRUE.Enum()}},
+				{ConstantPredicate: &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_TRUE.Enum()}},
 			}}},
 			true,
 		},
@@ -1366,9 +1366,9 @@ func TestPredicateProtoTautologyProofFailsClosed(t *testing.T) {
 			// The classifier has to agree with the evaluator that built the
 			// index, not be stricter than it.
 			"AND of value-defaulted constant children folds like explicit TRUEs",
-			&gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
-				{ConstantPredicate: &gen.ConstantPredicate{}},
-				{ConstantPredicate: &gen.ConstantPredicate{}},
+			&metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{
+				{ConstantPredicate: &metadatapb.ConstantPredicate{}},
+				{ConstantPredicate: &metadatapb.ConstantPredicate{}},
 			}}},
 			true,
 		},
@@ -1379,15 +1379,15 @@ func TestPredicateProtoTautologyProofFailsClosed(t *testing.T) {
 			// them. Only a child whose constant arm is PRESENT may be folded out;
 			// an armless child is unknowable and keeps the conjunction filtering.
 			"AND of children with NO constant arm stays filtering",
-			&gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+			&metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{
 				{}, {},
 			}}},
 			false,
 		},
 		{
 			"AND mixing a real TRUE with an armless child stays filtering",
-			&gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
-				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+			&metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{
+				{ConstantPredicate: &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_TRUE.Enum()}},
 				{},
 			}}},
 			false,
@@ -1396,27 +1396,27 @@ func TestPredicateProtoTautologyProofFailsClosed(t *testing.T) {
 			// A surviving conjunct keeps the conjunction filtering: TRUE AND x
 			// folds to x, which is a real comparison.
 			"AND of a tautology and a real comparison folds to the comparison",
-			&gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
-				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+			&metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{
+				{ConstantPredicate: &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_TRUE.Enum()}},
 				valueArm,
 			}}},
 			false,
 		},
 		{
 			"AND of two real comparisons stays filtering",
-			&gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{valueArm, valueArm}}},
+			&metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{valueArm, valueArm}}},
 			false,
 		},
 		{
 			// Nested: AND(AND(TRUE, TRUE), TRUE) collapses all the way down,
 			// because the fold is recursive exactly as construction is.
 			"nested AND of tautologies folds recursively",
-			&gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
-				{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
-					{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
-					{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+			&metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{
+				{AndPredicate: &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{
+					{ConstantPredicate: &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_TRUE.Enum()}},
+					{ConstantPredicate: &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_TRUE.Enum()}},
 				}}},
-				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+				{ConstantPredicate: &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_TRUE.Enum()}},
 			}}},
 			true,
 		},
@@ -1426,8 +1426,8 @@ func TestPredicateProtoTautologyProofFailsClosed(t *testing.T) {
 			// isTautology, so TRUE OR x is filtering to Java. Folding it would
 			// make Go scan an index Java treats as incomplete.
 			"OR containing a tautology is NOT a proved tautology",
-			&gen.Predicate{OrPredicate: &gen.OrPredicate{Children: []*gen.Predicate{
-				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+			&metadatapb.Predicate{OrPredicate: &metadatapb.OrPredicate{Children: []*metadatapb.Predicate{
+				{ConstantPredicate: &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_TRUE.Enum()}},
 				valueArm,
 			}}},
 			false,
@@ -1438,19 +1438,19 @@ func TestPredicateProtoTautologyProofFailsClosed(t *testing.T) {
 			// constant itself. The narrow test then answers about a constant,
 			// not about an Or.
 			"singleton OR collapses to its only child",
-			&gen.Predicate{OrPredicate: &gen.OrPredicate{Children: []*gen.Predicate{
-				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+			&metadatapb.Predicate{OrPredicate: &metadatapb.OrPredicate{Children: []*metadatapb.Predicate{
+				{ConstantPredicate: &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_TRUE.Enum()}},
 			}}},
 			true,
 		},
 		{
 			"singleton OR of a real comparison collapses and stays filtering",
-			&gen.Predicate{OrPredicate: &gen.OrPredicate{Children: []*gen.Predicate{valueArm}}},
+			&metadatapb.Predicate{OrPredicate: &metadatapb.OrPredicate{Children: []*metadatapb.Predicate{valueArm}}},
 			false,
 		},
 		{
 			"empty AND has no surviving conjunct and is vacuously complete",
-			&gen.Predicate{AndPredicate: &gen.AndPredicate{}},
+			&metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{}},
 			true,
 		},
 		{
@@ -1458,7 +1458,7 @@ func TestPredicateProtoTautologyProofFailsClosed(t *testing.T) {
 			// (Verify.verify(!disjuncts.isEmpty())). Unreconstructable, so it is
 			// handed back untouched and fails closed.
 			"empty OR fails closed",
-			&gen.Predicate{OrPredicate: &gen.OrPredicate{}},
+			&metadatapb.Predicate{OrPredicate: &metadatapb.OrPredicate{}},
 			false,
 		},
 		{
@@ -1467,9 +1467,9 @@ func TestPredicateProtoTautologyProofFailsClosed(t *testing.T) {
 			// constant arm out of turn would prove a tautology about a
 			// predicate that is never evaluated.
 			"multi-arm message answers for the arm the evaluator runs",
-			&gen.Predicate{
-				AndPredicate:      &gen.AndPredicate{Children: []*gen.Predicate{valueArm}},
-				ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()},
+			&metadatapb.Predicate{
+				AndPredicate:      &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{valueArm}},
+				ConstantPredicate: &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_TRUE.Enum()},
 			},
 			false,
 		},
@@ -1504,8 +1504,8 @@ func TestHasFilteringPredicateTreatsOpaqueGoPredicateAsFiltering(t *testing.T) {
 	}
 
 	serialized := NewIndex("serialized", Field("price"))
-	if err := serialized.SetPredicateProto(&gen.Predicate{
-		ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()},
+	if err := serialized.SetPredicateProto(&metadatapb.Predicate{
+		ConstantPredicate: &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_TRUE.Enum()},
 	}); err != nil {
 		t.Fatalf("SetPredicateProto: %v", err)
 	}
@@ -1518,8 +1518,8 @@ func TestHasFilteringPredicateTreatsOpaqueGoPredicateAsFiltering(t *testing.T) {
 	}
 
 	filtering := NewIndex("filtering", Field("price"))
-	if err := filtering.SetPredicateProto(&gen.Predicate{
-		ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_FALSE.Enum()},
+	if err := filtering.SetPredicateProto(&metadatapb.Predicate{
+		ConstantPredicate: &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_FALSE.Enum()},
 	}); err != nil {
 		t.Fatalf("SetPredicateProto: %v", err)
 	}
@@ -1551,11 +1551,11 @@ func TestSetPredicateProtoAcceptsRowNumberWindow(t *testing.T) {
 	t.Parallel()
 
 	idx := NewIndex("topn", Field("score"))
-	if err := idx.SetPredicateProto(&gen.Predicate{
-		RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+	if err := idx.SetPredicateProto(&metadatapb.Predicate{
+		RowNumberWindowPredicate: &metadatapb.RowNumberWindowPredicate{
 			OrderingField: []string{"score"},
 			Size:          proto.Int32(100),
-			Direction:     gen.RowNumberWindowPredicate_DESC.Enum(),
+			Direction:     metadatapb.RowNumberWindowPredicate_DESC.Enum(),
 		},
 	}); err != nil {
 		t.Fatalf("SetPredicateProto refused a well-formed row-number window: %v", err)
@@ -1604,11 +1604,11 @@ func TestSetPredicateProtoAcceptsWindowSizesJavaAccepts(t *testing.T) {
 
 	for _, size := range []int32{0, -1} {
 		idx := NewIndex("topn", Field("score"))
-		if err := idx.SetPredicateProto(&gen.Predicate{
-			RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+		if err := idx.SetPredicateProto(&metadatapb.Predicate{
+			RowNumberWindowPredicate: &metadatapb.RowNumberWindowPredicate{
 				OrderingField: []string{"score"},
 				Size:          proto.Int32(size),
-				Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+				Direction:     metadatapb.RowNumberWindowPredicate_ASC.Enum(),
 			},
 		}); err != nil {
 			t.Fatalf("size %d: Go refused metadata Java accepts: %v", size, err)
@@ -1633,20 +1633,20 @@ func TestRowNumberWindowSpecRejectsAbsentRequiredFields(t *testing.T) {
 
 	for _, tc := range []struct {
 		name string
-		pred *gen.RowNumberWindowPredicate
+		pred *metadatapb.RowNumberWindowPredicate
 	}{
 		{
 			name: "absent direction",
-			pred: &gen.RowNumberWindowPredicate{
+			pred: &metadatapb.RowNumberWindowPredicate{
 				OrderingField: []string{"score"},
 				Size:          proto.Int32(100),
 			},
 		},
 		{
 			name: "absent size",
-			pred: &gen.RowNumberWindowPredicate{
+			pred: &metadatapb.RowNumberWindowPredicate{
 				OrderingField: []string{"score"},
-				Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+				Direction:     metadatapb.RowNumberWindowPredicate_ASC.Enum(),
 			},
 		},
 	} {
@@ -1654,7 +1654,7 @@ func TestRowNumberWindowSpecRejectsAbsentRequiredFields(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			idx := NewIndex("topn", Field("score"))
-			if err := idx.SetPredicateProto(&gen.Predicate{RowNumberWindowPredicate: tc.pred}); err == nil {
+			if err := idx.SetPredicateProto(&metadatapb.Predicate{RowNumberWindowPredicate: tc.pred}); err == nil {
 				t.Fatal("SetPredicateProto defaulted a required field instead of refusing")
 			}
 			if idx.HasPredicate() {
@@ -1678,21 +1678,21 @@ func TestRowNumberWindowSpecRejectsAbsentRequiredFields(t *testing.T) {
 func TestRowNumberWindowLookupsFollowTheEvaluatorsArmOrder(t *testing.T) {
 	t.Parallel()
 
-	window := func(field string) *gen.RowNumberWindowPredicate {
-		return &gen.RowNumberWindowPredicate{
+	window := func(field string) *metadatapb.RowNumberWindowPredicate {
+		return &metadatapb.RowNumberWindowPredicate{
 			OrderingField: []string{field},
 			Size:          proto.Int32(5),
-			Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+			Direction:     metadatapb.RowNumberWindowPredicate_ASC.Enum(),
 		}
 	}
-	trueArm := &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
-		Value: gen.ConstantPredicate_TRUE.Enum(),
+	trueArm := &metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{
+		Value: metadatapb.ConstantPredicate_TRUE.Enum(),
 	}}
 
 	// AND wins over a same-message row-window arm; the AND has no window, so
 	// neither lookup may report one.
-	shadowed := &gen.Predicate{
-		AndPredicate:             &gen.AndPredicate{Children: []*gen.Predicate{trueArm}},
+	shadowed := &metadatapb.Predicate{
+		AndPredicate:             &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{trueArm}},
 		RowNumberWindowPredicate: window("shadowed"),
 	}
 	if got := findRowNumberWindowPredicateProto(shadowed); got != nil {
@@ -1705,13 +1705,13 @@ func TestRowNumberWindowLookupsFollowTheEvaluatorsArmOrder(t *testing.T) {
 	// The same shape where the AND *does* carry a window: both lookups must
 	// report THAT one, not the shadowed sibling. Distinct field names make the
 	// difference observable — matching on presence alone would pass either way.
-	both := &gen.Predicate{
-		AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+	both := &metadatapb.Predicate{
+		AndPredicate: &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{
 			{RowNumberWindowPredicate: window("live")},
 		}},
 		RowNumberWindowPredicate: window("shadowed"),
 	}
-	for name, got := range map[string]*gen.RowNumberWindowPredicate{
+	for name, got := range map[string]*metadatapb.RowNumberWindowPredicate{
 		"factory":    findRowNumberWindowPredicateProto(both),
 		"maintainer": qualifyRowNumberWindowPredicateProto(both),
 	} {
@@ -1725,7 +1725,7 @@ func TestRowNumberWindowLookupsFollowTheEvaluatorsArmOrder(t *testing.T) {
 	}
 
 	// A well-formed single-arm message is unaffected.
-	bare := &gen.Predicate{RowNumberWindowPredicate: window("only")}
+	bare := &metadatapb.Predicate{RowNumberWindowPredicate: window("only")}
 	if got := findRowNumberWindowPredicateProto(bare); got == nil || got.GetOrderingField()[0] != "only" {
 		t.Errorf("the factory search lost a bare window arm: %v", got)
 	}
@@ -1746,29 +1746,29 @@ func TestRowNumberWindowLookupsFollowTheEvaluatorsArmOrder(t *testing.T) {
 func TestRowNumberWindowArmPrecedenceInsideAndChildren(t *testing.T) {
 	t.Parallel()
 
-	window := func(field string) *gen.RowNumberWindowPredicate {
-		return &gen.RowNumberWindowPredicate{
+	window := func(field string) *metadatapb.RowNumberWindowPredicate {
+		return &metadatapb.RowNumberWindowPredicate{
 			OrderingField: []string{field},
 			Size:          proto.Int32(5),
-			Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+			Direction:     metadatapb.RowNumberWindowPredicate_ASC.Enum(),
 		}
 	}
-	trueArm := &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
-		Value: gen.ConstantPredicate_TRUE.Enum(),
+	trueArm := &metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{
+		Value: metadatapb.ConstantPredicate_TRUE.Enum(),
 	}}
 
 	// Child 0 carries an OR arm (which wins) AND a row-window arm (shadowed);
 	// child 1 carries the real one. Distinct ordering fields make the choice
 	// observable — a presence-only assertion would pass either way.
-	pred := &gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+	pred := &metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{
 		{
-			OrPredicate:              &gen.OrPredicate{Children: []*gen.Predicate{trueArm}},
+			OrPredicate:              &metadatapb.OrPredicate{Children: []*metadatapb.Predicate{trueArm}},
 			RowNumberWindowPredicate: window("shadowed"),
 		},
 		{RowNumberWindowPredicate: window("live")},
 	}}}
 
-	for name, got := range map[string]*gen.RowNumberWindowPredicate{
+	for name, got := range map[string]*metadatapb.RowNumberWindowPredicate{
 		"factory":    findRowNumberWindowPredicateProto(pred),
 		"maintainer": qualifyRowNumberWindowPredicateProto(pred),
 	} {
@@ -1784,9 +1784,9 @@ func TestRowNumberWindowArmPrecedenceInsideAndChildren(t *testing.T) {
 
 	// And a child whose only arm is shadowed contributes nothing rather than
 	// being read through.
-	onlyShadowed := &gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+	onlyShadowed := &metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{
 		{
-			ValuePredicate:           &gen.ValuePredicate{Value: []string{"price"}},
+			ValuePredicate:           &metadatapb.ValuePredicate{Value: []string{"price"}},
 			RowNumberWindowPredicate: window("shadowed"),
 		},
 	}}}
@@ -1809,20 +1809,20 @@ func TestRowNumberWindowArmPrecedenceInsideAndChildren(t *testing.T) {
 func TestRowNumberWindowPlacementFollowsArmOrder(t *testing.T) {
 	t.Parallel()
 
-	window := &gen.RowNumberWindowPredicate{
+	window := &metadatapb.RowNumberWindowPredicate{
 		OrderingField: []string{"score"},
 		Size:          proto.Int32(5),
-		Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+		Direction:     metadatapb.RowNumberWindowPredicate_ASC.Enum(),
 	}
-	windowArm := func() *gen.Predicate {
-		return &gen.Predicate{RowNumberWindowPredicate: window}
+	windowArm := func() *metadatapb.Predicate {
+		return &metadatapb.Predicate{RowNumberWindowPredicate: window}
 	}
 
 	// An OR carrying a window below it, on a node that ALSO sets a row-window
 	// arm of its own. Dispatch order decides everything: OR first means "look
 	// below and refuse"; row-window first means "this is a window, accept".
-	shadowingOr := &gen.Predicate{
-		OrPredicate:              &gen.OrPredicate{Children: []*gen.Predicate{windowArm()}},
+	shadowingOr := &metadatapb.Predicate{
+		OrPredicate:              &metadatapb.OrPredicate{Children: []*metadatapb.Predicate{windowArm()}},
 		RowNumberWindowPredicate: window,
 	}
 	if err := validateRowNumberWindowPlacement(shadowingOr); err == nil {
@@ -1831,8 +1831,8 @@ func TestRowNumberWindowPlacementFollowsArmOrder(t *testing.T) {
 	}
 
 	// Same shape under a NOT, which is the other arm that must look below.
-	shadowingNot := &gen.Predicate{
-		NotPredicate:             &gen.NotPredicate{Child: windowArm()},
+	shadowingNot := &metadatapb.Predicate{
+		NotPredicate:             &metadatapb.NotPredicate{Child: windowArm()},
 		RowNumberWindowPredicate: window,
 	}
 	if err := validateRowNumberWindowPlacement(shadowingNot); err == nil {
@@ -1844,17 +1844,17 @@ func TestRowNumberWindowPlacementFollowsArmOrder(t *testing.T) {
 	if err := validateRowNumberWindowPlacement(windowArm()); err != nil {
 		t.Errorf("a bare row-window arm must be a valid placement: %v", err)
 	}
-	trueArm := &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
-		Value: gen.ConstantPredicate_TRUE.Enum(),
+	trueArm := &metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{
+		Value: metadatapb.ConstantPredicate_TRUE.Enum(),
 	}}
-	underOr := &gen.Predicate{OrPredicate: &gen.OrPredicate{
-		Children: []*gen.Predicate{trueArm, windowArm()},
+	underOr := &metadatapb.Predicate{OrPredicate: &metadatapb.OrPredicate{
+		Children: []*metadatapb.Predicate{trueArm, windowArm()},
 	}}
 	if err := validateRowNumberWindowPlacement(underOr); err == nil {
 		t.Error("a window genuinely under an OR must be refused")
 	}
-	if err := validateRowNumberWindowPlacement(&gen.Predicate{
-		AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{windowArm(), trueArm}},
+	if err := validateRowNumberWindowPlacement(&metadatapb.Predicate{
+		AndPredicate: &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{windowArm(), trueArm}},
 	}); err != nil {
 		t.Errorf("a window on a pure conjunctive path must be accepted: %v", err)
 	}
@@ -1890,10 +1890,10 @@ func TestValuePredicateReadsAGroupsField(t *testing.T) {
 	g.Set(gField.Message().Fields().ByName("x"), protoreflect.ValueOfInt64(7))
 	msg.Set(gField, protoreflect.ValueOfMessage(g))
 
-	pred, err := predicateFromProto(&gen.Predicate{ValuePredicate: &gen.ValuePredicate{
+	pred, err := predicateFromProto(&metadatapb.Predicate{ValuePredicate: &metadatapb.ValuePredicate{
 		Value: []string{"g", "x"},
-		Comparison: &gen.Comparison{SimpleComparison: &gen.SimpleComparison{
-			Type: gen.ComparisonType_EQUALS.Enum(), Operand: &gen.Value{LongValue: proto.Int64(7)},
+		Comparison: &metadatapb.Comparison{SimpleComparison: &metadatapb.SimpleComparison{
+			Type: metadatapb.ComparisonType_EQUALS.Enum(), Operand: &metadatapb.Value{LongValue: proto.Int64(7)},
 		}},
 	}})
 	if err != nil {

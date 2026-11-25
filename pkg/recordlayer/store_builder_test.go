@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -108,7 +108,7 @@ var _ = Describe("StoreBuilder_FormatVersion", func() {
 		Entry("store lock state below 12",
 			int32(formatVersionRecordCountState),
 			func(s *FDBRecordStore) error {
-				return s.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "why")
+				return s.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "why")
 			},
 			"store lock state", int32(formatVersionStoreLockState)),
 		Entry("clear store lock state below 12",
@@ -126,7 +126,7 @@ var _ = Describe("StoreBuilder_FormatVersion", func() {
 		Entry("record count state below 11",
 			int32(formatVersionCheckIndexBuildType),
 			func(s *FDBRecordStore) error {
-				return s.UpdateRecordCountState(gen.DataStoreInfo_WRITE_ONLY)
+				return s.UpdateRecordCountState(metadatapb.DataStoreInfo_WRITE_ONLY)
 			},
 			"updating record count state", int32(formatVersionRecordCountState)),
 		Entry("incarnation below 13",
@@ -583,11 +583,11 @@ var _ = Describe("StoreBuilder_FormatVersion", func() {
 				return nil, oErr
 			}
 			Expect(store.SetStoreLockState(
-				gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "why")).To(Succeed())
+				metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "why")).To(Succeed())
 			Expect(store.ClearStoreLockState()).To(Succeed())
 			Expect(store.SetHeaderUserField("k", []byte("v"))).To(Succeed())
 			Expect(store.ClearHeaderUserField("k")).To(Succeed())
-			Expect(store.UpdateRecordCountState(gen.DataStoreInfo_WRITE_ONLY)).To(Succeed())
+			Expect(store.UpdateRecordCountState(metadatapb.DataStoreInfo_WRITE_ONLY)).To(Succeed())
 			Expect(store.UpdateIncarnation(func(cur int32) int32 { return cur + 1 })).To(Succeed())
 			return nil, nil
 		})
@@ -811,10 +811,10 @@ var _ = Describe("StoreLockState", func() {
 			}
 
 			// Lock the store by updating the header
-			lockState := gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE
+			lockState := metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE
 			reason := "index rebuild in progress"
 			ts := int64(1234567890)
-			store.storeHeader.StoreLockState = &gen.DataStoreInfo_StoreLockState{
+			store.storeHeader.StoreLockState = &metadatapb.DataStoreInfo_StoreLockState{
 				LockState: &lockState,
 				Reason:    &reason,
 				Timestamp: &ts,
@@ -866,8 +866,8 @@ var _ = Describe("StoreLockState", func() {
 			}
 
 			// Lock
-			lockState := gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE
-			store.storeHeader.StoreLockState = &gen.DataStoreInfo_StoreLockState{
+			lockState := metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE
+			store.storeHeader.StoreLockState = &metadatapb.DataStoreInfo_StoreLockState{
 				LockState: &lockState,
 			}
 			return nil, store.writeStoreHeader(store.storeHeader)
@@ -902,8 +902,8 @@ var _ = Describe("StoreLockState", func() {
 				return nil, err
 			}
 
-			lockState := gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE
-			store.storeHeader.StoreLockState = &gen.DataStoreInfo_StoreLockState{
+			lockState := metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE
+			store.storeHeader.StoreLockState = &metadatapb.DataStoreInfo_StoreLockState{
 				LockState: &lockState,
 			}
 			return nil, store.writeStoreHeader(store.storeHeader)
@@ -941,8 +941,8 @@ var _ = Describe("StoreLockState", func() {
 				return nil, err
 			}
 
-			lockState := gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE
-			store.storeHeader.StoreLockState = &gen.DataStoreInfo_StoreLockState{
+			lockState := metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE
+			store.storeHeader.StoreLockState = &metadatapb.DataStoreInfo_StoreLockState{
 				LockState: &lockState,
 			}
 			return nil, store.writeStoreHeader(store.storeHeader)

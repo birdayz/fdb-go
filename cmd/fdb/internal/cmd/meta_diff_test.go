@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
@@ -466,9 +466,9 @@ func TestDiff_AttributeMatrix_SurfacesInTextAndJSON(t *testing.T) {
 			md.GetIndex("Order$price").Options = map[string]string{"unique": "true"}
 		}},
 		{"predicate", func(md *recordlayer.RecordMetaData) {
-			err := md.GetIndex("Order$price").SetPredicateProto(&gen.Predicate{
-				ConstantPredicate: &gen.ConstantPredicate{
-					Value: gen.ConstantPredicate_TRUE.Enum(),
+			err := md.GetIndex("Order$price").SetPredicateProto(&metadatapb.Predicate{
+				ConstantPredicate: &metadatapb.ConstantPredicate{
+					Value: metadatapb.ConstantPredicate_TRUE.Enum(),
 				},
 			})
 			if err != nil {

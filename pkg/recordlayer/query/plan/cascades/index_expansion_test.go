@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -317,9 +317,9 @@ func TestExpandValueIndex_ScalarNestingReadsTheFullPath(t *testing.T) {
 		{Name: "CITY", FieldType: values.NullableString, Ordinal: 1},
 		{Name: "ADDR", FieldType: addressType, Ordinal: 2},
 	})
-	nestedCity := &gen.KeyExpression{Nesting: &gen.Nesting{
-		Parent: &gen.Field{FieldName: proto.String("ADDR"), FanType: gen.Field_SCALAR.Enum()},
-		Child:  keyExpressionField("CITY", gen.Field_SCALAR),
+	nestedCity := &metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{
+		Parent: &metadatapb.Field{FieldName: proto.String("ADDR"), FanType: metadatapb.Field_SCALAR.Enum()},
+		Child:  keyExpressionField("CITY", metadatapb.Field_SCALAR),
 	}}
 	alias := values.UniqueCorrelationIdentifier()
 	distinct := false
@@ -402,25 +402,25 @@ func TestExpandValueIndex_InconsistentFlatRootFailsClosed(t *testing.T) {
 	})
 
 	noDuplicates := false
-	cardinalityRoot := &gen.KeyExpression{Function: &gen.Function{
+	cardinalityRoot := &metadatapb.KeyExpression{Function: &metadatapb.Function{
 		Name: proto.String(FunctionKindCardinality),
 		Arguments: keyExpressionField(
 			"TAGS",
-			gen.Field_CONCATENATE,
+			metadatapb.Field_CONCATENATE,
 		),
 	}}
-	customRoot := &gen.KeyExpression{Function: &gen.Function{
+	customRoot := &metadatapb.KeyExpression{Function: &metadatapb.Function{
 		Name: proto.String("custom"),
 		Arguments: keyExpressionField(
 			"TAGS",
-			gen.Field_SCALAR,
+			metadatapb.Field_SCALAR,
 		),
 	}}
 
 	for _, tc := range []struct {
 		name      string
 		functions []string
-		root      *gen.KeyExpression
+		root      *metadatapb.KeyExpression
 	}{
 		{
 			name: "cardinality_root_without_function_tag",
@@ -429,7 +429,7 @@ func TestExpandValueIndex_InconsistentFlatRootFailsClosed(t *testing.T) {
 		{
 			name:      "scalar_root_with_cardinality_tag",
 			functions: []string{FunctionKindCardinality},
-			root:      keyExpressionField("TAGS", gen.Field_SCALAR),
+			root:      keyExpressionField("TAGS", metadatapb.Field_SCALAR),
 		},
 		{
 			name: "unsupported_custom_function",
@@ -507,7 +507,7 @@ func TestExpandValueIndex_DirectFanOutUsesJavaGraphShape(t *testing.T) {
 			Ordinal:   1,
 		},
 	})
-	root := keyExpressionField("TAGS", gen.Field_FAN_OUT)
+	root := keyExpressionField("TAGS", metadatapb.Field_FAN_OUT)
 	duplicates := true
 	cand := NewValueIndexScanMatchCandidateWithFunctions(
 		"item_tags",
@@ -521,7 +521,7 @@ func TestExpandValueIndex_DirectFanOutUsesJavaGraphShape(t *testing.T) {
 		&duplicates,
 	).WithRootKeyExpression(root)
 	root.Field.FieldName = proto.String("MUTATED")
-	root.Field.FanType = gen.Field_SCALAR.Enum()
+	root.Field.FanType = metadatapb.Field_SCALAR.Enum()
 	returnedRoot := cand.GetRootKeyExpression()
 	returnedRoot.Field.FieldName = proto.String("ALSO_MUTATED")
 	if got := cand.GetRootKeyExpression().GetField().GetFieldName(); got != "TAGS" {
@@ -592,9 +592,9 @@ func TestExpandValueIndex_ThenKeepsScalarAndFanOutPlaceholdersAtTheirJavaLevels(
 			Ordinal:   1,
 		},
 	})
-	root := &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{
-		keyExpressionField("REGION", gen.Field_SCALAR),
-		keyExpressionField("TAGS", gen.Field_FAN_OUT),
+	root := &metadatapb.KeyExpression{Then: &metadatapb.Then{Child: []*metadatapb.KeyExpression{
+		keyExpressionField("REGION", metadatapb.Field_SCALAR),
+		keyExpressionField("TAGS", metadatapb.Field_FAN_OUT),
 	}}}
 	duplicates := true
 	cand := NewValueIndexScanMatchCandidateWithFunctions(
@@ -646,15 +646,15 @@ func TestExpandValueIndex_NestedFanOutSharesOneExplodeAcrossThenChildren(t *test
 			Ordinal:   0,
 		},
 	})
-	parentFanType := gen.Field_FAN_OUT
-	root := &gen.KeyExpression{Nesting: &gen.Nesting{
-		Parent: &gen.Field{
+	parentFanType := metadatapb.Field_FAN_OUT
+	root := &metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{
+		Parent: &metadatapb.Field{
 			FieldName: proto.String("CHILDREN"),
 			FanType:   &parentFanType,
 		},
-		Child: &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{
-			keyExpressionField("KIND", gen.Field_SCALAR),
-			keyExpressionField("SCORE", gen.Field_SCALAR),
+		Child: &metadatapb.KeyExpression{Then: &metadatapb.Then{Child: []*metadatapb.KeyExpression{
+			keyExpressionField("KIND", metadatapb.Field_SCALAR),
+			keyExpressionField("SCORE", metadatapb.Field_SCALAR),
 		}}},
 	}}
 	duplicates := true
@@ -706,9 +706,9 @@ func TestExpandValueIndex_UnsupportedFanOutFailsClosed(t *testing.T) {
 	t.Parallel()
 
 	alias := values.UniqueCorrelationIdentifier()
-	root := &gen.KeyExpression{Function: &gen.Function{
+	root := &metadatapb.KeyExpression{Function: &metadatapb.Function{
 		Name:      proto.String("unsupported_fanout_function"),
-		Arguments: keyExpressionField("TAGS", gen.Field_FAN_OUT),
+		Arguments: keyExpressionField("TAGS", metadatapb.Field_FAN_OUT),
 	}}
 	duplicates := true
 	itemType := values.NewRecordType("Item", false, []values.Field{
@@ -750,7 +750,7 @@ func TestExpandValueIndex_FanOutASTColumnMismatchFailsClosed(t *testing.T) {
 		false,
 		nil,
 		&duplicates,
-	).WithRootKeyExpression(keyExpressionField("TAGS", gen.Field_FAN_OUT))
+	).WithRootKeyExpression(keyExpressionField("TAGS", metadatapb.Field_FAN_OUT))
 
 	if traversal := ExpandValueIndex(cand); traversal != nil {
 		t.Fatal("flat column OTHER must not create a candidate that physically scans AST field TAGS")
@@ -760,9 +760,9 @@ func TestExpandValueIndex_FanOutASTColumnMismatchFailsClosed(t *testing.T) {
 func TestExpandValueIndex_NullableArrayWrapperFailsClosed(t *testing.T) {
 	t.Parallel()
 
-	for _, childFanType := range []gen.Field_FanType{
-		gen.Field_FAN_OUT,
-		gen.Field_CONCATENATE,
+	for _, childFanType := range []metadatapb.Field_FanType{
+		metadatapb.Field_FAN_OUT,
+		metadatapb.Field_CONCATENATE,
 	} {
 		childFanType := childFanType
 		t.Run(childFanType.String(), func(t *testing.T) {
@@ -775,9 +775,9 @@ func TestExpandValueIndex_NullableArrayWrapperFailsClosed(t *testing.T) {
 				{Name: "OTHER", FieldType: values.NewArrayType(true, values.NotNullString), Ordinal: 1},
 			})
 
-			parentFanType := gen.Field_SCALAR
-			root := &gen.KeyExpression{Nesting: &gen.Nesting{
-				Parent: &gen.Field{
+			parentFanType := metadatapb.Field_SCALAR
+			root := &metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{
+				Parent: &metadatapb.Field{
 					FieldName: proto.String("TAGS"),
 					FanType:   &parentFanType,
 				},
@@ -785,14 +785,14 @@ func TestExpandValueIndex_NullableArrayWrapperFailsClosed(t *testing.T) {
 			}}
 			columns := []string{"values"}
 			aliases := []values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()}
-			if childFanType == gen.Field_CONCATENATE {
+			if childFanType == metadatapb.Field_CONCATENATE {
 				// CONCATENATE alone keeps the ordinary flat compatibility path.
 				// The unsafe case is a larger fanout root, whose structural
 				// visitor would otherwise interpret this wrapper sibling as an
 				// ordinary nested field.
-				root = &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{
+				root = &metadatapb.KeyExpression{Then: &metadatapb.Then{Child: []*metadatapb.KeyExpression{
 					root,
-					keyExpressionField("OTHER", gen.Field_FAN_OUT),
+					keyExpressionField("OTHER", metadatapb.Field_FAN_OUT),
 				}}}
 				columns = append(columns, "OTHER")
 				aliases = append(aliases, values.UniqueCorrelationIdentifier())
@@ -817,8 +817,8 @@ func TestExpandValueIndex_NullableArrayWrapperFailsClosed(t *testing.T) {
 	}
 }
 
-func keyExpressionField(name string, fanType gen.Field_FanType) *gen.KeyExpression {
-	return &gen.KeyExpression{Field: &gen.Field{
+func keyExpressionField(name string, fanType metadatapb.Field_FanType) *metadatapb.KeyExpression {
+	return &metadatapb.KeyExpression{Field: &metadatapb.Field{
 		FieldName: proto.String(name),
 		FanType:   &fanType,
 	}}
@@ -901,9 +901,9 @@ func TestAggregateIndexMatchCandidate_GetTraversal_SyncOnce(t *testing.T) {
 
 // tautologyPredicateProto is `WHERE TRUE` in the stored form: a predicate that
 // rejects no record, so the index it guards holds an entry for every one.
-func tautologyPredicateProto() *gen.Predicate {
-	return &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
-		Value: gen.ConstantPredicate_TRUE.Enum(),
+func tautologyPredicateProto() *metadatapb.Predicate {
+	return &metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{
+		Value: metadatapb.ConstantPredicate_TRUE.Enum(),
 	}}
 }
 
@@ -926,7 +926,7 @@ func tautologyPredicateProto() *gen.Predicate {
 func TestCandidateBoundaryClassifiesTautologyAsNoPredicate(t *testing.T) {
 	t.Parallel()
 
-	newCandidate := func(root *gen.KeyExpression, duplicates bool) *ValueIndexScanMatchCandidate {
+	newCandidate := func(root *metadatapb.KeyExpression, duplicates bool) *ValueIndexScanMatchCandidate {
 		fieldType := values.Type(values.NullableString)
 		if keyExpressionContainsFanOut(root) {
 			fieldType = values.NewArrayType(true, values.NotNullString)
@@ -941,7 +941,7 @@ func TestCandidateBoundaryClassifiesTautologyAsNoPredicate(t *testing.T) {
 		).WithRootKeyExpression(root)
 	}
 
-	fanOutRoot := keyExpressionField("TAGS", gen.Field_FAN_OUT)
+	fanOutRoot := keyExpressionField("TAGS", metadatapb.Field_FAN_OUT)
 
 	t.Run("presence gates see no predicate", func(t *testing.T) {
 		t.Parallel()
@@ -965,7 +965,7 @@ func TestCandidateBoundaryClassifiesTautologyAsNoPredicate(t *testing.T) {
 
 	t.Run("cardinality shortcut admits it", func(t *testing.T) {
 		t.Parallel()
-		scalarRoot := keyExpressionField("TAGS", gen.Field_SCALAR)
+		scalarRoot := keyExpressionField("TAGS", metadatapb.Field_SCALAR)
 		cand := newCandidate(scalarRoot, false).WithPredicateProto(tautologyPredicateProto())
 		if !candidatePreservesBaseRecordCardinality(cand) {
 			t.Fatal("a WHERE TRUE scalar index was refused as cardinality-preserving — " +
@@ -975,8 +975,8 @@ func TestCandidateBoundaryClassifiesTautologyAsNoPredicate(t *testing.T) {
 
 	t.Run("a REAL filter is still sparse at every gate", func(t *testing.T) {
 		t.Parallel()
-		filtering := &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
-			Value: gen.ConstantPredicate_FALSE.Enum(),
+		filtering := &metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{
+			Value: metadatapb.ConstantPredicate_FALSE.Enum(),
 		}}
 		cand := newCandidate(fanOutRoot, true).WithPredicateProto(filtering)
 		if cand.GetPredicateProto() == nil {
@@ -995,7 +995,7 @@ func TestCandidateBoundaryClassifiesTautologyAsNoPredicate(t *testing.T) {
 		if !carriesFilter {
 			t.Fatal("a genuinely sparse fan-out candidate graph lost its stored predicate")
 		}
-		scalarCand := newCandidate(keyExpressionField("TAGS", gen.Field_SCALAR), false).
+		scalarCand := newCandidate(keyExpressionField("TAGS", metadatapb.Field_SCALAR), false).
 			WithPredicateProto(filtering)
 		if candidatePreservesBaseRecordCardinality(scalarCand) {
 			t.Fatal("a sparse index omits records and cannot preserve base-record cardinality")
@@ -1020,7 +1020,7 @@ func TestExpandValueIndex_ConcatenateColumnIsTheWholeField(t *testing.T) {
 	cand := NewValueIndexScanMatchCandidateWithFunctions(
 		"idx_tags", []string{"Item"}, []string{"TAGS"}, nil,
 		[]values.CorrelationIdentifier{alias}, itemType, false, []string{"ID"}, &distinct,
-	).WithRootKeyExpression(keyExpressionField("TAGS", gen.Field_CONCATENATE)).WithPrimaryKeyEntryOrdinals([]int{1})
+	).WithRootKeyExpression(keyExpressionField("TAGS", metadatapb.Field_CONCATENATE)).WithPrimaryKeyEntryOrdinals([]int{1})
 
 	top := fanoutExpansionTopSelect(t, cand.GetTraversal())
 	preds := top.GetPredicates()
@@ -1060,16 +1060,16 @@ func TestExpandValueIndex_LongArithmeticKey(t *testing.T) {
 		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
 		{Name: "D", FieldType: values.NullableDouble, Ordinal: 1},
 	})
-	key := func(function, field string, literal *gen.Value) *gen.KeyExpression {
-		return &gen.KeyExpression{Function: &gen.Function{
+	key := func(function, field string, literal *metadatapb.Value) *metadatapb.KeyExpression {
+		return &metadatapb.KeyExpression{Function: &metadatapb.Function{
 			Name: proto.String(function),
-			Arguments: &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{
-				keyExpressionField(field, gen.Field_SCALAR),
+			Arguments: &metadatapb.KeyExpression{Then: &metadatapb.Then{Child: []*metadatapb.KeyExpression{
+				keyExpressionField(field, metadatapb.Field_SCALAR),
 				{Value: literal},
 			}}},
 		}}
 	}
-	candidate := func(root *gen.KeyExpression, function string) *ValueIndexScanMatchCandidate {
+	candidate := func(root *metadatapb.KeyExpression, function string) *ValueIndexScanMatchCandidate {
 		distinct := false
 		return NewValueIndexScanMatchCandidateWithFunctions(
 			"idx", []string{"T"}, []string{""}, []string{function},
@@ -1078,7 +1078,7 @@ func TestExpandValueIndex_LongArithmeticKey(t *testing.T) {
 		).WithRootKeyExpression(root)
 	}
 
-	intSize := candidate(key("bitmap_bucket_offset", "ID", &gen.Value{IntValue: proto.Int32(10000)}), "bitmap_bucket_offset")
+	intSize := candidate(key("bitmap_bucket_offset", "ID", &metadatapb.Value{IntValue: proto.Int32(10000)}), "bitmap_bucket_offset")
 	top := fanoutExpansionTopSelect(t, intSize.GetTraversal())
 	placeholder := top.GetPredicates()[0].(*predicates.Placeholder)
 	arithmetic, ok := placeholder.Value.(*values.ArithmeticValue)
@@ -1089,11 +1089,11 @@ func TestExpandValueIndex_LongArithmeticKey(t *testing.T) {
 		t.Fatalf("lane = %+v, %v; want the LONG lane of (LONG, INT)", lane, ok)
 	}
 
-	longSize := candidate(key("bitmap_bucket_offset", "ID", &gen.Value{LongValue: proto.Int64(10000)}), "bitmap_bucket_offset")
+	longSize := candidate(key("bitmap_bucket_offset", "ID", &metadatapb.Value{LongValue: proto.Int64(10000)}), "bitmap_bucket_offset")
 	if longSize.GetTraversal() != nil || longSize.ToScanPlan(EmptyPlanContext(), nil, false) != nil {
 		t.Fatal("a long_value entry size has no bitmap lane; the index must not be a candidate")
 	}
-	double := candidate(key("add", "D", &gen.Value{IntValue: proto.Int32(1)}), "add")
+	double := candidate(key("add", "D", &metadatapb.Value{IntValue: proto.Int32(1)}), "add")
 	if double.GetTraversal() != nil || double.ToScanPlan(EmptyPlanContext(), nil, false) != nil {
 		t.Fatal("an arithmetic key over a DOUBLE argument must not be a candidate")
 	}

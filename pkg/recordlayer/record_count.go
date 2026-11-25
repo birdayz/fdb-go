@@ -17,7 +17,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // RecordCountKeySizeMismatchError is Java's
@@ -75,7 +75,7 @@ func (store *FDBRecordStore) isRecordCountDisabled() bool {
 	if store.storeHeader == nil {
 		return false
 	}
-	return store.storeHeader.GetRecordCountState() == gen.DataStoreInfo_DISABLED
+	return store.storeHeader.GetRecordCountState() == metadatapb.DataStoreInfo_DISABLED
 }
 
 // addRecordCount atomically increments or decrements the record count.
@@ -425,7 +425,7 @@ func (store *FDBRecordStore) countFromIndex(ctx context.Context, fn *IndexAggreg
 // When transitioning to DISABLED, clears all count data.
 // Goroutine-safe via stateMu (write lock).
 // Matches Java's FDBRecordStore.updateRecordCountStateAsync().
-func (store *FDBRecordStore) UpdateRecordCountState(newState gen.DataStoreInfo_RecordCountState) error {
+func (store *FDBRecordStore) UpdateRecordCountState(newState metadatapb.DataStoreInfo_RecordCountState) error {
 	store.stateMu.Lock()
 	defer store.stateMu.Unlock()
 	if store.storeHeader == nil {
@@ -446,12 +446,12 @@ func (store *FDBRecordStore) UpdateRecordCountState(newState gen.DataStoreInfo_R
 	// WRITE_ONLY → READABLE: allowed
 	// any → DISABLED: allowed
 	// DISABLED → anything: forbidden (terminal state)
-	if existing == gen.DataStoreInfo_DISABLED {
+	if existing == metadatapb.DataStoreInfo_DISABLED {
 		return fmt.Errorf("invalid state transition for RecordCountState: DISABLED → %s (DISABLED is terminal)", newState)
 	}
-	toWriteOnly := existing == gen.DataStoreInfo_READABLE && newState == gen.DataStoreInfo_WRITE_ONLY
-	toReadable := existing == gen.DataStoreInfo_WRITE_ONLY && newState == gen.DataStoreInfo_READABLE
-	toDisabled := newState == gen.DataStoreInfo_DISABLED
+	toWriteOnly := existing == metadatapb.DataStoreInfo_READABLE && newState == metadatapb.DataStoreInfo_WRITE_ONLY
+	toReadable := existing == metadatapb.DataStoreInfo_WRITE_ONLY && newState == metadatapb.DataStoreInfo_READABLE
+	toDisabled := newState == metadatapb.DataStoreInfo_DISABLED
 	if !toWriteOnly && !toReadable && !toDisabled {
 		return fmt.Errorf("invalid state transition for RecordCountState: %s → %s", existing, newState)
 	}

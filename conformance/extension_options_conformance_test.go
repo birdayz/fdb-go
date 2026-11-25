@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/encoding/prototext"
@@ -23,9 +23,9 @@ import (
 // (record) record_type_key and since_version, and each field's (field)
 // primary_key, index and deprecated indexed. mutate edits it per case.
 func extensionOptionsRecords(mutate func(*descriptorpb.FileDescriptorProto)) *descriptorpb.FileDescriptorProto {
-	fieldOpts := func(o *gen.FieldOptions) *descriptorpb.FieldOptions {
+	fieldOpts := func(o *metadatapb.FieldOptions) *descriptorpb.FieldOptions {
 		fo := &descriptorpb.FieldOptions{}
-		proto.SetExtension(fo, gen.E_Field, o)
+		proto.SetExtension(fo, metadatapb.E_Field, o)
 		return fo
 	}
 	optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
@@ -33,12 +33,12 @@ func extensionOptionsRecords(mutate func(*descriptorpb.FileDescriptorProto)) *de
 		return &descriptorpb.FieldDescriptorProto{Name: proto.String(name), Number: proto.Int32(number), Label: optional, Type: typ.Enum(), Options: opts}
 	}
 	recOpts := &descriptorpb.MessageOptions{}
-	proto.SetExtension(recOpts, gen.E_Record, &gen.RecordTypeOptions{RecordTypeKey: &gen.Value{LongValue: proto.Int64(7)}})
+	proto.SetExtension(recOpts, metadatapb.E_Record, &metadatapb.RecordTypeOptions{RecordTypeKey: &metadatapb.Value{LongValue: proto.Int64(7)}})
 	unionOpts := &descriptorpb.MessageOptions{}
-	proto.SetExtension(unionOpts, gen.E_Record, &gen.RecordTypeOptions{Usage: gen.RecordTypeOptions_UNION.Enum()})
+	proto.SetExtension(unionOpts, metadatapb.E_Record, &metadatapb.RecordTypeOptions{Usage: metadatapb.RecordTypeOptions_UNION.Enum()})
 	fileOpts := &descriptorpb.FileOptions{}
-	proto.SetExtension(fileOpts, gen.E_Schema, &gen.SchemaOptions{SplitLongRecords: proto.Bool(true), StoreRecordVersions: proto.Bool(true)})
-	tags := field("tags", 5, descriptorpb.FieldDescriptorProto_TYPE_STRING, fieldOpts(&gen.FieldOptions{Index: &gen.FieldOptions_IndexOption{}}))
+	proto.SetExtension(fileOpts, metadatapb.E_Schema, &metadatapb.SchemaOptions{SplitLongRecords: proto.Bool(true), StoreRecordVersions: proto.Bool(true)})
+	tags := field("tags", 5, descriptorpb.FieldDescriptorProto_TYPE_STRING, fieldOpts(&metadatapb.FieldOptions{Index: &metadatapb.FieldOptions_IndexOption{}}))
 	tags.Label = descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()
 	fdp := &descriptorpb.FileDescriptorProto{
 		Name:       proto.String("extension_options.proto"),
@@ -50,12 +50,12 @@ func extensionOptionsRecords(mutate func(*descriptorpb.FileDescriptorProto)) *de
 			{
 				Name: proto.String("Rec"),
 				Field: []*descriptorpb.FieldDescriptorProto{
-					field("id", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64, fieldOpts(&gen.FieldOptions{PrimaryKey: proto.Bool(true)})),
-					field("price", 2, descriptorpb.FieldDescriptorProto_TYPE_INT32, fieldOpts(&gen.FieldOptions{Index: &gen.FieldOptions_IndexOption{
+					field("id", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64, fieldOpts(&metadatapb.FieldOptions{PrimaryKey: proto.Bool(true)})),
+					field("price", 2, descriptorpb.FieldDescriptorProto_TYPE_INT32, fieldOpts(&metadatapb.FieldOptions{Index: &metadatapb.FieldOptions_IndexOption{
 						Unique:  proto.Bool(true),
-						Options: []*gen.Index_Option{{Key: proto.String("allowedForQuery"), Value: proto.String("true")}},
+						Options: []*metadatapb.Index_Option{{Key: proto.String("allowedForQuery"), Value: proto.String("true")}},
 					}})),
-					field("score", 3, descriptorpb.FieldDescriptorProto_TYPE_INT64, fieldOpts(&gen.FieldOptions{Indexed: gen.Index_RANK.Enum()})),
+					field("score", 3, descriptorpb.FieldDescriptorProto_TYPE_INT64, fieldOpts(&metadatapb.FieldOptions{Indexed: metadatapb.Index_RANK.Enum()})),
 					field("name", 4, descriptorpb.FieldDescriptorProto_TYPE_STRING, nil),
 					tags,
 				},
@@ -74,11 +74,11 @@ func extensionOptionsRecords(mutate func(*descriptorpb.FileDescriptorProto)) *de
 	return fdp
 }
 
-func setFieldOptions(fdp *descriptorpb.FileDescriptorProto, field string, o *gen.FieldOptions) {
+func setFieldOptions(fdp *descriptorpb.FileDescriptorProto, field string, o *metadatapb.FieldOptions) {
 	for _, f := range fdp.MessageType[0].Field {
 		if f.GetName() == field {
 			f.Options = &descriptorpb.FieldOptions{}
-			proto.SetExtension(f.Options, gen.E_Field, o)
+			proto.SetExtension(f.Options, metadatapb.E_Field, o)
 		}
 	}
 }
@@ -96,27 +96,27 @@ var _ = Describe("SetRecords reads the records file's extension options, as Java
 	}{
 		{"every option", nil, "", ""},
 		{"a second primary key", func(f *descriptorpb.FileDescriptorProto) {
-			setFieldOptions(f, "name", &gen.FieldOptions{PrimaryKey: proto.Bool(true)})
+			setFieldOptions(f, "name", &metadatapb.FieldOptions{PrimaryKey: proto.Bool(true)})
 		}, "com.apple.foundationdb.record.metadata.MetaDataException", "Only one primary key per record type is allowed have: Field { 'id' None}; adding on name"},
 		{"a primary key on a repeated field", func(f *descriptorpb.FileDescriptorProto) {
-			setFieldOptions(f, "id", &gen.FieldOptions{})
-			setFieldOptions(f, "tags", &gen.FieldOptions{PrimaryKey: proto.Bool(true)})
+			setFieldOptions(f, "id", &metadatapb.FieldOptions{})
+			setFieldOptions(f, "tags", &metadatapb.FieldOptions{PrimaryKey: proto.Bool(true)})
 		}, "com.apple.foundationdb.record.metadata.MetaDataException", "Primary key cannot be set on a repeated field"},
 		{"an index option repeated", func(f *descriptorpb.FileDescriptorProto) {
-			setFieldOptions(f, "name", &gen.FieldOptions{Index: &gen.FieldOptions_IndexOption{Options: []*gen.Index_Option{
+			setFieldOptions(f, "name", &metadatapb.FieldOptions{Index: &metadatapb.FieldOptions_IndexOption{Options: []*metadatapb.Index_Option{
 				{Key: proto.String("k"), Value: proto.String("1")}, {Key: proto.String("k"), Value: proto.String("2")},
 			}}})
 		}, "java.lang.IllegalArgumentException", "Multiple entries with same key: k=2 and k=1"},
 		{"a since_version", func(f *descriptorpb.FileDescriptorProto) {
 			f.MessageType[0].Options = &descriptorpb.MessageOptions{}
-			proto.SetExtension(f.MessageType[0].Options, gen.E_Record, &gen.RecordTypeOptions{
-				SinceVersion: proto.Int32(3), RecordTypeKey: &gen.Value{LongValue: proto.Int64(7)},
+			proto.SetExtension(f.MessageType[0].Options, metadatapb.E_Record, &metadatapb.RecordTypeOptions{
+				SinceVersion: proto.Int32(3), RecordTypeKey: &metadatapb.Value{LongValue: proto.Int64(7)},
 			})
 		}, "", ""},
 		{"a record_type_key with two values", func(f *descriptorpb.FileDescriptorProto) {
 			f.MessageType[0].Options = &descriptorpb.MessageOptions{}
-			proto.SetExtension(f.MessageType[0].Options, gen.E_Record, &gen.RecordTypeOptions{
-				RecordTypeKey: &gen.Value{LongValue: proto.Int64(7), IntValue: proto.Int32(7)},
+			proto.SetExtension(f.MessageType[0].Options, metadatapb.E_Record, &metadatapb.RecordTypeOptions{
+				RecordTypeKey: &metadatapb.Value{LongValue: proto.Int64(7), IntValue: proto.Int32(7)},
 			})
 		}, "com.apple.foundationdb.record.RecordCoreException", "More than one value encoded in value"},
 		{"two record types of one name", func(f *descriptorpb.FileDescriptorProto) {
@@ -173,11 +173,11 @@ var _ = Describe("SetRecords reads the records file's extension options, as Java
 			}
 			Expect(java.Valid).To(BeTrue(), "Java: %s %s", java.Class, java.Error)
 			Expect(goErr).NotTo(HaveOccurred())
-			javaMD := &gen.MetaData{}
+			javaMD := &metadatapb.MetaData{}
 			Expect(proto.Unmarshal(intsToBytes(java.MetaData), javaMD)).To(Succeed())
 			goMD, err := md.ToProto()
 			Expect(err).NotTo(HaveOccurred())
-			for _, p := range []*gen.MetaData{javaMD, goMD} {
+			for _, p := range []*metadatapb.MetaData{javaMD, goMD} {
 				p.Records = nil
 				p.Dependencies = nil
 			}

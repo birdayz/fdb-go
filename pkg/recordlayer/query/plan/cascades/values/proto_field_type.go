@@ -7,7 +7,7 @@
 package values
 
 import (
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
@@ -308,10 +308,10 @@ func RecordNameForDescriptor(descriptor protoreflect.MessageDescriptor) string {
 }
 
 func vectorTypeForProtoField(fd protoreflect.FieldDescriptor) *VectorType {
-	if fd == nil || fd.Kind() != protoreflect.BytesKind || !proto.HasExtension(fd.Options(), gen.E_Field) {
+	if fd == nil || fd.Kind() != protoreflect.BytesKind || !proto.HasExtension(fd.Options(), metadatapb.E_Field) {
 		return nil
 	}
-	opts, ok := proto.GetExtension(fd.Options(), gen.E_Field).(*gen.FieldOptions)
+	opts, ok := proto.GetExtension(fd.Options(), metadatapb.E_Field).(*metadatapb.FieldOptions)
 	if !ok || opts.GetVectorOptions() == nil {
 		return nil
 	}

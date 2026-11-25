@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"sort"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
@@ -81,7 +81,7 @@ func keyExprString(ke recordlayer.KeyExpression) string {
 // normalizeKeyExprJSON re-marshals a KeyExpression JSON through Go's proto binary layer
 // then back to JSON, normalizing field presence (proto2 defaults) and whitespace.
 func normalizeKeyExprJSON(s string) string {
-	ke := &gen.KeyExpression{}
+	ke := &metadatapb.KeyExpression{}
 	if err := protojson.Unmarshal([]byte(s), ke); err != nil {
 		return s
 	}
@@ -90,7 +90,7 @@ func normalizeKeyExprJSON(s string) string {
 	if err != nil {
 		return s
 	}
-	ke2 := &gen.KeyExpression{}
+	ke2 := &metadatapb.KeyExpression{}
 	if err := proto.Unmarshal(raw, ke2); err != nil {
 		return s
 	}
@@ -324,7 +324,7 @@ var _ = Describe("RecordMetaData Proto Serialization Conformance", func() {
 					Expect(b).To(BeNumerically("<=", 255))
 					wire[i] = byte(b)
 				}
-				var p gen.MetaData
+				var p metadatapb.MetaData
 				Expect(proto.Unmarshal(wire, &p)).To(Succeed())
 				md, err := recordlayer.RecordMetaDataFromProto(&p)
 				Expect(err).NotTo(HaveOccurred())
@@ -402,7 +402,7 @@ var _ = Describe("RecordMetaData Proto Serialization Conformance", func() {
 				Expect(result.ProtoBytes).NotTo(BeEmpty(), "Java returned empty proto bytes")
 
 				// Go deserializes
-				mdProto := &gen.MetaData{}
+				mdProto := &metadatapb.MetaData{}
 				err = proto.Unmarshal(intsToBytes(result.ProtoBytes), mdProto)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -439,7 +439,7 @@ var _ = Describe("RecordMetaData Proto Serialization Conformance", func() {
 				compareSummaries(reResult.Summary, originalSummary)
 
 				// Go deserializes Java's output
-				roundtripProto := &gen.MetaData{}
+				roundtripProto := &metadatapb.MetaData{}
 				err = proto.Unmarshal(intsToBytes(reResult.ProtoBytes), roundtripProto)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -535,7 +535,7 @@ func normalizePredicateJSON(s string) string {
 	if s == "" {
 		return ""
 	}
-	pred := &gen.Predicate{}
+	pred := &metadatapb.Predicate{}
 	if err := protojson.Unmarshal([]byte(s), pred); err != nil {
 		return s
 	}
@@ -589,7 +589,7 @@ func buildUnionInteropSchema(version int, swapped, incompatible bool) *recordlay
 		first, second = second, first
 	}
 	options := &descriptorpb.MessageOptions{}
-	proto.SetExtension(options, gen.E_Record, &gen.RecordTypeOptions{Usage: gen.RecordTypeOptions_UNION.Enum()})
+	proto.SetExtension(options, metadatapb.E_Record, &metadatapb.RecordTypeOptions{Usage: metadatapb.RecordTypeOptions_UNION.Enum()})
 	envelope := &descriptorpb.DescriptorProto{Name: proto.String("Envelope"), Options: options, Field: []*descriptorpb.FieldDescriptorProto{
 		field("_Alpha", 1, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, first), field("_Beta", 2, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, second), field("high", 9, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, first), field("middle", 4, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, first),
 	}}
@@ -635,7 +635,7 @@ var _ = Describe("Union metadata Java interoperability", func() {
 				var result serializeResult
 				Expect(java.InvokeAs(ctx, "reserializeMetaData", map[string]any{"protoBytes": bytesToInts(bytesFor(md))}, &result)).To(Succeed())
 				Expect(result.ProtoBytes).NotTo(BeEmpty())
-				var p gen.MetaData
+				var p metadatapb.MetaData
 				Expect(proto.Unmarshal(intsToBytes(result.ProtoBytes), &p)).To(Succeed())
 				decoded, err := recordlayer.RecordMetaDataFromProto(&p)
 				Expect(err).NotTo(HaveOccurred())
@@ -695,7 +695,7 @@ var _ = Describe("Union name reuse and index association", func() {
 			}
 			for _, rt := range oldProto.RecordTypes {
 				if rt.GetName() == "Alpha" {
-					added := proto.Clone(rt).(*gen.RecordType)
+					added := proto.Clone(rt).(*metadatapb.RecordType)
 					added.SinceVersion = proto.Int32(2)
 					current.RecordTypes = append(current.RecordTypes, added)
 				}
@@ -728,7 +728,7 @@ var _ = Describe("Union name reuse and index association", func() {
 			var rewritten serializeResult
 			Expect(java.InvokeAs(ctx, "reserializeMetaData", map[string]any{"protoBytes": bytesToInts(newBytes)}, &rewritten)).To(Succeed())
 			Expect(rewritten.ProtoBytes).NotTo(BeEmpty())
-			var p gen.MetaData
+			var p metadatapb.MetaData
 			Expect(proto.Unmarshal(intsToBytes(rewritten.ProtoBytes), &p)).To(Succeed())
 			reopened, err := recordlayer.RecordMetaDataFromProto(&p)
 			Expect(err).NotTo(HaveOccurred())
@@ -805,9 +805,9 @@ var _ = Describe("Java refuses the same records descriptors", func() {
 		}
 		return f
 	}
-	usage := func(u gen.RecordTypeOptions_Usage) *descriptorpb.MessageOptions {
+	usage := func(u metadatapb.RecordTypeOptions_Usage) *descriptorpb.MessageOptions {
 		o := &descriptorpb.MessageOptions{}
-		proto.SetExtension(o, gen.E_Record, &gen.RecordTypeOptions{Usage: u.Enum()})
+		proto.SetExtension(o, metadatapb.E_Record, &metadatapb.RecordTypeOptions{Usage: u.Enum()})
 		return o
 	}
 	base := func() *descriptorpb.FileDescriptorProto {
@@ -816,7 +816,7 @@ var _ = Describe("Java refuses the same records descriptors", func() {
 			Dependency: []string{"record_metadata_options.proto"},
 			MessageType: []*descriptorpb.DescriptorProto{
 				{Name: proto.String("T"), Field: []*descriptorpb.FieldDescriptorProto{field("id", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64, "")}},
-				{Name: proto.String("Envelope"), Options: usage(gen.RecordTypeOptions_UNION), Field: []*descriptorpb.FieldDescriptorProto{
+				{Name: proto.String("Envelope"), Options: usage(metadatapb.RecordTypeOptions_UNION), Field: []*descriptorpb.FieldDescriptorProto{
 					field("_T", 1, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".vr.T"),
 				}},
 			},
@@ -824,9 +824,9 @@ var _ = Describe("Java refuses the same records descriptors", func() {
 	}
 	// index adds a VALUE index on field id of the given record type to the
 	// metadata, so a shape can ask what an index fault does beside a records one.
-	index := func(recordType string) func(md *gen.MetaData) {
-		return func(md *gen.MetaData) {
-			md.Indexes = append(md.Indexes, &gen.Index{
+	index := func(recordType string) func(md *metadatapb.MetaData) {
+		return func(md *metadatapb.MetaData) {
+			md.Indexes = append(md.Indexes, &metadatapb.Index{
 				Name: proto.String("I"), RecordType: []string{recordType},
 				RootExpression: recordlayer.Field("id").ToKeyExpression(),
 				Type:           proto.String("value"), AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1),
@@ -839,7 +839,7 @@ var _ = Describe("Java refuses the same records descriptors", func() {
 		want   string
 		// md, when set, changes the metadata around the records file; wantClass,
 		// when set, is the Java exception class (MetaDataException otherwise).
-		md        func(md *gen.MetaData)
+		md        func(md *metadatapb.MetaData)
 		wantClass string
 		// goRefuses marks shape (d), a message named UnionDescriptor beside the
 		// union: Go refused it with this message before the upgrade and now
@@ -870,7 +870,7 @@ var _ = Describe("Java refuses the same records descriptors", func() {
 		// candidate, not a union field.
 		{"a second union candidate named RecordTypeUnion", func(f *descriptorpb.FileDescriptorProto) {
 			f.MessageType = append(f.MessageType, &descriptorpb.DescriptorProto{
-				Name: proto.String("RecordTypeUnion"), Options: usage(gen.RecordTypeOptions_RECORD),
+				Name: proto.String("RecordTypeUnion"), Options: usage(metadatapb.RecordTypeOptions_RECORD),
 				Field: []*descriptorpb.FieldDescriptorProto{field("id", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64, "")},
 			})
 			f.MessageType[1].Field = append(f.MessageType[1].Field, field("_R", 2, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".vr.RecordTypeUnion"))
@@ -897,13 +897,13 @@ var _ = Describe("Java refuses the same records descriptors", func() {
 		}, "Field u in message vr.T has illegal unsigned type UINT32", nil, "", ""},
 		{"two usage=UNION messages", func(f *descriptorpb.FileDescriptorProto) {
 			f.MessageType = append(f.MessageType, &descriptorpb.DescriptorProto{
-				Name: proto.String("Other"), Options: usage(gen.RecordTypeOptions_UNION),
+				Name: proto.String("Other"), Options: usage(metadatapb.RecordTypeOptions_UNION),
 				Field: []*descriptorpb.FieldDescriptorProto{field("_T", 1, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".vr.T")},
 			})
 		}, "Only one union descriptor is allowed", nil, "", ""},
 		{"RecordTypeUnion with NESTED usage", func(f *descriptorpb.FileDescriptorProto) {
 			f.MessageType = append(f.MessageType, &descriptorpb.DescriptorProto{
-				Name: proto.String("RecordTypeUnion"), Options: usage(gen.RecordTypeOptions_NESTED),
+				Name: proto.String("RecordTypeUnion"), Options: usage(metadatapb.RecordTypeOptions_NESTED),
 				Field: []*descriptorpb.FieldDescriptorProto{field("id", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64, "")},
 			})
 		}, "Message type RecordTypeUnion cannot have NESTED usage", nil, "", ""},
@@ -922,14 +922,14 @@ var _ = Describe("Java refuses the same records descriptors", func() {
 		}, "", nil, "", ""},
 		{"nested usage as a union field", func(f *descriptorpb.FileDescriptorProto) {
 			f.MessageType = append(f.MessageType, &descriptorpb.DescriptorProto{
-				Name: proto.String("N"), Options: usage(gen.RecordTypeOptions_NESTED),
+				Name: proto.String("N"), Options: usage(metadatapb.RecordTypeOptions_NESTED),
 				Field: []*descriptorpb.FieldDescriptorProto{field("id", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64, "")},
 			})
 			f.MessageType[1].Field = append(f.MessageType[1].Field, field("_N", 2, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".vr.N"))
 		}, "Union field _N has type N which is not a record", nil, "", ""},
 		{"record usage missing from the union", func(f *descriptorpb.FileDescriptorProto) {
 			f.MessageType = append(f.MessageType, &descriptorpb.DescriptorProto{
-				Name: proto.String("R"), Options: usage(gen.RecordTypeOptions_RECORD),
+				Name: proto.String("R"), Options: usage(metadatapb.RecordTypeOptions_RECORD),
 				Field: []*descriptorpb.FieldDescriptorProto{field("id", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64, "")},
 			})
 		}, "Record message type R must be a union field.", nil, "", ""},
@@ -947,18 +947,18 @@ var _ = Describe("Java refuses the same records descriptors", func() {
 		// Per index, Java resolves the record types BEFORE it reads the index
 		// (loadProtoExceptRecords, RecordMetaDataBuilder.java:187-219), and a
 		// RecordType entry naming no record type is refused (:221, :986-990).
-		{"an unknown record type on an index with a repeated option", func(*descriptorpb.FileDescriptorProto) {}, "Unknown record type Nope", func(md *gen.MetaData) {
+		{"an unknown record type on an index with a repeated option", func(*descriptorpb.FileDescriptorProto) {}, "Unknown record type Nope", func(md *metadatapb.MetaData) {
 			index("Nope")(md)
-			md.Indexes[0].Options = []*gen.Index_Option{{Key: proto.String("a"), Value: proto.String("1")}, {Key: proto.String("a"), Value: proto.String("2")}}
+			md.Indexes[0].Options = []*metadatapb.Index_Option{{Key: proto.String("a"), Value: proto.String("1")}, {Key: proto.String("a"), Value: proto.String("2")}}
 		}, "", ""},
-		{"an unknown record type on an index before a repeated option on the next", func(*descriptorpb.FileDescriptorProto) {}, "Unknown record type Nope", func(md *gen.MetaData) {
+		{"an unknown record type on an index before a repeated option on the next", func(*descriptorpb.FileDescriptorProto) {}, "Unknown record type Nope", func(md *metadatapb.MetaData) {
 			index("Nope")(md)
 			index("T")(md)
 			md.Indexes[1].Name = proto.String("J")
-			md.Indexes[1].Options = []*gen.Index_Option{{Key: proto.String("a"), Value: proto.String("1")}, {Key: proto.String("a"), Value: proto.String("2")}}
+			md.Indexes[1].Options = []*metadatapb.Index_Option{{Key: proto.String("a"), Value: proto.String("1")}, {Key: proto.String("a"), Value: proto.String("2")}}
 		}, "", ""},
-		{"a record type entry naming no record type", func(*descriptorpb.FileDescriptorProto) {}, "Unknown record type Nope", func(md *gen.MetaData) {
-			md.RecordTypes = append(md.RecordTypes, &gen.RecordType{Name: proto.String("Nope"), PrimaryKey: recordlayer.Field("id").ToKeyExpression()})
+		{"a record type entry naming no record type", func(*descriptorpb.FileDescriptorProto) {}, "Unknown record type Nope", func(md *metadatapb.MetaData) {
+			md.RecordTypes = append(md.RecordTypes, &metadatapb.RecordType{Name: proto.String("Nope"), PrimaryKey: recordlayer.Field("id").ToKeyExpression()})
 		}, "", ""},
 		// A message named UnionDescriptor none of whose fields made a record type
 		// before the upgrade (a SQL table or STRUCT of that name with scalar
@@ -969,8 +969,8 @@ var _ = Describe("Java refuses the same records descriptors", func() {
 				Field: []*descriptorpb.FieldDescriptorProto{field("id", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64, "")},
 			})
 			f.MessageType[1].Field = append(f.MessageType[1].Field, field("_UnionDescriptor", 2, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".vr.UnionDescriptor"))
-		}, "", func(md *gen.MetaData) {
-			md.RecordTypes = append(md.RecordTypes, &gen.RecordType{Name: proto.String("UnionDescriptor"), PrimaryKey: recordlayer.Field("id").ToKeyExpression()})
+		}, "", func(md *metadatapb.MetaData) {
+			md.RecordTypes = append(md.RecordTypes, &metadatapb.RecordType{Name: proto.String("UnionDescriptor"), PrimaryKey: recordlayer.Field("id").ToKeyExpression()})
 		}, "", ""},
 		{"a nested message named UnionDescriptor", func(f *descriptorpb.FileDescriptorProto) {
 			f.MessageType = append(f.MessageType, &descriptorpb.DescriptorProto{
@@ -981,7 +981,7 @@ var _ = Describe("Java refuses the same records descriptors", func() {
 		}, "", nil, "", ""},
 		{"a subspace-key-counter fault beside a union fault", func(f *descriptorpb.FileDescriptorProto) {
 			f.MessageType[1].Field = append(f.MessageType[1].Field, field("x", 2, descriptorpb.FieldDescriptorProto_TYPE_INT64, ""))
-		}, "subspaceKeyCounter is set but usesSubspaceKeyCounter is not set in the meta-data proto", func(md *gen.MetaData) { md.SubspaceKeyCounter = proto.Int64(3) }, "", ""},
+		}, "subspaceKeyCounter is set but usesSubspaceKeyCounter is not set in the meta-data proto", func(md *metadatapb.MetaData) { md.SubspaceKeyCounter = proto.Int64(3) }, "", ""},
 		// Shape (d): the pre-upgrade Go loader took UnionDescriptor for the union (it
 		// tried that name first) and the target takes the usage=UNION message.
 		{"a message named UnionDescriptor beside the usage=UNION union", func(f *descriptorpb.FileDescriptorProto) {
@@ -1032,8 +1032,8 @@ var _ = Describe("Java refuses the same records descriptors", func() {
 				},
 			})
 			f.MessageType[1].Field = append(f.MessageType[1].Field, field("_UnionDescriptor", 2, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".vr.UnionDescriptor"))
-		}, "", func(md *gen.MetaData) {
-			md.RecordTypes = append(md.RecordTypes, &gen.RecordType{Name: proto.String("UnionDescriptor"), PrimaryKey: recordlayer.Field("id").ToKeyExpression()})
+		}, "", func(md *metadatapb.MetaData) {
+			md.RecordTypes = append(md.RecordTypes, &metadatapb.RecordType{Name: proto.String("UnionDescriptor"), PrimaryKey: recordlayer.Field("id").ToKeyExpression()})
 		}, "", "records file names two union candidates: UnionDescriptor (the pre-upgrade Go choice) and Envelope " +
 			"(the union the target uses); edit it so that only the union its records were written with is a candidate"},
 		// The stored path replays the pre-upgrade loader, which refused a record
@@ -1051,8 +1051,8 @@ var _ = Describe("Java refuses the same records descriptors", func() {
 				},
 			})
 			f.MessageType[1].Field = append(f.MessageType[1].Field, field("_UnionDescriptor", 2, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".vr.UnionDescriptor"))
-		}, "", func(md *gen.MetaData) {
-			md.RecordTypes = append(md.RecordTypes, &gen.RecordType{Name: proto.String("UnionDescriptor"), PrimaryKey: recordlayer.Field("id").ToKeyExpression()})
+		}, "", func(md *metadatapb.MetaData) {
+			md.RecordTypes = append(md.RecordTypes, &metadatapb.RecordType{Name: proto.String("UnionDescriptor"), PrimaryKey: recordlayer.Field("id").ToKeyExpression()})
 		}, "", ""},
 		{"a table named UnionDescriptor with a table-typed column and an index", func(f *descriptorpb.FileDescriptorProto) {
 			f.MessageType = append(f.MessageType, &descriptorpb.DescriptorProto{
@@ -1063,8 +1063,8 @@ var _ = Describe("Java refuses the same records descriptors", func() {
 				},
 			})
 			f.MessageType[1].Field = append(f.MessageType[1].Field, field("_UnionDescriptor", 2, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".vr.UnionDescriptor"))
-		}, "", func(md *gen.MetaData) {
-			md.RecordTypes = append(md.RecordTypes, &gen.RecordType{Name: proto.String("UnionDescriptor"), PrimaryKey: recordlayer.Field("id").ToKeyExpression()})
+		}, "", func(md *metadatapb.MetaData) {
+			md.RecordTypes = append(md.RecordTypes, &metadatapb.RecordType{Name: proto.String("UnionDescriptor"), PrimaryKey: recordlayer.Field("id").ToKeyExpression()})
 			index("UnionDescriptor")(md)
 		}, "", ""},
 		// One none of whose fields made a record type framed nothing, even where
@@ -1083,9 +1083,9 @@ var _ = Describe("Java refuses the same records descriptors", func() {
 		It("refuses or builds: "+shape.name, func() {
 			fdp := base()
 			shape.mutate(fdp)
-			md := &gen.MetaData{
+			md := &metadatapb.MetaData{
 				Records: fdp,
-				RecordTypes: []*gen.RecordType{{
+				RecordTypes: []*metadatapb.RecordType{{
 					Name: proto.String("T"), PrimaryKey: recordlayer.Field("id").ToKeyExpression(),
 				}},
 				Version: proto.Int32(1),
@@ -1182,11 +1182,11 @@ var _ = Describe("Record-type HashMap order is persisted as Java builds it", fun
 				Syntax: proto.String("proto2"), Dependency: []string{"record_metadata_options.proto"},
 			}
 			unionOptions := &descriptorpb.MessageOptions{}
-			proto.SetExtension(unionOptions, gen.E_Record, &gen.RecordTypeOptions{Usage: gen.RecordTypeOptions_UNION.Enum()})
+			proto.SetExtension(unionOptions, metadatapb.E_Record, &metadatapb.RecordTypeOptions{Usage: metadatapb.RecordTypeOptions_UNION.Enum()})
 			union := &descriptorpb.DescriptorProto{Name: proto.String("RecordTypeUnion"), Options: unionOptions}
 			for i, name := range tc.names {
 				fieldOptions := &descriptorpb.FieldOptions{}
-				proto.SetExtension(fieldOptions, gen.E_Field, &gen.FieldOptions{PrimaryKey: proto.Bool(true)})
+				proto.SetExtension(fieldOptions, metadatapb.E_Field, &metadatapb.FieldOptions{PrimaryKey: proto.Bool(true)})
 				fdp.MessageType = append(fdp.MessageType, &descriptorpb.DescriptorProto{
 					Name: proto.String(name), Field: []*descriptorpb.FieldDescriptorProto{{
 						Name: proto.String("id"), Number: proto.Int32(1),
@@ -1236,7 +1236,7 @@ var _ = Describe("Record-type HashMap order is persisted as Java builds it", fun
 				Expect(value).To(BeNumerically("<=", 127))
 				javaBytes[i] = byte(value)
 			}
-			javaMD := &gen.MetaData{}
+			javaMD := &metadatapb.MetaData{}
 			Expect(proto.Unmarshal(javaBytes, javaMD)).To(Succeed())
 			fd, err := protodesc.NewFile(fdp, protoregistry.GlobalFiles)
 			Expect(err).NotTo(HaveOccurred())
@@ -1250,7 +1250,7 @@ var _ = Describe("Record-type HashMap order is persisted as Java builds it", fun
 			Expect(err).NotTo(HaveOccurred())
 			goBytes, err := proto.MarshalOptions{Deterministic: true}.Marshal(goMD)
 			Expect(err).NotTo(HaveOccurred())
-			names := func(metadata *gen.MetaData) []string {
+			names := func(metadata *metadatapb.MetaData) []string {
 				out := make([]string, len(metadata.GetRecordTypes()))
 				for i, recordType := range metadata.GetRecordTypes() {
 					out[i] = recordType.GetName()

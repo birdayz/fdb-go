@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -149,11 +149,11 @@ var _ = Describe("Queued store dispatch", func() {
 					if err != nil {
 						return nil, err
 					}
-					payload, err := anypb.New(&gen.DeleteWhere{Prefix: tuple.Tuple{}.Pack()})
+					payload, err := anypb.New(&metadatapb.DeleteWhere{Prefix: tuple.Tuple{}.Pack()})
 					if err != nil {
 						return nil, err
 					}
-					return nil, store.indexingPendingWriteQueue(index, 0).Enqueue(rc, &gen.PendingWritesQueueEntry{Operation: gen.PendingWritesQueueEntry_DELETE_WHERE.Enum(), Data: payload}, 0)
+					return nil, store.indexingPendingWriteQueue(index, 0).Enqueue(rc, &metadatapb.PendingWritesQueueEntry{Operation: metadatapb.PendingWritesQueueEntry_DELETE_WHERE.Enum(), Data: payload}, 0)
 				})
 				return err
 			}}
@@ -506,7 +506,7 @@ var _ = Describe("Queued store dispatch", func() {
 			store := open(rc, md, root)
 			cursor := store.indexingPendingWriteQueue(index, 100).GetQueueCursor(rc, ForwardScan(), nil)
 			defer cursor.Close()
-			operations := []gen.PendingWritesQueueEntry_Operation{}
+			operations := []metadatapb.PendingWritesQueueEntry_Operation{}
 			for {
 				row, err := cursor.OnNext(ctx)
 				Expect(err).NotTo(HaveOccurred())
@@ -516,7 +516,7 @@ var _ = Describe("Queued store dispatch", func() {
 				operations = append(operations, row.GetValue().Payload.GetOperation())
 				Expect(store.replayPendingIndexWrite(index, row.GetValue())).To(Succeed())
 			}
-			Expect(operations).To(Equal([]gen.PendingWritesQueueEntry_Operation{gen.PendingWritesQueueEntry_UPDATE, gen.PendingWritesQueueEntry_UPDATE, gen.PendingWritesQueueEntry_UPDATE, gen.PendingWritesQueueEntry_DELETE_WHERE}))
+			Expect(operations).To(Equal([]metadatapb.PendingWritesQueueEntry_Operation{metadatapb.PendingWritesQueueEntry_UPDATE, metadatapb.PendingWritesQueueEntry_UPDATE, metadatapb.PendingWritesQueueEntry_UPDATE, metadatapb.PendingWritesQueueEntry_DELETE_WHERE}))
 			_, err := store.MarkIndexReadable(index.Name)
 			Expect(err).NotTo(HaveOccurred())
 			found, err := queuedIndexPrimaryKeys(store, index, tuple.Tuple{int64(8)})

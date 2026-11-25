@@ -15,6 +15,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -32,21 +33,21 @@ import (
 // parse in both engines); in memory any can, and the JVM reads those protos
 // partially parsed.
 var _ = Describe("RFC-257 an absent key-expression child is Java's refusal", func() {
-	field := &gen.KeyExpression{Field: &gen.Field{FieldName: proto.String("order_id"), FanType: gen.Field_SCALAR.Enum(), NullInterpretation: gen.Field_NOT_UNIQUE.Enum()}}
+	field := &metadatapb.KeyExpression{Field: &metadatapb.Field{FieldName: proto.String("order_id"), FanType: metadatapb.Field_SCALAR.Enum(), NullInterpretation: metadatapb.Field_NOT_UNIQUE.Enum()}}
 	const (
 		deserialization = "com.apple.foundationdb.record.metadata.expressions.KeyExpression$DeserializationException"
 		noRoot          = "Exactly one root must be specified for an index"
 	)
 	for _, c := range []struct {
 		name string
-		expr *gen.KeyExpression
+		expr *metadatapb.KeyExpression
 	}{
-		{"a nesting's child", &gen.KeyExpression{Nesting: &gen.Nesting{Parent: field.GetField()}}},
-		{"a grouping's whole key", &gen.KeyExpression{Grouping: &gen.Grouping{GroupedCount: proto.Int32(0)}}},
-		{"a dimensions' whole key", &gen.KeyExpression{Dimensions: &gen.Dimensions{PrefixSize: proto.Int32(0), DimensionsSize: proto.Int32(0)}}},
-		{"a key-with-value's inner key", &gen.KeyExpression{KeyWithValue: &gen.KeyWithValue{SplitPoint: proto.Int32(0)}}},
-		{"a split's joined key", &gen.KeyExpression{Split: &gen.Split{SplitSize: proto.Int32(1)}}},
-		{"a function's arguments", &gen.KeyExpression{Function: &gen.Function{Name: proto.String("add")}}},
+		{"a nesting's child", &metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{Parent: field.GetField()}}},
+		{"a grouping's whole key", &metadatapb.KeyExpression{Grouping: &metadatapb.Grouping{GroupedCount: proto.Int32(0)}}},
+		{"a dimensions' whole key", &metadatapb.KeyExpression{Dimensions: &metadatapb.Dimensions{PrefixSize: proto.Int32(0), DimensionsSize: proto.Int32(0)}}},
+		{"a key-with-value's inner key", &metadatapb.KeyExpression{KeyWithValue: &metadatapb.KeyWithValue{SplitPoint: proto.Int32(0)}}},
+		{"a split's joined key", &metadatapb.KeyExpression{Split: &metadatapb.Split{SplitSize: proto.Int32(1)}}},
+		{"a function's arguments", &metadatapb.KeyExpression{Function: &metadatapb.Function{Name: proto.String("add")}}},
 	} {
 		It(c.name, func() {
 			b, err := proto.MarshalOptions{AllowPartial: true}.Marshal(c.expr)
@@ -69,18 +70,18 @@ var _ = Describe("RFC-257 an absent key-expression child is Java's refusal", fun
 	}
 
 	It("a nesting's child is absent from stored bytes; the others fail at parse", func() {
-		stored, err := proto.Marshal(&gen.KeyExpression{Nesting: &gen.Nesting{Parent: field.GetField()}})
+		stored, err := proto.Marshal(&metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{Parent: field.GetField()}})
 		Expect(err).NotTo(HaveOccurred())
-		var parsed gen.KeyExpression
+		var parsed metadatapb.KeyExpression
 		Expect(proto.Unmarshal(stored, &parsed)).To(Succeed())
 		_, goErr := recordlayer.KeyExpressionFromProto(&parsed)
 		var de *recordlayer.KeyExpressionDeserializationError
 		Expect(errors.As(goErr, &de)).To(BeTrue(), "%v", goErr)
 		Expect(de.Message).To(Equal(noRoot))
 
-		partial, err := proto.MarshalOptions{AllowPartial: true}.Marshal(&gen.KeyExpression{Grouping: &gen.Grouping{}})
+		partial, err := proto.MarshalOptions{AllowPartial: true}.Marshal(&metadatapb.KeyExpression{Grouping: &metadatapb.Grouping{}})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(proto.Unmarshal(partial, &gen.KeyExpression{})).NotTo(Succeed(), "a grouping without its required whole key parses")
+		Expect(proto.Unmarshal(partial, &metadatapb.KeyExpression{})).NotTo(Succeed(), "a grouping without its required whole key parses")
 	})
 })
 
@@ -104,24 +105,24 @@ var _ = Describe("RFC-257 a key expression Java cannot deserialize is refused as
 		protoDeser      = "com.apple.foundationdb.record.RecordMetaDataBuilder$MetaDataProtoDeserializationException"
 		metaDataExc     = "com.apple.foundationdb.record.metadata.MetaDataException"
 	)
-	noName := &gen.Field{FanType: gen.Field_SCALAR.Enum()}
-	noFan := &gen.Field{FieldName: proto.String("order_id")}
-	unknownFan := func() *gen.Field {
-		f := &gen.Field{FieldName: proto.String("order_id")}
+	noName := &metadatapb.Field{FanType: metadatapb.Field_SCALAR.Enum()}
+	noFan := &metadatapb.Field{FieldName: proto.String("order_id")}
+	unknownFan := func() *metadatapb.Field {
+		f := &metadatapb.Field{FieldName: proto.String("order_id")}
 		f.ProtoReflect().SetUnknown(protowire.AppendVarint(protowire.AppendTag(nil, 2, protowire.VarintType), 7))
 		return f
 	}()
-	price := &gen.KeyExpression{Field: &gen.Field{FieldName: proto.String("price"), FanType: gen.Field_SCALAR.Enum()}}
+	price := &metadatapb.KeyExpression{Field: &metadatapb.Field{FieldName: proto.String("price"), FanType: metadatapb.Field_SCALAR.Enum()}}
 	exprs := []struct {
 		name string
-		expr *gen.KeyExpression
+		expr *metadatapb.KeyExpression
 		want string
 	}{
-		{"a field without its name", &gen.KeyExpression{Field: noName}, "Serialized Field is missing field name"},
-		{"a field without its fan type", &gen.KeyExpression{Field: noFan}, "Serialized Field is missing fan type"},
-		{"a field whose fan type is 7", &gen.KeyExpression{Field: unknownFan}, "Serialized Field is missing fan type"},
-		{"a nesting's parent without its fan type", &gen.KeyExpression{Nesting: &gen.Nesting{Parent: noFan, Child: price}}, "Serialized Field is missing fan type"},
-		{"a nesting's parent without its name, and no child", &gen.KeyExpression{Nesting: &gen.Nesting{Parent: noName}}, "Serialized Field is missing field name"},
+		{"a field without its name", &metadatapb.KeyExpression{Field: noName}, "Serialized Field is missing field name"},
+		{"a field without its fan type", &metadatapb.KeyExpression{Field: noFan}, "Serialized Field is missing fan type"},
+		{"a field whose fan type is 7", &metadatapb.KeyExpression{Field: unknownFan}, "Serialized Field is missing fan type"},
+		{"a nesting's parent without its fan type", &metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{Parent: noFan, Child: price}}, "Serialized Field is missing fan type"},
+		{"a nesting's parent without its name, and no child", &metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{Parent: noName}}, "Serialized Field is missing field name"},
 	}
 	partial := func(m proto.Message) []int {
 		b, err := proto.MarshalOptions{AllowPartial: true}.Marshal(m)
@@ -140,7 +141,7 @@ var _ = Describe("RFC-257 a key expression Java cannot deserialize is refused as
 			GinkgoWriter.Printf("DESERIALIZE %s java=%s %q\n", c.name, java.Class, java.Error)
 			Expect([]string{java.Class, java.Error}).To(Equal([]string{deserialization, c.want}))
 
-			var parsed gen.KeyExpression
+			var parsed metadatapb.KeyExpression
 			Expect(proto.UnmarshalOptions{AllowPartial: true}.Unmarshal(intsToBytes(partial(c.expr)), &parsed)).To(Succeed())
 			_, goErr := recordlayer.KeyExpressionFromProto(&parsed)
 			var de *recordlayer.KeyExpressionDeserializationError
@@ -151,7 +152,7 @@ var _ = Describe("RFC-257 a key expression Java cannot deserialize is refused as
 		})
 	}
 
-	demo := func() *gen.MetaData {
+	demo := func() *metadatapb.MetaData {
 		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
@@ -164,39 +165,39 @@ var _ = Describe("RFC-257 a key expression Java cannot deserialize is refused as
 	}
 	for _, c := range []struct {
 		name       string
-		edit       func(*gen.MetaData)
+		edit       func(*metadatapb.MetaData)
 		causeClass string
 		cause      string
 	}{
-		{"an index root whose field has no name", func(md *gen.MetaData) {
-			md.Indexes = append(md.Indexes, &gen.Index{
+		{"an index root whose field has no name", func(md *metadatapb.MetaData) {
+			md.Indexes = append(md.Indexes, &metadatapb.Index{
 				Name: proto.String("i"), RecordType: []string{"Order"},
-				RootExpression: &gen.KeyExpression{Field: noName}, AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1),
+				RootExpression: &metadatapb.KeyExpression{Field: noName}, AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1),
 			})
 		}, deserialization, "Serialized Field is missing field name"},
-		{"an index root nesting under a parent with no fan type", func(md *gen.MetaData) {
-			md.Indexes = append(md.Indexes, &gen.Index{
+		{"an index root nesting under a parent with no fan type", func(md *metadatapb.MetaData) {
+			md.Indexes = append(md.Indexes, &metadatapb.Index{
 				Name: proto.String("i"), RecordType: []string{"Order"},
-				RootExpression: &gen.KeyExpression{Nesting: &gen.Nesting{Parent: noFan, Child: price}}, AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1),
+				RootExpression: &metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{Parent: noFan, Child: price}}, AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1),
 			})
 		}, deserialization, "Serialized Field is missing fan type"},
-		{"an index root whose field's fan type is 7", func(md *gen.MetaData) {
-			md.Indexes = append(md.Indexes, &gen.Index{
+		{"an index root whose field's fan type is 7", func(md *metadatapb.MetaData) {
+			md.Indexes = append(md.Indexes, &metadatapb.Index{
 				Name: proto.String("i"), RecordType: []string{"Order"},
-				RootExpression: &gen.KeyExpression{Field: unknownFan}, AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1),
+				RootExpression: &metadatapb.KeyExpression{Field: unknownFan}, AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1),
 			})
 		}, deserialization, "Serialized Field is missing fan type"},
-		{"a primary key whose field has no fan type", func(md *gen.MetaData) {
+		{"a primary key whose field has no fan type", func(md *metadatapb.MetaData) {
 			for _, rt := range md.RecordTypes {
 				if rt.GetName() == "Order" {
-					rt.PrimaryKey = &gen.KeyExpression{Field: noFan}
+					rt.PrimaryKey = &metadatapb.KeyExpression{Field: noFan}
 				}
 			}
 		}, deserialization, "Serialized Field is missing fan type"},
-		{"a record-count key with no root", func(md *gen.MetaData) {
-			md.RecordCountKey = &gen.KeyExpression{}
+		{"a record-count key with no root", func(md *metadatapb.MetaData) {
+			md.RecordCountKey = &metadatapb.KeyExpression{}
 		}, deserialization, "Exactly one root must be specified for an index"},
-		{"a subspace-key counter without its flag", func(md *gen.MetaData) {
+		{"a subspace-key counter without its flag", func(md *metadatapb.MetaData) {
 			md.SubspaceKeyCounter = proto.Int64(3)
 		}, metaDataExc, "subspaceKeyCounter is set but usesSubspaceKeyCounter is not set in the meta-data proto"},
 	} {
@@ -210,7 +211,7 @@ var _ = Describe("RFC-257 a key expression Java cannot deserialize is refused as
 			GinkgoWriter.Printf("DESERIALIZE_MD %s java=%t %s %q cause=%s %q\n", c.name, java.Valid, java.Class, java.Error, java.CauseClass, java.CauseError)
 			Expect([]string{java.Class, java.Error, java.CauseClass, java.CauseError}).To(Equal([]string{protoDeser, "Error converting from protobuf", c.causeClass, c.cause}))
 
-			var parsed gen.MetaData
+			var parsed metadatapb.MetaData
 			Expect(proto.UnmarshalOptions{AllowPartial: true}.Unmarshal(intsToBytes(partial(md)), &parsed)).To(Succeed())
 			_, goErr := recordlayer.RecordMetaDataFromProto(&parsed)
 			var pde *recordlayer.MetaDataProtoDeserializationError
@@ -241,7 +242,7 @@ var _ = Describe("RFC-257 a key expression Java cannot deserialize is refused as
 // refuses as a RecordCoreError of its own text (DIVERGENCES.md). Both engines
 // read the same bytes.
 var _ = Describe("RFC-257 an index predicate's operand Java cannot read is refused as Java refuses it", func() {
-	demo := func(operand *gen.Value) *gen.MetaData {
+	demo := func(operand *metadatapb.Value) *metadatapb.MetaData {
 		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
@@ -251,27 +252,27 @@ var _ = Describe("RFC-257 an index predicate's operand Java cannot read is refus
 		p, err := md.ToProto()
 		Expect(err).NotTo(HaveOccurred())
 		p.Version = proto.Int32(1)
-		p.Indexes = append(p.Indexes, &gen.Index{
+		p.Indexes = append(p.Indexes, &metadatapb.Index{
 			Name: proto.String("i"), RecordType: []string{"Order"}, Type: proto.String("value"),
 			RootExpression: recordlayer.Field("price").ToKeyExpression(), SubspaceKey: tuple.Tuple{"i"}.Pack(),
 			AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1),
-			Predicate: &gen.Predicate{ValuePredicate: &gen.ValuePredicate{
+			Predicate: &metadatapb.Predicate{ValuePredicate: &metadatapb.ValuePredicate{
 				Value:      []string{"price"},
-				Comparison: &gen.Comparison{SimpleComparison: &gen.SimpleComparison{Type: gen.ComparisonType_GREATER_THAN.Enum(), Operand: operand}},
+				Comparison: &metadatapb.Comparison{SimpleComparison: &metadatapb.SimpleComparison{Type: metadatapb.ComparisonType_GREATER_THAN.Enum(), Operand: operand}},
 			}},
 		})
 		return p
 	}
 	for _, c := range []struct {
 		name, class, error string
-		operand            *gen.Value
+		operand            *metadatapb.Value
 	}{
 		{
 			"two values", "com.apple.foundationdb.record.RecordCoreException", "More than one value encoded in value",
-			&gen.Value{LongValue: proto.Int64(1), StringValue: proto.String("a")},
+			&metadatapb.Value{LongValue: proto.Int64(1), StringValue: proto.String("a")},
 		},
-		{"no value", "java.lang.NullPointerException", "index comparison operand has no value", &gen.Value{}},
-		{"one value (admitted)", "", "", &gen.Value{IntValue: proto.Int32(3)}},
+		{"no value", "java.lang.NullPointerException", "index comparison operand has no value", &metadatapb.Value{}},
+		{"one value (admitted)", "", "", &metadatapb.Value{IntValue: proto.Int32(3)}},
 	} {
 		It(c.name, func() {
 			b, err := proto.MarshalOptions{AllowPartial: true}.Marshal(demo(c.operand))
@@ -280,7 +281,7 @@ var _ = Describe("RFC-257 an index predicate's operand Java cannot read is refus
 			Expect(NewJavaInvoker().InvokeAs(context.Background(), "buildPartialMetaDataAnyVerdict", map[string]any{
 				"protoBytes": BytesToIntArray(b),
 			}, &java)).To(Succeed())
-			var parsed gen.MetaData
+			var parsed metadatapb.MetaData
 			Expect(proto.UnmarshalOptions{AllowPartial: true}.Unmarshal(b, &parsed)).To(Succeed())
 			_, goErr := recordlayer.RecordMetaDataFromProto(&parsed)
 			GinkgoWriter.Printf("OPERAND %s java=%t %s %q go=%v\n", c.name, java.Valid, java.Class, java.Error, goErr)
@@ -306,11 +307,11 @@ var _ = Describe("RFC-257 an index predicate's operand Java cannot read is refus
 // deeper than that is refused at parse, before any key-expression check; Go
 // parses shared bytes with the same limit (recordlayer.UnmarshalAsJava).
 var _ = Describe("RFC-257 a key expression nested past protobuf's recursion limit", func() {
-	nested := func(depth int) *gen.KeyExpression {
+	nested := func(depth int) *metadatapb.KeyExpression {
 		root := recordlayer.Field("price").ToKeyExpression()
 		for i := 1; i < depth; i++ {
-			root = &gen.KeyExpression{Nesting: &gen.Nesting{
-				Parent: &gen.Field{FieldName: proto.String("n"), FanType: gen.Field_SCALAR.Enum()},
+			root = &metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{
+				Parent: &metadatapb.Field{FieldName: proto.String("n"), FanType: metadatapb.Field_SCALAR.Enum()},
 				Child:  root,
 			}}
 		}
@@ -326,7 +327,7 @@ var _ = Describe("RFC-257 a key expression nested past protobuf's recursion limi
 		p, err := md.ToProto()
 		Expect(err).NotTo(HaveOccurred())
 		p.Version = proto.Int32(1)
-		p.Indexes = append(p.Indexes, &gen.Index{
+		p.Indexes = append(p.Indexes, &metadatapb.Index{
 			Name: proto.String("i"), RecordType: []string{"Order"}, Type: proto.String("value"),
 			RootExpression: nested(depth), SubspaceKey: tuple.Tuple{"i"}.Pack(),
 			AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1),
@@ -343,7 +344,7 @@ var _ = Describe("RFC-257 a key expression nested past protobuf's recursion limi
 		GinkgoWriter.Printf("DEPTH 49 java=%t %s %q\n", java.Valid, java.Class, java.Error)
 		// Parsed; refused later for its made-up field.
 		Expect(java.Class).To(Equal("com.apple.foundationdb.record.metadata.expressions.KeyExpression$InvalidExpressionException"))
-		Expect(recordlayer.UnmarshalAsJava(demo(49), &gen.MetaData{})).To(Succeed())
+		Expect(recordlayer.UnmarshalAsJava(demo(49), &metadatapb.MetaData{})).To(Succeed())
 
 		err := NewJavaInvoker().InvokeAs(context.Background(), "buildPartialMetaDataAnyVerdict", map[string]any{
 			"protoBytes": BytesToIntArray(demo(50)),
@@ -352,9 +353,9 @@ var _ = Describe("RFC-257 a key expression nested past protobuf's recursion limi
 		Expect(errors.As(err, &je)).To(BeTrue(), "%v", err)
 		GinkgoWriter.Printf("DEPTH 50 java=%s %q\n", je.ExceptionFullClass, je.Message)
 		Expect(je.ExceptionFullClass).To(Equal("com.google.protobuf.InvalidProtocolBufferException"))
-		goErr := recordlayer.UnmarshalAsJava(demo(50), &gen.MetaData{})
+		goErr := recordlayer.UnmarshalAsJava(demo(50), &metadatapb.MetaData{})
 		Expect(goErr).To(MatchError(ContainSubstring("exceeded maximum recursion depth")))
-		Expect(proto.Unmarshal(demo(50), &gen.MetaData{})).To(Succeed(), "protobuf-go's own default admits it")
+		Expect(proto.Unmarshal(demo(50), &metadatapb.MetaData{})).To(Succeed(), "protobuf-go's own default admits it")
 	})
 	// The shape above opens an even number of levels (2d+2: the meta-data,
 	// the index, then d key expressions and their nestings), so it cannot tell
@@ -365,9 +366,9 @@ var _ = Describe("RFC-257 a key expression nested past protobuf's recursion limi
 	// Java parses and Go refused at a limit of 100, and 103 at d = 51.
 	It("a record-count key opening 101 levels parses in both engines, 103 in neither", func() {
 		countKey := func(depth int) []byte {
-			p, err := proto.Marshal(&gen.MetaData{Version: proto.Int32(1), RecordCountKey: nested(depth)})
+			p, err := proto.Marshal(&metadatapb.MetaData{Version: proto.Int32(1), RecordCountKey: nested(depth)})
 			Expect(err).NotTo(HaveOccurred())
-			var withRecords gen.MetaData
+			var withRecords metadatapb.MetaData
 			Expect(proto.Unmarshal(demo(1), &withRecords)).To(Succeed())
 			withRecords.Indexes = nil
 			rest, err := proto.Marshal(&withRecords)
@@ -380,7 +381,7 @@ var _ = Describe("RFC-257 a key expression nested past protobuf's recursion limi
 		}, &java)).To(Succeed())
 		GinkgoWriter.Printf("DEPTH 101 java=%t %s %q\n", java.Valid, java.Class, java.Error)
 		Expect(java.Class).NotTo(Equal("com.google.protobuf.InvalidProtocolBufferException"))
-		Expect(recordlayer.UnmarshalAsJava(countKey(50), &gen.MetaData{})).To(Succeed())
+		Expect(recordlayer.UnmarshalAsJava(countKey(50), &metadatapb.MetaData{})).To(Succeed())
 
 		err := NewJavaInvoker().InvokeAs(context.Background(), "buildPartialMetaDataAnyVerdict", map[string]any{
 			"protoBytes": BytesToIntArray(countKey(51)),
@@ -389,7 +390,7 @@ var _ = Describe("RFC-257 a key expression nested past protobuf's recursion limi
 		Expect(errors.As(err, &je)).To(BeTrue(), "%v", err)
 		GinkgoWriter.Printf("DEPTH 103 java=%s %q\n", je.ExceptionFullClass, je.Message)
 		Expect(je.ExceptionFullClass).To(Equal("com.google.protobuf.InvalidProtocolBufferException"))
-		Expect(recordlayer.UnmarshalAsJava(countKey(51), &gen.MetaData{})).To(MatchError(ContainSubstring("exceeded maximum recursion depth")))
+		Expect(recordlayer.UnmarshalAsJava(countKey(51), &metadatapb.MetaData{})).To(MatchError(ContainSubstring("exceeded maximum recursion depth")))
 	})
 })
 
@@ -402,7 +403,7 @@ var _ = Describe("RFC-257 a key expression nested past protobuf's recursion limi
 // it: Java's CREATE SCHEMA through JDBC, Go's catalog load its CREATE SCHEMA
 // runs.
 var _ = Describe("RFC-257 a stored template Java cannot load", func() {
-	demo := func(edit func(*gen.MetaData)) []byte {
+	demo := func(edit func(*metadatapb.MetaData)) []byte {
 		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
@@ -417,9 +418,9 @@ var _ = Describe("RFC-257 a stored template Java cannot load", func() {
 		Expect(err).NotTo(HaveOccurred())
 		return b
 	}
-	index := func(root *gen.KeyExpression, pred *gen.Predicate) func(*gen.MetaData) {
-		return func(p *gen.MetaData) {
-			p.Indexes = append(p.Indexes, &gen.Index{
+	index := func(root *metadatapb.KeyExpression, pred *metadatapb.Predicate) func(*metadatapb.MetaData) {
+		return func(p *metadatapb.MetaData) {
+			p.Indexes = append(p.Indexes, &metadatapb.Index{
 				Name: proto.String("i"), RecordType: []string{"Order"}, Type: proto.String("value"),
 				RootExpression: root, SubspaceKey: tuple.Tuple{"i"}.Pack(),
 				AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1), Predicate: pred,
@@ -429,7 +430,7 @@ var _ = Describe("RFC-257 a stored template Java cannot load", func() {
 	price := recordlayer.Field("price").ToKeyExpression()
 	deep := price
 	for i := 1; i < 50; i++ {
-		deep = &gen.KeyExpression{Nesting: &gen.Nesting{Parent: &gen.Field{FieldName: proto.String("n"), FanType: gen.Field_SCALAR.Enum()}, Child: deep}}
+		deep = &metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{Parent: &metadatapb.Field{FieldName: proto.String("n"), FanType: metadatapb.Field_SCALAR.Enum()}, Child: deep}}
 	}
 	for _, c := range []struct {
 		name string
@@ -438,20 +439,20 @@ var _ = Describe("RFC-257 a stored template Java cannot load", func() {
 	}{
 		// A required field unset fails the full parse, before the key
 		// expression's own check.
-		{"a root field without its fan type", demo(index(&gen.KeyExpression{Field: &gen.Field{FieldName: proto.String("price")}}, nil)), "XXXXX"},
+		{"a root field without its fan type", demo(index(&metadatapb.KeyExpression{Field: &metadatapb.Field{FieldName: proto.String("price")}}, nil)), "XXXXX"},
 		// Fan type 7 is not declared: protobuf-java's parse keeps it as an
 		// unknown field, and the required fan_type is then missing, so the
 		// full parse fails as above. Go read 7 into the field, passed its
 		// required check, and refused the key expression later (42000).
-		{"a root field of fan type 7", demo(index(&gen.KeyExpression{Field: &gen.Field{FieldName: proto.String("price"), FanType: gen.Field_FanType(7).Enum()}}, nil)), "XXXXX"},
-		{"an operand with two values", demo(index(price, &gen.Predicate{ValuePredicate: &gen.ValuePredicate{
+		{"a root field of fan type 7", demo(index(&metadatapb.KeyExpression{Field: &metadatapb.Field{FieldName: proto.String("price"), FanType: metadatapb.Field_FanType(7).Enum()}}, nil)), "XXXXX"},
+		{"an operand with two values", demo(index(price, &metadatapb.Predicate{ValuePredicate: &metadatapb.ValuePredicate{
 			Value: []string{"price"},
-			Comparison: &gen.Comparison{SimpleComparison: &gen.SimpleComparison{
-				Type: gen.ComparisonType_GREATER_THAN.Enum(), Operand: &gen.Value{LongValue: proto.Int64(1), StringValue: proto.String("a")},
+			Comparison: &metadatapb.Comparison{SimpleComparison: &metadatapb.SimpleComparison{
+				Type: metadatapb.ComparisonType_GREATER_THAN.Enum(), Operand: &metadatapb.Value{LongValue: proto.Int64(1), StringValue: proto.String("a")},
 			}},
 		}})), "XXXXX"},
 		{"a root nested 50 deep", demo(index(deep, nil)), "XXXXX"},
-		{"a subspace-key counter without its flag", demo(func(p *gen.MetaData) { p.SubspaceKeyCounter = proto.Int64(3) }), "42000"},
+		{"a subspace-key counter without its flag", demo(func(p *metadatapb.MetaData) { p.SubspaceKeyCounter = proto.Int64(3) }), "42000"},
 	} {
 		It(c.name, func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)

@@ -13,10 +13,10 @@ import (
 
 	"fdb.dev/pkg/recordlayer/internal/tuplefast"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 )
@@ -152,7 +152,7 @@ func (h *IndexingHeartbeat) checkAdmission(tx fdb.WritableTransaction, storeSubs
 		}
 
 		// Parse the heartbeat proto.
-		var hb gen.IndexBuildHeartbeat
+		var hb metadatapb.IndexBuildHeartbeat
 		if err := UnmarshalVTAsJava(&hb, kv.Value); err != nil {
 			continue // corrupt heartbeat, ignore
 		}
@@ -178,7 +178,7 @@ func (h *IndexingHeartbeat) checkAdmission(tx fdb.WritableTransaction, storeSubs
 // update writes this indexer's heartbeat with the current timestamp.
 // Matches Java's IndexingHeartbeat.updateHeartbeat().
 func (h *IndexingHeartbeat) update(tx fdb.WritableTransaction, storeSubspace subspace.Subspace, index *Index) {
-	hb := &gen.IndexBuildHeartbeat{
+	hb := &metadatapb.IndexBuildHeartbeat{
 		Info:                      proto.String(h.info),
 		CreateTimeMilliseconds:    proto.Int64(h.createTimeMs),
 		HeartbeatTimeMilliseconds: proto.Int64(h.env.Now().UnixMilli()),
@@ -257,7 +257,7 @@ func heartbeatIndexerID(key []byte, ss subspace.Subspace, index *Index) (uuid.UU
 }
 
 // ReadHeartbeats reads all heartbeats for an index. Useful for diagnostics.
-func ReadHeartbeats(tx fdb.ReadTransaction, storeSubspace subspace.Subspace, index *Index) ([]*gen.IndexBuildHeartbeat, []string, error) {
+func ReadHeartbeats(tx fdb.ReadTransaction, storeSubspace subspace.Subspace, index *Index) ([]*metadatapb.IndexBuildHeartbeat, []string, error) {
 	hbSub := heartbeatSubspace(storeSubspace, index)
 	rr := tx.GetRange(hbSub, fdb.RangeOptions{})
 	kvs, err := rr.GetSliceWithError()
@@ -265,16 +265,16 @@ func ReadHeartbeats(tx fdb.ReadTransaction, storeSubspace subspace.Subspace, ind
 		return nil, nil, err
 	}
 
-	var heartbeats []*gen.IndexBuildHeartbeat
+	var heartbeats []*metadatapb.IndexBuildHeartbeat
 	var indexerIDs []string
 	for _, kv := range kvs {
 		id, err := heartbeatIndexerID(kv.Key, hbSub, index)
 		if err != nil {
 			return nil, nil, err
 		}
-		var hb gen.IndexBuildHeartbeat
+		var hb metadatapb.IndexBuildHeartbeat
 		if err := UnmarshalVTAsJava(&hb, kv.Value); err != nil {
-			hb = gen.IndexBuildHeartbeat{
+			hb = metadatapb.IndexBuildHeartbeat{
 				Info:                      proto.String(InvalidHeartbeatInfo),
 				CreateTimeMilliseconds:    proto.Int64(0),
 				HeartbeatTimeMilliseconds: proto.Int64(0),

@@ -3,7 +3,7 @@ package cascades
 import (
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"google.golang.org/protobuf/proto"
@@ -17,12 +17,12 @@ import (
 func TestStampIndexMetadata_OrderFunctionColumnOrdersByItsField(t *testing.T) {
 	t.Parallel()
 	rowType := testRecordRowType("T", "A", "B", "ID")
-	root := &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{
-		{Function: &gen.Function{
+	root := &metadatapb.KeyExpression{Then: &metadatapb.Then{Child: []*metadatapb.KeyExpression{
+		{Function: &metadatapb.Function{
 			Name:      proto.String(FunctionKindOrderDescNullsLast),
-			Arguments: keyExpressionField("A", gen.Field_SCALAR),
+			Arguments: keyExpressionField("A", metadatapb.Field_SCALAR),
 		}},
-		keyExpressionField("B", gen.Field_SCALAR),
+		keyExpressionField("B", metadatapb.Field_SCALAR),
 	}}}
 	noDuplicates := false
 	cand := NewValueIndexScanMatchCandidateWithFunctions(

@@ -3,7 +3,7 @@ package indexpredicate
 import (
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -21,61 +21,61 @@ import (
 func TestNormalizeReturnsAFreshTree(t *testing.T) {
 	t.Parallel()
 
-	valueArm := func() *gen.Predicate {
-		return &gen.Predicate{ValuePredicate: &gen.ValuePredicate{
+	valueArm := func() *metadatapb.Predicate {
+		return &metadatapb.Predicate{ValuePredicate: &metadatapb.ValuePredicate{
 			Value: []string{"PRICE"},
-			Comparison: &gen.Comparison{
-				SimpleComparison: &gen.SimpleComparison{
-					Type:    gen.ComparisonType_GREATER_THAN.Enum(),
-					Operand: &gen.Value{IntValue: proto.Int32(100)},
+			Comparison: &metadatapb.Comparison{
+				SimpleComparison: &metadatapb.SimpleComparison{
+					Type:    metadatapb.ComparisonType_GREATER_THAN.Enum(),
+					Operand: &metadatapb.Value{IntValue: proto.Int32(100)},
 				},
 			},
 		}}
 	}
-	trueArm := func() *gen.Predicate {
-		return &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
-			Value: gen.ConstantPredicate_TRUE.Enum(),
+	trueArm := func() *metadatapb.Predicate {
+		return &metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{
+			Value: metadatapb.ConstantPredicate_TRUE.Enum(),
 		}}
 	}
 
 	for _, tc := range []struct {
 		name  string
-		build func() *gen.Predicate
+		build func() *metadatapb.Predicate
 	}{
 		{"constant arm", trueArm},
 		{"value arm", valueArm},
-		{"NOT arm", func() *gen.Predicate {
-			return &gen.Predicate{NotPredicate: &gen.NotPredicate{Child: valueArm()}}
+		{"NOT arm", func() *metadatapb.Predicate {
+			return &metadatapb.Predicate{NotPredicate: &metadatapb.NotPredicate{Child: valueArm()}}
 		}},
-		{"AND that folds to a surviving leaf", func() *gen.Predicate {
-			return &gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+		{"AND that folds to a surviving leaf", func() *metadatapb.Predicate {
+			return &metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{
 				trueArm(), valueArm(),
 			}}}
 		}},
-		{"AND that keeps several children", func() *gen.Predicate {
-			return &gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+		{"AND that keeps several children", func() *metadatapb.Predicate {
+			return &metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{
 				valueArm(), valueArm(),
 			}}}
 		}},
-		{"OR that keeps several children", func() *gen.Predicate {
-			return &gen.Predicate{OrPredicate: &gen.OrPredicate{Children: []*gen.Predicate{
+		{"OR that keeps several children", func() *metadatapb.Predicate {
+			return &metadatapb.Predicate{OrPredicate: &metadatapb.OrPredicate{Children: []*metadatapb.Predicate{
 				valueArm(), valueArm(),
 			}}}
 		}},
-		{"singleton OR that collapses", func() *gen.Predicate {
-			return &gen.Predicate{OrPredicate: &gen.OrPredicate{Children: []*gen.Predicate{valueArm()}}}
+		{"singleton OR that collapses", func() *metadatapb.Predicate {
+			return &metadatapb.Predicate{OrPredicate: &metadatapb.OrPredicate{Children: []*metadatapb.Predicate{valueArm()}}}
 		}},
-		{"empty OR handed back unchanged", func() *gen.Predicate {
-			return &gen.Predicate{OrPredicate: &gen.OrPredicate{}}
+		{"empty OR handed back unchanged", func() *metadatapb.Predicate {
+			return &metadatapb.Predicate{OrPredicate: &metadatapb.OrPredicate{}}
 		}},
-		{"multi-arm message left alone", func() *gen.Predicate {
-			return &gen.Predicate{
-				AndPredicate:      &gen.AndPredicate{Children: []*gen.Predicate{valueArm()}},
-				ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()},
+		{"multi-arm message left alone", func() *metadatapb.Predicate {
+			return &metadatapb.Predicate{
+				AndPredicate:      &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{valueArm()}},
+				ConstantPredicate: &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_TRUE.Enum()},
 			}
 		}},
-		{"row-number window arm left alone", func() *gen.Predicate {
-			return &gen.Predicate{RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+		{"row-number window arm left alone", func() *metadatapb.Predicate {
+			return &metadatapb.Predicate{RowNumberWindowPredicate: &metadatapb.RowNumberWindowPredicate{
 				Size: proto.Int32(100),
 			}}
 		}},
@@ -108,10 +108,10 @@ func TestNormalizeReturnsAFreshTree(t *testing.T) {
 
 // aliasedNode reports whether any node reachable from a is the same pointer as
 // any node reachable from b.
-func aliasedNode(a, b *gen.Predicate) bool {
-	seen := map[*gen.Predicate]struct{}{}
-	var collect func(p *gen.Predicate)
-	collect = func(p *gen.Predicate) {
+func aliasedNode(a, b *metadatapb.Predicate) bool {
+	seen := map[*metadatapb.Predicate]struct{}{}
+	var collect func(p *metadatapb.Predicate)
+	collect = func(p *metadatapb.Predicate) {
 		if p == nil {
 			return
 		}
@@ -132,8 +132,8 @@ func aliasedNode(a, b *gen.Predicate) bool {
 	}
 	collect(b)
 	found := false
-	var walk func(p *gen.Predicate)
-	walk = func(p *gen.Predicate) {
+	var walk func(p *metadatapb.Predicate)
+	walk = func(p *metadatapb.Predicate) {
 		if p == nil || found {
 			return
 		}
@@ -160,12 +160,12 @@ func aliasedNode(a, b *gen.Predicate) bool {
 }
 
 // scribbleOn edits every reachable leaf of a predicate tree in place.
-func scribbleOn(p *gen.Predicate) {
+func scribbleOn(p *metadatapb.Predicate) {
 	if p == nil {
 		return
 	}
 	if p.ConstantPredicate != nil {
-		p.ConstantPredicate.Value = gen.ConstantPredicate_FALSE.Enum()
+		p.ConstantPredicate.Value = metadatapb.ConstantPredicate_FALSE.Enum()
 	}
 	if p.ValuePredicate != nil {
 		p.ValuePredicate.Value = []string{"SCRIBBLED"}

@@ -13,7 +13,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 )
@@ -160,7 +160,7 @@ var _ = Describe("IndexState", func() {
 			Expect(err).NotTo(HaveOccurred())
 			_, err = store.SetStateCacheability(true)
 			Expect(err).NotTo(HaveOccurred())
-			return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "locked before lazy open")
+			return nil, store.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "locked before lazy open")
 		})
 		Expect(err).NotTo(HaveOccurred())
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {

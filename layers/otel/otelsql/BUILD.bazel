@@ -56,12 +56,12 @@ go_test(
     ],
     embed = [":otelsql"],
     deps = [
-        "//gen",
         "//layers/otel/otelsql/otelv1pb",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
+        "//pkg/recordlayer/metadatapb",
         "//pkg/relational/api",
         "//pkg/relational/core/catalog",
         "//pkg/relational/core/ddl",

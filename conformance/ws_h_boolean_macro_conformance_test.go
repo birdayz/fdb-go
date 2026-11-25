@@ -14,8 +14,8 @@ import (
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/core/catalog"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -116,13 +116,13 @@ var _ = Describe("WSHBooleanMacroConformance", func() {
 	})
 })
 
-func probeFn(fns []*gen.PUserDefinedFunction) string {
+func probeFn(fns []*metadatapb.PUserDefinedFunction) string {
 	if len(fns) != 1 {
 		return fmt.Sprintf("%d functions", len(fns))
 	}
 	b, err := proto.MarshalOptions{Deterministic: true}.Marshal(fns[0])
 	Expect(err).NotTo(HaveOccurred())
-	var f gen.PUserDefinedFunction
+	var f metadatapb.PUserDefinedFunction
 	Expect(proto.Unmarshal([]byte(wshCanonicalAliases(string(b))), &f)).To(Succeed())
 	return strings.Join(strings.Fields(prototext.Format(f.GetUserDefinedMacroFunction().GetBody())), " ")
 }

@@ -10,8 +10,8 @@ package recordlayer
 import (
 	"fmt"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -146,10 +146,10 @@ func (store *FDBRecordStore) writeOnlyBuildSource(index *Index) (*Index, error) 
 		return nil, err
 	}
 	switch stamp.GetMethod() {
-	case gen.IndexBuildIndexingStamp_BY_RECORDS, gen.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS,
-		gen.IndexBuildIndexingStamp_MUTUAL_BY_RECORDS:
+	case metadatapb.IndexBuildIndexingStamp_BY_RECORDS, metadatapb.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS,
+		metadatapb.IndexBuildIndexingStamp_MUTUAL_BY_RECORDS:
 		return nil, nil
-	case gen.IndexBuildIndexingStamp_BY_INDEX:
+	case metadatapb.IndexBuildIndexingStamp_BY_INDEX:
 		// Java: Tuple.fromBytes(sourceIndexSubspaceKey).get(0), then
 		// RecordMetaData.getIndexFromSubspaceKey, which throws on a miss.
 		key, err := tuple.Unpack(stamp.GetSourceIndexSubspaceKey())

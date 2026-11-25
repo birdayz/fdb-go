@@ -3,8 +3,8 @@ package cascades
 import (
 	"testing"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer/indexpredicate"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"google.golang.org/protobuf/proto"
 )
@@ -34,14 +34,14 @@ import (
 func TestRowNumberWindowPredicateIsNeverFoldedAsATautology(t *testing.T) {
 	t.Parallel()
 
-	rowWindow := func() *gen.Predicate {
-		return &gen.Predicate{RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+	rowWindow := func() *metadatapb.Predicate {
+		return &metadatapb.Predicate{RowNumberWindowPredicate: &metadatapb.RowNumberWindowPredicate{
 			Size: proto.Int32(100),
 		}}
 	}
-	trueArm := func() *gen.Predicate {
-		return &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
-			Value: gen.ConstantPredicate_TRUE.Enum(),
+	trueArm := func() *metadatapb.Predicate {
+		return &metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{
+			Value: metadatapb.ConstantPredicate_TRUE.Enum(),
 		}}
 	}
 
@@ -54,7 +54,7 @@ func TestRowNumberWindowPredicateIsNeverFoldedAsATautology(t *testing.T) {
 	// conjunct folds away; the row-window one must survive and keep the whole
 	// conjunction filtering. Java restricts row-window arms to AND-only paths
 	// (IndexPredicate.java:235-243), so this is the shape that actually occurs.
-	andWithRowWindow := &gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+	andWithRowWindow := &metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{
 		rowWindow(), trueArm(),
 	}}}
 	if indexpredicate.IsTautology(andWithRowWindow) {

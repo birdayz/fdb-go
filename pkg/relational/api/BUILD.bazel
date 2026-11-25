@@ -34,8 +34,8 @@ go_library(
     importpath = "fdb.dev/pkg/relational/api",
     visibility = ["//visibility:public"],
     deps = [
-        "//gen",
         "//internal/unicode15",
+        "//pkg/recordlayer/metadatapb",
         "//pkg/relational/sqlapi",
     ],
 )

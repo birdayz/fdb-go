@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -572,7 +572,7 @@ var _ = Describe("RecordCounting", func() {
 			Expect(count).To(Equal(int64(3)))
 
 			// Transition to DISABLED — clears count data
-			Expect(store.UpdateRecordCountState(gen.DataStoreInfo_DISABLED)).To(Succeed())
+			Expect(store.UpdateRecordCountState(metadatapb.DataStoreInfo_DISABLED)).To(Succeed())
 
 			// Saves should still work, but count should not be maintained
 			order4 := &demopb.Order{OrderId: proto.Int64(4), Price: proto.Int32(40)}
@@ -615,15 +615,15 @@ var _ = Describe("RecordCounting", func() {
 			}
 
 			// READABLE → DISABLED: allowed
-			Expect(store.UpdateRecordCountState(gen.DataStoreInfo_DISABLED)).To(Succeed())
+			Expect(store.UpdateRecordCountState(metadatapb.DataStoreInfo_DISABLED)).To(Succeed())
 
 			// DISABLED → READABLE: forbidden
-			err = store.UpdateRecordCountState(gen.DataStoreInfo_READABLE)
+			err = store.UpdateRecordCountState(metadatapb.DataStoreInfo_READABLE)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("DISABLED"))
 
 			// DISABLED → WRITE_ONLY: also forbidden
-			err = store.UpdateRecordCountState(gen.DataStoreInfo_WRITE_ONLY)
+			err = store.UpdateRecordCountState(metadatapb.DataStoreInfo_WRITE_ONLY)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("DISABLED"))
 
@@ -658,7 +658,7 @@ var _ = Describe("RecordCounting", func() {
 			}
 
 			// Transition to WRITE_ONLY
-			Expect(store.UpdateRecordCountState(gen.DataStoreInfo_WRITE_ONLY)).To(Succeed())
+			Expect(store.UpdateRecordCountState(metadatapb.DataStoreInfo_WRITE_ONLY)).To(Succeed())
 
 			// Saves should still maintain the count
 			order3 := &demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(30)}
@@ -674,7 +674,7 @@ var _ = Describe("RecordCounting", func() {
 				"a WRITE_ONLY count state must fall through to the index path, not fail on the state: %v", err)
 
 			// Transition back to READABLE
-			Expect(store.UpdateRecordCountState(gen.DataStoreInfo_READABLE)).To(Succeed())
+			Expect(store.UpdateRecordCountState(metadatapb.DataStoreInfo_READABLE)).To(Succeed())
 
 			// Now count should work and reflect all 3 records
 			count, err := store.GetRecordCount()
@@ -704,16 +704,16 @@ var _ = Describe("RecordCounting", func() {
 			}
 
 			// Same state → no-op
-			Expect(store.UpdateRecordCountState(gen.DataStoreInfo_READABLE)).To(Succeed())
+			Expect(store.UpdateRecordCountState(metadatapb.DataStoreInfo_READABLE)).To(Succeed())
 
 			// READABLE → WRITE_ONLY: allowed
-			Expect(store.UpdateRecordCountState(gen.DataStoreInfo_WRITE_ONLY)).To(Succeed())
+			Expect(store.UpdateRecordCountState(metadatapb.DataStoreInfo_WRITE_ONLY)).To(Succeed())
 
 			// WRITE_ONLY → READABLE: allowed
-			Expect(store.UpdateRecordCountState(gen.DataStoreInfo_READABLE)).To(Succeed())
+			Expect(store.UpdateRecordCountState(metadatapb.DataStoreInfo_READABLE)).To(Succeed())
 
 			// READABLE → DISABLED: allowed
-			Expect(store.UpdateRecordCountState(gen.DataStoreInfo_DISABLED)).To(Succeed())
+			Expect(store.UpdateRecordCountState(metadatapb.DataStoreInfo_DISABLED)).To(Succeed())
 
 			return nil, nil
 		})

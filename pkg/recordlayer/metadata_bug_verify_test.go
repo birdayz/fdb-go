@@ -10,7 +10,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 )
@@ -268,7 +268,7 @@ var _ = Describe("MetadataBugVerify", func() {
 				if err != nil {
 					return nil, err
 				}
-				header := &gen.DataStoreInfo{}
+				header := &metadatapb.DataStoreInfo{}
 				if err := proto.Unmarshal(data, header); err != nil {
 					return nil, err
 				}

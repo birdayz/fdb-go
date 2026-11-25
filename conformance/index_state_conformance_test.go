@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -210,7 +210,7 @@ var _ = Describe("Index State Persistence Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 		}
 		beat := func(info string, at int64) []byte {
-			data, err := proto.Marshal(&gen.IndexBuildHeartbeat{
+			data, err := proto.Marshal(&metadatapb.IndexBuildHeartbeat{
 				Info:                      proto.String(info),
 				CreateTimeMilliseconds:    proto.Int64(at),
 				HeartbeatTimeMilliseconds: proto.Int64(at),
@@ -239,8 +239,8 @@ var _ = Describe("Index State Persistence Conformance", func() {
 			Expect(err).To(Succeed())
 			return r
 		}
-		goRead := func(maxCount int) (map[uuid.UUID]*gen.IndexBuildHeartbeat, bool) {
-			var heartbeats map[uuid.UUID]*gen.IndexBuildHeartbeat
+		goRead := func(maxCount int) (map[uuid.UUID]*metadatapb.IndexBuildHeartbeat, bool) {
+			var heartbeats map[uuid.UUID]*metadatapb.IndexBuildHeartbeat
 			var ongoing bool
 			_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				handle, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(store.MetaData).SetSubspace(store.Keyspace).Open()
@@ -384,7 +384,7 @@ var _ = Describe("Index State Persistence Conformance", func() {
 		// key's value (HashMap.put, IndexingHeartbeat.java:151) and its ongoing check reads
 		// only the map's values, so a live (U) beside a (U, x) a day ahead is not ongoing,
 		// and Go judges the same surviving value.
-		pair := func(bare, suffixed []byte) (javaAdmin, map[uuid.UUID]*gen.IndexBuildHeartbeat, bool) {
+		pair := func(bare, suffixed []byte) (javaAdmin, map[uuid.UUID]*metadatapb.IndexBuildHeartbeat, bool) {
 			seed(map[uuid.UUID][]byte{})
 			_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				rtx.Transaction().Set(hbSub.Pack(tuple.Tuple{tuple.UUID(trailing)}), bare)

@@ -7,8 +7,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -35,7 +35,7 @@ func TestIndexGenerator_ResolverArms(t *testing.T) {
 	t.Parallel()
 	f := recordlayer.Field
 	concat := recordlayer.Concat
-	bGreaterThan1 := predVP([]string{"B"}, cmpSimple(gen.ComparisonType_GREATER_THAN, valLong(1)))
+	bGreaterThan1 := predVP([]string{"B"}, cmpSimple(metadatapb.ComparisonType_GREATER_THAN, valLong(1)))
 	col4Values := recordlayer.Nest("COL4", recordlayer.FanOut("values"))
 
 	cases := []struct {
@@ -44,7 +44,7 @@ func TestIndexGenerator_ResolverArms(t *testing.T) {
 		graph string
 		// An accepted definition's key and stored predicate (nil: none).
 		key  recordlayer.KeyExpression
-		pred *gen.Predicate
+		pred *metadatapb.Predicate
 		// A refused one's code and message.
 		code api.ErrorCode
 		msg  string
@@ -153,7 +153,7 @@ func TestIndexGenerator_ResolverArms(t *testing.T) {
 			index: `create index ix as select sq."e" from t4 as r, (select "e" from r.col4 as "e") as sq where r.col2 > 1 order by sq."e"`,
 			graph: "Sort(Select(FullUnorderedScan, Select(Explode)))",
 			key:   col4Values,
-			pred:  predVP([]string{"COL2"}, cmpSimple(gen.ComparisonType_GREATER_THAN, valLong(1))),
+			pred:  predVP([]string{"COL2"}, cmpSimple(metadatapb.ComparisonType_GREATER_THAN, valLong(1))),
 		},
 		{
 			// A non-field value ends the trie's run; the field after it starts

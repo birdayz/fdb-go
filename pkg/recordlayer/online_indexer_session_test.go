@@ -12,7 +12,7 @@ import (
 
 	"fdb.dev/pkg/dst"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -300,7 +300,7 @@ var _ = Describe("OnlineIndexer batch session fencing", func() {
 				case "blocked":
 					stamp.Block = proto.Bool(true)
 				case "method":
-					stamp.Method = gen.IndexBuildIndexingStamp_BY_INDEX.Enum()
+					stamp.Method = metadatapb.IndexBuildIndexingStamp_BY_INDEX.Enum()
 				case "other-session":
 					err = NewIndexingHeartbeat("competitor", 30000, false, sharedDB.Env()).CheckAndUpdate(rc.Transaction(), root, index)
 				}
@@ -334,15 +334,15 @@ func TestOnlineIndexerOngoingStampValidation(t *testing.T) {
 	store := &FDBRecordStore{context: NewFDBRecordContext(nil, simEnv(env))}
 	for _, tc := range []struct {
 		name      string
-		stamp     *gen.IndexBuildIndexingStamp
+		stamp     *metadatapb.IndexBuildIndexingStamp
 		wantError bool
 	}{
 		{"legacy missing BY_RECORDS", nil, false},
-		{"method changed", &gen.IndexBuildIndexingStamp{Method: gen.IndexBuildIndexingStamp_BY_INDEX.Enum()}, true},
-		{"ancillary fields do not decide ongoing validation", &gen.IndexBuildIndexingStamp{Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(), TargetIndex: []string{"different"}}, false},
-		{"permanent block", &gen.IndexBuildIndexingStamp{Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(), Block: proto.Bool(true)}, true},
-		{"future block", &gen.IndexBuildIndexingStamp{Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(), Block: proto.Bool(true), BlockExpireEpochMilliSeconds: proto.Uint64(uint64(env.Now().UnixMilli() + 1))}, true},
-		{"expired block", &gen.IndexBuildIndexingStamp{Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(), Block: proto.Bool(true), BlockExpireEpochMilliSeconds: proto.Uint64(uint64(env.Now().UnixMilli()))}, false},
+		{"method changed", &metadatapb.IndexBuildIndexingStamp{Method: metadatapb.IndexBuildIndexingStamp_BY_INDEX.Enum()}, true},
+		{"ancillary fields do not decide ongoing validation", &metadatapb.IndexBuildIndexingStamp{Method: metadatapb.IndexBuildIndexingStamp_BY_RECORDS.Enum(), TargetIndex: []string{"different"}}, false},
+		{"permanent block", &metadatapb.IndexBuildIndexingStamp{Method: metadatapb.IndexBuildIndexingStamp_BY_RECORDS.Enum(), Block: proto.Bool(true)}, true},
+		{"future block", &metadatapb.IndexBuildIndexingStamp{Method: metadatapb.IndexBuildIndexingStamp_BY_RECORDS.Enum(), Block: proto.Bool(true), BlockExpireEpochMilliSeconds: proto.Uint64(uint64(env.Now().UnixMilli() + 1))}, true},
+		{"expired block", &metadatapb.IndexBuildIndexingStamp{Method: metadatapb.IndexBuildIndexingStamp_BY_RECORDS.Enum(), Block: proto.Bool(true), BlockExpireEpochMilliSeconds: proto.Uint64(uint64(env.Now().UnixMilli()))}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

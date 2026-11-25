@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"testing"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -21,7 +21,7 @@ func TestFDB_MetadataLoadReadConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	initial.Version = proto.Int32(1)
-	next := proto.Clone(initial).(*gen.MetaData)
+	next := proto.Clone(initial).(*metadatapb.MetaData)
 	next.Version = proto.Int32(2)
 	initialBytes, err := proto.Marshal(initial)
 	if err != nil {
@@ -54,7 +54,7 @@ func TestFDB_MetadataLoadReadConflict(t *testing.T) {
 					assertLoadParityCommit(t, seed, false)
 					reader := loadParityContext(t, db)
 					key := tuple.Tuple{nil}
-					var got *gen.MetaData
+					var got *metadatapb.MetaData
 					var readErr error
 					switch api {
 					case "current":

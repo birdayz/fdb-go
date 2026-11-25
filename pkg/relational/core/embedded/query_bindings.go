@@ -14,9 +14,9 @@ import (
 	"sync"
 	"weak"
 
-	"fdb.dev/gen"
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query/expr"
@@ -337,7 +337,7 @@ func keyHasLiteral(key recordlayer.KeyExpression) bool {
 	}
 }
 
-func keyProtoHasLiteral(key *gen.KeyExpression) bool {
+func keyProtoHasLiteral(key *metadatapb.KeyExpression) bool {
 	if key == nil {
 		return false
 	}

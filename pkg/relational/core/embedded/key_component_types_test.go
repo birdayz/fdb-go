@@ -3,7 +3,7 @@ package embedded
 import (
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
@@ -634,12 +634,12 @@ func TestMetadataIndexDefPrimaryKeyTypesStayAlignedThroughMiddleTrim(t *testing.
 // split keeps the key columns before it positionally.
 func TestIndexTrimmableKeyColumnNamesAreTopLevelFields(t *testing.T) {
 	t.Parallel()
-	key := func(expression recordlayer.KeyExpression) *gen.KeyExpression {
+	key := func(expression recordlayer.KeyExpression) *metadatapb.KeyExpression {
 		return expression.ToKeyExpression()
 	}
 	for _, test := range []struct {
 		name string
-		root *gen.KeyExpression
+		root *metadatapb.KeyExpression
 		want []string
 	}{
 		{"nested leaf named like the pk", key(recordlayer.Concat(

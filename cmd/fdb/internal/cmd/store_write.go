@@ -8,9 +8,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // Store-level writes (RFC-174 §3.3): lock / unlock / truncate. Truncate
@@ -35,7 +35,7 @@ func armFullStoreLockBypass(ctx context.Context, target *storeTarget, ss subspac
 	if err != nil {
 		return err
 	}
-	if ls := info.GetStoreLockState(); ls.GetLockState() == gen.DataStoreInfo_StoreLockState_FULL_STORE {
+	if ls := info.GetStoreLockState(); ls.GetLockState() == metadatapb.DataStoreInfo_StoreLockState_FULL_STORE {
 		reason := ls.GetReason()
 		target.bypassFullStoreLock = &reason
 	}
@@ -59,12 +59,12 @@ func newStoreLockCmd() *cobra.Command {
 			"`fdb rl store info` shows the state; `fdb rl store unlock` clears it.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var state gen.DataStoreInfo_StoreLockState_State
+			var state metadatapb.DataStoreInfo_StoreLockState_State
 			switch args[0] {
 			case "forbid-record-update":
-				state = gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE
+				state = metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE
 			case "full-store":
-				state = gen.DataStoreInfo_StoreLockState_FULL_STORE
+				state = metadatapb.DataStoreInfo_StoreLockState_FULL_STORE
 			default:
 				return fmt.Errorf("unknown lock state %q — want forbid-record-update or full-store", args[0])
 			}

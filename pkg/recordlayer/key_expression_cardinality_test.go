@@ -9,7 +9,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // buildCardTestMessage builds a dynamic message descriptor with an int32
@@ -252,7 +252,7 @@ func TestCardinalityKeyExpression_WireRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	pb2 := &gen.KeyExpression{}
+	pb2 := &metadatapb.KeyExpression{}
 	if err := proto.Unmarshal(raw, pb2); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}

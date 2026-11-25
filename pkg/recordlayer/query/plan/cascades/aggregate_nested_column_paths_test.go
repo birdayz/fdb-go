@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -115,24 +115,24 @@ func TestAggregateDataAccessRule_NestedColumnPaths(t *testing.T) {
 // base expansion: a column is a scalar field path or the candidate declines.
 func TestDescribeAggregateIndexKey(t *testing.T) {
 	t.Parallel()
-	field := func(name string, fan gen.Field_FanType) *gen.KeyExpression {
-		return &gen.KeyExpression{Field: &gen.Field{FieldName: &name, FanType: fan.Enum()}}
+	field := func(name string, fan metadatapb.Field_FanType) *metadatapb.KeyExpression {
+		return &metadatapb.KeyExpression{Field: &metadatapb.Field{FieldName: &name, FanType: fan.Enum()}}
 	}
-	scalar := func(name string) *gen.KeyExpression { return field(name, gen.Field_SCALAR) }
-	nest := func(parent string, fan gen.Field_FanType, child *gen.KeyExpression) *gen.KeyExpression {
-		return &gen.KeyExpression{Nesting: &gen.Nesting{
-			Parent: &gen.Field{FieldName: &parent, FanType: fan.Enum()}, Child: child,
+	scalar := func(name string) *metadatapb.KeyExpression { return field(name, metadatapb.Field_SCALAR) }
+	nest := func(parent string, fan metadatapb.Field_FanType, child *metadatapb.KeyExpression) *metadatapb.KeyExpression {
+		return &metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{
+			Parent: &metadatapb.Field{FieldName: &parent, FanType: fan.Enum()}, Child: child,
 		}}
 	}
-	then := func(children ...*gen.KeyExpression) *gen.KeyExpression {
-		return &gen.KeyExpression{Then: &gen.Then{Child: children}}
+	then := func(children ...*metadatapb.KeyExpression) *metadatapb.KeyExpression {
+		return &metadatapb.KeyExpression{Then: &metadatapb.Then{Child: children}}
 	}
-	function := func(name string, argument *gen.KeyExpression) *gen.KeyExpression {
-		return &gen.KeyExpression{Function: &gen.Function{Name: &name, Arguments: argument}}
+	function := func(name string, argument *metadatapb.KeyExpression) *metadatapb.KeyExpression {
+		return &metadatapb.KeyExpression{Function: &metadatapb.Function{Name: &name, Arguments: argument}}
 	}
 	for _, c := range []struct {
 		name          string
-		key           *gen.KeyExpression
+		key           *metadatapb.KeyExpression
 		groupingCount int
 		grouping      [][]string
 		grouped       [][]string
@@ -140,25 +140,25 @@ func TestDescribeAggregateIndexKey(t *testing.T) {
 	}{
 		{"flat", then(scalar("A"), scalar("V")), 1, [][]string{{"A"}}, [][]string{{"V"}}, false},
 		{
-			"nested_grouping_and_operand", then(nest("HOME", gen.Field_SCALAR, then(scalar("CITY"), scalar("ZIP"))), scalar("CAT"),
-				nest("OFFICE", gen.Field_SCALAR, scalar("ZIP"))), 3,
+			"nested_grouping_and_operand", then(nest("HOME", metadatapb.Field_SCALAR, then(scalar("CITY"), scalar("ZIP"))), scalar("CAT"),
+				nest("OFFICE", metadatapb.Field_SCALAR, scalar("ZIP"))), 3,
 			[][]string{{"HOME", "CITY"}, {"HOME", "ZIP"}, {"CAT"}},
 			[][]string{{"OFFICE", "ZIP"}},
 			false,
 		},
 		{
-			"deep_nesting", nest("O", gen.Field_SCALAR, nest("I", gen.Field_SCALAR, scalar("A"))), 1,
+			"deep_nesting", nest("O", metadatapb.Field_SCALAR, nest("I", metadatapb.Field_SCALAR, scalar("A"))), 1,
 			[][]string{{"O", "I", "A"}},
 			[][]string{},
 			false,
 		},
 		{"count_star_grouping_only", then(scalar("A"), scalar("B")), 2, [][]string{{"A"}, {"B"}}, [][]string{}, false},
 		{"ungrouped_operand", scalar("V"), 0, [][]string{}, [][]string{{"V"}}, false},
-		{"fan_out_field", then(field("TAGS", gen.Field_FAN_OUT), scalar("V")), 1, nil, nil, true},
-		{"concatenated_field", then(field("TAGS", gen.Field_CONCATENATE), scalar("V")), 1, nil, nil, true},
-		{"field_under_fan_out_parent", then(nest("ITEMS", gen.Field_FAN_OUT, scalar("SKU")), scalar("V")), 1, nil, nil, true},
+		{"fan_out_field", then(field("TAGS", metadatapb.Field_FAN_OUT), scalar("V")), 1, nil, nil, true},
+		{"concatenated_field", then(field("TAGS", metadatapb.Field_CONCATENATE), scalar("V")), 1, nil, nil, true},
+		{"field_under_fan_out_parent", then(nest("ITEMS", metadatapb.Field_FAN_OUT, scalar("SKU")), scalar("V")), 1, nil, nil, true},
 		{"function_grouping", then(function("add", then(scalar("A"), scalar("B"))), scalar("V")), 1, nil, nil, true},
-		{"version_grouping", then(&gen.KeyExpression{Version: &gen.Version{}}, scalar("V")), 1, nil, nil, true},
+		{"version_grouping", then(&metadatapb.KeyExpression{Version: &metadatapb.Version{}}, scalar("V")), 1, nil, nil, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()

@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
@@ -544,7 +545,7 @@ func TestVectorColumnIsAVectorOfItsOptions(t *testing.T) {
 			Name: proto.String("v"), Number: proto.Int32(1), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
 			Type: descriptorpb.FieldDescriptorProto_TYPE_BYTES.Enum(), Options: func() *descriptorpb.FieldOptions {
 				o := &descriptorpb.FieldOptions{}
-				proto.SetExtension(o, gen.E_Field, &gen.FieldOptions{VectorOptions: &gen.FieldOptions_VectorOptions{}})
+				proto.SetExtension(o, metadatapb.E_Field, &metadatapb.FieldOptions{VectorOptions: &metadatapb.FieldOptions_VectorOptions{}})
 				return o
 			}(),
 		}}}},

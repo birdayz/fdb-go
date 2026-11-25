@@ -9,7 +9,7 @@
 // an index predicate, which cannot import the record layer.
 package protovalue
 
-import "fdb.dev/gen"
+import "fdb.dev/pkg/recordlayer/metadatapb"
 
 // MultipleValuesError is Java's refusal of a Value with more than one field
 // set. The record layer reports it as the RecordCoreError Java throws.
@@ -19,7 +19,7 @@ func (*MultipleValuesError) Error() string { return "More than one value encoded
 
 // FromProto is the one field p sets, nil when it sets none (or p is nil), and
 // a MultipleValuesError when it sets several.
-func FromProto(p *gen.Value) (any, error) {
+func FromProto(p *metadatapb.Value) (any, error) {
 	if p == nil {
 		return nil, nil
 	}

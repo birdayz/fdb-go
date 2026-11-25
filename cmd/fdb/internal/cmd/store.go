@@ -10,11 +10,11 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // The DataStoreInfo header lives at recordlayer.StoreInfoKey — we read
@@ -102,7 +102,7 @@ func runStoreInfo(ctx context.Context, out io.Writer, target *storeTarget, outpu
 // "RECORD_COUNT_STATE_READABLE") rather than integer codes. Context
 // identity is intentionally omitted — the caller already knows which
 // context they asked about; the JSON output is the store's own data.
-func writeStoreInfoJSON(out io.Writer, info *gen.DataStoreInfo) error {
+func writeStoreInfoJSON(out io.Writer, info *metadatapb.DataStoreInfo) error {
 	bytes, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(info)
 	if err != nil {
 		return fmt.Errorf("marshal DataStoreInfo: %w", err)
@@ -173,7 +173,7 @@ func keyHex(k fdb.Key) string {
 // readStoreInfo reads the DataStoreInfo proto directly from FDB at the
 // store's StoreInfoKey subspace, without going through a FDBRecordStore
 // builder (which would require metadata we intentionally don't load here).
-func readStoreInfo(ctx context.Context, rec *recordlayer.FDBDatabase, ss subspace.Subspace) (*gen.DataStoreInfo, error) {
+func readStoreInfo(ctx context.Context, rec *recordlayer.FDBDatabase, ss subspace.Subspace) (*metadatapb.DataStoreInfo, error) {
 	key := ss.Pack(tuple.Tuple{recordlayer.StoreInfoKey})
 	result, err := rec.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		return rtx.Transaction().Get(key).Get()
@@ -185,7 +185,7 @@ func readStoreInfo(ctx context.Context, rec *recordlayer.FDBDatabase, ss subspac
 	if len(bytes) == 0 {
 		return nil, fmt.Errorf("no store header at keyspace %s — store does not exist", keyHex(key))
 	}
-	info := &gen.DataStoreInfo{}
+	info := &metadatapb.DataStoreInfo{}
 	if err := recordlayer.UnmarshalAsJava(bytes, info); err != nil {
 		return nil, fmt.Errorf("unmarshal DataStoreInfo: %w", err)
 	}
@@ -197,7 +197,7 @@ func readStoreInfo(ctx context.Context, rec *recordlayer.FDBDatabase, ss subspac
 // subspacePrefix is the packed FDB byte prefix of the store's keyspace;
 // rendered in hex so operators can paste it directly into `fdbcli getrange`.
 // Nil means the caller didn't resolve a prefix (rare — tests only).
-func writeStoreInfo(out io.Writer, target *storeTarget, info *gen.DataStoreInfo, subspacePrefix []byte) error {
+func writeStoreInfo(out io.Writer, target *storeTarget, info *metadatapb.DataStoreInfo, subspacePrefix []byte) error {
 	cfgCtx := target.cfgCtx
 	var b strings.Builder
 	fmt.Fprintf(&b, "Context:           %s\n", cfgCtx.GetName())
@@ -258,21 +258,21 @@ func orDefault(s, fallback string) string {
 	return s
 }
 
-func recordCountStateName(s gen.DataStoreInfo_RecordCountState) string {
+func recordCountStateName(s metadatapb.DataStoreInfo_RecordCountState) string {
 	switch s {
-	case gen.DataStoreInfo_READABLE:
+	case metadatapb.DataStoreInfo_READABLE:
 		return "readable"
-	case gen.DataStoreInfo_WRITE_ONLY:
+	case metadatapb.DataStoreInfo_WRITE_ONLY:
 		return "write-only"
-	case gen.DataStoreInfo_DISABLED:
+	case metadatapb.DataStoreInfo_DISABLED:
 		return "disabled"
 	default:
 		return fmt.Sprintf("unknown(%d)", s)
 	}
 }
 
-func lockStateDescription(lock *gen.DataStoreInfo_StoreLockState) string {
-	if lock == nil || lock.GetLockState() == gen.DataStoreInfo_StoreLockState_UNSPECIFIED {
+func lockStateDescription(lock *metadatapb.DataStoreInfo_StoreLockState) string {
+	if lock == nil || lock.GetLockState() == metadatapb.DataStoreInfo_StoreLockState_UNSPECIFIED {
 		return "unlocked"
 	}
 	name := lock.GetLockState().String()

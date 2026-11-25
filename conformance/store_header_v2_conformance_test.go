@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -178,7 +178,7 @@ var _ = Describe("Store Header V2 Conformance", func() {
 			err := store.CreateStoreGo(ctx)
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SetStoreLockGo(ctx, gen.DataStoreInfo_StoreLockState_FULL_STORE, "migration in progress")
+			err = store.SetStoreLockGo(ctx, metadatapb.DataStoreInfo_StoreLockState_FULL_STORE, "migration in progress")
 			Expect(err).NotTo(HaveOccurred())
 
 			// Java tries to open — should fail
@@ -191,7 +191,7 @@ var _ = Describe("Store Header V2 Conformance", func() {
 			err := store.CreateStoreGo(ctx)
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SetStoreLockGo(ctx, gen.DataStoreInfo_StoreLockState_FULL_STORE, "test_reason")
+			err = store.SetStoreLockGo(ctx, metadatapb.DataStoreInfo_StoreLockState_FULL_STORE, "test_reason")
 			Expect(err).NotTo(HaveOccurred())
 
 			// Java opens with matching bypass reason — should succeed
@@ -204,7 +204,7 @@ var _ = Describe("Store Header V2 Conformance", func() {
 			err := store.CreateStoreGo(ctx)
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SetStoreLockGo(ctx, gen.DataStoreInfo_StoreLockState_FULL_STORE, "correct_reason")
+			err = store.SetStoreLockGo(ctx, metadatapb.DataStoreInfo_StoreLockState_FULL_STORE, "correct_reason")
 			Expect(err).NotTo(HaveOccurred())
 
 			result, err := store.OpenLockedStoreJava(ctx, "wrong_reason")
@@ -216,7 +216,7 @@ var _ = Describe("Store Header V2 Conformance", func() {
 			err := store.CreateStoreGo(ctx)
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SetStoreLockGo(ctx, gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "maintenance")
+			err = store.SetStoreLockGo(ctx, metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "maintenance")
 			Expect(err).NotTo(HaveOccurred())
 
 			// Java tries to save — should fail
@@ -246,7 +246,7 @@ var _ = Describe("Store Header V2 Conformance", func() {
 			err := store.CreateStoreGo(ctx)
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SetStoreLockGo(ctx, gen.DataStoreInfo_StoreLockState_FULL_STORE, "temporary")
+			err = store.SetStoreLockGo(ctx, metadatapb.DataStoreInfo_StoreLockState_FULL_STORE, "temporary")
 			Expect(err).NotTo(HaveOccurred())
 
 			// Clear the lock
@@ -263,7 +263,7 @@ var _ = Describe("Store Header V2 Conformance", func() {
 			err := store.CreateStoreGo(ctx)
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SetStoreLockGo(ctx, gen.DataStoreInfo_StoreLockState_FULL_STORE, "wire_test")
+			err = store.SetStoreLockGo(ctx, metadatapb.DataStoreInfo_StoreLockState_FULL_STORE, "wire_test")
 			Expect(err).NotTo(HaveOccurred())
 
 			// Read raw header from both sides
@@ -402,7 +402,7 @@ func (s *StoreHeaderV2ConformanceStore) SetIncarnationJava(ctx context.Context, 
 }
 
 // SetStoreLockGo opens the store and sets a lock state.
-func (s *StoreHeaderV2ConformanceStore) SetStoreLockGo(ctx context.Context, state gen.DataStoreInfo_StoreLockState_State, reason string) error {
+func (s *StoreHeaderV2ConformanceStore) SetStoreLockGo(ctx context.Context, state metadatapb.DataStoreInfo_StoreLockState_State, reason string) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		st, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).Open()
@@ -507,7 +507,7 @@ func (s *StoreHeaderV2ConformanceStore) GetStoreHeaderV2RawGo(ctx context.Contex
 		if headerBytes == nil {
 			return nil, fmt.Errorf("store header not found")
 		}
-		var header gen.DataStoreInfo
+		var header metadatapb.DataStoreInfo
 		if err := proto.Unmarshal(headerBytes, &header); err != nil {
 			return nil, fmt.Errorf("failed to parse store header: %w", err)
 		}

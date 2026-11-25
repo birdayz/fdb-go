@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"sort"
 
-	"fdb.dev/gen"
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	. "github.com/onsi/ginkgo/v2"
 
@@ -26,17 +26,17 @@ import (
 // the partition field (quantity) stay independent of the vector itself; a test
 // that reused one field for two roles could not tell window movement apart from
 // vector movement.
-func newWindowedVectorIndex(name string, size int32, dir gen.RowNumberWindowPredicate_Direction, partitionFields ...string) *recordlayer.Index {
+func newWindowedVectorIndex(name string, size int32, dir metadatapb.RowNumberWindowPredicate_Direction, partitionFields ...string) *recordlayer.Index {
 	idx := recordlayer.NewVectorIndex(name, recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
-	rn := &gen.RowNumberWindowPredicate{
+	rn := &metadatapb.RowNumberWindowPredicate{
 		OrderingField: []string{"price"},
 		Size:          proto.Int32(size),
 		Direction:     dir.Enum(),
 	}
 	for _, f := range partitionFields {
-		rn.PartitionFields = append(rn.PartitionFields, &gen.FieldPath{Field: []string{f}})
+		rn.PartitionFields = append(rn.PartitionFields, &metadatapb.FieldPath{Field: []string{f}})
 	}
-	Expect(idx.SetPredicateProto(&gen.Predicate{RowNumberWindowPredicate: rn})).To(Succeed())
+	Expect(idx.SetPredicateProto(&metadatapb.Predicate{RowNumberWindowPredicate: rn})).To(Succeed())
 	return idx
 }
 
@@ -46,16 +46,16 @@ func newWindowedVectorIndex(name string, size int32, dir gen.RowNumberWindowPred
 // because deleteWhere must be acceptable to BOTH the window (against the
 // partition key) and the wrapped vector maintainer (against its own
 // KeyWithValue expression).
-func newPartitionedWindowedVectorIndex(name string, size int32, dir gen.RowNumberWindowPredicate_Direction, partitionField string) *recordlayer.Index {
+func newPartitionedWindowedVectorIndex(name string, size int32, dir metadatapb.RowNumberWindowPredicate_Direction, partitionField string) *recordlayer.Index {
 	idx := recordlayer.NewVectorIndex(name,
 		recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field(partitionField), recordlayer.Field("vector_data")), 1), 2)
-	rn := &gen.RowNumberWindowPredicate{
+	rn := &metadatapb.RowNumberWindowPredicate{
 		OrderingField:   []string{"price"},
 		Size:            proto.Int32(size),
 		Direction:       dir.Enum(),
-		PartitionFields: []*gen.FieldPath{{Field: []string{partitionField}}},
+		PartitionFields: []*metadatapb.FieldPath{{Field: []string{partitionField}}},
 	}
-	Expect(idx.SetPredicateProto(&gen.Predicate{RowNumberWindowPredicate: rn})).To(Succeed())
+	Expect(idx.SetPredicateProto(&metadatapb.Predicate{RowNumberWindowPredicate: rn})).To(Succeed())
 	return idx
 }
 
@@ -150,7 +150,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 	// =====================================================================
 	It("writes its bookkeeping at exactly Java's keys under prefix 10", func() {
 		ks := specSubspace()
-		idx := newWindowedVectorIndex("sw_layout", 2, gen.RowNumberWindowPredicate_ASC)
+		idx := newWindowedVectorIndex("sw_layout", 2, metadatapb.RowNumberWindowPredicate_ASC)
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -222,7 +222,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 	// =====================================================================
 	It("ASC/MIN keeps the N smallest and evicts the largest", func() {
 		ks := specSubspace()
-		idx := newWindowedVectorIndex("sw_min", 3, gen.RowNumberWindowPredicate_ASC)
+		idx := newWindowedVectorIndex("sw_min", 3, metadatapb.RowNumberWindowPredicate_ASC)
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -293,7 +293,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 	// =====================================================================
 	It("DESC/MAX keeps the N largest and evicts the smallest", func() {
 		ks := specSubspace()
-		idx := newWindowedVectorIndex("sw_max", 3, gen.RowNumberWindowPredicate_DESC)
+		idx := newWindowedVectorIndex("sw_max", 3, metadatapb.RowNumberWindowPredicate_DESC)
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -352,7 +352,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 	// =====================================================================
 	for _, dirCase := range []struct {
 		name      string
-		dir       gen.RowNumberWindowPredicate_Direction
+		dir       metadatapb.RowNumberWindowPredicate_Direction
 		prices    []int32 // for PKs 1..4
 		inWindow  []int64
 		afterDel  []int64
@@ -361,7 +361,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 	}{
 		{
 			name:      "ASC/MIN",
-			dir:       gen.RowNumberWindowPredicate_ASC,
+			dir:       metadatapb.RowNumberWindowPredicate_ASC,
 			prices:    []int32{10, 20, 30, 40},
 			inWindow:  []int64{1, 2},
 			afterDel:  []int64{2, 3},
@@ -370,7 +370,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 		},
 		{
 			name:      "DESC/MAX",
-			dir:       gen.RowNumberWindowPredicate_DESC,
+			dir:       metadatapb.RowNumberWindowPredicate_DESC,
 			prices:    []int32{40, 30, 20, 10},
 			inWindow:  []int64{1, 2},
 			afterDel:  []int64{2, 3},
@@ -427,7 +427,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 
 	It("deleting an overflow record leaves the window and its pointer untouched", func() {
 		ks := specSubspace()
-		idx := newWindowedVectorIndex("sw_del_overflow", 2, gen.RowNumberWindowPredicate_ASC)
+		idx := newWindowedVectorIndex("sw_del_overflow", 2, metadatapb.RowNumberWindowPredicate_ASC)
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -470,7 +470,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 
 	It("empties the partition and clears the boundary when the last entry goes", func() {
 		ks := specSubspace()
-		idx := newWindowedVectorIndex("sw_empty", 2, gen.RowNumberWindowPredicate_ASC)
+		idx := newWindowedVectorIndex("sw_empty", 2, metadatapb.RowNumberWindowPredicate_ASC)
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -511,7 +511,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 	// =====================================================================
 	It("keeps an independent window per partition", func() {
 		ks := specSubspace()
-		idx := newWindowedVectorIndex("sw_part", 2, gen.RowNumberWindowPredicate_ASC, "quantity")
+		idx := newWindowedVectorIndex("sw_part", 2, metadatapb.RowNumberWindowPredicate_ASC, "quantity")
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -574,7 +574,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 		// realistic — and only workable — shape is a vector index whose HNSW
 		// prefix column IS the partition column, with that column leading the
 		// primary key.
-		idx := newPartitionedWindowedVectorIndex("sw_dw", 2, gen.RowNumberWindowPredicate_ASC, "quantity")
+		idx := newPartitionedWindowedVectorIndex("sw_dw", 2, metadatapb.RowNumberWindowPredicate_ASC, "quantity")
 		builder := baseMetaData()
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("order_id")))
 		builder.AddIndex("Order", idx)
@@ -630,11 +630,11 @@ var _ = Describe("SlidingWindowIndex", func() {
 		// about it.
 		idx := recordlayer.NewVectorIndex("sw_dw_unpart",
 			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 2)
-		Expect(idx.SetPredicateProto(&gen.Predicate{
-			RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+		Expect(idx.SetPredicateProto(&metadatapb.Predicate{
+			RowNumberWindowPredicate: &metadatapb.RowNumberWindowPredicate{
 				OrderingField: []string{"price"},
 				Size:          proto.Int32(2),
-				Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+				Direction:     metadatapb.RowNumberWindowPredicate_ASC.Enum(),
 			},
 		})).To(Succeed())
 		builder := baseMetaData()
@@ -708,12 +708,12 @@ var _ = Describe("SlidingWindowIndex", func() {
 		// structural question instead: matchesSatisfyingQuery(partitionKey).
 		idx := recordlayer.NewVectorIndex("sw_dw_mismatch",
 			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 2)
-		Expect(idx.SetPredicateProto(&gen.Predicate{
-			RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+		Expect(idx.SetPredicateProto(&metadatapb.Predicate{
+			RowNumberWindowPredicate: &metadatapb.RowNumberWindowPredicate{
 				OrderingField:   []string{"order_id"},
 				Size:            proto.Int32(2),
-				Direction:       gen.RowNumberWindowPredicate_ASC.Enum(),
-				PartitionFields: []*gen.FieldPath{{Field: []string{"price"}}},
+				Direction:       metadatapb.RowNumberWindowPredicate_ASC.Enum(),
+				PartitionFields: []*metadatapb.FieldPath{{Field: []string{"price"}}},
 			},
 		})).To(Succeed())
 		builder := baseMetaData()
@@ -794,7 +794,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 		dw := dw
 		It("deleteRecordsWhere works under a record-type-key prefix ("+dw.name+")", func() {
 			ks := specSubspace()
-			idx := newPartitionedWindowedVectorIndex("sw_dw_typekey", 2, gen.RowNumberWindowPredicate_ASC, "quantity")
+			idx := newPartitionedWindowedVectorIndex("sw_dw_typekey", 2, metadatapb.RowNumberWindowPredicate_ASC, "quantity")
 			builder := baseMetaData()
 			builder.GetRecordType("Order").SetPrimaryKey(
 				recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("quantity"), recordlayer.Field("order_id")))
@@ -854,11 +854,11 @@ var _ = Describe("SlidingWindowIndex", func() {
 		// one; the derived index prefix is then empty by construction.
 		idx := recordlayer.NewVectorIndex("sw_dw_whole_type",
 			recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 3)
-		Expect(idx.SetPredicateProto(&gen.Predicate{
-			RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+		Expect(idx.SetPredicateProto(&metadatapb.Predicate{
+			RowNumberWindowPredicate: &metadatapb.RowNumberWindowPredicate{
 				OrderingField: []string{"price"},
 				Size:          proto.Int32(2),
-				Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+				Direction:     metadatapb.RowNumberWindowPredicate_ASC.Enum(),
 			},
 		})).To(Succeed())
 		builder := baseMetaData()
@@ -925,12 +925,12 @@ var _ = Describe("SlidingWindowIndex", func() {
 		// column-by-column check, which is the arm under test.
 		idx := recordlayer.NewVectorIndex("sw_dw_rtk_root",
 			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 2), 2)
-		Expect(idx.SetPredicateProto(&gen.Predicate{
-			RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+		Expect(idx.SetPredicateProto(&metadatapb.Predicate{
+			RowNumberWindowPredicate: &metadatapb.RowNumberWindowPredicate{
 				OrderingField: []string{"order_id"},
 				Size:          proto.Int32(2),
-				Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
-				PartitionFields: []*gen.FieldPath{
+				Direction:     metadatapb.RowNumberWindowPredicate_ASC.Enum(),
+				PartitionFields: []*metadatapb.FieldPath{
 					{Field: []string{"quantity"}},
 					{Field: []string{"price"}},
 				},
@@ -994,7 +994,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 		//
 		// Go promotes instead. Size 1 is a legal and likely configuration, so
 		// this is not an exotic corner.
-		idx := newWindowedVectorIndex("sw_size_one", 1, gen.RowNumberWindowPredicate_ASC)
+		idx := newWindowedVectorIndex("sw_size_one", 1, metadatapb.RowNumberWindowPredicate_ASC)
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1066,7 +1066,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 		// MAX is the mirror image: the inward rescan runs the other way and the
 		// overflow lies below the boundary rather than above it. ASC passing
 		// proves nothing about it.
-		idx := newWindowedVectorIndex("sw_size_one_desc", 1, gen.RowNumberWindowPredicate_DESC)
+		idx := newWindowedVectorIndex("sw_size_one_desc", 1, metadatapb.RowNumberWindowPredicate_DESC)
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1109,7 +1109,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 		// and boundary describe a graph that no longer exists: the next save
 		// reads a full window, takes the eviction branch, and evicts against a
 		// boundary naming a record that is gone.
-		idx := newWindowedVectorIndex("sw_delete_all", 2, gen.RowNumberWindowPredicate_ASC)
+		idx := newWindowedVectorIndex("sw_delete_all", 2, metadatapb.RowNumberWindowPredicate_ASC)
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1170,7 +1170,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 		// The two dedicated entry points (SearchVectorIndex / ScanVectorIndex)
 		// do not cover this: they were patched with a vector-specific unwrap,
 		// and this is the interface-based site they do not go through.
-		idx := newWindowedVectorIndex("sw_by_distance", 10, gen.RowNumberWindowPredicate_ASC)
+		idx := newWindowedVectorIndex("sw_by_distance", 10, metadatapb.RowNumberWindowPredicate_ASC)
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1201,7 +1201,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 	// =====================================================================
 	It("vector search still resolves through the decorator", func() {
 		ks := specSubspace()
-		idx := newWindowedVectorIndex("sw_search", 10, gen.RowNumberWindowPredicate_ASC)
+		idx := newWindowedVectorIndex("sw_search", 10, metadatapb.RowNumberWindowPredicate_ASC)
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1236,7 +1236,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	for _, direction := range []gen.RowNumberWindowPredicate_Direction{gen.RowNumberWindowPredicate_ASC, gen.RowNumberWindowPredicate_DESC} {
+	for _, direction := range []metadatapb.RowNumberWindowPredicate_Direction{metadatapb.RowNumberWindowPredicate_ASC, metadatapb.RowNumberWindowPredicate_DESC} {
 		for _, writeOnly := range []bool{false, true} {
 			for _, size := range []int32{1, 2, 3, 4} {
 				for _, partitioned := range []bool{false, true} {
@@ -1351,7 +1351,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 
 	It("refuses replay of a tracked insert without its boundary", func() {
 		ks := specSubspace()
-		idx := newWindowedVectorIndex("sw_replay_corrupt", 3, gen.RowNumberWindowPredicate_ASC)
+		idx := newWindowedVectorIndex("sw_replay_corrupt", 3, metadatapb.RowNumberWindowPredicate_ASC)
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1383,7 +1383,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 	// =====================================================================
 	It("does not double-count a record the indexer already processed", func() {
 		ks := specSubspace()
-		idx := newWindowedVectorIndex("sw_writeonly", 2, gen.RowNumberWindowPredicate_ASC)
+		idx := newWindowedVectorIndex("sw_writeonly", 2, metadatapb.RowNumberWindowPredicate_ASC)
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1458,7 +1458,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 
 	It("clears its keyspace-10 bookkeeping when the index data is cleared", func() {
 		ks := specSubspace()
-		idx := newWindowedVectorIndex("sw_clear", 2, gen.RowNumberWindowPredicate_ASC)
+		idx := newWindowedVectorIndex("sw_clear", 2, metadatapb.RowNumberWindowPredicate_ASC)
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1531,7 +1531,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 		// handleInsert from the NEW one, so a maintainer that evaluated either
 		// once would strand the record in one partition while claiming it in the
 		// other.
-		idx := newPartitionedWindowedVectorIndex("sw_move", 2, gen.RowNumberWindowPredicate_ASC, "quantity")
+		idx := newPartitionedWindowedVectorIndex("sw_move", 2, metadatapb.RowNumberWindowPredicate_ASC, "quantity")
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1612,7 +1612,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 	// =====================================================================
 	It("re-positions a record whose window value changes", func() {
 		ks := specSubspace()
-		idx := newWindowedVectorIndex("sw_update", 2, gen.RowNumberWindowPredicate_ASC)
+		idx := newWindowedVectorIndex("sw_update", 2, metadatapb.RowNumberWindowPredicate_ASC)
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1679,7 +1679,7 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 	// a default — so the index builds and writes a graph whose connectivity is
 	// not the one declared, indistinguishably from a correct index.
 	It("runs the wrapped vector index's option validation", func() {
-		idx := newWindowedVectorIndex("sw_bad_m", 2, gen.RowNumberWindowPredicate_ASC)
+		idx := newWindowedVectorIndex("sw_bad_m", 2, metadatapb.RowNumberWindowPredicate_ASC)
 		idx.Options[recordlayer.IndexOptionHNSWM] = "not-a-number"
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
@@ -1695,7 +1695,7 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 	})
 
 	It("refuses a wrapped vector index without its dimension count, with Java's text", func() {
-		idx := newWindowedVectorIndex("sw_no_dims", 2, gen.RowNumberWindowPredicate_ASC)
+		idx := newWindowedVectorIndex("sw_no_dims", 2, metadatapb.RowNumberWindowPredicate_ASC)
 		delete(idx.Options, recordlayer.IndexOptionVectorNumDimensions)
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
@@ -1708,7 +1708,7 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 	It("runs the wrapped vector index's metric validation", func() {
 		// Java's Metric.valueOf knows only the four constants' names.
 		for _, metric := range []string{"COSIGN_METRIC", "cosine", "inner_product", "euclidean"} {
-			idx := newWindowedVectorIndex("sw_bad_metric", 2, gen.RowNumberWindowPredicate_ASC)
+			idx := newWindowedVectorIndex("sw_bad_metric", 2, metadatapb.RowNumberWindowPredicate_ASC)
 			idx.Options[recordlayer.IndexOptionVectorMetric] = metric
 			builder := baseMetaData()
 			builder.AddIndex("Order", idx)
@@ -1723,7 +1723,7 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 	It("accepts a windowed vector index whose options are all well-formed", func() {
 		// The other direction, without which the two specs above are satisfied
 		// by a validator that refuses everything.
-		idx := newWindowedVectorIndex("sw_good_opts", 2, gen.RowNumberWindowPredicate_ASC)
+		idx := newWindowedVectorIndex("sw_good_opts", 2, metadatapb.RowNumberWindowPredicate_ASC)
 		idx.Options[recordlayer.IndexOptionHNSWM] = "16"
 		idx.Options[recordlayer.IndexOptionVectorMetric] = "COSINE_METRIC"
 		builder := baseMetaData()
@@ -1733,7 +1733,7 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 	})
 
 	It("refuses a unique sliding window index", func() {
-		idx := newWindowedVectorIndex("sw_unique", 2, gen.RowNumberWindowPredicate_ASC)
+		idx := newWindowedVectorIndex("sw_unique", 2, metadatapb.RowNumberWindowPredicate_ASC)
 		idx.SetUnique()
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
@@ -1750,11 +1750,11 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 		// share, so the index expression itself validates everywhere and the
 		// multiple-types arm is what fails — not a field-resolution error.
 		idx := recordlayer.NewVectorIndex("sw_universal", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("price")), 0), 2)
-		Expect(idx.SetPredicateProto(&gen.Predicate{
-			RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+		Expect(idx.SetPredicateProto(&metadatapb.Predicate{
+			RowNumberWindowPredicate: &metadatapb.RowNumberWindowPredicate{
 				OrderingField: []string{"price"},
 				Size:          proto.Int32(2),
-				Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+				Direction:     metadatapb.RowNumberWindowPredicate_ASC.Enum(),
 			},
 		})).To(Succeed())
 		builder := baseMetaData()
@@ -1773,20 +1773,20 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 		// through AND only. A window reachable solely under an OR is therefore
 		// never seen — see the spec below, which pins that Java accepts it too.
 		idx := recordlayer.NewVectorIndex("sw_or", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
-		rn := func() *gen.Predicate {
-			return &gen.Predicate{RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+		rn := func() *metadatapb.Predicate {
+			return &metadatapb.Predicate{RowNumberWindowPredicate: &metadatapb.RowNumberWindowPredicate{
 				OrderingField: []string{"price"},
 				Size:          proto.Int32(2),
-				Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+				Direction:     metadatapb.RowNumberWindowPredicate_ASC.Enum(),
 			}}
 		}
-		trueArm := &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
-			Value: gen.ConstantPredicate_TRUE.Enum(),
+		trueArm := &metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{
+			Value: metadatapb.ConstantPredicate_TRUE.Enum(),
 		}}
-		Expect(idx.SetPredicateProto(&gen.Predicate{AndPredicate: &gen.AndPredicate{
-			Children: []*gen.Predicate{
+		Expect(idx.SetPredicateProto(&metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{
+			Children: []*metadatapb.Predicate{
 				rn(),
-				{OrPredicate: &gen.OrPredicate{Children: []*gen.Predicate{trueArm, rn()}}},
+				{OrPredicate: &metadatapb.OrPredicate{Children: []*metadatapb.Predicate{trueArm, rn()}}},
 			},
 		}})).To(Succeed())
 
@@ -1814,14 +1814,14 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 		// record in it down with the one broken index.
 		idx := recordlayer.NewVectorIndex("sw_nested_and",
 			recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 3)
-		rn := &gen.Predicate{RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+		rn := &metadatapb.Predicate{RowNumberWindowPredicate: &metadatapb.RowNumberWindowPredicate{
 			OrderingField: []string{"price"},
 			Size:          proto.Int32(2),
-			Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+			Direction:     metadatapb.RowNumberWindowPredicate_ASC.Enum(),
 		}}
-		inner := &gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{rn}}}
-		Expect(idx.SetPredicateProto(&gen.Predicate{AndPredicate: &gen.AndPredicate{
-			Children: []*gen.Predicate{inner},
+		inner := &metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{rn}}}
+		Expect(idx.SetPredicateProto(&metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{
+			Children: []*metadatapb.Predicate{inner},
 		}})).To(Succeed())
 
 		Expect(idx.HasRowNumberWindowPredicate()).To(BeTrue(),
@@ -1858,16 +1858,16 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 		// BOTH: the per-record arm decides who is a candidate at all, the window
 		// decides which candidates are kept.
 		idx := recordlayer.NewVectorIndex("sw_and_value", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
-		rn := &gen.Predicate{RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+		rn := &metadatapb.Predicate{RowNumberWindowPredicate: &metadatapb.RowNumberWindowPredicate{
 			OrderingField: []string{"price"},
 			Size:          proto.Int32(2),
-			Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+			Direction:     metadatapb.RowNumberWindowPredicate_ASC.Enum(),
 		}}
-		trueArm := &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
-			Value: gen.ConstantPredicate_TRUE.Enum(),
+		trueArm := &metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{
+			Value: metadatapb.ConstantPredicate_TRUE.Enum(),
 		}}
-		Expect(idx.SetPredicateProto(&gen.Predicate{AndPredicate: &gen.AndPredicate{
-			Children: []*gen.Predicate{rn, trueArm},
+		Expect(idx.SetPredicateProto(&metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{
+			Children: []*metadatapb.Predicate{rn, trueArm},
 		}})).To(Succeed())
 
 		builder := baseMetaData()

@@ -10,7 +10,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -129,7 +129,7 @@ var _ = Describe("A store writing through TransformedRecordSerializer", func() {
 		// validateRecordUpdateAllowed: a store that cannot read the record
 		// fails the decode, one that can fails the lock.
 		Expect(withStore(ks, md, encrypting(key), func(s *FDBRecordStore) error {
-			return s.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "serializer spec")
+			return s.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "serializer spec")
 		})).To(Succeed())
 		for _, op := range []struct {
 			name string

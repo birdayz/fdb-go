@@ -8,7 +8,7 @@ package values
 import (
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -29,19 +29,19 @@ type MacroFunction struct {
 
 // ToProto is UserDefinedMacroFunction.toProto: one serialization context over
 // the parameters, their defaults and the body, in that order.
-func (m *MacroFunction) ToProto() (*gen.PUserDefinedFunction, error) {
+func (m *MacroFunction) ToProto() (*metadatapb.PUserDefinedFunction, error) {
 	c := NewSerializationContext()
-	p := &gen.PUserDefinedMacroFunction{FunctionName: proto.String(m.Name)}
+	p := &metadatapb.PUserDefinedMacroFunction{FunctionName: proto.String(m.Name)}
 	for i, param := range m.Params {
 		pt, err := c.TypeToProto(m.ParamTypes[i])
 		if err != nil {
 			return nil, err
 		}
-		p.Arguments = append(p.Arguments, &gen.PValue{SpecificValue: &gen.PValue_QuantifiedObjectValue{
-			QuantifiedObjectValue: &gen.PQuantifiedObjectValue{Alias: proto.String(param.Correlation().Name()), ResultType: pt},
+		p.Arguments = append(p.Arguments, &metadatapb.PValue{SpecificValue: &metadatapb.PValue_QuantifiedObjectValue{
+			QuantifiedObjectValue: &metadatapb.PQuantifiedObjectValue{Alias: proto.String(param.Correlation().Name()), ResultType: pt},
 		}})
 		p.ArgumentNames = append(p.ArgumentNames, m.ParamNames[i])
-		def := &gen.PUserDefinedFunctionArgumentDefaultValue{IsProvided: proto.Bool(m.Defaults[i] != nil)}
+		def := &metadatapb.PUserDefinedFunctionArgumentDefaultValue{IsProvided: proto.Bool(m.Defaults[i] != nil)}
 		if m.Defaults[i] != nil {
 			if def.Value, err = c.ValueToProto(m.Defaults[i]); err != nil {
 				return nil, err
@@ -54,11 +54,11 @@ func (m *MacroFunction) ToProto() (*gen.PUserDefinedFunction, error) {
 		return nil, err
 	}
 	p.Body = body
-	return &gen.PUserDefinedFunction{SpecificFunction: &gen.PUserDefinedFunction_UserDefinedMacroFunction{UserDefinedMacroFunction: p}}, nil
+	return &metadatapb.PUserDefinedFunction{SpecificFunction: &metadatapb.PUserDefinedFunction_UserDefinedMacroFunction{UserDefinedMacroFunction: p}}, nil
 }
 
 // MacroFunctionFromProto is UserDefinedMacroFunction.fromProto.
-func MacroFunctionFromProto(p *gen.PUserDefinedMacroFunction) (*MacroFunction, error) {
+func MacroFunctionFromProto(p *metadatapb.PUserDefinedMacroFunction) (*MacroFunction, error) {
 	c := NewSerializationContext()
 	m := &MacroFunction{Name: p.GetFunctionName(), ParamNames: p.GetArgumentNames()}
 	for _, a := range p.GetArguments() {

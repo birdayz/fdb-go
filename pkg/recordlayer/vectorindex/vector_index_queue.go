@@ -3,9 +3,9 @@ package vectorindex
 import (
 	"fmt"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
@@ -13,7 +13,7 @@ import (
 func (m *vectorIndexMaintainer) IsPendingWriteQueueAllowed() bool { return true }
 
 func (m *vectorIndexMaintainer) SerializePendingWriteQueue(oldRecord, newRecord *recordlayer.FDBStoredRecord[proto.Message]) (*anypb.Any, error) {
-	entries := &gen.OldAndNewIndexEntries{}
+	entries := &metadatapb.OldAndNewIndexEntries{}
 	for i, record := range []*recordlayer.FDBStoredRecord[proto.Message]{oldRecord, newRecord} {
 		if record == nil {
 			continue
@@ -29,7 +29,7 @@ func (m *vectorIndexMaintainer) SerializePendingWriteQueue(oldRecord, newRecord 
 			return nil, &recordlayer.RecordCoreError{Message: "expected exactly one vector index entry", IndexName: m.Index().Name}
 		}
 		entry := evaluated[0]
-		packed := &gen.IndexEntry{Key: entry.Key().Pack(), Value: entry.Value().Pack(), PrimaryKey: record.PrimaryKey.Pack()}
+		packed := &metadatapb.IndexEntry{Key: entry.Key().Pack(), Value: entry.Value().Pack(), PrimaryKey: record.PrimaryKey.Pack()}
 		if i == 0 {
 			entries.OldEntries = append(entries.OldEntries, packed)
 		} else {
@@ -46,11 +46,11 @@ func (m *vectorIndexMaintainer) SerializePendingWriteQueue(oldRecord, newRecord 
 }
 
 func (m *vectorIndexMaintainer) UpdateFromQueue(data *anypb.Any) error {
-	entries := &gen.OldAndNewIndexEntries{}
+	entries := &metadatapb.OldAndNewIndexEntries{}
 	if err := recordlayer.UnmarshalPendingQueueAny(data, entries); err != nil {
 		return &recordlayer.RecordCoreError{Message: "failed to parse vector index pending write queue entry data", Cause: err}
 	}
-	for i, list := range [][]*gen.IndexEntry{entries.GetOldEntries(), entries.GetNewEntries()} {
+	for i, list := range [][]*metadatapb.IndexEntry{entries.GetOldEntries(), entries.GetNewEntries()} {
 		for _, packed := range list {
 			key, err := tuple.Unpack(packed.GetKey())
 			if err != nil {

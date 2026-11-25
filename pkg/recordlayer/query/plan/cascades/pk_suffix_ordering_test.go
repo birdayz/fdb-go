@@ -18,7 +18,7 @@ package cascades
 import (
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -301,7 +301,7 @@ func TestComputeMatchedOrderingParts_SuffixPastBoundFanOut(t *testing.T) {
 		tagsIDRowType(), false,
 		[]string{"ID"})
 	cand.createsDuplicates = true
-	cand.WithRootKeyExpression(candidateTestKeyField("TAGS", gen.Field_FAN_OUT))
+	cand.WithRootKeyExpression(candidateTestKeyField("TAGS", metadatapb.Field_FAN_OUT))
 
 	mi := NewRegularMatchInfo(
 		map[values.CorrelationIdentifier]*predicates.ComparisonRange{alias: equalityRange(t, "x")},
@@ -344,7 +344,7 @@ func TestComputeMatchedOrderingParts_SuffixPastBoundFanOut(t *testing.T) {
 	floatCandidate := newKnownDistinctValueIndexCandidate(
 		"IDX_TAGS", []string{"T"}, []string{"TAGS"},
 		[]values.CorrelationIdentifier{alias}, tagsIDRowType(), false, []string{"ID"})
-	floatCandidate.WithRootKeyExpression(candidateTestKeyField("TAGS", gen.Field_FAN_OUT)).
+	floatCandidate.WithRootKeyExpression(candidateTestKeyField("TAGS", metadatapb.Field_FAN_OUT)).
 		WithKeyComponentTypes([]values.Type{values.NullableDouble})
 	zeroMatch := NewRegularMatchInfo(
 		map[values.CorrelationIdentifier]*predicates.ComparisonRange{alias: equalityRange(t, float64(0))},
@@ -580,14 +580,14 @@ func TestFanOutOrderingUsesStructuralElementTypes(t *testing.T) {
 		name := "A"
 		element := values.NewRecordType("Attr", false, []values.Field{{Name: "ID", FieldType: values.NullableDouble, Ordinal: 0}})
 		arrayType := values.Type(values.NewArrayType(true, values.NullableDouble))
-		root := candidateTestKeyField("A", gen.Field_FAN_OUT)
+		root := candidateTestKeyField("A", metadatapb.Field_FAN_OUT)
 		if nested {
 			name = "ID"
 			arrayType = values.NewArrayType(true, element)
 			parent := "A"
-			root = &gen.KeyExpression{Nesting: &gen.Nesting{
-				Parent: &gen.Field{FieldName: &parent, FanType: gen.Field_FAN_OUT.Enum()},
-				Child:  candidateTestKeyField("ID", gen.Field_SCALAR),
+			root = &metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{
+				Parent: &metadatapb.Field{FieldName: &parent, FanType: metadatapb.Field_FAN_OUT.Enum()},
+				Child:  candidateTestKeyField("ID", metadatapb.Field_SCALAR),
 			}}
 		}
 		row := values.NewRecordType("T", false, []values.Field{
@@ -595,7 +595,7 @@ func TestFanOutOrderingUsesStructuralElementTypes(t *testing.T) {
 			{Name: "B", FieldType: values.NullableDouble, Ordinal: 1},
 			{Name: "A", FieldType: arrayType, Ordinal: 2},
 		})
-		root = &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{root, candidateTestKeyField("B", gen.Field_SCALAR)}}}
+		root = &metadatapb.KeyExpression{Then: &metadatapb.Then{Child: []*metadatapb.KeyExpression{root, candidateTestKeyField("B", metadatapb.Field_SCALAR)}}}
 		for _, tc := range []struct {
 			name    string
 			typ     values.Type
@@ -693,9 +693,9 @@ func TestFanOutElementNameDoesNotTrimRootPrimaryKey(t *testing.T) {
 	attrs := "ATTRS"
 	candidate := newKnownDistinctValueIndexCandidate("ATTR_ID", []string{"T"}, []string{"ID"},
 		[]values.CorrelationIdentifier{alias}, row, false, []string{"ID", "B"}).
-		WithRootKeyExpression(&gen.KeyExpression{Nesting: &gen.Nesting{
-			Parent: &gen.Field{FieldName: &attrs, FanType: gen.Field_FAN_OUT.Enum()},
-			Child:  candidateTestKeyField("ID", gen.Field_SCALAR),
+		WithRootKeyExpression(&metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{
+			Parent: &metadatapb.Field{FieldName: &attrs, FanType: metadatapb.Field_FAN_OUT.Enum()},
+			Child:  candidateTestKeyField("ID", metadatapb.Field_SCALAR),
 		}})
 	bindings := map[values.CorrelationIdentifier]*predicates.ComparisonRange{alias: equalityRange(t, int64(7))}
 	match := NewRegularMatchInfo(bindings, nil, nil, nil, nil, nil, nil, nil)

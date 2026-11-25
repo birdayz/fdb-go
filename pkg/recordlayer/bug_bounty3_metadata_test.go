@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"google.golang.org/protobuf/proto"
@@ -315,8 +315,8 @@ func (m *mockFanOutExpression) Evaluate(_ *FDBStoredRecord[proto.Message], _ pro
 }
 func (m *mockFanOutExpression) FieldNames() []string { return nil }
 func (m *mockFanOutExpression) ColumnSize() int      { return 1 }
-func (m *mockFanOutExpression) ToKeyExpression() *gen.KeyExpression {
-	return &gen.KeyExpression{Empty: &gen.Empty{}}
+func (m *mockFanOutExpression) ToKeyExpression() *metadatapb.KeyExpression {
+	return &metadatapb.KeyExpression{Empty: &metadatapb.Empty{}}
 }
 
 // =============================================================================
@@ -367,10 +367,10 @@ func TestBug4_GroupingFromProtoNoValidation(t *testing.T) {
 
 	// Create a Grouping proto with groupedCount > actual column size of wholeKey
 	gc := int32(99)
-	protoExpr := &gen.KeyExpression{
-		Grouping: &gen.Grouping{
-			WholeKey: &gen.KeyExpression{
-				Field: &gen.Field{
+	protoExpr := &metadatapb.KeyExpression{
+		Grouping: &metadatapb.Grouping{
+			WholeKey: &metadatapb.KeyExpression{
+				Field: &metadatapb.Field{
 					FieldName: proto.String("price"),
 				},
 			},

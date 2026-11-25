@@ -26,12 +26,12 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"fdb.dev/gen"
 	"fdb.dev/internal/recordlayer/query/executor"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/core/metadata"
@@ -71,8 +71,8 @@ func TestFDB_TautologyPredicateOnFanOutIndexStillPlansAndExecutes(t *testing.T) 
 	if idx == nil {
 		t.Fatal("index T_TAGS not in metadata")
 	}
-	if err := idx.SetPredicateProto(&gen.Predicate{
-		ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()},
+	if err := idx.SetPredicateProto(&metadatapb.Predicate{
+		ConstantPredicate: &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_TRUE.Enum()},
 	}); err != nil {
 		t.Fatalf("SetPredicateProto: %v", err)
 	}

@@ -5,7 +5,7 @@
 
 package api
 
-import "fdb.dev/gen"
+import "fdb.dev/pkg/recordlayer/metadatapb"
 
 // Package api types in this file mirror Java's
 // com.apple.foundationdb.relational.api.catalog.{StoreCatalog,
@@ -44,7 +44,7 @@ type SchemaTemplateCatalog interface {
 	// the stored side of a new version's carry and of a template restore
 	// (RFC-257 WS-J section 4). Same not-found semantics as
 	// LoadSchemaTemplateAtVersion.
-	LoadTemplateProto(txn Transaction, templateName string, version int) (*gen.MetaData, error)
+	LoadTemplateProto(txn Transaction, templateName string, version int) (*metadatapb.MetaData, error)
 	// CreateTemplate persists a new template version. Returns an
 	// *Error with ErrCodeDuplicateSchemaTemplate when (name, version)
 	// already exists.

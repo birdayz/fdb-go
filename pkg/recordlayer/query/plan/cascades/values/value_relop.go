@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"hash/fnv"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // RelOpComparison is the Comparisons.Type of a RelOpValue.
@@ -41,12 +41,12 @@ const (
 	RelOpNotNull             = relOpNotNull
 )
 
-var relOpComparisonProto = map[RelOpComparison]gen.PComparison_PComparisonType{
-	relOpEquals: gen.PComparison_EQUALS, relOpNotEquals: gen.PComparison_NOT_EQUALS,
-	relOpLessThan: gen.PComparison_LESS_THAN, relOpLessThanOrEquals: gen.PComparison_LESS_THAN_OR_EQUALS,
-	relOpGreaterThan: gen.PComparison_GREATER_THAN, relOpGreaterThanOrEquals: gen.PComparison_GREATER_THAN_OR_EQUALS,
-	relOpIsDistinctFrom: gen.PComparison_IS_DISTINCT_FROM, relOpNotDistinctFrom: gen.PComparison_NOT_DISTINCT_FROM,
-	relOpIsNull: gen.PComparison_IS_NULL, relOpNotNull: gen.PComparison_NOT_NULL,
+var relOpComparisonProto = map[RelOpComparison]metadatapb.PComparison_PComparisonType{
+	relOpEquals: metadatapb.PComparison_EQUALS, relOpNotEquals: metadatapb.PComparison_NOT_EQUALS,
+	relOpLessThan: metadatapb.PComparison_LESS_THAN, relOpLessThanOrEquals: metadatapb.PComparison_LESS_THAN_OR_EQUALS,
+	relOpGreaterThan: metadatapb.PComparison_GREATER_THAN, relOpGreaterThanOrEquals: metadatapb.PComparison_GREATER_THAN_OR_EQUALS,
+	relOpIsDistinctFrom: metadatapb.PComparison_IS_DISTINCT_FROM, relOpNotDistinctFrom: metadatapb.PComparison_NOT_DISTINCT_FROM,
+	relOpIsNull: metadatapb.PComparison_IS_NULL, relOpNotNull: metadatapb.PComparison_NOT_NULL,
 }
 
 // relOpFunctionNames are the BuiltInFunction names the SQL operators resolve
@@ -67,14 +67,14 @@ const (
 )
 
 type binaryRelOpOperator struct {
-	proto       gen.PBinaryRelOpValue_PBinaryPhysicalOperator
+	proto       metadatapb.PBinaryRelOpValue_PBinaryPhysicalOperator
 	comparison  RelOpComparison
 	left, right TypeCode
 	eval        relOpEvalKind
 }
 
 type unaryRelOpOperator struct {
-	proto      gen.PUnaryRelOpValue_PUnaryPhysicalOperator
+	proto      metadatapb.PUnaryRelOpValue_PUnaryPhysicalOperator
 	comparison RelOpComparison
 	arg        TypeCode
 }
@@ -91,9 +91,9 @@ type unaryRelOpSignature struct {
 
 var (
 	binaryRelOpBySignature = map[binaryRelOpSignature]int{}
-	binaryRelOpByProto     = map[gen.PBinaryRelOpValue_PBinaryPhysicalOperator]int{}
+	binaryRelOpByProto     = map[metadatapb.PBinaryRelOpValue_PBinaryPhysicalOperator]int{}
 	unaryRelOpBySignature  = map[unaryRelOpSignature]int{}
-	unaryRelOpByProto      = map[gen.PUnaryRelOpValue_PUnaryPhysicalOperator]int{}
+	unaryRelOpByProto      = map[metadatapb.PUnaryRelOpValue_PUnaryPhysicalOperator]int{}
 )
 
 func init() {
@@ -289,7 +289,7 @@ func relOpStringOperand(s any, other Type) (any, error) {
 }
 
 // PhysicalOperator is the operator's proto enum.
-func (v *BinaryRelOpValue) PhysicalOperator() gen.PBinaryRelOpValue_PBinaryPhysicalOperator {
+func (v *BinaryRelOpValue) PhysicalOperator() metadatapb.PBinaryRelOpValue_PBinaryPhysicalOperator {
 	return binaryRelOpOperators[v.operator].proto
 }
 
@@ -329,7 +329,7 @@ func (v *UnaryRelOpValue) Evaluate(evalCtx any) (any, error) {
 }
 
 // PhysicalOperator is the operator's proto enum.
-func (v *UnaryRelOpValue) PhysicalOperator() gen.PUnaryRelOpValue_PUnaryPhysicalOperator {
+func (v *UnaryRelOpValue) PhysicalOperator() metadatapb.PUnaryRelOpValue_PUnaryPhysicalOperator {
 	return unaryRelOpOperators[v.operator].proto
 }
 

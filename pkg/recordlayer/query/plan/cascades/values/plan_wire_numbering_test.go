@@ -6,6 +6,7 @@ import (
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer/indexfetch"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -15,7 +16,7 @@ import (
 func TestTupleSourceIsTheProtoEnum(t *testing.T) {
 	t.Parallel()
 	for _, s := range []TupleSource{TupleSourceKey, TupleSourceValue, TupleSourceOther} {
-		if got := gen.PIndexKeyValueToPartialRecord_PTupleSource(s).String(); got != s.String() {
+		if got := metadatapb.PIndexKeyValueToPartialRecord_PTupleSource(s).String(); got != s.String() {
 			t.Errorf("TupleSource %s is proto %s", s, got)
 		}
 	}
@@ -32,8 +33,8 @@ func TestPlanSchemaTags(t *testing.T) {
 	reserved := func(md protoreflect.MessageDescriptor, tag protoreflect.FieldNumber) bool {
 		return md.ReservedRanges().Has(tag)
 	}
-	pvalue := (&gen.PValue{}).ProtoReflect().Descriptor()
-	plan := (&gen.PRecordQueryPlan{}).ProtoReflect().Descriptor()
+	pvalue := (&metadatapb.PValue{}).ProtoReflect().Descriptor()
+	plan := (&metadatapb.PRecordQueryPlan{}).ProtoReflect().Descriptor()
 	for _, c := range []struct {
 		md  protoreflect.MessageDescriptor
 		tag protoreflect.FieldNumber
@@ -51,10 +52,10 @@ func TestPlanSchemaTags(t *testing.T) {
 		{pvalue, 41, "index_entry_object_value"},
 		{plan, 38, "streaming_aggregation_plan"},
 		{plan, 41, "covering_index_value_plan"},
-		{(&gen.PRecordQueryExplodePlan{}).ProtoReflect().Descriptor(), 3, "zero_based_ordinality"},
-		{(&gen.PRecordQueryAggregateIndexPlan{}).ProtoReflect().Descriptor(), 7, "result_type"},
+		{(&metadatapb.PRecordQueryExplodePlan{}).ProtoReflect().Descriptor(), 3, "zero_based_ordinality"},
+		{(&metadatapb.PRecordQueryAggregateIndexPlan{}).ProtoReflect().Descriptor(), 7, "result_type"},
 		{(&gen.PlannerConfiguration{}).ProtoReflect().Descriptor(), 15, "vectorIndexEnginePreference"},
-		{(&gen.PRecordQueryIndexPlan{}).ProtoReflect().Descriptor(), 4, "index_fetch_method"},
+		{(&metadatapb.PRecordQueryIndexPlan{}).ProtoReflect().Descriptor(), 4, "index_fetch_method"},
 		{(&gen.PlannerConfiguration{}).ProtoReflect().Descriptor(), 10, "indexFetchMethod"},
 	} {
 		if fd := c.md.Fields().ByNumber(c.tag); fd == nil || fd.Name() != c.name {
@@ -72,14 +73,14 @@ func TestPlanSchemaTags(t *testing.T) {
 func TestIndexFetchMethodWireNumbers(t *testing.T) {
 	t.Parallel()
 	methods := []indexfetch.Method{indexfetch.ScanAndFetch, indexfetch.UseRemoteFetch, indexfetch.UseRemoteFetchWithFallback}
-	if got := len(gen.PIndexFetchMethod_name); got != len(methods) {
+	if got := len(metadatapb.PIndexFetchMethod_name); got != len(methods) {
 		t.Fatalf("PIndexFetchMethod has %d values, indexfetch.Method %d", got, len(methods))
 	}
 	if got := len(gen.PlannerConfiguration_IndexFetchMethod_name); got != len(methods) {
 		t.Fatalf("PlannerConfiguration.IndexFetchMethod has %d values, indexfetch.Method %d", got, len(methods))
 	}
 	for i, m := range methods {
-		plan := gen.PIndexFetchMethod(gen.PIndexFetchMethod_value[m.String()])
+		plan := metadatapb.PIndexFetchMethod(metadatapb.PIndexFetchMethod_value[m.String()])
 		if int(plan) != i+1 {
 			t.Errorf("PIndexFetchMethod %s = %d, want %d", m, plan, i+1)
 		}
@@ -87,7 +88,7 @@ func TestIndexFetchMethodWireNumbers(t *testing.T) {
 		if int(config) != i || config.String() != m.String() {
 			t.Errorf("PlannerConfiguration.IndexFetchMethod %s = %d (%s), want %d", m, config, config, i)
 		}
-		encoded, err := proto.Marshal(&gen.PRecordQueryIndexPlan{IndexFetchMethod: plan.Enum()})
+		encoded, err := proto.Marshal(&metadatapb.PRecordQueryIndexPlan{IndexFetchMethod: plan.Enum()})
 		if err != nil || !bytes.Equal(encoded, []byte{0x20, byte(i + 1)}) {
 			t.Errorf("PRecordQueryIndexPlan{%s} = % x (%v), want 20 %02x", m, encoded, err, i+1)
 		}

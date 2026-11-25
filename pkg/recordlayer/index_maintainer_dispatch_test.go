@@ -5,7 +5,7 @@ import (
 	"errors"
 	"sync"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	. "github.com/onsi/ginkgo/v2"
@@ -208,7 +208,7 @@ var _ = Describe("index maintainer dispatch", func() {
 			// by accident. With the dispatch failing closed, the default has to be
 			// real or Java-authored metadata stops opening.
 			// A root, which Java's Index(proto) requires (KeyExpression.java:404-405).
-			idx, err := indexFromProto(&gen.Index{Name: proto.String("Order$notype"), RootExpression: Field("price").ToKeyExpression()})
+			idx, err := indexFromProto(&metadatapb.Index{Name: proto.String("Order$notype"), RootExpression: Field("price").ToKeyExpression()})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(idx.Type).To(Equal(IndexTypeValue))
 		})
@@ -217,7 +217,7 @@ var _ = Describe("index maintainer dispatch", func() {
 			// hasType() is presence, not emptiness. A type explicitly set to ""
 			// is a type no maintainer implements and must reach the dispatch and
 			// be refused there — Java draws the line in the same place.
-			idx, err := indexFromProto(&gen.Index{
+			idx, err := indexFromProto(&metadatapb.Index{
 				Name:           proto.String("Order$emptytype"),
 				Type:           proto.String(""),
 				RootExpression: Field("price").ToKeyExpression(), // Java requires a root

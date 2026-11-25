@@ -12,6 +12,7 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/metadata"
 )
@@ -43,11 +44,11 @@ import (
 //
 // defined names the indexes the new version defines, its NEW and CHANGED ones:
 // the ones the lane check reads (checkIndexLanes).
-func carryNumbering(stored, built *gen.MetaData) (carried *gen.MetaData, defined map[string]bool, err error) {
-	out := proto.Clone(built).(*gen.MetaData)
+func carryNumbering(stored, built *metadatapb.MetaData) (carried *metadatapb.MetaData, defined map[string]bool, err error) {
+	out := proto.Clone(built).(*metadatapb.MetaData)
 	version := stored.GetVersion()
 
-	storedTypes := map[string]*gen.RecordType{}
+	storedTypes := map[string]*metadatapb.RecordType{}
 	var maxKey int64 = -1
 	for _, rt := range stored.GetRecordTypes() {
 		storedTypes[rt.GetName()] = rt
@@ -71,13 +72,13 @@ func carryNumbering(stored, built *gen.MetaData) (carried *gen.MetaData, defined
 
 	// Indexes first: the new metadata version depends on them, and a new
 	// record type's since-version is that version.
-	storedIndexes := map[string]*gen.Index{}
+	storedIndexes := map[string]*metadatapb.Index{}
 	for _, idx := range stored.GetIndexes() {
 		storedIndexes[idx.GetName()] = idx
 	}
-	formers := make([]*gen.FormerIndex, 0, len(stored.GetFormerIndexes()))
+	formers := make([]*metadatapb.FormerIndex, 0, len(stored.GetFormerIndexes()))
 	for _, f := range stored.GetFormerIndexes() {
-		formers = append(formers, proto.Clone(f).(*gen.FormerIndex))
+		formers = append(formers, proto.Clone(f).(*metadatapb.FormerIndex))
 	}
 	kept := map[string]bool{}
 	defined = map[string]bool{}
@@ -113,7 +114,7 @@ func carryNumbering(stored, built *gen.MetaData) (carried *gen.MetaData, defined
 			return nil, nil, err
 		}
 		if class == recordlayer.IndexEquivalent {
-			out.Indexes[i] = proto.Clone(prior).(*gen.Index)
+			out.Indexes[i] = proto.Clone(prior).(*metadatapb.Index)
 			continue
 		}
 		defined[idx.GetName()] = true
@@ -133,7 +134,7 @@ func carryNumbering(stored, built *gen.MetaData) (carried *gen.MetaData, defined
 		if kept[idx.GetName()] {
 			continue
 		}
-		f := &gen.FormerIndex{
+		f := &metadatapb.FormerIndex{
 			SubspaceKey:    append([]byte(nil), idx.GetSubspaceKey()...),
 			RemovedVersion: proto.Int32(version),
 			AddedVersion:   proto.Int32(1),
@@ -161,7 +162,7 @@ func carryNumbering(stored, built *gen.MetaData) (carried *gen.MetaData, defined
 		}
 		if _, explicit := explicitLongKey(rt); explicit {
 			maxKey++
-			rt.ExplicitKey = &gen.Value{LongValue: proto.Int64(maxKey)}
+			rt.ExplicitKey = &metadatapb.Value{LongValue: proto.Int64(maxKey)}
 		}
 		rt.SinceVersion = proto.Int32(version)
 	}
@@ -184,8 +185,8 @@ func carryNumbering(stored, built *gen.MetaData) (carried *gen.MetaData, defined
 func unionMessage(fdp *descriptorpb.FileDescriptorProto) *descriptorpb.DescriptorProto {
 	var named *descriptorpb.DescriptorProto
 	for _, m := range fdp.GetMessageType() {
-		if opts := m.GetOptions(); opts != nil && proto.HasExtension(opts, gen.E_Record) {
-			if rto, _ := proto.GetExtension(opts, gen.E_Record).(*gen.RecordTypeOptions); rto.GetUsage() == gen.RecordTypeOptions_UNION {
+		if opts := m.GetOptions(); opts != nil && proto.HasExtension(opts, metadatapb.E_Record) {
+			if rto, _ := proto.GetExtension(opts, metadatapb.E_Record).(*metadatapb.RecordTypeOptions); rto.GetUsage() == metadatapb.RecordTypeOptions_UNION {
 				return m
 			}
 		}
@@ -208,7 +209,7 @@ func unionTypeName(f *descriptorpb.FieldDescriptorProto) string {
 
 // explicitLongKey is a record type's explicit key when it is a long, the form
 // the relational builder assigns (its table counter).
-func explicitLongKey(rt *gen.RecordType) (int64, bool) {
+func explicitLongKey(rt *metadatapb.RecordType) (int64, bool) {
 	k := rt.GetExplicitKey()
 	if k == nil || k.LongValue == nil {
 		return 0, false
@@ -216,15 +217,15 @@ func explicitLongKey(rt *gen.RecordType) (int64, bool) {
 	return k.GetLongValue(), true
 }
 
-func cloneValue(v *gen.Value) *gen.Value {
+func cloneValue(v *metadatapb.Value) *metadatapb.Value {
 	if v == nil {
 		return nil
 	}
-	return proto.Clone(v).(*gen.Value)
+	return proto.Clone(v).(*metadatapb.Value)
 }
 
 // formerName names a former index in a refusal: its name, else its subspace key.
-func formerName(f *gen.FormerIndex) string {
+func formerName(f *metadatapb.FormerIndex) string {
 	if f.GetFormerName() != "" {
 		return f.GetFormerName()
 	}
@@ -259,7 +260,7 @@ func refuseBelowLatest(latest, newTemplate api.SchemaTemplate) error {
 // one with index rebuilds allowed: a CHANGED or NEW index is rebuilt when a
 // store opens under the new version (DIVERGENCES.md "CreateTemplate refuses
 // more than an exact duplicate, and carries a new version").
-func carryTemplate(stored *gen.MetaData, rl *metadata.RecordLayerSchemaTemplate) ([]byte, api.SchemaTemplate, error) {
+func carryTemplate(stored *metadatapb.MetaData, rl *metadata.RecordLayerSchemaTemplate) ([]byte, api.SchemaTemplate, error) {
 	built, err := rl.Underlying().ToProto()
 	if err != nil {
 		return nil, nil, api.WrapErrorf(err, api.ErrCodeInternalError, "template to-proto")
@@ -284,7 +285,7 @@ func carryTemplate(stored *gen.MetaData, rl *metadata.RecordLayerSchemaTemplate)
 	if err := checkIndexLanes(newMD, carried, defined); err != nil {
 		return nil, nil, err
 	}
-	oldMD, err := recordlayer.RecordMetaDataFromProto(proto.Clone(stored).(*gen.MetaData))
+	oldMD, err := recordlayer.RecordMetaDataFromProto(proto.Clone(stored).(*metadatapb.MetaData))
 	if err != nil {
 		return nil, nil, api.WrapErrorf(err, api.ErrCodeInternalError, "stored template %s from-proto", rl.MetadataName())
 	}

@@ -3,7 +3,7 @@ package values
 import (
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
@@ -22,7 +22,7 @@ func TestJavaMacroBodiesRoundTrip(t *testing.T) {
 		"LIKE 'a%' without ESCAPE":                                 `like_operator_value: { src_child: { quantified_object_value: { alias: "c000000000000000000000000000000000000" result_type: { primitive_type: { type_code: STRING is_nullable: true } } } } pattern_child: { pattern_for_like_value: { pattern_child: { literal_value: { result_type: { primitive_type: { type_code: STRING is_nullable: false } } value: { primitive_object: { string_value: "a%" } } } } escape_child: { literal_value: { result_type: { null_type: {} } value: { primitive_object: {} } } } } } }`,
 		"CASE WHEN b THEN a ELSE 5 END":                            `pick_value: { selector_value: { condition_selector_value: { implications: { quantified_object_value: { alias: "c000000000000000000000000000000000001" result_type: { primitive_type: { type_code: BOOLEAN is_nullable: true } } } } implications: { additional_values: { type_url: "c.a.fdb.types/com.apple.foundationdb.record.PTautologicalValue" } } } } alternative_values: { quantified_object_value: { alias: "c000000000000000000000000000000000000" result_type: { primitive_type: { type_code: LONG is_nullable: true } } } } alternative_values: { promote_value: { in_value: { literal_value: { result_type: { primitive_type: { type_code: INT is_nullable: false } } value: { primitive_object: { int_value: 5 } } } } promote_to_type: { primitive_type: { type_code: LONG is_nullable: true } } promotion_trie: { children_map_is_null: true value: { primitive_coercion_bi_function: { operator: INT_TO_LONG } } } } } result_type: { primitive_type: { type_code: LONG is_nullable: true } } }`,
 	} {
-		var java gen.PValue
+		var java metadatapb.PValue
 		if err := prototext.Unmarshal([]byte(text), &java); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}

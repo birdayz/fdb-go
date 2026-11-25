@@ -9,7 +9,7 @@
 package cascades
 
 import (
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -107,7 +107,7 @@ type IndexDefWithCreatesDuplicates interface {
 // clones it again when attaching it to the candidate.
 type IndexDefWithRootKeyExpression interface {
 	IndexDef
-	IndexRootKeyExpression() *gen.KeyExpression
+	IndexRootKeyExpression() *metadatapb.KeyExpression
 }
 
 // IndexDefWithCommonPrimaryKey is an optional extension of IndexDef exposing the
@@ -141,7 +141,7 @@ type IndexDefWithValueColumns interface {
 // (ValueIndexExpansionVisitor.java:138-162). A nil return means a full index.
 type IndexDefWithPredicate interface {
 	IndexDef
-	IndexPredicateProto() *gen.Predicate
+	IndexPredicateProto() *metadatapb.Predicate
 }
 
 // IndexDefWithOpaqueFilter reports an index that FILTERS records but whose
@@ -181,7 +181,7 @@ type IndexDefWithOpaqueFilter interface {
 func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 	candidates := make([]MatchCandidate, 0, len(defs))
 	for _, def := range defs {
-		var rootKeyExpression *gen.KeyExpression
+		var rootKeyExpression *metadatapb.KeyExpression
 		if withRoot, ok := def.(IndexDefWithRootKeyExpression); ok {
 			rootKeyExpression = withRoot.IndexRootKeyExpression()
 		}

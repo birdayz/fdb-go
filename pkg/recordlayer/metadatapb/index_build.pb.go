@@ -23,7 +23,7 @@
 // 	protoc        (unknown)
 // source: index_build.proto
 
-package gen
+package metadatapb
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
@@ -721,8 +721,8 @@ const file_index_build_proto_rawDesc = "" +
 	"\rold_entry_key\x18\x01 \x01(\fR\voldEntryKey\x12\"\n" +
 	"\rnew_entry_key\x18\x02 \x01(\fR\vnewEntryKey\x12?\n" +
 	"\x10delegated_delete\x18\x03 \x01(\v2\x14.google.protobuf.AnyR\x0fdelegatedDelete\x12?\n" +
-	"\x10delegated_insert\x18\x04 \x01(\v2\x14.google.protobuf.AnyR\x0fdelegatedInsertB\xd9\x01\n" +
-	"!com.com.apple.foundationdb.recordB\x0fIndexBuildProtoP\x01Z\vfdb.dev/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
+	"\x10delegated_insert\x18\x04 \x01(\v2\x14.google.protobuf.AnyR\x0fdelegatedInsertB\xf0\x01\n" +
+	"!com.com.apple.foundationdb.recordB\x0fIndexBuildProtoP\x01Z\"fdb.dev/pkg/recordlayer/metadatapb\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
 
 var (
 	file_index_build_proto_rawDescOnce sync.Once

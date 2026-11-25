@@ -11,9 +11,9 @@ package cascades
 import (
 	"sync"
 
-	"fdb.dev/gen"
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/indexpredicate"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -78,7 +78,7 @@ type ValueIndexScanMatchCandidate struct {
 	// predicateProto is the stored sparse-index predicate
 	// (RecordMetaDataProto.Index.predicate) when the index is filtered;
 	// nil for a full index. See WithPredicateProto.
-	predicateProto *gen.Predicate
+	predicateProto *metadatapb.Predicate
 
 	// opaqueFilter records that this index filters records through a predicate
 	// with no proto representation (Go's Index.SetPredicate closure). Sparseness
@@ -116,7 +116,7 @@ type ValueIndexScanMatchCandidate struct {
 	// the exact FAN_OUT node); the historical flat columnNames slice cannot
 	// distinguish a scalar field from a repeated field or preserve a shared
 	// fan-out parent. It is always stored as a defensive clone.
-	rootKeyExpression *gen.KeyExpression
+	rootKeyExpression *metadatapb.KeyExpression
 
 	columnsOnce sync.Once
 	columns     *valueIndexExpansion
@@ -574,7 +574,7 @@ func (c *ValueIndexScanMatchCandidate) WithCommonPrimaryKey(pk []values.Value) *
 // expression to a freshly constructed candidate. A nil root clears the
 // optional structure. Call this before GetTraversal; traversal construction is
 // deliberately stable under sync.Once.
-func (c *ValueIndexScanMatchCandidate) WithRootKeyExpression(root *gen.KeyExpression) *ValueIndexScanMatchCandidate {
+func (c *ValueIndexScanMatchCandidate) WithRootKeyExpression(root *metadatapb.KeyExpression) *ValueIndexScanMatchCandidate {
 	if root == nil {
 		c.rootKeyExpression = nil
 		if !c.keyComponentTypesExplicit {
@@ -582,7 +582,7 @@ func (c *ValueIndexScanMatchCandidate) WithRootKeyExpression(root *gen.KeyExpres
 		}
 		return c
 	}
-	c.rootKeyExpression = proto.Clone(root).(*gen.KeyExpression)
+	c.rootKeyExpression = proto.Clone(root).(*metadatapb.KeyExpression)
 	if !c.keyComponentTypesExplicit {
 		c.keyComponentTypes = normalizePhysicalKeyTypes(nil, len(c.columnNames))
 	}
@@ -609,7 +609,7 @@ func (c *ValueIndexScanMatchCandidate) WithRootKeyExpression(root *gen.KeyExpres
 // collapsed a tautology to the constant (IndexPredicate.java:344-345).
 //
 // Only a PROVED tautology is dropped; anything unprovable stays sparse.
-func (c *ValueIndexScanMatchCandidate) WithPredicateProto(pred *gen.Predicate) *ValueIndexScanMatchCandidate {
+func (c *ValueIndexScanMatchCandidate) WithPredicateProto(pred *metadatapb.Predicate) *ValueIndexScanMatchCandidate {
 	if pred == nil {
 		c.predicateProto = nil
 		return c
@@ -654,20 +654,20 @@ func (c *ValueIndexScanMatchCandidate) HasOpaqueFilter() bool {
 
 // GetPredicateProto returns a defensive copy of the sparse-index predicate, or
 // nil for a full index.
-func (c *ValueIndexScanMatchCandidate) GetPredicateProto() *gen.Predicate {
+func (c *ValueIndexScanMatchCandidate) GetPredicateProto() *metadatapb.Predicate {
 	if c.predicateProto == nil {
 		return nil
 	}
-	return proto.Clone(c.predicateProto).(*gen.Predicate)
+	return proto.Clone(c.predicateProto).(*metadatapb.Predicate)
 }
 
 // GetRootKeyExpression returns a defensive copy of the record-layer
 // key-expression AST, or nil when the candidate was built from flat metadata.
-func (c *ValueIndexScanMatchCandidate) GetRootKeyExpression() *gen.KeyExpression {
+func (c *ValueIndexScanMatchCandidate) GetRootKeyExpression() *metadatapb.KeyExpression {
 	if c.rootKeyExpression == nil {
 		return nil
 	}
-	return proto.Clone(c.rootKeyExpression).(*gen.KeyExpression)
+	return proto.Clone(c.rootKeyExpression).(*metadatapb.KeyExpression)
 }
 
 // GetCommonPrimaryKeyValues returns the index's structural common primary key
@@ -946,7 +946,7 @@ func (c *ValueIndexScanMatchCandidate) GetTraversal() *Traversal {
 
 // effectiveRootKeyExpression is the stored root, or the root the flat column
 // metadata spells when the candidate carries none.
-func (c *ValueIndexScanMatchCandidate) effectiveRootKeyExpression() *gen.KeyExpression {
+func (c *ValueIndexScanMatchCandidate) effectiveRootKeyExpression() *metadatapb.KeyExpression {
 	if c.rootKeyExpression != nil {
 		return c.rootKeyExpression
 	}

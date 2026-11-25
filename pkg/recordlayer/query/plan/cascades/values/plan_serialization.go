@@ -12,7 +12,7 @@ import (
 	"math"
 	"strings"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/protoname"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
@@ -52,32 +52,32 @@ func NewSerializationContext() *SerializationContext {
 	return &SerializationContext{recordIDs: map[string]int32{}, records: map[int32]*RecordType{}}
 }
 
-var primitiveTypeCodes = map[TypeCode]gen.PType_PTypeCode{
-	TypeCodeBoolean: gen.PType_BOOLEAN,
-	TypeCodeBytes:   gen.PType_BYTES,
-	TypeCodeDouble:  gen.PType_DOUBLE,
-	TypeCodeFloat:   gen.PType_FLOAT,
-	TypeCodeInt:     gen.PType_INT,
-	TypeCodeLong:    gen.PType_LONG,
-	TypeCodeString:  gen.PType_STRING,
-	TypeCodeVersion: gen.PType_VERSION,
-	TypeCodeUnknown: gen.PType_UNKNOWN,
+var primitiveTypeCodes = map[TypeCode]metadatapb.PType_PTypeCode{
+	TypeCodeBoolean: metadatapb.PType_BOOLEAN,
+	TypeCodeBytes:   metadatapb.PType_BYTES,
+	TypeCodeDouble:  metadatapb.PType_DOUBLE,
+	TypeCodeFloat:   metadatapb.PType_FLOAT,
+	TypeCodeInt:     metadatapb.PType_INT,
+	TypeCodeLong:    metadatapb.PType_LONG,
+	TypeCodeString:  metadatapb.PType_STRING,
+	TypeCodeVersion: metadatapb.PType_VERSION,
+	TypeCodeUnknown: metadatapb.PType_UNKNOWN,
 }
 
 // TypeToProto is Java's Type.toTypeProto.
-func (c *SerializationContext) TypeToProto(t Type) (*gen.PType, error) {
+func (c *SerializationContext) TypeToProto(t Type) (*metadatapb.PType, error) {
 	switch tt := t.(type) {
 	case *VectorType:
-		return &gen.PType{SpecificType: &gen.PType_VectorType{VectorType: &gen.PType_PVectorType{IsNullable: proto.Bool(tt.Nullable), Precision: proto.Int32(int32(tt.Precision)), Dimensions: proto.Int32(int32(tt.Dimensions))}}}, nil
+		return &metadatapb.PType{SpecificType: &metadatapb.PType_VectorType{VectorType: &metadatapb.PType_PVectorType{IsNullable: proto.Bool(tt.Nullable), Precision: proto.Int32(int32(tt.Precision)), Dimensions: proto.Int32(int32(tt.Dimensions))}}}, nil
 	case *RecordType:
 		key := recordIdentityKey(tt)
 		if id, ok := c.recordIDs[key]; ok {
-			return &gen.PType{SpecificType: &gen.PType_RecordType{RecordType: &gen.PType_PRecordType{ReferenceId: proto.Int32(id)}}}, nil
+			return &metadatapb.PType{SpecificType: &metadatapb.PType_RecordType{RecordType: &metadatapb.PType_PRecordType{ReferenceId: proto.Int32(id)}}}, nil
 		}
 		id := int32(len(c.recordIDs))
 		c.recordIDs[key] = id
 		c.records[id] = tt
-		rt := &gen.PType_PRecordType{ReferenceId: proto.Int32(id), IsNullable: proto.Bool(tt.Nullable)}
+		rt := &metadatapb.PType_PRecordType{ReferenceId: proto.Int32(id), IsNullable: proto.Bool(tt.Nullable)}
 		if tt.RecordName != "" {
 			rt.Name = proto.String(tt.RecordName)
 		}
@@ -91,13 +91,13 @@ func (c *SerializationContext) TypeToProto(t Type) (*gen.PType, error) {
 			}
 			rt.Fields = append(rt.Fields, pf)
 		}
-		return &gen.PType{SpecificType: &gen.PType_RecordType{RecordType: rt}}, nil
+		return &metadatapb.PType{SpecificType: &metadatapb.PType_RecordType{RecordType: rt}}, nil
 	case *EnumType:
 		// Type.Enum.toProto: the members, then the name and a differing
 		// storage name.
-		et := &gen.PType_PEnumType{IsNullable: proto.Bool(tt.Nullable)}
+		et := &metadatapb.PType_PEnumType{IsNullable: proto.Bool(tt.Nullable)}
 		for _, v := range tt.Values {
-			pv := &gen.PType_PEnumType_PEnumValue{Name: proto.String(v.Name), Number: proto.Int32(v.Number)}
+			pv := &metadatapb.PType_PEnumType_PEnumValue{Name: proto.String(v.Name), Number: proto.Int32(v.Number)}
 			storage := v.StorageName
 			if storage == "" {
 				storage = DerivedStorageName(v.Name)
@@ -113,13 +113,13 @@ func (c *SerializationContext) TypeToProto(t Type) (*gen.PType, error) {
 		if tt.StorageName != "" && tt.StorageName != tt.EnumName {
 			et.StorageName = proto.String(tt.StorageName)
 		}
-		return &gen.PType{SpecificType: &gen.PType_EnumType{EnumType: et}}, nil
+		return &metadatapb.PType{SpecificType: &metadatapb.PType_EnumType{EnumType: et}}, nil
 	case *ArrayType:
 		elem, err := c.TypeToProto(tt.ElementType)
 		if err != nil {
 			return nil, err
 		}
-		return &gen.PType{SpecificType: &gen.PType_ArrayType{ArrayType: &gen.PType_PArrayType{
+		return &metadatapb.PType{SpecificType: &metadatapb.PType_ArrayType{ArrayType: &metadatapb.PType_PArrayType{
 			IsNullable: proto.Bool(tt.Nullable), ElementType: elem,
 		}}}, nil
 	}
@@ -128,15 +128,15 @@ func (c *SerializationContext) TypeToProto(t Type) (*gen.PType, error) {
 	}
 	switch t.Code() {
 	case TypeCodeNull:
-		return &gen.PType{SpecificType: &gen.PType_NullType{NullType: &gen.PType_PNullType{}}}, nil
+		return &metadatapb.PType{SpecificType: &metadatapb.PType_NullType{NullType: &metadatapb.PType_PNullType{}}}, nil
 	case TypeCodeUuid:
-		return &gen.PType{SpecificType: &gen.PType_UuidType{UuidType: &gen.PType_PUuidType{IsNullable: proto.Bool(t.IsNullable())}}}, nil
+		return &metadatapb.PType{SpecificType: &metadatapb.PType_UuidType{UuidType: &metadatapb.PType_PUuidType{IsNullable: proto.Bool(t.IsNullable())}}}, nil
 	}
 	code, ok := primitiveTypeCodes[t.Code()]
 	if !ok {
 		return nil, fmt.Errorf("serialize type: unsupported %s", t)
 	}
-	return &gen.PType{SpecificType: &gen.PType_PrimitiveType{PrimitiveType: &gen.PType_PPrimitiveType{
+	return &metadatapb.PType{SpecificType: &metadatapb.PType_PrimitiveType{PrimitiveType: &metadatapb.PType_PPrimitiveType{
 		TypeCode: code.Enum(), IsNullable: proto.Bool(t.IsNullable()),
 	}}}, nil
 }
@@ -144,7 +144,7 @@ func (c *SerializationContext) TypeToProto(t Type) (*gen.PType, error) {
 // fieldToProto is Java's Type.Record.Field.toProto: a descriptor-derived
 // field keeps its protobuf number and storage name; a constructed one is
 // numbered by position from 1 (Type.Record.normalizeFields).
-func (c *SerializationContext) fieldToProto(f Field, ordinal int) (*gen.PType_PRecordType_PField, error) {
+func (c *SerializationContext) fieldToProto(f Field, ordinal int) (*metadatapb.PType_PRecordType_PField, error) {
 	ft, err := c.TypeToProto(f.FieldType)
 	if err != nil {
 		return nil, err
@@ -153,7 +153,7 @@ func (c *SerializationContext) fieldToProto(f Field, ordinal int) (*gen.PType_PR
 	if index == 0 {
 		index = int32(ordinal + 1)
 	}
-	pf := &gen.PType_PRecordType_PField{FieldType: ft, FieldIndex: proto.Int32(index)}
+	pf := &metadatapb.PType_PRecordType_PField{FieldType: ft, FieldIndex: proto.Int32(index)}
 	if f.Name != "" {
 		pf.FieldName = proto.String(f.Name)
 	}
@@ -216,7 +216,7 @@ func recordIdentityKey(t Type) string {
 }
 
 // TypeFromProto is Java's Type.fromTypeProto.
-func (c *SerializationContext) TypeFromProto(p *gen.PType) (Type, error) {
+func (c *SerializationContext) TypeFromProto(p *metadatapb.PType) (Type, error) {
 	switch {
 	case p.GetVectorType() != nil:
 		v := p.GetVectorType()
@@ -291,13 +291,13 @@ func (c *SerializationContext) TypeFromProto(p *gen.PType) (Type, error) {
 
 // ValueToProto is Java's Value.toValueProto for the values a SQL macro body
 // is built from.
-func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
+func (c *SerializationContext) ValueToProto(v Value) (*metadatapb.PValue, error) {
 	if qov, ok := AsQuantifiedObjectValue(v); ok {
 		t, err := c.TypeToProto(qov.FlowedType())
 		if err != nil {
 			return nil, err
 		}
-		return &gen.PValue{SpecificValue: &gen.PValue_QuantifiedObjectValue{QuantifiedObjectValue: &gen.PQuantifiedObjectValue{
+		return &metadatapb.PValue{SpecificValue: &metadatapb.PValue_QuantifiedObjectValue{QuantifiedObjectValue: &metadatapb.PQuantifiedObjectValue{
 			Alias: proto.String(qov.Correlation().Name()), ResultType: t,
 		}}}, nil
 	}
@@ -306,7 +306,7 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		if err != nil {
 			return nil, err
 		}
-		path := &gen.PFieldPath{}
+		path := &metadatapb.PFieldPath{}
 		parent := fv.ChildValue().Type()
 		for i := 0; i < fv.Path().Len(); i++ {
 			acc, _ := fv.Path().Accessor(i)
@@ -318,7 +318,7 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 				return nil, fmt.Errorf("serialize field path: %s has no field %d", parent, acc.Ordinal())
 			}
 			f := rt.Fields[acc.Ordinal()]
-			pa := &gen.PFieldPath_PResolvedAccessor{Name: proto.String(f.Name), Ordinal: proto.Int32(int32(acc.Ordinal()))}
+			pa := &metadatapb.PFieldPath_PResolvedAccessor{Name: proto.String(f.Name), Ordinal: proto.Int32(int32(acc.Ordinal()))}
 			if pa.Type, err = c.TypeToProto(f.FieldType); err != nil {
 				return nil, err
 			}
@@ -328,7 +328,7 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 			path.FieldAccessors = append(path.FieldAccessors, pa)
 			parent = f.FieldType
 		}
-		return &gen.PValue{SpecificValue: &gen.PValue_FieldValue{FieldValue: &gen.PFieldValue{ChildValue: child, FieldPath: path}}}, nil
+		return &metadatapb.PValue{SpecificValue: &metadatapb.PValue_FieldValue{FieldValue: &metadatapb.PFieldValue{ChildValue: child, FieldPath: path}}}, nil
 	}
 	switch vv := v.(type) {
 	case *ArithmeticValue:
@@ -348,7 +348,7 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &gen.PValue{SpecificValue: &gen.PValue_ArithmeticValue{ArithmeticValue: &gen.PArithmeticValue{
+		return &metadatapb.PValue{SpecificValue: &metadatapb.PValue_ArithmeticValue{ArithmeticValue: &metadatapb.PArithmeticValue{
 			Operator: op.Enum(), LeftChild: left, RightChild: right,
 		}}}, nil
 	case *NullValue:
@@ -356,7 +356,7 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &gen.PValue{SpecificValue: &gen.PValue_NullValue{NullValue: &gen.PNullValue{ResultType: t}}}, nil
+		return &metadatapb.PValue{SpecificValue: &metadatapb.PValue_NullValue{NullValue: &metadatapb.PNullValue{ResultType: t}}}, nil
 	case *ConstantValue:
 		obj, err := literalToProto(vv.Value, vv.Typ)
 		if err != nil {
@@ -372,9 +372,9 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 			// RealVector rather than byte[], independently of the literal type.
 			obj.Type = t
 		}
-		return &gen.PValue{SpecificValue: &gen.PValue_LiteralValue{LiteralValue: &gen.PLiteralValue{Value: obj, ResultType: t}}}, nil
+		return &metadatapb.PValue{SpecificValue: &metadatapb.PValue_LiteralValue{LiteralValue: &metadatapb.PLiteralValue{Value: obj, ResultType: t}}}, nil
 	case *RecordConstructorValue:
-		rc := &gen.PRecordConstructorValue{}
+		rc := &metadatapb.PRecordConstructorValue{}
 		for i, f := range vv.Fields {
 			pf, err := c.fieldToProto(Field{Name: f.Name, FieldType: f.Value.Type()}, i)
 			if err != nil {
@@ -384,14 +384,14 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 			if err != nil {
 				return nil, err
 			}
-			rc.Columns = append(rc.Columns, &gen.PRecordConstructorValue_PColumn{Field: pf, Value: pv})
+			rc.Columns = append(rc.Columns, &metadatapb.PRecordConstructorValue_PColumn{Field: pf, Value: pv})
 		}
 		t, err := c.TypeToProto(vv.Type())
 		if err != nil {
 			return nil, err
 		}
 		rc.ResultType = t
-		return &gen.PValue{SpecificValue: &gen.PValue_RecordConstructorValue{RecordConstructorValue: rc}}, nil
+		return &metadatapb.PValue{SpecificValue: &metadatapb.PValue_RecordConstructorValue{RecordConstructorValue: rc}}, nil
 	case *SubscriptValue:
 		index, err := c.ValueToProto(vv.Index)
 		if err != nil {
@@ -401,14 +401,14 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &gen.PValue{SpecificValue: &gen.PValue_SubscriptValue{SubscriptValue: &gen.PSubscriptValue{
+		return &metadatapb.PValue{SpecificValue: &metadatapb.PValue_SubscriptValue{SubscriptValue: &metadatapb.PSubscriptValue{
 			Index: index, Source: source,
 		}}}, nil
 	case TautologicalValue:
 		// TautologicalValue.toValueProto packs the empty PTautologicalValue.
-		return &gen.PValue{SpecificValue: &gen.PValue_AdditionalValues{AdditionalValues: &anypb.Any{TypeUrl: tautologicalValueTypeURL}}}, nil
+		return &metadatapb.PValue{SpecificValue: &metadatapb.PValue_AdditionalValues{AdditionalValues: &anypb.Any{TypeUrl: tautologicalValueTypeURL}}}, nil
 	case *ConditionSelectorValue:
-		cs := &gen.PConditionSelectorValue{}
+		cs := &metadatapb.PConditionSelectorValue{}
 		for _, impl := range vv.Implications {
 			p, err := c.ValueToProto(impl)
 			if err != nil {
@@ -416,13 +416,13 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 			}
 			cs.Implications = append(cs.Implications, p)
 		}
-		return &gen.PValue{SpecificValue: &gen.PValue_ConditionSelectorValue{ConditionSelectorValue: cs}}, nil
+		return &metadatapb.PValue{SpecificValue: &metadatapb.PValue_ConditionSelectorValue{ConditionSelectorValue: cs}}, nil
 	case *PickValue:
 		selector, err := c.ValueToProto(vv.Selector)
 		if err != nil {
 			return nil, err
 		}
-		pick := &gen.PPickValue{SelectorValue: selector}
+		pick := &metadatapb.PPickValue{SelectorValue: selector}
 		for _, alt := range vv.Alternatives {
 			p, err := c.ValueToProto(alt)
 			if err != nil {
@@ -433,7 +433,7 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		if pick.ResultType, err = c.TypeToProto(vv.Typ); err != nil {
 			return nil, err
 		}
-		return &gen.PValue{SpecificValue: &gen.PValue_PickValue{PickValue: pick}}, nil
+		return &metadatapb.PValue{SpecificValue: &metadatapb.PValue_PickValue{PickValue: pick}}, nil
 	case *InOpValue:
 		probe, err := c.ValueToProto(vv.Probe)
 		if err != nil {
@@ -443,10 +443,10 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &gen.PValue{SpecificValue: &gen.PValue_InOpValue{InOpValue: &gen.PInOpValue{ProbeValue: probe, InArrayValue: list}}}, nil
+		return &metadatapb.PValue{SpecificValue: &metadatapb.PValue_InOpValue{InOpValue: &metadatapb.PInOpValue{ProbeValue: probe, InArrayValue: list}}}, nil
 	case *BooleanValue:
 		// Java's boolean literal is a LiteralValue (LiteralValue.toProto).
-		obj := &gen.PComparableObject{SpecificObject: &gen.PComparableObject_PrimitiveObject{PrimitiveObject: &gen.Value{}}}
+		obj := &metadatapb.PComparableObject{SpecificObject: &metadatapb.PComparableObject_PrimitiveObject{PrimitiveObject: &metadatapb.Value{}}}
 		if vv.Value != nil {
 			obj.GetPrimitiveObject().BoolValue = proto.Bool(*vv.Value)
 		}
@@ -454,7 +454,7 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &gen.PValue{SpecificValue: &gen.PValue_LiteralValue{LiteralValue: &gen.PLiteralValue{Value: obj, ResultType: t}}}, nil
+		return &metadatapb.PValue{SpecificValue: &metadatapb.PValue_LiteralValue{LiteralValue: &metadatapb.PLiteralValue{Value: obj, ResultType: t}}}, nil
 	case *LikeOperatorValue:
 		src, err := c.ValueToProto(vv.Probe)
 		if err != nil {
@@ -464,7 +464,7 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &gen.PValue{SpecificValue: &gen.PValue_LikeOperatorValue{LikeOperatorValue: &gen.PLikeOperatorValue{
+		return &metadatapb.PValue{SpecificValue: &metadatapb.PValue_LikeOperatorValue{LikeOperatorValue: &metadatapb.PLikeOperatorValue{
 			SrcChild: src, PatternChild: pattern,
 		}}}, nil
 	case *BinaryRelOpValue:
@@ -473,7 +473,7 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &gen.PValue{SpecificValue: &gen.PValue_BinaryRelOpValue{BinaryRelOpValue: &gen.PBinaryRelOpValue{
+		return &metadatapb.PValue{SpecificValue: &metadatapb.PValue_BinaryRelOpValue{BinaryRelOpValue: &metadatapb.PBinaryRelOpValue{
 			Super: super, Operator: vv.PhysicalOperator().Enum(),
 		}}}, nil
 	case *UnaryRelOpValue:
@@ -481,7 +481,7 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &gen.PValue{SpecificValue: &gen.PValue_UnaryRelOpValue{UnaryRelOpValue: &gen.PUnaryRelOpValue{
+		return &metadatapb.PValue{SpecificValue: &metadatapb.PValue_UnaryRelOpValue{UnaryRelOpValue: &metadatapb.PUnaryRelOpValue{
 			Super: super, Operator: vv.PhysicalOperator().Enum(),
 		}}}, nil
 	case *AndOrValue:
@@ -494,11 +494,11 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		if err != nil {
 			return nil, err
 		}
-		op, name := gen.PAndOrValue_AND, "and"
+		op, name := metadatapb.PAndOrValue_AND, "and"
 		if vv.Op == AndOrOr {
-			op, name = gen.PAndOrValue_OR, "or"
+			op, name = metadatapb.PAndOrValue_OR, "or"
 		}
-		return &gen.PValue{SpecificValue: &gen.PValue_AndOrValue{AndOrValue: &gen.PAndOrValue{
+		return &metadatapb.PValue{SpecificValue: &metadatapb.PValue_AndOrValue{AndOrValue: &metadatapb.PAndOrValue{
 			FunctionName: proto.String(name), LeftChild: left, RightChild: right, Operator: op.Enum(),
 		}}}, nil
 	case *NotValue:
@@ -506,7 +506,7 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &gen.PValue{SpecificValue: &gen.PValue_NotValue{NotValue: &gen.PNotValue{Child: child}}}, nil
+		return &metadatapb.PValue{SpecificValue: &metadatapb.PValue_NotValue{NotValue: &metadatapb.PNotValue{Child: child}}}, nil
 	case *PatternForLikeValue:
 		pattern, err := c.ValueToProto(vv.PatternChild)
 		if err != nil {
@@ -516,11 +516,11 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &gen.PValue{SpecificValue: &gen.PValue_PatternForLikeValue{PatternForLikeValue: &gen.PPatternForLikeValue{
+		return &metadatapb.PValue{SpecificValue: &metadatapb.PValue_PatternForLikeValue{PatternForLikeValue: &metadatapb.PPatternForLikeValue{
 			PatternChild: pattern, EscapeChild: escape,
 		}}}, nil
 	case *ArrayConstructorValue:
-		ac := &gen.PAbstractArrayConstructorValue{}
+		ac := &metadatapb.PAbstractArrayConstructorValue{}
 		for _, e := range vv.Elements {
 			pe, err := c.ValueToProto(e)
 			if err != nil {
@@ -533,8 +533,8 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 			return nil, err
 		}
 		ac.ElementType = t
-		return &gen.PValue{SpecificValue: &gen.PValue_LightArrayConstructorValue{
-			LightArrayConstructorValue: &gen.PLightArrayConstructorValue{Super: ac},
+		return &metadatapb.PValue{SpecificValue: &metadatapb.PValue_LightArrayConstructorValue{
+			LightArrayConstructorValue: &metadatapb.PLightArrayConstructorValue{Super: ac},
 		}}, nil
 	}
 	if pv, ok := v.(*PromoteValue); ok {
@@ -550,7 +550,7 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &gen.PValue{SpecificValue: &gen.PValue_PromoteValue{PromoteValue: &gen.PPromoteValue{
+		return &metadatapb.PValue{SpecificValue: &metadatapb.PValue_PromoteValue{PromoteValue: &metadatapb.PPromoteValue{
 			InValue: in, PromoteToType: to, PromotionTrie: trie,
 		}}}, nil
 	}
@@ -568,7 +568,7 @@ var javaTypeCodeNames = map[TypeCode]string{
 // (PromoteValue.java:353-405) for primitive and array types: an array node
 // carries an ArrayCoercionBiFunction and, when the elements need one, the
 // element trie under index -1.
-func (c *SerializationContext) promotionTrie(from, to Type) (*gen.PCoercionTrieNode, error) {
+func (c *SerializationContext) promotionTrie(from, to Type) (*metadatapb.PCoercionTrieNode, error) {
 	fa, fromArray := from.(*ArrayType)
 	ta, toArray := to.(*ArrayType)
 	if !fromArray || !toArray {
@@ -589,14 +589,14 @@ func (c *SerializationContext) promotionTrie(from, to Type) (*gen.PCoercionTrieN
 	if err != nil {
 		return nil, err
 	}
-	node := &gen.PCoercionTrieNode{
+	node := &metadatapb.PCoercionTrieNode{
 		ChildrenMapIsNull: proto.Bool(elems == nil),
-		Value: &gen.PCoercionBiFunction{SpecificFunction: &gen.PCoercionBiFunction_ArrayCoercionBiFunction{
-			ArrayCoercionBiFunction: &gen.PArrayCoercionBiFunction{FromArrayType: fromType, ToArrayType: toType, ElementsTrie: elems},
+		Value: &metadatapb.PCoercionBiFunction{SpecificFunction: &metadatapb.PCoercionBiFunction_ArrayCoercionBiFunction{
+			ArrayCoercionBiFunction: &metadatapb.PArrayCoercionBiFunction{FromArrayType: fromType, ToArrayType: toType, ElementsTrie: elems},
 		}},
 	}
 	if elems != nil {
-		node.ChildPair = []*gen.PCoercionTrieNode_IntChildPair{{Index: proto.Int32(-1), ChildCoercionTrieNode: elems}}
+		node.ChildPair = []*metadatapb.PCoercionTrieNode_IntChildPair{{Index: proto.Int32(-1), ChildCoercionTrieNode: elems}}
 	}
 	return node, nil
 }
@@ -604,7 +604,7 @@ func (c *SerializationContext) promotionTrie(from, to Type) (*gen.PCoercionTrieN
 // primitivePromotionTrie is PromoteValue.computePromotionsTrie for a
 // primitive (or NULL) source: a leaf naming the physical coercion, or none
 // when only nullability differs.
-func primitivePromotionTrie(from, to Type) (*gen.PCoercionTrieNode, error) {
+func primitivePromotionTrie(from, to Type) (*metadatapb.PCoercionTrieNode, error) {
 	if from == nil || to == nil {
 		return nil, fmt.Errorf("serialize promotion: untyped")
 	}
@@ -615,19 +615,19 @@ func primitivePromotionTrie(from, to Type) (*gen.PCoercionTrieNode, error) {
 		return nil, fmt.Errorf("serialize promotion: unsupported %s to %s", from, to)
 	}
 	name := javaTypeCodeNames[from.Code()] + "_TO_" + javaTypeCodeNames[to.Code()]
-	op, ok := gen.PPrimitiveCoercionBiFunction_PPhysicalOperator_value[name]
+	op, ok := metadatapb.PPrimitiveCoercionBiFunction_PPhysicalOperator_value[name]
 	if !ok {
 		return nil, fmt.Errorf("serialize promotion: no coercion %s", name)
 	}
-	return &gen.PCoercionTrieNode{
-		Value: &gen.PCoercionBiFunction{SpecificFunction: &gen.PCoercionBiFunction_PrimitiveCoercionBiFunction{
-			PrimitiveCoercionBiFunction: &gen.PPrimitiveCoercionBiFunction{Operator: gen.PPrimitiveCoercionBiFunction_PPhysicalOperator(op).Enum()},
+	return &metadatapb.PCoercionTrieNode{
+		Value: &metadatapb.PCoercionBiFunction{SpecificFunction: &metadatapb.PCoercionBiFunction_PrimitiveCoercionBiFunction{
+			PrimitiveCoercionBiFunction: &metadatapb.PPrimitiveCoercionBiFunction{Operator: metadatapb.PPrimitiveCoercionBiFunction_PPhysicalOperator(op).Enum()},
 		}},
 		ChildrenMapIsNull: proto.Bool(true),
 	}, nil
 }
 
-func literalToProto(v any, typ Type) (*gen.PComparableObject, error) {
+func literalToProto(v any, typ Type) (*metadatapb.PComparableObject, error) {
 	// SQL uses wide Go carriers even for INT/FLOAT literals. Java restores
 	// the runtime box from the value field, not PLiteralValue.result_type;
 	// writing the wide carrier would break Integer/Float arithmetic casts.
@@ -668,7 +668,7 @@ func literalToProto(v any, typ Type) (*gen.PComparableObject, error) {
 			}
 		}
 	}
-	pv := &gen.Value{}
+	pv := &metadatapb.Value{}
 	switch x := v.(type) {
 	case nil:
 		// LiteralKeyExpression.toProtoValue(null): an empty Value.
@@ -689,10 +689,10 @@ func literalToProto(v any, typ Type) (*gen.PComparableObject, error) {
 	default:
 		return nil, fmt.Errorf("serialize literal: unsupported %T", v)
 	}
-	return &gen.PComparableObject{SpecificObject: &gen.PComparableObject_PrimitiveObject{PrimitiveObject: pv}}, nil
+	return &metadatapb.PComparableObject{SpecificObject: &metadatapb.PComparableObject_PrimitiveObject{PrimitiveObject: pv}}, nil
 }
 
-func literalFromProto(p *gen.PComparableObject) (any, error) {
+func literalFromProto(p *metadatapb.PComparableObject) (any, error) {
 	pv := p.GetPrimitiveObject()
 	switch {
 	case pv == nil:
@@ -716,7 +716,7 @@ func literalFromProto(p *gen.PComparableObject) (any, error) {
 }
 
 // ValueFromProto is Java's Value.fromValueProto for the same values.
-func (c *SerializationContext) ValueFromProto(p *gen.PValue) (Value, error) {
+func (c *SerializationContext) ValueFromProto(p *metadatapb.PValue) (Value, error) {
 	switch {
 	case p.GetQuantifiedObjectValue() != nil:
 		q := p.GetQuantifiedObjectValue()
@@ -917,9 +917,9 @@ func (c *SerializationContext) ValueFromProto(p *gen.PValue) (Value, error) {
 			return nil, err
 		}
 		switch a.GetOperator() {
-		case gen.PAndOrValue_AND:
+		case metadatapb.PAndOrValue_AND:
 			return NewAndOrValue(AndOrAnd, left, right), nil
-		case gen.PAndOrValue_OR:
+		case metadatapb.PAndOrValue_OR:
 			return NewAndOrValue(AndOrOr, left, right), nil
 		}
 		return nil, fmt.Errorf("deserialize and/or: operator %v", a.GetOperator())
@@ -954,13 +954,13 @@ func (c *SerializationContext) ValueFromProto(p *gen.PValue) (Value, error) {
 }
 
 // relOpSuperToProto is RelOpValue.toRelOpValueProto.
-func (c *SerializationContext) relOpSuperToProto(name string, comparison RelOpComparison, children ...Value) (*gen.PRelOpValue, error) {
+func (c *SerializationContext) relOpSuperToProto(name string, comparison RelOpComparison, children ...Value) (*metadatapb.PRelOpValue, error) {
 	ct, ok := relOpComparisonProto[comparison]
 	if !ok {
 		return nil, fmt.Errorf("serialize rel op: comparison %d", comparison)
 	}
 	// Comparisons.Type.toProto writes PComparisonType.
-	p := &gen.PRelOpValue{FunctionName: proto.String(name), ComparisonType: ct.Enum()}
+	p := &metadatapb.PRelOpValue{FunctionName: proto.String(name), ComparisonType: ct.Enum()}
 	for _, child := range children {
 		pc, err := c.ValueToProto(child)
 		if err != nil {
@@ -971,7 +971,7 @@ func (c *SerializationContext) relOpSuperToProto(name string, comparison RelOpCo
 	return p, nil
 }
 
-func (c *SerializationContext) relOpSuperFromProto(p *gen.PRelOpValue, arity int) (string, RelOpComparison, []Value, error) {
+func (c *SerializationContext) relOpSuperFromProto(p *metadatapb.PRelOpValue, arity int) (string, RelOpComparison, []Value, error) {
 	var comparison RelOpComparison
 	for k, v := range relOpComparisonProto {
 		if v == p.GetComparisonType() {

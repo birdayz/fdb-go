@@ -18,7 +18,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -493,7 +493,7 @@ func TestFDB_SchemaRebindRejectsRecordTypeKeyChange(t *testing.T) {
 		md1proto, err := build(name).Underlying().ToProto()
 		g.Expect(err).ToNot(gomega.HaveOccurred())
 		g.Expect(md1proto.GetRecordTypes()).To(gomega.HaveLen(1))
-		md1proto.RecordTypes[0].ExplicitKey = &gen.Value{LongValue: proto.Int64(1)}
+		md1proto.RecordTypes[0].ExplicitKey = &metadatapb.Value{LongValue: proto.Int64(1)}
 		md1, err := recordlayer.RecordMetaDataFromProto(md1proto)
 		g.Expect(err).ToNot(gomega.HaveOccurred())
 		tmpl1, err := metadata.NewRecordLayerSchemaTemplateWithVersion(name, md1, 1)
@@ -927,7 +927,7 @@ func TestFDB_SchemaRebindOfALiteralCarrierChange(t *testing.T) {
 	tc := cat.SchemaTemplateCatalog()
 
 	// version tags the template; lit is the literal of the index `add(V, lit)`.
-	build := func(name string, version int, lit *gen.Value) api.SchemaTemplate {
+	build := func(name string, version int, lit *metadatapb.Value) api.SchemaTemplate {
 		b := metadata.NewSchemaTemplateBuilder().SetName(name)
 		b.AddTable("T", []metadata.ColumnSpec{
 			metadata.NewColumnSpec("ID", api.NewLongType(false), 1),
@@ -937,15 +937,15 @@ func TestFDB_SchemaRebindOfALiteralCarrierChange(t *testing.T) {
 		g.Expect(err).ToNot(gomega.HaveOccurred())
 		mdProto, err := tmpl.Underlying().ToProto()
 		g.Expect(err).ToNot(gomega.HaveOccurred())
-		mdProto.Indexes = append(mdProto.Indexes, &gen.Index{
+		mdProto.Indexes = append(mdProto.Indexes, &metadatapb.Index{
 			Name:                proto.String("VPLUS"),
 			RecordType:          []string{"T"},
 			AddedVersion:        proto.Int32(1),
 			LastModifiedVersion: proto.Int32(1),
-			RootExpression: &gen.KeyExpression{Function: &gen.Function{
+			RootExpression: &metadatapb.KeyExpression{Function: &metadatapb.Function{
 				Name: proto.String("add"),
-				Arguments: &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{
-					{Field: &gen.Field{FieldName: proto.String("V"), FanType: gen.Field_SCALAR.Enum()}},
+				Arguments: &metadatapb.KeyExpression{Then: &metadatapb.Then{Child: []*metadatapb.KeyExpression{
+					{Field: &metadatapb.Field{FieldName: proto.String("V"), FanType: metadatapb.Field_SCALAR.Enum()}},
 					{Value: lit},
 				}}},
 			}},
@@ -969,13 +969,13 @@ func TestFDB_SchemaRebindOfALiteralCarrierChange(t *testing.T) {
 	}
 
 	// Carried: v2 differs only in the carrier, and is CHANGED.
-	carried1 := build("widen-carried", 1, &gen.Value{LongValue: proto.Int64(1)})
+	carried1 := build("widen-carried", 1, &metadatapb.Value{LongValue: proto.Int64(1)})
 	g.Expect(run(func(tx api.Transaction) error {
 		g.Expect(tc.CreateTemplate(tx, carried1)).To(gomega.Succeed())
 		return cat.SaveSchema(tx, carried1.GenerateSchema("/FRL/widendb", "carried"), true, api.SchemaExistsError)
 	})).To(gomega.Succeed())
 	g.Expect(run(func(tx api.Transaction) error {
-		return tc.CreateTemplate(tx, build("widen-carried", 2, &gen.Value{IntValue: proto.Int32(1)}))
+		return tc.CreateTemplate(tx, build("widen-carried", 2, &metadatapb.Value{IntValue: proto.Int32(1)}))
 	})).To(gomega.Succeed())
 	g.Expect(run(func(tx api.Transaction) error {
 		v1, err := tc.LoadTemplateProto(tx, "widen-carried", 1)
@@ -998,15 +998,15 @@ func TestFDB_SchemaRebindOfALiteralCarrierChange(t *testing.T) {
 	// Written raw: v2 differs only in the carrier, v3 in the value, each with
 	// the index's last-modified version unchanged: both refused, the binding
 	// stays at v1.
-	raw1 := build("widen-raw", 1, &gen.Value{LongValue: proto.Int64(1)})
+	raw1 := build("widen-raw", 1, &metadatapb.Value{LongValue: proto.Int64(1)})
 	g.Expect(run(func(tx api.Transaction) error {
 		g.Expect(tc.CreateTemplate(tx, raw1)).To(gomega.Succeed())
 		return cat.SaveSchema(tx, raw1.GenerateSchema("/FRL/widendb", "pub"), true, api.SchemaExistsError)
 	})).To(gomega.Succeed())
 	for _, c := range []struct {
 		version int
-		lit     *gen.Value
-	}{{2, &gen.Value{IntValue: proto.Int32(1)}}, {3, &gen.Value{LongValue: proto.Int64(2)}}} {
+		lit     *metadatapb.Value
+	}{{2, &metadatapb.Value{IntValue: proto.Int32(1)}}, {3, &metadatapb.Value{LongValue: proto.Int64(2)}}} {
 		g.Expect(run(func(tx api.Transaction) error {
 			return rawCreateTemplate(t, cat, tx, build("widen-raw", c.version, c.lit))
 		})).To(gomega.Succeed())

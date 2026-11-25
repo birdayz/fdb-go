@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/dst"
@@ -63,7 +63,7 @@ var _ = Describe("IndexingHeartbeat", func() {
 			peer := NewIndexingHeartbeat("JAVA_PEER", 60_000, false, env)
 			self := NewIndexingHeartbeat("GO_SELF", 60_000, false, env)
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-				data, err := proto.Marshal(&gen.IndexBuildHeartbeat{
+				data, err := proto.Marshal(&metadatapb.IndexBuildHeartbeat{
 					Info: proto.String("JAVA_PEER"), HeartbeatTimeMilliseconds: proto.Int64(dst.Epoch.UnixMilli() - age),
 				})
 				if err != nil {

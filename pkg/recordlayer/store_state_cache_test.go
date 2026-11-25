@@ -13,7 +13,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 )
@@ -1385,7 +1385,7 @@ var _ = Describe("Store State Cache", func() {
 
 	Describe("FDBRecordStoreStateCacheEntry", func() {
 		It("GetRecordStoreState returns the embedded state", func() {
-			header := &gen.DataStoreInfo{}
+			header := &metadatapb.DataStoreInfo{}
 			states := map[string]IndexState{"idx": IndexStateWriteOnly}
 			entry := &FDBRecordStoreStateCacheEntry{
 				recordStoreState: &RecordStoreState{
@@ -1421,7 +1421,7 @@ var _ = Describe("Store State Cache", func() {
 			cache.addToCache("key1", &FDBRecordStoreStateCacheEntry{
 				metaDataVersionStamp: oldStamp,
 				recordStoreState: &RecordStoreState{
-					StoreHeader: &gen.DataStoreInfo{Cacheable: &trueVal},
+					StoreHeader: &metadatapb.DataStoreInfo{Cacheable: &trueVal},
 				},
 			})
 
@@ -1445,7 +1445,7 @@ var _ = Describe("Store State Cache", func() {
 			cache.addToCache("key1", &FDBRecordStoreStateCacheEntry{
 				metaDataVersionStamp: newerStamp,
 				recordStoreState: &RecordStoreState{
-					StoreHeader: &gen.DataStoreInfo{Cacheable: &trueVal},
+					StoreHeader: &metadatapb.DataStoreInfo{Cacheable: &trueVal},
 				},
 			})
 
@@ -1463,7 +1463,7 @@ var _ = Describe("Store State Cache", func() {
 			cache.addToCache("key1", &FDBRecordStoreStateCacheEntry{
 				metaDataVersionStamp: nil,
 				recordStoreState: &RecordStoreState{
-					StoreHeader: &gen.DataStoreInfo{Cacheable: &trueVal},
+					StoreHeader: &metadatapb.DataStoreInfo{Cacheable: &trueVal},
 				},
 			})
 
@@ -1575,7 +1575,7 @@ var _ = Describe("Store State Cache", func() {
 			cache.addToCache("a", &FDBRecordStoreStateCacheEntry{
 				metaDataVersionStamp: []byte{0x01},
 				recordStoreState: &RecordStoreState{
-					StoreHeader: &gen.DataStoreInfo{Cacheable: &trueVal},
+					StoreHeader: &metadatapb.DataStoreInfo{Cacheable: &trueVal},
 				},
 			})
 			// Small pause to ensure different timestamps.
@@ -1584,7 +1584,7 @@ var _ = Describe("Store State Cache", func() {
 			cache.addToCache("b", &FDBRecordStoreStateCacheEntry{
 				metaDataVersionStamp: []byte{0x02},
 				recordStoreState: &RecordStoreState{
-					StoreHeader: &gen.DataStoreInfo{Cacheable: &trueVal},
+					StoreHeader: &metadatapb.DataStoreInfo{Cacheable: &trueVal},
 				},
 			})
 
@@ -1597,7 +1597,7 @@ var _ = Describe("Store State Cache", func() {
 			cache.addToCache("c", &FDBRecordStoreStateCacheEntry{
 				metaDataVersionStamp: []byte{0x03},
 				recordStoreState: &RecordStoreState{
-					StoreHeader: &gen.DataStoreInfo{Cacheable: &trueVal},
+					StoreHeader: &metadatapb.DataStoreInfo{Cacheable: &trueVal},
 				},
 			})
 

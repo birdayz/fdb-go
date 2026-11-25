@@ -22,6 +22,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/core/catalog"
 )
 
@@ -503,7 +504,7 @@ func lowerStatusHeader(t *testing.T, ctx context.Context, rec *recordlayer.FDBDa
 		if err != nil {
 			return nil, err
 		}
-		info := &gen.DataStoreInfo{}
+		info := &metadatapb.DataStoreInfo{}
 		if err := recordlayer.UnmarshalAsJava(raw, info); err != nil {
 			return nil, err
 		}

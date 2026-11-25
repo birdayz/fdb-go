@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -216,7 +216,7 @@ var _ = Describe("SaveRecordWithVersion", func() {
 				}
 				run(md, ks, format, func(store *FDBRecordStore) {
 					if api == "override-lock" && format == 0 {
-						Expect(store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test lock")).To(Succeed())
+						Expect(store.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test lock")).To(Succeed())
 					}
 					for i, version := range versions {
 						if api == "typed" {
@@ -545,7 +545,7 @@ var _ = Describe("SaveRecordWithVersion", func() {
 		ks := specSubspace()
 		v := complete(5)
 		run(md, ks, 0, func(store *FDBRecordStore) {
-			Expect(store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test lock")).To(Succeed())
+			Expect(store.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test lock")).To(Succeed())
 		})
 		run(md, ks, 0, func(store *FDBRecordStore) {
 			_, err := store.SaveRecordWithVersion(order(1), RecordExistenceCheckNone, v, VersionstampSaveBehaviorIfPresent)

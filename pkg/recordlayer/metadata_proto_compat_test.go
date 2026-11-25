@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"google.golang.org/protobuf/proto"
@@ -25,7 +25,7 @@ import (
 // bareTypeRoundTrip serializes real metadata, rewrites one index's proto the way
 // an older or Java-side writer would have, and reads it back through the actual
 // load path (RecordMetaDataFromProto -> ... -> Build, validators included).
-func bareTypeRoundTrip(t *testing.T, mutate func(*gen.Index)) (*RecordMetaData, error) {
+func bareTypeRoundTrip(t *testing.T, mutate func(*metadatapb.Index)) (*RecordMetaData, error) {
 	t.Helper()
 	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
@@ -92,7 +92,7 @@ func TestIndexFromProto_GroupingFixupForOldMetaData(t *testing.T) {
 	} {
 		t.Run(tc.indexType, func(t *testing.T) {
 			t.Parallel()
-			md, err := bareTypeRoundTrip(t, func(ip *gen.Index) {
+			md, err := bareTypeRoundTrip(t, func(ip *metadatapb.Index) {
 				ip.Type = proto.String(tc.indexType)
 			})
 			if !tc.wrapped {
@@ -201,18 +201,18 @@ func TestIndexFromProto_DeprecatedIndexTypeEnum(t *testing.T) {
 
 	for _, tc := range []struct {
 		name       string
-		enum       gen.Index_Type
+		enum       metadatapb.Index_Type
 		wantType   string
 		wantUnique bool
 	}{
-		{"INDEX", gen.Index_INDEX, IndexTypeValue, false},
-		{"UNIQUE", gen.Index_UNIQUE, IndexTypeValue, true},
-		{"RANK", gen.Index_RANK, IndexTypeRank, false},
-		{"RANK_UNIQUE", gen.Index_RANK_UNIQUE, IndexTypeRank, true},
+		{"INDEX", metadatapb.Index_INDEX, IndexTypeValue, false},
+		{"UNIQUE", metadatapb.Index_UNIQUE, IndexTypeValue, true},
+		{"RANK", metadatapb.Index_RANK, IndexTypeRank, false},
+		{"RANK_UNIQUE", metadatapb.Index_RANK_UNIQUE, IndexTypeRank, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			idx, err := indexFromProto(&gen.Index{
+			idx, err := indexFromProto(&metadatapb.Index{
 				Name:           proto.String("Order$legacy"),
 				IndexType:      tc.enum.Enum(),
 				RootExpression: Field("price").ToKeyExpression(), // Java requires a root
@@ -272,12 +272,12 @@ func TestIndexFromProto_DeprecatedIndexTypeEnum(t *testing.T) {
 func TestIndexFromProto_DeprecatedIndexTypeWinsOverTypeAndOptions(t *testing.T) {
 	t.Parallel()
 
-	idx, err := indexFromProto(&gen.Index{
+	idx, err := indexFromProto(&metadatapb.Index{
 		Name:           proto.String("Order$both"),
 		RootExpression: Field("price").ToKeyExpression(), // Java requires a root
-		IndexType:      gen.Index_UNIQUE.Enum(),
+		IndexType:      metadatapb.Index_UNIQUE.Enum(),
 		Type:           proto.String(IndexTypeSum), // must be IGNORED
-		Options: []*gen.Index_Option{{
+		Options: []*metadatapb.Index_Option{{
 			Key:   proto.String("some_option"),
 			Value: proto.String("from_the_list"),
 		}},
@@ -304,7 +304,7 @@ func TestIndexFromProto_DeprecatedIndexTypeWinsOverTypeAndOptions(t *testing.T) 
 // the JVM: the load fails with Java's KeyExpression.InvalidExpressionException.
 func TestBareCountIsWrappedThenRefusedAsJavaRefusesIt(t *testing.T) {
 	t.Parallel()
-	_, err := bareTypeRoundTrip(t, func(ip *gen.Index) {
+	_, err := bareTypeRoundTrip(t, func(ip *metadatapb.Index) {
 		ip.Type = proto.String(IndexTypeCount)
 	})
 	var keyErr *KeyExpressionError

@@ -11,9 +11,9 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	configv1 "fdb.dev/cmd/fdb/gen/fdb/config/v1"
-	"fdb.dev/gen"
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // sampleMetaDataBytes returns a minimal but valid serialized MetaData proto
@@ -98,7 +98,7 @@ func TestFileSource_MetaDataMissingRecords(t *testing.T) {
 	// Serialize a MetaData proto with no `records` field — simulates an
 	// incremental update or partial dump. fdb must reject it with a clear
 	// operator message pointing at the correct app-side fix.
-	bad := &gen.MetaData{Version: proto.Int32(1)}
+	bad := &metadatapb.MetaData{Version: proto.Int32(1)}
 	raw, err := proto.Marshal(bad)
 	if err != nil {
 		t.Fatalf("marshal bad metadata: %v", err)

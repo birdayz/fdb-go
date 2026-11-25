@@ -11,7 +11,7 @@ package recordlayer
 import (
 	"fmt"
 
-	gen "fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // RowNumberWindowDirection is the sort direction of a sliding window's
@@ -158,7 +158,7 @@ func fieldPathToKeyExpression(path []string) (KeyExpression, error) {
 // Java throws on any direction value it does not recognise
 // (IndexPredicate.java:657-673); Go refuses absence as well, for the reason
 // above.
-func rowNumberWindowSpecFromProto(p *gen.RowNumberWindowPredicate) (*RowNumberWindowSpec, error) {
+func rowNumberWindowSpecFromProto(p *metadatapb.RowNumberWindowPredicate) (*RowNumberWindowSpec, error) {
 	if p == nil {
 		return nil, &MetaDataError{Message: "nil row-number window predicate"}
 	}
@@ -174,9 +174,9 @@ func rowNumberWindowSpecFromProto(p *gen.RowNumberWindowPredicate) (*RowNumberWi
 		Size:          int(p.GetSize()),
 	}
 	switch p.GetDirection() {
-	case gen.RowNumberWindowPredicate_ASC:
+	case metadatapb.RowNumberWindowPredicate_ASC:
 		spec.Direction = RowNumberWindowAscending
-	case gen.RowNumberWindowPredicate_DESC:
+	case metadatapb.RowNumberWindowPredicate_DESC:
 		spec.Direction = RowNumberWindowDescending
 	default:
 		return nil, &MetaDataError{Message: fmt.Sprintf(
@@ -211,7 +211,7 @@ func rowNumberWindowSpecFromProto(p *gen.RowNumberWindowPredicate) (*RowNumberWi
 // The same discipline is written down at
 // indexpredicate.ConstantArmIsTrue: answer only for the arm the evaluator
 // would actually run.
-func findRowNumberWindowPredicateProto(p *gen.Predicate) *gen.RowNumberWindowPredicate {
+func findRowNumberWindowPredicateProto(p *metadatapb.Predicate) *metadatapb.RowNumberWindowPredicate {
 	if p == nil {
 		return nil
 	}
@@ -240,7 +240,7 @@ func findRowNumberWindowPredicateProto(p *gen.Predicate) *gen.RowNumberWindowPre
 // AND is deliberately NOT handled here: its children have to be searched, which
 // is the caller's business and differs between the factory's recursive search
 // and the maintainer's one-level lookup. Every caller tests AND first.
-func activeRowNumberWindowArm(p *gen.Predicate) *gen.RowNumberWindowPredicate {
+func activeRowNumberWindowArm(p *metadatapb.Predicate) *metadatapb.RowNumberWindowPredicate {
 	if p == nil {
 		return nil
 	}
@@ -265,7 +265,7 @@ func activeRowNumberWindowArm(p *gen.Predicate) *gen.RowNumberWindowPredicate {
 // AND is tested first for the same reason as in the factory's search above: it
 // is the arm predicateFromProto would evaluate, and answering from a shadowed
 // one would qualify the window with a declaration the evaluator ignores.
-func qualifyRowNumberWindowPredicateProto(p *gen.Predicate) *gen.RowNumberWindowPredicate {
+func qualifyRowNumberWindowPredicateProto(p *metadatapb.Predicate) *metadatapb.RowNumberWindowPredicate {
 	if p == nil {
 		return nil
 	}
@@ -322,7 +322,7 @@ func (idx *Index) RowNumberWindowSpec() (*RowNumberWindowSpec, error) {
 // window admits, so a window reached only on one branch of a disjunction would
 // describe an index whose contents depend on a choice the maintainer never
 // makes.
-func validateRowNumberWindowPlacement(p *gen.Predicate) error {
+func validateRowNumberWindowPlacement(p *metadatapb.Predicate) error {
 	if p == nil {
 		return nil
 	}
@@ -342,7 +342,7 @@ func validateRowNumberWindowPlacement(p *gen.Predicate) error {
 // message can set several, and answering from a shadowed one accepts a
 // placement Java rejects (or rejects one it accepts). Same precedence rule as
 // activeRowNumberWindowArm, applied to the whole tree rather than one node.
-func rowNumberWindowValidInConjunctivePath(p *gen.Predicate) bool {
+func rowNumberWindowValidInConjunctivePath(p *metadatapb.Predicate) bool {
 	switch {
 	case p == nil:
 		return true
@@ -379,7 +379,7 @@ func rowNumberWindowValidInConjunctivePath(p *gen.Predicate) bool {
 // what it returns; this one is named for its return value.
 // Arms are tested in predicateFromProto's order, for the reason given on
 // rowNumberWindowValidInConjunctivePath.
-func rowNumberWindowAbsent(p *gen.Predicate) bool {
+func rowNumberWindowAbsent(p *metadatapb.Predicate) bool {
 	switch {
 	case p == nil:
 		return true

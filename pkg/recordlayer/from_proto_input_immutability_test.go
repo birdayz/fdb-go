@@ -7,7 +7,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 )
@@ -43,7 +43,7 @@ func TestRecordMetaDataFromProtoDoesNotMutateItsInput(t *testing.T) {
 
 	// The independent side. proto.Clone, not a second call to the builder: the
 	// point is a snapshot that cannot move when `input` does.
-	before := proto.Clone(input).(*gen.MetaData)
+	before := proto.Clone(input).(*metadatapb.MetaData)
 
 	if _, err := RecordMetaDataFromProto(input); err != nil {
 		t.Fatalf("RecordMetaDataFromProto: %v", err)
@@ -168,7 +168,7 @@ func TestRelativeTypeNameFixtureActuallyCarriesARelativeName(t *testing.T) {
 // That is the shape the relational DDL builder produces natively; constructing
 // it by hand keeps this test inside pkg/recordlayer rather than importing the
 // SQL layer.
-func relativeTypeNameMetaData(t *testing.T) *gen.MetaData {
+func relativeTypeNameMetaData(t *testing.T) *metadatapb.MetaData {
 	t.Helper()
 
 	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
@@ -396,13 +396,13 @@ func TestRecordMetaDataFromProtoReadsAnUndeclaredEnumFromAClone(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := Field("price").ToKeyExpression()
-	root.Field.NullInterpretation = gen.Field_NullInterpretation(9).Enum()
-	input.Indexes = append(input.Indexes, &gen.Index{
+	root.Field.NullInterpretation = metadatapb.Field_NullInterpretation(9).Enum()
+	input.Indexes = append(input.Indexes, &metadatapb.Index{
 		Name: proto.String("BY_PRICE"), RecordType: []string{"Order"}, RootExpression: root,
 		Type: proto.String("value"), AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1),
 	})
 	input.Version = proto.Int32(1)
-	before := proto.Clone(input).(*gen.MetaData)
+	before := proto.Clone(input).(*metadatapb.MetaData)
 
 	md, err := RecordMetaDataFromProto(input)
 	if err != nil {
@@ -417,7 +417,7 @@ func TestRecordMetaDataFromProtoReadsAnUndeclaredEnumFromAClone(t *testing.T) {
 	}
 	for _, idx := range out.GetIndexes() {
 		if idx.GetName() == "BY_PRICE" && idx.GetRootExpression().GetField().NullInterpretation != nil &&
-			idx.GetRootExpression().GetField().GetNullInterpretation() != gen.Field_NOT_UNIQUE {
+			idx.GetRootExpression().GetField().GetNullInterpretation() != metadatapb.Field_NOT_UNIQUE {
 			t.Errorf("the loaded index's null interpretation is %v, want Java's reading (absent, NOT_UNIQUE)",
 				idx.GetRootExpression().GetField().GetNullInterpretation())
 		}

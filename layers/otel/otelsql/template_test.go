@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/core/keyspace"
@@ -68,7 +68,7 @@ func TestTemplateOverlay(t *testing.T) {
 	if len(bp.GetIndexes()) != 20 || len(fp.GetIndexes()) != 21 || bp.GetVersion() != 21 || fp.GetVersion() != 22 {
 		t.Fatalf("indexes %d/%d, versions %d/%d", len(bp.GetIndexes()), len(fp.GetIndexes()), bp.GetVersion(), fp.GetVersion())
 	}
-	byName := map[string]*gen.Index{}
+	byName := map[string]*metadatapb.Index{}
 	for _, idx := range fp.GetIndexes() {
 		byName[idx.GetName()] = idx
 	}

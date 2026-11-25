@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	configv1 "fdb.dev/cmd/fdb/gen/fdb/config/v1"
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 func TestParseKeyspacePath(t *testing.T) {
@@ -75,10 +75,10 @@ func TestParseKeyspacePath(t *testing.T) {
 
 func TestRecordCountStateName(t *testing.T) {
 	t.Parallel()
-	cases := map[gen.DataStoreInfo_RecordCountState]string{
-		gen.DataStoreInfo_READABLE:   "readable",
-		gen.DataStoreInfo_WRITE_ONLY: "write-only",
-		gen.DataStoreInfo_DISABLED:   "disabled",
+	cases := map[metadatapb.DataStoreInfo_RecordCountState]string{
+		metadatapb.DataStoreInfo_READABLE:   "readable",
+		metadatapb.DataStoreInfo_WRITE_ONLY: "write-only",
+		metadatapb.DataStoreInfo_DISABLED:   "disabled",
 	}
 	for state, want := range cases {
 		if got := recordCountStateName(state); got != want {
@@ -86,7 +86,7 @@ func TestRecordCountStateName(t *testing.T) {
 		}
 	}
 	// Unknown value falls into default branch.
-	if got := recordCountStateName(gen.DataStoreInfo_RecordCountState(99)); !strings.HasPrefix(got, "unknown") {
+	if got := recordCountStateName(metadatapb.DataStoreInfo_RecordCountState(99)); !strings.HasPrefix(got, "unknown") {
 		t.Errorf("unknown state rendered as %q, want unknown(...)", got)
 	}
 }
@@ -98,13 +98,13 @@ func TestLockStateDescription(t *testing.T) {
 	if got := lockStateDescription(nil); got != "unlocked" {
 		t.Errorf("nil lock = %q, want unlocked", got)
 	}
-	if got := lockStateDescription(&gen.DataStoreInfo_StoreLockState{}); got != "unlocked" {
+	if got := lockStateDescription(&metadatapb.DataStoreInfo_StoreLockState{}); got != "unlocked" {
 		t.Errorf("empty StoreLockState = %q, want unlocked", got)
 	}
 
 	// With reason appended.
-	locked := &gen.DataStoreInfo_StoreLockState{
-		LockState: gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE.Enum(),
+	locked := &metadatapb.DataStoreInfo_StoreLockState{
+		LockState: metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE.Enum(),
 		Reason:    proto_string("maintenance window"),
 	}
 	got := lockStateDescription(locked)
@@ -120,7 +120,7 @@ func TestWriteStoreInfoRendersAllFields(t *testing.T) {
 		ClusterFile:  "/etc/fdb/prod.cluster",
 		KeyspacePath: "/myapp/prod",
 	}
-	info := &gen.DataStoreInfo{
+	info := &metadatapb.DataStoreInfo{
 		FormatVersion:   proto_int32(12),
 		MetaDataversion: proto_int32(17),
 		UserVersion:     proto_int32(3),
@@ -151,7 +151,7 @@ func TestWriteStoreInfo_RendersRFC3339Timestamp(t *testing.T) {
 	t.Parallel()
 	// 2026-04-19T08:00:00Z as ms-since-epoch (verified via `date -u -d`).
 	const ts = 1776585600000
-	info := &gen.DataStoreInfo{LastUpdateTime: proto_uint64(ts)}
+	info := &metadatapb.DataStoreInfo{LastUpdateTime: proto_uint64(ts)}
 	ctx := &configv1.Context{Name: "test", KeyspacePath: "/x"}
 	var buf bytes.Buffer
 	if err := writeStoreInfo(&buf, &storeTarget{cfgCtx: ctx}, info, nil); err != nil {
@@ -167,7 +167,7 @@ func TestWriteStoreInfo_RendersRFC3339Timestamp(t *testing.T) {
 
 func TestWriteStoreInfo_RendersFDBPrefix(t *testing.T) {
 	t.Parallel()
-	info := &gen.DataStoreInfo{}
+	info := &metadatapb.DataStoreInfo{}
 	ctx := &configv1.Context{Name: "test", KeyspacePath: "/myapp"}
 	prefix := []byte{0x02, 'a', 'b', 0x00}
 	var buf bytes.Buffer
@@ -181,7 +181,7 @@ func TestWriteStoreInfo_RendersFDBPrefix(t *testing.T) {
 
 func TestWriteStoreInfo_OmitsPrefixWhenNil(t *testing.T) {
 	t.Parallel()
-	info := &gen.DataStoreInfo{}
+	info := &metadatapb.DataStoreInfo{}
 	ctx := &configv1.Context{Name: "test", KeyspacePath: "/myapp"}
 	var buf bytes.Buffer
 	if err := writeStoreInfo(&buf, &storeTarget{cfgCtx: ctx}, info, nil); err != nil {
@@ -200,7 +200,7 @@ func TestWriteStoreInfo_OmitsPrefixWhenNil(t *testing.T) {
 func TestWriteStoreInfo_RendersIncarnation(t *testing.T) {
 	t.Parallel()
 	ctx := &configv1.Context{Name: "migrated", KeyspacePath: "/x"}
-	info := &gen.DataStoreInfo{Incarnation: proto_int32(7)}
+	info := &metadatapb.DataStoreInfo{Incarnation: proto_int32(7)}
 
 	var buf bytes.Buffer
 	if err := writeStoreInfo(&buf, &storeTarget{cfgCtx: ctx}, info, nil); err != nil {
@@ -217,7 +217,7 @@ func TestWriteStoreInfo_RendersIncarnation(t *testing.T) {
 func TestWriteStoreInfo_OmitsZeroIncarnation(t *testing.T) {
 	t.Parallel()
 	ctx := &configv1.Context{Name: "pristine", KeyspacePath: "/x"}
-	info := &gen.DataStoreInfo{}
+	info := &metadatapb.DataStoreInfo{}
 	var buf bytes.Buffer
 	if err := writeStoreInfo(&buf, &storeTarget{cfgCtx: ctx}, info, nil); err != nil {
 		t.Fatalf("writeStoreInfo: %v", err)
@@ -234,7 +234,7 @@ func TestWriteStoreInfo_OmitsZeroIncarnation(t *testing.T) {
 func TestWriteStoreInfo_LegacyUnsplitSuffix(t *testing.T) {
 	t.Parallel()
 	ctx := &configv1.Context{Name: "legacy", KeyspacePath: "/x"}
-	info := &gen.DataStoreInfo{OmitUnsplitRecordSuffix: proto_bool(true)}
+	info := &metadatapb.DataStoreInfo{OmitUnsplitRecordSuffix: proto_bool(true)}
 
 	var buf bytes.Buffer
 	if err := writeStoreInfo(&buf, &storeTarget{cfgCtx: ctx}, info, nil); err != nil {
@@ -254,7 +254,7 @@ func TestWriteStoreInfo_LegacyUnsplitSuffix(t *testing.T) {
 func TestWriteStoreInfo_ModernNoUnsplitLine(t *testing.T) {
 	t.Parallel()
 	ctx := &configv1.Context{Name: "modern", KeyspacePath: "/x"}
-	info := &gen.DataStoreInfo{}
+	info := &metadatapb.DataStoreInfo{}
 	var buf bytes.Buffer
 	if err := writeStoreInfo(&buf, &storeTarget{cfgCtx: ctx}, info, nil); err != nil {
 		t.Fatalf("writeStoreInfo: %v", err)
@@ -266,7 +266,7 @@ func TestWriteStoreInfo_ModernNoUnsplitLine(t *testing.T) {
 
 func TestWriteStoreInfo_OmitsZeroTimestamp(t *testing.T) {
 	t.Parallel()
-	info := &gen.DataStoreInfo{} // LastUpdateTime unset → 0
+	info := &metadatapb.DataStoreInfo{} // LastUpdateTime unset → 0
 	ctx := &configv1.Context{Name: "test", KeyspacePath: "/x"}
 	var buf bytes.Buffer
 	if err := writeStoreInfo(&buf, &storeTarget{cfgCtx: ctx}, info, nil); err != nil {
@@ -281,7 +281,7 @@ func proto_uint64(v uint64) *uint64 { return &v }
 
 func TestWriteStoreInfoJSON_RendersProtoFields(t *testing.T) {
 	t.Parallel()
-	info := &gen.DataStoreInfo{
+	info := &metadatapb.DataStoreInfo{
 		FormatVersion:   proto_int32(12),
 		MetaDataversion: proto_int32(17),
 		Cacheable:       proto_bool(true),

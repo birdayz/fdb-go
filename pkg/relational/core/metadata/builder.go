@@ -28,6 +28,7 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/protoscope"
 	"fdb.dev/pkg/relational/api"
 )
@@ -53,13 +54,13 @@ type Builder struct {
 	storeRowVersions bool
 	views            []viewSpec
 	functions        []functionSpec
-	storedQueries    map[string]*gen.PStoredQuery
+	storedQueries    map[string]*metadatapb.PStoredQuery
 	storedQueryOrder []string
 }
 
 type functionSpec struct {
 	name string
-	fn   *gen.PUserDefinedFunction
+	fn   *metadatapb.PUserDefinedFunction
 }
 
 type viewSpec struct{ name, definition string }
@@ -113,7 +114,7 @@ type indexSpec struct {
 	// shape from names.
 	rootExpression recordlayer.KeyExpression
 	indexType      string
-	predicate      *gen.Predicate
+	predicate      *metadatapb.Predicate
 }
 
 // ColumnSpec describes a single column within a table.
@@ -185,16 +186,16 @@ func (b *Builder) HasTable(name string) bool {
 // place, as Java's HashMap put does.
 func (b *Builder) AddStoredQuery(name, query string, tempFunctions []string) {
 	if b.storedQueries == nil {
-		b.storedQueries = map[string]*gen.PStoredQuery{}
+		b.storedQueries = map[string]*metadatapb.PStoredQuery{}
 	}
 	if _, ok := b.storedQueries[name]; !ok {
 		b.storedQueryOrder = append(b.storedQueryOrder, name)
 	}
-	b.storedQueries[name] = &gen.PStoredQuery{Name: &name, Query: &query, TempFunctions: tempFunctions}
+	b.storedQueries[name] = &metadatapb.PStoredQuery{Name: &name, Query: &query, TempFunctions: tempFunctions}
 }
 
 // SetIndexPredicate sets the stored predicate of a table's index.
-func (b *Builder) SetIndexPredicate(tableName, indexName string, p *gen.Predicate) {
+func (b *Builder) SetIndexPredicate(tableName, indexName string, p *metadatapb.Predicate) {
 	for i := range b.tables {
 		if b.tables[i].name != tableName {
 			continue
@@ -208,7 +209,7 @@ func (b *Builder) SetIndexPredicate(tableName, indexName string, p *gen.Predicat
 }
 
 // AddFunction records a SQL function as the template stores it.
-func (b *Builder) AddFunction(name string, fn *gen.PUserDefinedFunction) error {
+func (b *Builder) AddFunction(name string, fn *metadatapb.PUserDefinedFunction) error {
 	if err := b.verifyNameIsNotUsed(name); err != nil {
 		return err
 	}
@@ -325,7 +326,7 @@ func (b *Builder) AddIndex(tableName, indexName string, columns []string, unique
 // rootExpression must be non-nil. indexType "" means VALUE. options may be
 // nil. predicate may be nil (a full, non-sparse index).
 func (b *Builder) AddGeneratedIndex(tableName, indexName string, rootExpression recordlayer.KeyExpression,
-	indexType string, unique bool, options map[string]string, predicate *gen.Predicate,
+	indexType string, unique bool, options map[string]string, predicate *metadatapb.Predicate,
 ) *Builder {
 	if rootExpression == nil {
 		b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInternalError,
@@ -662,7 +663,7 @@ func (b *Builder) build() (*RecordLayerSchemaTemplate, error) {
 	for _, name := range javaHashMapOrder(nil, viewNames) {
 		mdBuilder.AddView(name, viewDef[name])
 	}
-	fnDef := make(map[string]*gen.PUserDefinedFunction, len(b.functions))
+	fnDef := make(map[string]*metadatapb.PUserDefinedFunction, len(b.functions))
 	fnNames := make([]string, len(b.functions))
 	for i, f := range b.functions {
 		fnDef[f.name] = f.fn
@@ -904,8 +905,8 @@ func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, *descripto
 	fdp := b.templateFileProto()
 
 	unionOpts := &descriptorpb.MessageOptions{}
-	proto.SetExtension(unionOpts, gen.E_Record, &gen.RecordTypeOptions{
-		Usage: gen.RecordTypeOptions_UNION.Enum(),
+	proto.SetExtension(unionOpts, metadatapb.E_Record, &metadatapb.RecordTypeOptions{
+		Usage: metadatapb.RecordTypeOptions_UNION.Enum(),
 	})
 	unionMsg := &descriptorpb.DescriptorProto{
 		Name:    proto.String(relationalUnionName),
@@ -950,7 +951,7 @@ func (b *Builder) templateFileProto() *descriptorpb.FileDescriptorProto {
 		Name: proto.String(b.name),
 		Dependency: []string{
 			gen.File_tuple_fields_proto.Path(),
-			gen.File_record_metadata_options_proto.Path(),
+			metadatapb.File_record_metadata_options_proto.Path(),
 		},
 	}
 }
@@ -995,7 +996,7 @@ func newTemplateFile(fdp *descriptorpb.FileDescriptorProto) (protoreflect.FileDe
 	// available to the local resolver.
 	resolver := &protoregistry.Files{}
 	_ = resolver.RegisterFile(gen.File_tuple_fields_proto)
-	_ = resolver.RegisterFile(gen.File_record_metadata_options_proto)
+	_ = resolver.RegisterFile(metadatapb.File_record_metadata_options_proto)
 
 	// The RETAINED proto keeps Java's RELATIVE type_name references
 	// ("com.apple.foundationdb.record.UUID"); protodesc's resolver wants
@@ -1245,8 +1246,8 @@ func (r *tableTypeRepo) setFieldType(f *descriptorpb.FieldDescriptorProto, dt ap
 		vt := dt.(*api.VectorType)
 		setScalar(descriptorpb.FieldDescriptorProto_TYPE_BYTES)
 		opts := &descriptorpb.FieldOptions{}
-		proto.SetExtension(opts, gen.E_Field, &gen.FieldOptions{
-			VectorOptions: &gen.FieldOptions_VectorOptions{
+		proto.SetExtension(opts, metadatapb.E_Field, &metadatapb.FieldOptions{
+			VectorOptions: &metadatapb.FieldOptions_VectorOptions{
 				Precision:  proto.Int32(int32(vt.Precision())),  //nolint:gosec
 				Dimensions: proto.Int32(int32(vt.Dimensions())), //nolint:gosec
 			},

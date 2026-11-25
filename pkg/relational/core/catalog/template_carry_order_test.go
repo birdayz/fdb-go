@@ -5,9 +5,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/core/metadata"
 )
 
@@ -22,9 +22,9 @@ func TestCarryNumbering_NewIndexesInRegistrationOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored.Version = proto.Int32(5)
-	built := proto.Clone(stored).(*gen.MetaData)
-	index := func(name, recordType string, registered int32) *gen.Index {
-		return &gen.Index{
+	built := proto.Clone(stored).(*metadatapb.MetaData)
+	index := func(name, recordType string, registered int32) *metadatapb.Index {
+		return &metadatapb.Index{
 			Name:                proto.String(name),
 			RecordType:          []string{recordType},
 			RootExpression:      recordlayer.Field("order_id").ToKeyExpression(),
@@ -35,7 +35,7 @@ func TestCarryNumbering_NewIndexesInRegistrationOrder(t *testing.T) {
 		}
 	}
 	// Listed by name; Z_IDX was registered first.
-	built.Indexes = []*gen.Index{index("A_IDX", "Order", 2), index("Z_IDX", "Order", 1)}
+	built.Indexes = []*metadatapb.Index{index("A_IDX", "Order", 2), index("Z_IDX", "Order", 1)}
 
 	carried, _, err := carryNumbering(stored, built)
 	if err != nil {

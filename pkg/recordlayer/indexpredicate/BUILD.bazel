@@ -6,7 +6,7 @@ go_library(
     importpath = "fdb.dev/pkg/recordlayer/indexpredicate",
     visibility = ["//visibility:public"],
     deps = [
-        "//gen",
+        "//pkg/recordlayer/metadatapb",
         "@org_golang_google_protobuf//proto",
     ],
 )
@@ -16,7 +16,7 @@ go_test(
     srcs = ["normalize_test.go"],
     embed = [":indexpredicate"],
     deps = [
-        "//gen",
+        "//pkg/recordlayer/metadatapb",
         "@org_golang_google_protobuf//proto",
     ],
 )

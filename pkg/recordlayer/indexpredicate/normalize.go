@@ -10,7 +10,7 @@
 package indexpredicate
 
 import (
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -73,7 +73,7 @@ import (
 //
 // The result is always a deep clone; the input is never mutated and the two
 // trees share no nodes.
-func Normalize(p *gen.Predicate) *gen.Predicate {
+func Normalize(p *metadatapb.Predicate) *metadatapb.Predicate {
 	if p == nil {
 		return nil
 	}
@@ -81,7 +81,7 @@ func Normalize(p *gen.Predicate) *gen.Predicate {
 	// evaluates the FIRST arm it finds, so rewriting one arm of a multi-arm
 	// message could produce a predicate the evaluator never runs.
 	if indexPredicateProtoArmCount(p) != 1 {
-		return proto.Clone(p).(*gen.Predicate)
+		return proto.Clone(p).(*metadatapb.Predicate)
 	}
 	// A nil child makes the message malformed, and malformed is not provably
 	// true. Normalizing through it would collapse AND(nil) / OR(nil) — a
@@ -90,11 +90,11 @@ func Normalize(p *gen.Predicate) *gen.Predicate {
 	// index. Handing the message back intact keeps it non-nil for the gates and
 	// lets the conversion reject it, which excludes the candidate.
 	if indexPredicateProtoHasNilChild(p) {
-		return proto.Clone(p).(*gen.Predicate)
+		return proto.Clone(p).(*metadatapb.Predicate)
 	}
 	switch {
 	case p.AndPredicate != nil:
-		kept := make([]*gen.Predicate, 0, len(p.AndPredicate.Children))
+		kept := make([]*metadatapb.Predicate, 0, len(p.AndPredicate.Children))
 		for _, child := range p.AndPredicate.Children {
 			normalized := Normalize(child)
 			// A conjunct that provably cannot reject a record contributes
@@ -109,16 +109,16 @@ func Normalize(p *gen.Predicate) *gen.Predicate {
 		}
 		switch len(kept) {
 		case 0:
-			return &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
-				Value: gen.ConstantPredicate_TRUE.Enum(),
+			return &metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{
+				Value: metadatapb.ConstantPredicate_TRUE.Enum(),
 			}}
 		case 1:
 			return kept[0]
 		default:
-			return &gen.Predicate{AndPredicate: &gen.AndPredicate{Children: kept}}
+			return &metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{Children: kept}}
 		}
 	case p.OrPredicate != nil:
-		kept := make([]*gen.Predicate, 0, len(p.OrPredicate.Children))
+		kept := make([]*metadatapb.Predicate, 0, len(p.OrPredicate.Children))
 		for _, child := range p.OrPredicate.Children {
 			kept = append(kept, Normalize(child))
 		}
@@ -129,11 +129,11 @@ func Normalize(p *gen.Predicate) *gen.Predicate {
 			return kept[0]
 		}
 		if len(kept) == 0 {
-			return proto.Clone(p).(*gen.Predicate)
+			return proto.Clone(p).(*metadatapb.Predicate)
 		}
-		return &gen.Predicate{OrPredicate: &gen.OrPredicate{Children: kept}}
+		return &metadatapb.Predicate{OrPredicate: &metadatapb.OrPredicate{Children: kept}}
 	default:
-		return proto.Clone(p).(*gen.Predicate)
+		return proto.Clone(p).(*metadatapb.Predicate)
 	}
 }
 
@@ -141,14 +141,14 @@ func Normalize(p *gen.Predicate) *gen.Predicate {
 // provably rejects no record — i.e. whether the index it guards holds an entry
 // for every record. Normalize the way Java's constructors do, then apply Java's
 // narrow tautology test to the result.
-func IsTautology(p *gen.Predicate) bool {
+func IsTautology(p *metadatapb.Predicate) bool {
 	return ConstantArmIsTrue(Normalize(p))
 }
 
 // indexPredicateProtoHasNilChild reports whether any child slot of a composite
 // arm is nil. Only the immediate children are checked; a deeper nil is caught
 // when the recursion reaches its parent.
-func indexPredicateProtoHasNilChild(p *gen.Predicate) bool {
+func indexPredicateProtoHasNilChild(p *metadatapb.Predicate) bool {
 	if p.AndPredicate != nil {
 		for _, c := range p.AndPredicate.Children {
 			if c == nil {
@@ -168,7 +168,7 @@ func indexPredicateProtoHasNilChild(p *gen.Predicate) bool {
 
 // indexPredicateProtoArmCount counts the set arms of a predicate message.
 // Exactly one is the well-formed case; anything else is ambiguous input.
-func indexPredicateProtoArmCount(p *gen.Predicate) int {
+func indexPredicateProtoArmCount(p *metadatapb.Predicate) int {
 	n := 0
 	for _, set := range []bool{
 		p.AndPredicate != nil,
@@ -196,7 +196,7 @@ func indexPredicateProtoArmCount(p *gen.Predicate) int {
 // GetValue() on an ABSENT arm returns TRUE. The nil-safe getters fail OPEN
 // here, not closed, which is why the arm is checked explicitly — and why
 // normalization above must only fold children that carry the arm.
-func ConstantArmIsTrue(p *gen.Predicate) bool {
+func ConstantArmIsTrue(p *metadatapb.Predicate) bool {
 	if p == nil {
 		return false
 	}
@@ -208,7 +208,7 @@ func ConstantArmIsTrue(p *gen.Predicate) bool {
 	case p.AndPredicate != nil, p.OrPredicate != nil:
 		return false
 	case p.ConstantPredicate != nil:
-		return p.ConstantPredicate.GetValue() == gen.ConstantPredicate_TRUE
+		return p.ConstantPredicate.GetValue() == metadatapb.ConstantPredicate_TRUE
 	default:
 		return false
 	}

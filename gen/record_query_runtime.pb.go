@@ -26,6 +26,7 @@
 package gen
 
 import (
+	metadatapb "fdb.dev/pkg/recordlayer/metadatapb"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	_ "google.golang.org/protobuf/types/descriptorpb"
@@ -89,7 +90,7 @@ func (x *PQueryResult) GetDatum() isPQueryResult_Datum {
 	return nil
 }
 
-func (x *PQueryResult) GetPrimitive() *PComparableObject {
+func (x *PQueryResult) GetPrimitive() *metadatapb.PComparableObject {
 	if x != nil {
 		if x, ok := x.Datum.(*PQueryResult_Primitive); ok {
 			return x.Primitive
@@ -112,7 +113,7 @@ type isPQueryResult_Datum interface {
 }
 
 type PQueryResult_Primitive struct {
-	Primitive *PComparableObject `protobuf:"bytes,1,opt,name=primitive,oneof"`
+	Primitive *metadatapb.PComparableObject `protobuf:"bytes,1,opt,name=primitive,oneof"`
 }
 
 type PQueryResult_Complex struct {
@@ -195,9 +196,9 @@ func file_record_query_runtime_proto_rawDescGZIP() []byte {
 
 var file_record_query_runtime_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_record_query_runtime_proto_goTypes = []any{
-	(*PQueryResult)(nil),      // 0: com.apple.foundationdb.record.planprotos.PQueryResult
-	(*PTempTable)(nil),        // 1: com.apple.foundationdb.record.planprotos.PTempTable
-	(*PComparableObject)(nil), // 2: com.apple.foundationdb.record.planprotos.PComparableObject
+	(*PQueryResult)(nil),                 // 0: com.apple.foundationdb.record.planprotos.PQueryResult
+	(*PTempTable)(nil),                   // 1: com.apple.foundationdb.record.planprotos.PTempTable
+	(*metadatapb.PComparableObject)(nil), // 2: com.apple.foundationdb.record.planprotos.PComparableObject
 }
 var file_record_query_runtime_proto_depIdxs = []int32{
 	2, // 0: com.apple.foundationdb.record.planprotos.PQueryResult.primitive:type_name -> com.apple.foundationdb.record.planprotos.PComparableObject
@@ -214,7 +215,6 @@ func file_record_query_runtime_proto_init() {
 	if File_record_query_runtime_proto != nil {
 		return
 	}
-	file_record_query_plan_proto_init()
 	file_record_query_runtime_proto_msgTypes[0].OneofWrappers = []any{
 		(*PQueryResult_Primitive)(nil),
 		(*PQueryResult_Complex)(nil),

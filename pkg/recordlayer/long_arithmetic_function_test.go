@@ -12,9 +12,9 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"fdb.dev/gen"
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // evaluateArithmetic is a test helper that invokes a registered arithmetic function
@@ -977,7 +977,7 @@ func TestOverflowCheckedOps(t *testing.T) {
 // non-Number argument (getClass().getName() after toTupleAppropriateValue).
 func TestJavaTupleValueClassName(t *testing.T) {
 	t.Parallel()
-	dynamic := dynamicpb.NewMessage((&gen.Index{}).ProtoReflect().Descriptor())
+	dynamic := dynamicpb.NewMessage((&metadatapb.Index{}).ProtoReflect().Descriptor())
 	for _, tc := range []struct {
 		name string
 		v    any
@@ -999,8 +999,8 @@ func TestJavaTupleValueClassName(t *testing.T) {
 		{"dynamic message", dynamic, "com.google.protobuf.DynamicMessage"},
 		// A generated message's Java class is not knowable from the Go copy of its
 		// descriptor (see javaMessageClassName): its proto full name.
-		{"generated message", &gen.Index{}, "com.apple.foundationdb.record.Index"},
-		{"generated nested message", &gen.Index_Option{}, "com.apple.foundationdb.record.Index.Option"},
+		{"generated message", &metadatapb.Index{}, "com.apple.foundationdb.record.Index"},
+		{"generated nested message", &metadatapb.Index_Option{}, "com.apple.foundationdb.record.Index.Option"},
 		// A Go carrier no Java value can be keeps its Go type name.
 		{"go-only carrier", struct{}{}, "struct {}"},
 	} {

@@ -7,8 +7,8 @@ import (
 	"math/big"
 	"testing"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/tupleordering"
 )
 
@@ -1186,7 +1186,7 @@ func TestOrderFunctionProtoFieldsPopulated(t *testing.T) {
 	}
 
 	// Suppress unused import warning for gen.
-	_ = (*gen.Function)(nil)
+	_ = (*metadatapb.Function)(nil)
 }
 
 // ---------------------------------------------------------------------------

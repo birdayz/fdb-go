@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -1338,11 +1338,11 @@ func TestIntersector_ResidualFanOutEqualityDoesNotExposePK(t *testing.T) {
 		{Name: "ATTRS", FieldType: values.NewArrayType(true, element), Ordinal: 3},
 	})
 	attrs := "ATTRS"
-	fanRoot := &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{
-		candidateTestKeyField("A", gen.Field_SCALAR),
-		{Nesting: &gen.Nesting{
-			Parent: &gen.Field{FieldName: &attrs, FanType: gen.Field_FAN_OUT.Enum()},
-			Child:  candidateTestKeyField("K", gen.Field_SCALAR),
+	fanRoot := &metadatapb.KeyExpression{Then: &metadatapb.Then{Child: []*metadatapb.KeyExpression{
+		candidateTestKeyField("A", metadatapb.Field_SCALAR),
+		{Nesting: &metadatapb.Nesting{
+			Parent: &metadatapb.Field{FieldName: &attrs, FanType: metadatapb.Field_FAN_OUT.Enum()},
+			Child:  candidateTestKeyField("K", metadatapb.Field_SCALAR),
 		}},
 	}}}
 	rangeComparison := predicates.NewLiteralComparison(predicates.ComparisonGreaterThanEq, int64(0))
@@ -1362,7 +1362,7 @@ func TestIntersector_ResidualFanOutEqualityDoesNotExposePK(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, reverse := range []bool{false, true} {
-				makeAccess := func(name string, columns []string, ranges []*predicates.ComparisonRange, root *gen.KeyExpression, position int) Vectored[*SingleMatchedAccess] {
+				makeAccess := func(name string, columns []string, ranges []*predicates.ComparisonRange, root *metadatapb.KeyExpression, position int) Vectored[*SingleMatchedAccess] {
 					aliases := []values.CorrelationIdentifier{values.UniqueCorrelationIdentifier(), values.UniqueCorrelationIdentifier()}
 					candidate := newKnownDistinctValueIndexCandidate(name, []string{"T"}, columns, aliases, row, false, []string{"ID"}).
 						WithCommonPrimaryKey([]values.Value{pkSuffixField(t, row, "ID")})

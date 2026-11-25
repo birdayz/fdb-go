@@ -15,13 +15,13 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/gen"
 	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/layers/otel/otelsql/otelv1pb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/core/keyspace"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
@@ -386,7 +386,7 @@ func rdSetHeaderVersion(t *testing.T, ctx context.Context, db *recordlayer.FDBDa
 		if err != nil {
 			return nil, err
 		}
-		var info gen.DataStoreInfo
+		var info metadatapb.DataStoreInfo
 		if err := info.UnmarshalVT(raw); err != nil {
 			return nil, err
 		}

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -61,11 +61,11 @@ var _ = Describe("Index pending queue application", func() {
 				record := &FDBStoredRecord[proto.Message]{Record: &demopb.Order{OrderId: proto.Int64(int64(partition)), Quantity: proto.Int32(partition), Price: proto.Int32(42)}, PrimaryKey: tuple.Tuple{int64(partition)}, RecordType: md.GetRecordType("Order")}
 				data, err := maintainer.SerializePendingWriteQueue(nil, record)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(queue.Enqueue(rc, &gen.PendingWritesQueueEntry{Operation: gen.PendingWritesQueueEntry_UPDATE.Enum(), Data: data}, incarnation)).To(Succeed())
+				Expect(queue.Enqueue(rc, &metadatapb.PendingWritesQueueEntry{Operation: metadatapb.PendingWritesQueueEntry_UPDATE.Enum(), Data: data}, incarnation)).To(Succeed())
 			}
-			deletion, err := anypb.New(&gen.DeleteWhere{Prefix: tuple.Tuple{int64(7)}.Pack()})
+			deletion, err := anypb.New(&metadatapb.DeleteWhere{Prefix: tuple.Tuple{int64(7)}.Pack()})
 			Expect(err).NotTo(HaveOccurred())
-			return nil, queue.Enqueue(rc, &gen.PendingWritesQueueEntry{Operation: gen.PendingWritesQueueEntry_DELETE_WHERE.Enum(), Data: deletion}, incarnation)
+			return nil, queue.Enqueue(rc, &metadatapb.PendingWritesQueueEntry{Operation: metadatapb.PendingWritesQueueEntry_DELETE_WHERE.Enum(), Data: deletion}, incarnation)
 		})
 		Expect(err).NotTo(HaveOccurred())
 		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
@@ -106,7 +106,7 @@ var _ = Describe("Index pending queue application", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
-	for _, operation := range []gen.PendingWritesQueueEntry_Operation{gen.PendingWritesQueueEntry_UPDATE, gen.PendingWritesQueueEntry_DELETE_WHERE} {
+	for _, operation := range []metadatapb.PendingWritesQueueEntry_Operation{metadatapb.PendingWritesQueueEntry_UPDATE, metadatapb.PendingWritesQueueEntry_DELETE_WHERE} {
 		It("retains a committed entry when "+operation.String()+" replay fails", func() {
 			ctx := context.Background()
 			root := specSubspace()
@@ -118,7 +118,7 @@ var _ = Describe("Index pending queue application", func() {
 			_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root).Create()
 				Expect(err).NotTo(HaveOccurred())
-				return nil, store.indexingPendingWriteQueue(index, 100).Enqueue(rc, &gen.PendingWritesQueueEntry{Operation: operation.Enum(), Data: &anypb.Any{TypeUrl: "wrong/type"}}, 0)
+				return nil, store.indexingPendingWriteQueue(index, 100).Enqueue(rc, &metadatapb.PendingWritesQueueEntry{Operation: operation.Enum(), Data: &anypb.Any{TypeUrl: "wrong/type"}}, 0)
 			})
 			Expect(err).NotTo(HaveOccurred())
 			for attempt := 0; attempt < 2; attempt++ {
@@ -180,9 +180,9 @@ var _ = Describe("Pending queue checked readability", func() {
 						reader, err = NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root).Open()
 						Expect(err).NotTo(HaveOccurred())
 					}
-					data, err := anypb.New(&gen.OldAndNewRecords{})
+					data, err := anypb.New(&metadatapb.OldAndNewRecords{})
 					Expect(err).NotTo(HaveOccurred())
-					payload := &gen.PendingWritesQueueEntry{Operation: gen.PendingWritesQueueEntry_UPDATE.Enum(), Data: data}
+					payload := &metadatapb.PendingWritesQueueEntry{Operation: metadatapb.PendingWritesQueueEntry_UPDATE.Enum(), Data: data}
 					queue := store.indexingPendingWriteQueue(index, 100)
 					Expect(queue.Enqueue(rc, payload, 0)).To(Succeed())
 					Expect(store.indexingPendingWriteQueue(otherIndex, 100).Enqueue(rc, payload, 0)).To(Succeed())
@@ -226,9 +226,9 @@ var _ = Describe("Pending queue checked readability", func() {
 			Expect(err).NotTo(HaveOccurred())
 			_, err = store.MarkIndexWriteOnly(index.Name)
 			Expect(err).NotTo(HaveOccurred())
-			data, err := anypb.New(&gen.OldAndNewRecords{})
+			data, err := anypb.New(&metadatapb.OldAndNewRecords{})
 			Expect(err).NotTo(HaveOccurred())
-			return nil, store.indexingPendingWriteQueue(index, 100).Enqueue(rc, &gen.PendingWritesQueueEntry{Operation: gen.PendingWritesQueueEntry_UPDATE.Enum(), Data: data}, 0)
+			return nil, store.indexingPendingWriteQueue(index, 100).Enqueue(rc, &metadatapb.PendingWritesQueueEntry{Operation: metadatapb.PendingWritesQueueEntry_UPDATE.Enum(), Data: data}, 0)
 		})
 		Expect(err).NotTo(HaveOccurred())
 		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
@@ -288,9 +288,9 @@ var _ = Describe("Pending queue closeout conflicts", func() {
 			state, err := writeStore.readIndexState(index.Name)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(state).To(Equal(IndexStateWriteOnly))
-			data, err := anypb.New(&gen.OldAndNewRecords{})
+			data, err := anypb.New(&metadatapb.OldAndNewRecords{})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(writeStore.indexingPendingWriteQueue(index, 100).Enqueue(writer, &gen.PendingWritesQueueEntry{Operation: gen.PendingWritesQueueEntry_UPDATE.Enum(), Data: data}, 0)).To(Succeed())
+			Expect(writeStore.indexingPendingWriteQueue(index, 100).Enqueue(writer, &metadatapb.PendingWritesQueueEntry{Operation: metadatapb.PendingWritesQueueEntry_UPDATE.Enum(), Data: data}, 0)).To(Succeed())
 			changed, err := readStore.MarkIndexReadable(index.Name)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(changed).To(BeTrue())
@@ -328,20 +328,20 @@ var _ = Describe("Nested pending queue Any compatibility", func() {
 					Expect(err).NotTo(HaveOccurred())
 					record := &FDBStoredRecord[proto.Message]{Record: &demopb.Order{OrderId: proto.Int64(1), Quantity: proto.Int32(7), Price: proto.Int32(42), CoordX: proto.Int64(3), CoordY: proto.Int64(4)}, PrimaryKey: tuple.Tuple{int64(1)}, RecordType: md.GetRecordType("Order")}
 					var data *anypb.Any
-					operation := gen.PendingWritesQueueEntry_UPDATE
+					operation := metadatapb.PendingWritesQueueEntry_UPDATE
 					if deleting {
 						_, err = store.SaveRecord(record.Record)
 						Expect(err).NotTo(HaveOccurred())
 						if boundary == "delete-where" {
-							operation = gen.PendingWritesQueueEntry_DELETE_WHERE
-							data, err = anypb.New(&gen.DeleteWhere{Prefix: tuple.Tuple{int64(7)}.Pack()})
+							operation = metadatapb.PendingWritesQueueEntry_DELETE_WHERE
+							data, err = anypb.New(&metadatapb.DeleteWhere{Prefix: tuple.Tuple{int64(7)}.Pack()})
 						}
 					} else {
 						data, err = maintainer.SerializePendingWriteQueue(nil, record)
 					}
 					Expect(err).NotTo(HaveOccurred())
 					data.TypeUrl = prefix + string(data.MessageName())
-					return nil, store.indexingPendingWriteQueue(index, 100).Enqueue(rc, &gen.PendingWritesQueueEntry{Operation: operation.Enum(), Data: data}, 0)
+					return nil, store.indexingPendingWriteQueue(index, 100).Enqueue(rc, &metadatapb.PendingWritesQueueEntry{Operation: operation.Enum(), Data: data}, 0)
 				})
 				Expect(err).NotTo(HaveOccurred())
 				_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {

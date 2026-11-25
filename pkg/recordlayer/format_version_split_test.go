@@ -6,7 +6,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // THE MAX-SUPPORTED CEILING AND THE DEFAULT TARGET ARE TWO DIFFERENT NUMBERS.
@@ -30,8 +30,8 @@ import (
 // These pin the separation. They are the reason the default is now a free
 // decision rather than one blocked by its own ceiling.
 
-func headerAt(v int32) *gen.DataStoreInfo {
-	return &gen.DataStoreInfo{FormatVersion: proto.Int32(v)}
+func headerAt(v int32) *metadatapb.DataStoreInfo {
+	return &metadatapb.DataStoreInfo{FormatVersion: proto.Int32(v)}
 }
 
 // The CEILING is what validation uses. A stored version at the ceiling opens; one

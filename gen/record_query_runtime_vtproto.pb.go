@@ -5,6 +5,7 @@
 package gen
 
 import (
+	metadatapb "fdb.dev/pkg/recordlayer/metadatapb"
 	fmt "fmt"
 	protohelpers "github.com/planetscale/vtprotobuf/protohelpers"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
@@ -308,7 +309,7 @@ func (m *PQueryResult) UnmarshalVT(dAtA []byte) error {
 					return err
 				}
 			} else {
-				v := PComparableObjectFromVTPool()
+				v := metadatapb.PComparableObjectFromVTPool()
 				if err := v.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 					return err
 				}

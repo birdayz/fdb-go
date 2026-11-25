@@ -173,6 +173,7 @@ var (
 		"fdb.dev/pkg/recordlayer/protoname",
 		"fdb.dev/pkg/recordlayer/protoscope",
 		"fdb.dev/pkg/recordlayer/tupleordering",
+		"fdb.dev/pkg/recordlayer/metadatapb",
 		"fdb.dev/pkg/recordlayer/vectorcodec",
 		"fdb.dev/internal/recordlayer/indexfetch",
 		"fdb.dev/internal/recordlayer/indexpredicate",
@@ -190,6 +191,7 @@ var (
 		"fdb.dev/recordlayer/protoname",
 		"fdb.dev/recordlayer/protoscope",
 		"fdb.dev/recordlayer/tupleordering",
+		"fdb.dev/recordlayer/metadatapb",
 		"fdb.dev/recordlayer/vectorcodec",
 	}
 	repoTopDirs = []string{

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"math"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -36,8 +36,8 @@ func vectorScanOptionFields(o *VectorIndexScanOptions) []struct {
 
 // ToProto writes Java VectorIndexScanOptions, using Integer (not Long) for
 // integer options and canonical names. Entries have a deterministic order.
-func (o VectorIndexScanOptions) ToProto() (*gen.PVectorIndexScanOptions, error) {
-	out := &gen.PVectorIndexScanOptions{}
+func (o VectorIndexScanOptions) ToProto() (*metadatapb.PVectorIndexScanOptions, error) {
+	out := &metadatapb.PVectorIndexScanOptions{}
 	for _, slot := range vectorScanOptionFields(&o) {
 		_, wasPresent := o.wirePresence[slot.name]
 		var value any
@@ -67,7 +67,7 @@ func (o VectorIndexScanOptions) ToProto() (*gen.PVectorIndexScanOptions, error) 
 		if err != nil {
 			return nil, err
 		}
-		out.OptionEntries = append(out.OptionEntries, &gen.PVectorIndexScanOptions_POptionEntry{Key: proto.String(slot.name), Value: encoded})
+		out.OptionEntries = append(out.OptionEntries, &metadatapb.PVectorIndexScanOptions_POptionEntry{Key: proto.String(slot.name), Value: encoded})
 	}
 	return out, nil
 }
@@ -76,7 +76,7 @@ func (o VectorIndexScanOptions) ToProto() (*gen.PVectorIndexScanOptions, error) 
 // duplicate aliases as Java does. An explicit NULL retains its presence.
 // Invalid value types are rejected at this typed Go boundary rather than at
 // Java's later getOption Class.cast call.
-func VectorIndexScanOptionsFromProto(p *gen.PVectorIndexScanOptions) (VectorIndexScanOptions, error) {
+func VectorIndexScanOptionsFromProto(p *metadatapb.PVectorIndexScanOptions) (VectorIndexScanOptions, error) {
 	o := VectorIndexScanOptions{wirePresence: map[string]bool{}}
 	if p == nil {
 		return VectorIndexScanOptions{}, &RecordCoreError{Message: "missing vector index scan options"}

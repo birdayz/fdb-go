@@ -5,8 +5,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 )
 
@@ -21,13 +21,13 @@ import (
 // split would then address entry columns living in the FDB VALUE.
 func javaAuthoredKWVIndex(t *testing.T, split int32) *recordlayer.Index {
 	t.Helper()
-	field := func(name string) *gen.KeyExpression {
-		fan := gen.Field_SCALAR
-		return &gen.KeyExpression{Field: &gen.Field{FieldName: proto.String(name), FanType: &fan}}
+	field := func(name string) *metadatapb.KeyExpression {
+		fan := metadatapb.Field_SCALAR
+		return &metadatapb.KeyExpression{Field: &metadatapb.Field{FieldName: proto.String(name), FanType: &fan}}
 	}
-	kwvProto := &gen.KeyExpression{KeyWithValue: &gen.KeyWithValue{
-		InnerKey: &gen.KeyExpression{Then: &gen.Then{
-			Child: []*gen.KeyExpression{field("A"), field("B"), field("C")},
+	kwvProto := &metadatapb.KeyExpression{KeyWithValue: &metadatapb.KeyWithValue{
+		InnerKey: &metadatapb.KeyExpression{Then: &metadatapb.Then{
+			Child: []*metadatapb.KeyExpression{field("A"), field("B"), field("C")},
 		}},
 		SplitPoint: proto.Int32(split),
 	}}

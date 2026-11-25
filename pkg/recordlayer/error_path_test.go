@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -304,7 +304,7 @@ var _ = Describe("StoreStateNotLoaded_ErrorPaths", func() {
 
 	It("SetStoreLockStateWithoutHeader", func() {
 		store := &FDBRecordStore{}
-		err := store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "")
+		err := store.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "")
 		Expect(err).To(HaveOccurred())
 		var stateErr *RecordStoreStateNotLoadedError
 		Expect(errors.As(err, &stateErr)).To(BeTrue())
@@ -320,7 +320,7 @@ var _ = Describe("StoreStateNotLoaded_ErrorPaths", func() {
 
 	It("UpdateRecordCountStateWithoutHeader", func() {
 		store := &FDBRecordStore{}
-		err := store.UpdateRecordCountState(gen.DataStoreInfo_DISABLED)
+		err := store.UpdateRecordCountState(metadatapb.DataStoreInfo_DISABLED)
 		Expect(err).To(HaveOccurred())
 		var stateErr *RecordStoreStateNotLoadedError
 		Expect(errors.As(err, &stateErr)).To(BeTrue())
@@ -475,8 +475,8 @@ var _ = Describe("SaveRecord_ValidationErrors", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Lock the store
-			lockState := gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE
-			store.storeHeader.StoreLockState = &gen.DataStoreInfo_StoreLockState{
+			lockState := metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE
+			store.storeHeader.StoreLockState = &metadatapb.DataStoreInfo_StoreLockState{
 				LockState: &lockState,
 			}
 
@@ -747,8 +747,8 @@ var _ = Describe("DeleteRecord_ErrorPaths", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Lock the store
-			lockState := gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE
-			store.storeHeader.StoreLockState = &gen.DataStoreInfo_StoreLockState{
+			lockState := metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE
+			store.storeHeader.StoreLockState = &metadatapb.DataStoreInfo_StoreLockState{
 				LockState: &lockState,
 			}
 
@@ -791,7 +791,7 @@ var _ = Describe("Phase 2 error types", func() {
 
 			// Now overwrite the store header with format version 999.
 			futureVersion := int32(999)
-			header := &gen.DataStoreInfo{
+			header := &metadatapb.DataStoreInfo{
 				FormatVersion: &futureVersion,
 			}
 			headerBytes, err := proto.Marshal(header)
@@ -827,7 +827,7 @@ var _ = Describe("Phase 2 error types", func() {
 
 			// Now overwrite the store header with format version 0 (below formatVersionMinimum=1).
 			zeroVersion := int32(0)
-			header := &gen.DataStoreInfo{
+			header := &metadatapb.DataStoreInfo{
 				FormatVersion: &zeroVersion,
 			}
 			headerBytes, err := proto.Marshal(header)
@@ -981,10 +981,10 @@ var _ = Describe("Error type coverage gaps", func() {
 			// Overwrite the store header with FormatVersion=14 and an unknown lock state (999).
 			// Proto enums in Go accept arbitrary int32 values, so this is valid wire data.
 			fmtVersion := int32(formatVersionFullStoreLock)
-			unknownState := gen.DataStoreInfo_StoreLockState_State(999)
-			header := &gen.DataStoreInfo{
+			unknownState := metadatapb.DataStoreInfo_StoreLockState_State(999)
+			header := &metadatapb.DataStoreInfo{
 				FormatVersion: &fmtVersion,
-				StoreLockState: &gen.DataStoreInfo_StoreLockState{
+				StoreLockState: &metadatapb.DataStoreInfo_StoreLockState{
 					LockState: &unknownState,
 				},
 			}
@@ -1002,7 +1002,7 @@ var _ = Describe("Error type coverage gaps", func() {
 			// reads UNSPECIFIED, which it refuses, reporting the unknown fields.
 			var unknownErr *UnknownStoreLockStateError
 			Expect(errors.As(err, &unknownErr)).To(BeTrue())
-			Expect(unknownErr.LockStateValue).To(Equal(int32(gen.DataStoreInfo_StoreLockState_UNSPECIFIED)))
+			Expect(unknownErr.LockStateValue).To(Equal(int32(metadatapb.DataStoreInfo_StoreLockState_UNSPECIFIED)))
 			Expect(unknownErr.UnknownFields).To(Equal([]byte(protowire.AppendVarint(protowire.AppendTag(nil, 1, protowire.VarintType), 999))))
 			return nil, nil
 		})

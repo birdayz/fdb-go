@@ -12,6 +12,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/keyspace"
 	"fdb.dev/pkg/relational/core/metadata"
@@ -138,18 +139,18 @@ func (c *RecordLayerStoreCatalog) restoreTemplateVersion(ctx context.Context, db
 
 // restoredMetaData is the restored bytes read as the catalog reads a template.
 type restoredMetaData struct {
-	proto *gen.MetaData
+	proto *metadatapb.MetaData
 	md    *recordlayer.RecordMetaData
 	tmpl  api.SchemaTemplate
 }
 
 func loadRestoredMetaData(name string, version int, md []byte) (*restoredMetaData, error) {
-	p := &gen.MetaData{}
+	p := &metadatapb.MetaData{}
 	if err := recordlayer.UnmarshalAsJava(md, p); err != nil {
 		return nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
 			"schema template %s version %d cannot be restored: its metadata does not parse", name, version)
 	}
-	loaded, err := recordlayer.RecordMetaDataFromProto(proto.Clone(p).(*gen.MetaData))
+	loaded, err := recordlayer.RecordMetaDataFromProto(proto.Clone(p).(*metadatapb.MetaData))
 	if err != nil {
 		return nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
 			"schema template %s version %d cannot be restored: its metadata does not load", name, version)
@@ -192,7 +193,7 @@ func (c *RecordLayerStoreCatalog) checkBoundStores(ctx context.Context, db *reco
 					return nil, errRestore(api.ErrCodeInvalidSchemaTemplate, name, version,
 						"schema %s/%s has no store header in the keyspace", b.DatabaseID, b.SchemaName)
 				}
-				header := &gen.DataStoreInfo{}
+				header := &metadatapb.DataStoreInfo{}
 				if err := recordlayer.UnmarshalAsJava(raw, header); err != nil {
 					return nil, errRestore(api.ErrCodeInvalidSchemaTemplate, name, version,
 						"the store header of schema %s/%s does not parse: %v", b.DatabaseID, b.SchemaName, err)
@@ -381,7 +382,7 @@ func storedTemplateRows(store *recordlayer.FDBRecordStore, name string) ([]*gen.
 // historyVersion is one side of a carry check.
 type historyVersion struct {
 	version int
-	proto   *gen.MetaData
+	proto   *metadatapb.MetaData
 	md      *recordlayer.RecordMetaData
 	tmpl    api.SchemaTemplate
 }
@@ -397,11 +398,11 @@ func carryCompatible(name string, version int, restored *restoredMetaData, row *
 			"schema template %s version %d cannot be restored beside version %d: %s",
 			name, version, storedVersion, fmt.Sprintf(format, args...))
 	}
-	sp := &gen.MetaData{}
+	sp := &metadatapb.MetaData{}
 	if err := recordlayer.UnmarshalAsJava(row.GetMETA_DATA(), sp); err != nil {
 		return refuse("its metadata does not parse: %v", err)
 	}
-	smd, err := recordlayer.RecordMetaDataFromProto(proto.Clone(sp).(*gen.MetaData))
+	smd, err := recordlayer.RecordMetaDataFromProto(proto.Clone(sp).(*metadatapb.MetaData))
 	if err != nil {
 		return refuse("its metadata does not load: %v", err)
 	}
@@ -435,7 +436,7 @@ func carryCompatible(name string, version int, restored *restoredMetaData, row *
 	}
 	// (iii) every index both define: EQUIVALENT, unless H raised it above L's
 	// metadata version, which a store bound to L rebuilds on its next open.
-	lowIndexes := map[string]*gen.Index{}
+	lowIndexes := map[string]*metadatapb.Index{}
 	for _, ix := range low.proto.GetIndexes() {
 		lowIndexes[ix.GetName()] = ix
 	}

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -58,7 +58,7 @@ func unionEvolutionSchema(t unionSchemaTest, version int, swapped, incompatible 
 			unionEvolutionField("alias_middle", 4, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, first))
 	}
 	options := &descriptorpb.MessageOptions{}
-	proto.SetExtension(options, gen.E_Record, &gen.RecordTypeOptions{Usage: gen.RecordTypeOptions_UNION.Enum()})
+	proto.SetExtension(options, metadatapb.E_Record, &metadatapb.RecordTypeOptions{Usage: metadatapb.RecordTypeOptions_UNION.Enum()})
 	file, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
 		Dependency: []string{"record_metadata_options.proto"},
 		Name:       proto.String("union_evolution.proto"), Package: proto.String("union_evolution"), Syntax: proto.String("proto2"),
@@ -154,7 +154,7 @@ func TestUnionEvolutionMemoizesDescriptorPairs(t *testing.T) {
 		// The union is marked as Java finds one ((record).usage = UNION): a
 		// message merely named in SetRecordsWithUnionName is refused.
 		unionOptions := &descriptorpb.MessageOptions{}
-		proto.SetExtension(unionOptions, gen.E_Record, &gen.RecordTypeOptions{Usage: gen.RecordTypeOptions_UNION.Enum()})
+		proto.SetExtension(unionOptions, metadatapb.E_Record, &metadatapb.RecordTypeOptions{Usage: metadatapb.RecordTypeOptions_UNION.Enum()})
 		messages = append(messages, &descriptorpb.DescriptorProto{Name: proto.String("Envelope"), Options: unionOptions, Field: []*descriptorpb.FieldDescriptorProto{unionEvolutionField("root", 1, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".pair.Root")}})
 		fd, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
 			Dependency: []string{"record_metadata_options.proto"},

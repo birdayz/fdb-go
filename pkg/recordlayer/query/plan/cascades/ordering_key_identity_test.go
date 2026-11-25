@@ -15,7 +15,7 @@ package cascades
 import (
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -48,12 +48,12 @@ func orderingIdentityField(
 	return mustConstruct(t, field, err)
 }
 
-func orderingIdentityKeyExpression(cols ...string) *gen.KeyExpression {
-	children := make([]*gen.KeyExpression, len(cols))
+func orderingIdentityKeyExpression(cols ...string) *metadatapb.KeyExpression {
+	children := make([]*metadatapb.KeyExpression, len(cols))
 	for i, c := range cols {
-		children[i] = candidateTestKeyField(c, gen.Field_SCALAR)
+		children[i] = candidateTestKeyField(c, metadatapb.Field_SCALAR)
 	}
-	return &gen.KeyExpression{Then: &gen.Then{Child: children}}
+	return &metadatapb.KeyExpression{Then: &metadatapb.Then{Child: children}}
 }
 
 // orderingIdentityCandidate builds an index candidate over the ORDERS row with

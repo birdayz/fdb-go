@@ -68,13 +68,13 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/gen"
 	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 	relkeyspace "fdb.dev/pkg/relational/core/keyspace"
@@ -511,7 +511,7 @@ func setStoreFormatVersion(t *testing.T, ctx context.Context, rdb *recordlayer.F
 			return nil, fmt.Errorf("no store header at %x: the schema was not created where "+
 				"this test looks for it", []byte(key))
 		}
-		hdr := &gen.DataStoreInfo{}
+		hdr := &metadatapb.DataStoreInfo{}
 		if err := hdr.UnmarshalVT(raw); err != nil {
 			return nil, err
 		}
@@ -536,7 +536,7 @@ func readStoreFormatVersion(t *testing.T, ctx context.Context, rdb *recordlayer.
 		if err != nil {
 			return nil, err
 		}
-		hdr := &gen.DataStoreInfo{}
+		hdr := &metadatapb.DataStoreInfo{}
 		if err := hdr.UnmarshalVT(raw); err != nil {
 			return nil, err
 		}

@@ -27,10 +27,10 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"fdb.dev/gen"
 	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/core/catalog"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -248,8 +248,8 @@ func TestNormalizeWrapperNames(t *testing.T) {
 // wrapper names/references and order within contiguous wrapper runs, and
 // re-marshals deterministically — the byte form all
 // three sides (Java catalog, committed golden, Go catalog) compare in.
-func normalizeStoredTemplate(raw []byte) ([]byte, *gen.MetaData, error) {
-	md := &gen.MetaData{}
+func normalizeStoredTemplate(raw []byte) ([]byte, *metadatapb.MetaData, error) {
+	md := &metadatapb.MetaData{}
 	if err := proto.Unmarshal(raw, md); err != nil {
 		return nil, nil, fmt.Errorf("unmarshal stored MetaData: %w", err)
 	}
@@ -430,7 +430,7 @@ var _ = Describe("RFC-204 schema-template byte-goldens (Java catalog == committe
 			if !bytes.Equal(goNorm, committed) {
 				// Structural rendering first for a readable diff; the
 				// authoritative assertion is on bytes.
-				committedMD := &gen.MetaData{}
+				committedMD := &metadatapb.MetaData{}
 				Expect(proto.Unmarshal(committed, committedMD)).To(Succeed())
 				Expect(prototext.Format(goMD)).To(Equal(prototext.Format(committedMD)),
 					"%s: Go stored bytes diverge (structural rendering of the byte diff)", g.name)

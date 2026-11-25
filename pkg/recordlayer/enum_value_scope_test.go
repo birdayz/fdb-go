@@ -8,6 +8,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/protoscope"
 )
 
@@ -19,7 +20,7 @@ import (
 // value under its enum type, so the file is valid there; protoc and
 // protobuf-go scope it beside the enum, at file level, where the two Ys
 // collide.
-func sharedEnumValueMetaData() *gen.MetaData {
+func sharedEnumValueMetaData() *metadatapb.MetaData {
 	return enumScopeMetaData([]string{"E1", "E2"}, [][]string{{"X", "Y"}, {"Y", "Z"}})
 }
 
@@ -28,13 +29,13 @@ func sharedEnumValueMetaData() *gen.MetaData {
 // a status, primary key(id))` (the conformance shape enum_value_named_like_enum):
 // protobuf-java scopes the value as STATUS.STATUS, protobuf-go beside the enum,
 // where it collides with the enum's own name.
-func selfNamedEnumValueMetaData() *gen.MetaData {
+func selfNamedEnumValueMetaData() *metadatapb.MetaData {
 	return enumScopeMetaData([]string{"STATUS"}, [][]string{{"STATUS", "DONE"}})
 }
 
 // enumScopeMetaData is a one-table records file whose fields A, B, … hold the
 // named top-level enums, in order.
-func enumScopeMetaData(names []string, values [][]string) *gen.MetaData {
+func enumScopeMetaData(names []string, values [][]string) *metadatapb.MetaData {
 	opt := func(name string, n int32, typ descriptorpb.FieldDescriptorProto_Type, typeName string) *descriptorpb.FieldDescriptorProto {
 		f := &descriptorpb.FieldDescriptorProto{
 			Name: proto.String(name), Number: proto.Int32(n),
@@ -59,11 +60,11 @@ func enumScopeMetaData(names []string, values [][]string) *gen.MetaData {
 		enums = append(enums, enum(name, values[i]...))
 	}
 	unionOpts := &descriptorpb.MessageOptions{}
-	proto.SetExtension(unionOpts, gen.E_Record, &gen.RecordTypeOptions{Usage: gen.RecordTypeOptions_UNION.Enum()})
-	return &gen.MetaData{
+	proto.SetExtension(unionOpts, metadatapb.E_Record, &metadatapb.RecordTypeOptions{Usage: metadatapb.RecordTypeOptions_UNION.Enum()})
+	return &metadatapb.MetaData{
 		Records: &descriptorpb.FileDescriptorProto{
 			Name:       proto.String("P"),
-			Dependency: []string{gen.File_tuple_fields_proto.Path(), gen.File_record_metadata_options_proto.Path()},
+			Dependency: []string{gen.File_tuple_fields_proto.Path(), metadatapb.File_record_metadata_options_proto.Path()},
 			MessageType: []*descriptorpb.DescriptorProto{
 				{Name: proto.String("T"), Field: fields},
 				{Name: proto.String("RecordTypeUnion"), Options: unionOpts, Field: []*descriptorpb.FieldDescriptorProto{{
@@ -74,9 +75,9 @@ func enumScopeMetaData(names []string, values [][]string) *gen.MetaData {
 			},
 			EnumType: enums,
 		},
-		RecordTypes: []*gen.RecordType{{
+		RecordTypes: []*metadatapb.RecordType{{
 			Name:       proto.String("T"),
-			PrimaryKey: &gen.KeyExpression{Field: &gen.Field{FieldName: proto.String("ID"), FanType: gen.Field_SCALAR.Enum()}},
+			PrimaryKey: &metadatapb.KeyExpression{Field: &metadatapb.Field{FieldName: proto.String("ID"), FanType: metadatapb.Field_SCALAR.Enum()}},
 		}},
 	}
 }
@@ -101,9 +102,9 @@ func TestAnEnumValueNamedLikeItsEnumLoadsAsJavaLoadsIt(t *testing.T) {
 		map[string][]string{"A": {"STATUS", "DONE"}})
 }
 
-func assertEnumScopeLoadsAsJava(t *testing.T, stored *gen.MetaData, javaNames map[string]string, values map[string][]string) {
+func assertEnumScopeLoadsAsJava(t *testing.T, stored *metadatapb.MetaData, javaNames map[string]string, values map[string][]string) {
 	t.Helper()
-	md, err := RecordMetaDataFromProto(proto.Clone(stored).(*gen.MetaData))
+	md, err := RecordMetaDataFromProto(proto.Clone(stored).(*metadatapb.MetaData))
 	if err != nil {
 		t.Fatalf("loading meta-data Java stores: %v", err)
 	}

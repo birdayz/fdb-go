@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	. "github.com/onsi/ginkgo/v2"
@@ -2742,9 +2742,9 @@ type unsupportedKeyExpr struct{}
 func (unsupportedKeyExpr) Evaluate(*FDBStoredRecord[proto.Message], proto.Message) ([][]any, error) {
 	return nil, nil
 }
-func (unsupportedKeyExpr) FieldNames() []string                { return nil }
-func (unsupportedKeyExpr) ColumnSize() int                     { return 0 }
-func (unsupportedKeyExpr) ToKeyExpression() *gen.KeyExpression { return nil }
+func (unsupportedKeyExpr) FieldNames() []string                       { return nil }
+func (unsupportedKeyExpr) ColumnSize() int                            { return 0 }
+func (unsupportedKeyExpr) ToKeyExpression() *metadatapb.KeyExpression { return nil }
 
 // TestRecordTypeViolationsNamedInNameOrder pins that validateRecordTypes walks
 // the record types by name: with two types' since versions changed, the message

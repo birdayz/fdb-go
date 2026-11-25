@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -30,7 +30,7 @@ func TestRecordTypeKey_EmptyBytesSurvivesProtoRoundTrip(t *testing.T) {
 	// PRESENT on the wire (tag 6, length 0), a nil one is absent. If this ever
 	// changes, an empty-bytes key cannot be represented at all and the
 	// canonicalizer must reject it instead of storing it.
-	present, err := proto.Marshal(&gen.Value{BytesValue: []byte{}})
+	present, err := proto.Marshal(&metadatapb.Value{BytesValue: []byte{}})
 	if err != nil {
 		t.Fatalf("marshal empty bytes value: %v", err)
 	}
@@ -38,14 +38,14 @@ func TestRecordTypeKey_EmptyBytesSurvivesProtoRoundTrip(t *testing.T) {
 		t.Fatal("a non-nil empty bytes_value marshaled to nothing — proto field presence no longer distinguishes " +
 			"an empty bytes key from an absent one, so an empty-bytes record type key cannot round-trip")
 	}
-	absent, err := proto.Marshal(&gen.Value{BytesValue: nil})
+	absent, err := proto.Marshal(&metadatapb.Value{BytesValue: nil})
 	if err != nil {
 		t.Fatalf("marshal nil bytes value: %v", err)
 	}
 	if len(absent) != 0 {
 		t.Fatalf("a nil bytes_value marshaled to %x, want nothing", absent)
 	}
-	var decoded gen.Value
+	var decoded metadatapb.Value
 	if err := proto.Unmarshal(present, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}

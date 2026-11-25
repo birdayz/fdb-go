@@ -7,7 +7,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
@@ -839,9 +839,9 @@ func TestBuilder_WithFanOutIndex(t *testing.T) {
 	nest := root.GetNesting()
 	if nest == nil ||
 		nest.GetParent().GetFieldName() != "tags" ||
-		nest.GetParent().GetFanType() != gen.Field_SCALAR ||
+		nest.GetParent().GetFanType() != metadatapb.Field_SCALAR ||
 		nest.GetChild().GetField().GetFieldName() != "values" ||
-		nest.GetChild().GetField().GetFanType() != gen.Field_FAN_OUT {
+		nest.GetChild().GetField().GetFanType() != metadatapb.Field_FAN_OUT {
 		t.Fatalf("fanout root = %v, want field(tags, SCALAR).nest(field(values, FAN_OUT))", root)
 	}
 }
@@ -865,7 +865,7 @@ func TestBuilder_WithFanOutIndex_NotNullArray(t *testing.T) {
 	root := tmpl.Underlying().GetIndex("by_tag").RootExpression.ToKeyExpression()
 	if root.GetField() == nil ||
 		root.GetField().GetFieldName() != "tags" ||
-		root.GetField().GetFanType() != gen.Field_FAN_OUT {
+		root.GetField().GetFanType() != metadatapb.Field_FAN_OUT {
 		t.Fatalf("fanout root = %v, want flat field(tags, FAN_OUT)", root)
 	}
 }

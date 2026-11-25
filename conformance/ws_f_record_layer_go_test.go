@@ -13,7 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/internal/recordlayer/query/executor"
@@ -225,7 +225,7 @@ func (d wsfIndexDef) IndexIsUnique() bool              { return false }
 func (d wsfIndexDef) IndexPrimaryKeyColumns() []string { return d.primaryKey }
 func (d wsfIndexDef) IndexRowType() values.Type        { return d.row }
 func (d wsfIndexDef) IndexCreatesDuplicates() bool     { return false }
-func (d wsfIndexDef) IndexRootKeyExpression() *gen.KeyExpression {
+func (d wsfIndexDef) IndexRootKeyExpression() *metadatapb.KeyExpression {
 	return d.root.ToKeyExpression()
 }
 func (d wsfIndexDef) IndexKeyComponentTypes() []values.Type { return d.types(d.columns) }

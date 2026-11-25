@@ -10,7 +10,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -160,7 +160,7 @@ var _ = Describe("Index Build State Conformance", func() {
 					return nil, err
 				}
 				Expect(stamp).NotTo(BeNil(), "stamp should exist")
-				Expect(stamp.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_RECORDS))
+				Expect(stamp.GetMethod()).To(Equal(metadatapb.IndexBuildIndexingStamp_BY_RECORDS))
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())

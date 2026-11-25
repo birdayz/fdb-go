@@ -13,7 +13,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
@@ -71,13 +71,13 @@ var _ = Describe("RFC-257 key functions: the registry and create's refusals as J
 		Expect(ok).To(BeFalse(), "a key function the target's registry lacks")
 	})
 
-	field := func(name string) *gen.KeyExpression {
-		return &gen.KeyExpression{Field: &gen.Field{FieldName: proto.String(name), FanType: gen.Field_SCALAR.Enum(), NullInterpretation: gen.Field_NOT_UNIQUE.Enum()}}
+	field := func(name string) *metadatapb.KeyExpression {
+		return &metadatapb.KeyExpression{Field: &metadatapb.Field{FieldName: proto.String(name), FanType: metadatapb.Field_SCALAR.Enum(), NullInterpretation: metadatapb.Field_NOT_UNIQUE.Enum()}}
 	}
-	then := func(children ...*gen.KeyExpression) *gen.KeyExpression {
-		return &gen.KeyExpression{Then: &gen.Then{Child: children}}
+	then := func(children ...*metadatapb.KeyExpression) *metadatapb.KeyExpression {
+		return &metadatapb.KeyExpression{Then: &metadatapb.Then{Child: children}}
 	}
-	empty := &gen.KeyExpression{Empty: &gen.Empty{}}
+	empty := &metadatapb.KeyExpression{Empty: &metadatapb.Empty{}}
 	const (
 		invalidExpression = "com.apple.foundationdb.record.metadata.expressions.KeyExpression$InvalidExpressionException"
 		deserialization   = "com.apple.foundationdb.record.metadata.expressions.KeyExpression$DeserializationException"
@@ -86,7 +86,7 @@ var _ = Describe("RFC-257 key functions: the registry and create's refusals as J
 	)
 	for _, c := range []struct {
 		name      string
-		args      *gen.KeyExpression
+		args      *metadatapb.KeyExpression
 		wantError string // Java's create and load message; "" accepts
 	}{
 		{"add", then(field("order_id"), field("price")), ""},
@@ -102,7 +102,7 @@ var _ = Describe("RFC-257 key functions: the registry and create's refusals as J
 		{"no_such_function", field("order_id"), notDefined},
 	} {
 		It(fmt.Sprintf("create and load %s over %d columns", c.name, argColumns(c.args)), func() {
-			fn := &gen.Function{Name: proto.String(c.name), Arguments: c.args}
+			fn := &metadatapb.Function{Name: proto.String(c.name), Arguments: c.args}
 			fnBytes, err := proto.Marshal(fn)
 			Expect(err).NotTo(HaveOccurred())
 			var java struct {
@@ -141,7 +141,7 @@ var _ = Describe("RFC-257 key functions: the registry and create's refusals as J
 
 			// Loaded: an arity refusal is Java's; an unknown name loads in Go
 			// only (DIVERGENCES.md, a function only a Java module registers).
-			_, loadErr := recordlayer.KeyExpressionFromProto(&gen.KeyExpression{Function: fn})
+			_, loadErr := recordlayer.KeyExpressionFromProto(&metadatapb.KeyExpression{Function: fn})
 			switch c.wantError {
 			case "", notDefined:
 				Expect(loadErr).NotTo(HaveOccurred())
@@ -154,7 +154,7 @@ var _ = Describe("RFC-257 key functions: the registry and create's refusals as J
 	}
 })
 
-func argColumns(e *gen.KeyExpression) int {
+func argColumns(e *metadatapb.KeyExpression) int {
 	switch {
 	case e.GetEmpty() != nil:
 		return 0
