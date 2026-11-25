@@ -88,7 +88,11 @@ CMAKEOF
 
 go_library(
     name = "fdb-diff-oracle",
-    srcs = ["oracle.go"],
+    srcs = [
+        "oracle.go",
+        "serialize_replies.go",
+        "serialize_requests.go",
+    ],
     importpath = "fdb.dev/cmd/fdb-diff-oracle",
     visibility = ["//visibility:private"],
 )

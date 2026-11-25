@@ -3,9 +3,7 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
 	"fmt"
 	"math/big"
 	"strings"
@@ -15,21 +13,43 @@ import (
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 )
 
-func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any) error {
+func splitOpSuffix(op string) (baseOp string, isSnapshot, isDatabase bool) {
 	// Strip _SNAPSHOT and _DATABASE suffixes for dispatch.
-	baseOp := op
-	isSnapshot := false
-	isDatabase := false
 	if strings.HasSuffix(op, "_SNAPSHOT") {
-		baseOp = strings.TrimSuffix(op, "_SNAPSHOT")
-		isSnapshot = true
-	} else if strings.HasSuffix(op, "_DATABASE") {
-		baseOp = strings.TrimSuffix(op, "_DATABASE")
-		isDatabase = true
+		return strings.TrimSuffix(op, "_SNAPSHOT"), true, false
 	}
+	if strings.HasSuffix(op, "_DATABASE") {
+		return strings.TrimSuffix(op, "_DATABASE"), false, true
+	}
+	return op, false, false
+}
 
+func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any) error {
+	baseOp, isSnapshot, isDatabase := splitOpSuffix(op)
+
+	if handled, err := sm.executeStackOp(ctx, idx, baseOp, arg); handled || err != nil {
+		return err
+	}
+	if handled, err := sm.executeTxnOp(ctx, idx, baseOp, isDatabase, isSnapshot); handled || err != nil {
+		return err
+	}
+	if handled, err := sm.executeKVOp(ctx, idx, baseOp, isDatabase, isSnapshot); handled || err != nil {
+		return err
+	}
+	if handled, err := sm.executeTupleOp(idx, baseOp); handled || err != nil {
+		return err
+	}
+	if handled, err := sm.executeThreadOp(ctx, idx, baseOp); handled || err != nil {
+		return err
+	}
+	if handled, err := sm.executeDirectoryOp(ctx, idx, baseOp, isDatabase, isSnapshot); handled || err != nil {
+		return err
+	}
+	return fmt.Errorf("unimplemented operation: %s", op)
+}
+
+func (sm *StackMachine) executeStackOp(ctx context.Context, idx int, baseOp string, arg any) (bool, error) {
 	switch baseOp {
-	// --- Stack operations ---
 	case "PUSH":
 		sm.push(idx, arg)
 	case "DUP":
@@ -53,637 +73,68 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		sm.push(idx, append(a, b...))
 	case "LOG_STACK":
 		prefix := sm.popBytes()
-		return sm.logStack(ctx, idx, prefix)
+		return true, sm.logStack(ctx, idx, prefix)
+	default:
+		return false, nil
+	}
+	return true, nil
+}
 
-	// --- Transaction management ---
-	case "NEW_TRANSACTION":
-		sm.trMu.Lock()
-		sm.replaceTransaction(sm.trName)
-		sm.trMu.Unlock()
-	case "USE_TRANSACTION":
-		name := sm.popString()
-		sm.trMu.Lock()
-		sm.trName = name
-		if _, ok := sm.trMap[name]; !ok {
-			sm.replaceTransaction(name)
-		}
-		sm.trMu.Unlock()
-	case "COMMIT":
-		tr, release := sm.acquireCommitTransaction()
-		defer release()
-		err := tr.Commit(ctx)
-		if err != nil {
-			sm.pushError(idx, err)
-		} else {
-			sm.push(idx, []byte("RESULT_NOT_PRESENT"))
-		}
-	case "RESET":
-		sm.trMu.Lock()
-		sm.replaceTransaction(sm.trName)
-		sm.trMu.Unlock()
-	case "CANCEL":
-		sm.currentTr().Cancel()
-
-	// --- Reads ---
-	case "GET":
-		key := sm.popBytes()
-		var val []byte
-		var err error
-		if isDatabase {
-			result, e := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
-				return tx.Get(ctx, key)
-			})
-			if e == nil && result != nil {
-				val = result.([]byte)
-			}
-			err = e
-		} else if isSnapshot {
-			val, err = sm.currentTr().Snapshot().Get(ctx, key)
-		} else {
-			val, err = sm.currentTr().Get(ctx, key)
-		}
-		if err != nil {
-			sm.pushError(idx, err)
-		} else if val == nil {
-			sm.push(idx, []byte("RESULT_NOT_PRESENT"))
-		} else {
-			sm.push(idx, val)
-		}
-
-	case "GET_KEY":
-		key := sm.popBytes()
-		orEqual := sm.popInt64() != 0
-		offset := int32(sm.popInt64())
-		prefix := sm.popBytes()
-		var result []byte
-		var err error
-		if isDatabase {
-			r, e := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
-				return tx.GetKey(ctx, key, orEqual, offset)
-			})
-			if e == nil && r != nil {
-				result = r.([]byte)
-			}
-			err = e
-		} else if isSnapshot {
-			result, err = sm.currentTr().Snapshot().GetKey(ctx, key, orEqual, offset)
-		} else {
-			result, err = sm.currentTr().GetKey(ctx, key, orEqual, offset)
-		}
-		if err != nil {
-			sm.pushError(idx, err)
-		} else {
-			// Clamp result to prefix range.
-			if bytes.Compare(result, prefix) < 0 {
-				result = prefix
-			} else if !bytes.HasPrefix(result, prefix) && bytes.Compare(result, prefix) > 0 {
-				result = strinc(prefix)
-			}
-			sm.push(idx, result)
-		}
-
-	case "GET_RANGE":
-		begin := sm.popBytes()
-		end := sm.popBytes()
-		limit := int(sm.popInt64())
-		reverse := sm.popInt64() != 0
-		mode := sm.popInt64()
-		if limit == 0 && mode == 0 {
-			sm.pushError(idx, &wire.FDBError{Code: 2210})
-			return nil
-		}
-
-		var kvs []client.KeyValue
-		var err error
-		if isDatabase {
-			result, e := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
-				var kv []client.KeyValue
-				var rangeErr error
-				if reverse {
-					kv, _, rangeErr = tx.GetRangeReverse(ctx, begin, end, limit)
-				} else {
-					kv, _, rangeErr = tx.GetRange(ctx, begin, end, limit)
-				}
-				return kv, rangeErr
-			})
-			if e == nil && result != nil {
-				kvs = result.([]client.KeyValue)
-			}
-			err = e
-		} else if reverse {
-			if isSnapshot {
-				kvs, _, err = sm.currentTr().Snapshot().GetRangeReverse(ctx, begin, end, limit)
-			} else {
-				kvs, _, err = sm.currentTr().GetRangeReverse(ctx, begin, end, limit)
-			}
-		} else {
-			if isSnapshot {
-				kvs, _, err = sm.currentTr().Snapshot().GetRange(ctx, begin, end, limit)
-			} else {
-				kvs, _, err = sm.currentTr().GetRange(ctx, begin, end, limit)
-			}
-		}
-		if err != nil {
-			sm.pushError(idx, err)
-		} else {
-			// Pack as single tuple: [k1, v1, k2, v2, ...]
-			t := make(tuple.Tuple, 0, len(kvs)*2)
-			for _, kv := range kvs {
-				t = append(t, kv.Key, kv.Value)
-			}
-			sm.push(idx, t.Pack())
-		}
-
-	case "GET_RANGE_STARTS_WITH":
-		prefix := sm.popBytes()
-		limit := int(sm.popInt64())
-		reverse := sm.popInt64() != 0
-		mode := sm.popInt64()
-		if limit == 0 && mode == 0 {
-			sm.pushError(idx, &wire.FDBError{Code: 2210})
-			return nil
-		}
-
-		end := strinc(prefix)
-		var kvs []client.KeyValue
-		var err error
-		if isDatabase {
-			result, e := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
-				var kv []client.KeyValue
-				var rangeErr error
-				if reverse {
-					kv, _, rangeErr = tx.GetRangeReverse(ctx, prefix, end, limit)
-				} else {
-					kv, _, rangeErr = tx.GetRange(ctx, prefix, end, limit)
-				}
-				return kv, rangeErr
-			})
-			if e == nil && result != nil {
-				kvs = result.([]client.KeyValue)
-			}
-			err = e
-		} else if reverse {
-			if isSnapshot {
-				kvs, _, err = sm.currentTr().Snapshot().GetRangeReverse(ctx, prefix, end, limit)
-			} else {
-				kvs, _, err = sm.currentTr().GetRangeReverse(ctx, prefix, end, limit)
-			}
-		} else {
-			if isSnapshot {
-				kvs, _, err = sm.currentTr().Snapshot().GetRange(ctx, prefix, end, limit)
-			} else {
-				kvs, _, err = sm.currentTr().GetRange(ctx, prefix, end, limit)
-			}
-		}
-		if err != nil {
-			sm.pushError(idx, err)
-		} else {
-			t := make(tuple.Tuple, 0, len(kvs)*2)
-			for _, kv := range kvs {
-				t = append(t, kv.Key, kv.Value)
-			}
-			sm.push(idx, t.Pack())
-		}
-
-	case "GET_RANGE_SELECTOR":
-		beginKey := sm.popBytes()
-		beginOrEqual := sm.popInt64() != 0
-		beginOffset := int32(sm.popInt64())
-		endKey := sm.popBytes()
-		endOrEqual := sm.popInt64() != 0
-		endOffset := int32(sm.popInt64())
-		limit := int(sm.popInt64())
-		reverse := sm.popInt64() != 0
-		mode := sm.popInt64()
-		prefix := sm.popBytes()
-		if limit == 0 && mode == 0 {
-			sm.pushError(idx, &wire.FDBError{Code: 2210})
-			return nil
-		}
-
-		// Resolve key selectors to actual keys + range read.
-		// For _DATABASE variant, everything runs in one auto-commit transaction.
-		if isDatabase {
-			type rangeResult struct {
-				kvs []client.KeyValue
-			}
-			result, e := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
-				b, bErr := tx.GetKey(ctx, beginKey, beginOrEqual, beginOffset)
-				if bErr != nil {
-					return nil, bErr
-				}
-				en, eErr := tx.GetKey(ctx, endKey, endOrEqual, endOffset)
-				if eErr != nil {
-					return nil, eErr
-				}
-				var kv []client.KeyValue
-				var rangeErr error
-				if reverse {
-					kv, _, rangeErr = tx.GetRangeReverse(ctx, b, en, limit)
-				} else {
-					kv, _, rangeErr = tx.GetRange(ctx, b, en, limit)
-				}
-				return &rangeResult{kvs: kv}, rangeErr
-			})
-			if e != nil {
-				sm.pushError(idx, e)
-			} else {
-				rr := result.(*rangeResult)
-				t := make(tuple.Tuple, 0, len(rr.kvs)*2)
-				for _, kv := range rr.kvs {
-					if bytes.HasPrefix(kv.Key, prefix) {
-						t = append(t, kv.Key, kv.Value)
-					}
-				}
-				sm.push(idx, t.Pack())
-			}
-			return nil
-		}
-
-		var begin, end []byte
-		var err error
-		if isSnapshot {
-			begin, err = sm.currentTr().Snapshot().GetKey(ctx, beginKey, beginOrEqual, beginOffset)
-			if err == nil {
-				end, err = sm.currentTr().Snapshot().GetKey(ctx, endKey, endOrEqual, endOffset)
-			}
-		} else {
-			begin, err = sm.currentTr().GetKey(ctx, beginKey, beginOrEqual, beginOffset)
-			if err == nil {
-				end, err = sm.currentTr().GetKey(ctx, endKey, endOrEqual, endOffset)
-			}
-		}
-		if err != nil {
-			sm.pushError(idx, err)
-		} else {
-			var kvs []client.KeyValue
-			if reverse {
-				if isSnapshot {
-					kvs, _, err = sm.currentTr().Snapshot().GetRangeReverse(ctx, begin, end, limit)
-				} else {
-					kvs, _, err = sm.currentTr().GetRangeReverse(ctx, begin, end, limit)
-				}
-			} else {
-				if isSnapshot {
-					kvs, _, err = sm.currentTr().Snapshot().GetRange(ctx, begin, end, limit)
-				} else {
-					kvs, _, err = sm.currentTr().GetRange(ctx, begin, end, limit)
-				}
-			}
-			if err != nil {
-				sm.pushError(idx, err)
-			} else {
-				// Filter results to prefix and pack.
-				t := make(tuple.Tuple, 0, len(kvs)*2)
-				for _, kv := range kvs {
-					if prefix == nil || bytes.HasPrefix(kv.Key, prefix) {
-						t = append(t, kv.Key, kv.Value)
-					}
-				}
-				sm.push(idx, t.Pack())
-			}
-		}
-
-	// --- Writes ---
-	case "SET":
-		key := sm.popBytes()
-		value := sm.popBytes()
-		if isDatabase {
-			_, err := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
-				tx.Set(key, value)
-				return nil, nil
-			})
-			if err != nil {
-				sm.pushError(idx, err)
-			} else {
-				sm.push(idx, []byte("RESULT_NOT_PRESENT"))
-			}
-		} else {
-			sm.currentTr().Set(key, value)
-		}
-
-	case "CLEAR":
-		key := sm.popBytes()
-		if isDatabase {
-			_, err := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
-				tx.Clear(key)
-				return nil, nil
-			})
-			if err != nil {
-				sm.pushError(idx, err)
-			} else {
-				sm.push(idx, []byte("RESULT_NOT_PRESENT"))
-			}
-		} else {
-			sm.currentTr().Clear(key)
-		}
-
-	case "CLEAR_RANGE":
-		begin := sm.popBytes()
-		end := sm.popBytes()
-		if isDatabase {
-			_, err := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
-				return nil, tx.ClearRange(begin, end)
-			})
-			if err != nil {
-				sm.pushError(idx, err)
-			} else {
-				sm.push(idx, []byte("RESULT_NOT_PRESENT"))
-			}
-		} else {
-			if err := sm.currentTr().ClearRange(begin, end); err != nil {
-				sm.pushError(idx, err)
-			}
-		}
-
-	case "CLEAR_RANGE_STARTS_WITH":
-		prefix := sm.popBytes()
-		end := strinc(prefix)
-		if isDatabase {
-			_, err := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
-				return nil, tx.ClearRange(prefix, end)
-			})
-			if err != nil {
-				sm.pushError(idx, err)
-			} else {
-				sm.push(idx, []byte("RESULT_NOT_PRESENT"))
-			}
-		} else {
-			if err := sm.currentTr().ClearRange(prefix, end); err != nil {
-				sm.pushError(idx, err)
-			}
-		}
-
-	case "ATOMIC_OP":
-		opType := sm.popString()
-		key := sm.popBytes()
-		value := sm.popBytes()
-		mutType := atomicOpType(opType)
-		if isDatabase {
-			_, err := sm.transact(ctx, func(tx *client.Transaction) (any, error) {
-				tx.Atomic(mutType, key, value)
-				return nil, nil
-			})
-			if err != nil {
-				sm.pushError(idx, err)
-			} else {
-				sm.push(idx, []byte("RESULT_NOT_PRESENT"))
-			}
-		} else {
-			sm.currentTr().Atomic(mutType, key, value)
-		}
-
-	// --- Version ---
-	case "GET_READ_VERSION":
-		var ver int64
-		var err error
-		if isSnapshot {
-			ver, err = sm.currentTr().Snapshot().GetReadVersion(ctx)
-		} else {
-			ver, err = sm.currentTr().GetReadVersion(ctx)
-		}
-		if err != nil {
-			sm.pushError(idx, err)
-		} else {
-			sm.lastVer = ver
-			sm.push(idx, []byte("GOT_READ_VERSION"))
-		}
-
-	case "SET_READ_VERSION":
-		sm.currentTr().SetReadVersion(sm.lastVer)
-
-	case "GET_COMMITTED_VERSION":
-		ver, err := sm.currentTr().GetCommittedVersion()
-		if err != nil {
-			sm.pushError(idx, err)
-		} else {
-			sm.lastVer = ver
-			sm.push(idx, []byte("GOT_COMMITTED_VERSION"))
-		}
-
-	case "GET_VERSIONSTAMP":
-		// Deferred versionstamp: we push a future that resolves after commit.
-		// Since our client is synchronous, we use the versionstampFuture mechanism.
-		f := &versionstampFuture{tr: sm.currentTr()}
-		sm.push(idx, f)
-
-	case "GET_APPROXIMATE_SIZE":
-		// Reference testers wait on the future and surface its error as an
-		// ERROR tuple — a deferred-error-poisoned txn (2000/2018) must compare
-		// identically across bindings, not be swallowed.
-		if _, err := sm.currentTr().GetApproximateSize(); err != nil {
-			sm.pushError(idx, err)
-		} else {
-			sm.push(idx, []byte("GOT_APPROXIMATE_SIZE"))
-		}
-
-	case "GET_ESTIMATED_RANGE_SIZE":
-		begin, end := sm.popBytes(), sm.popBytes()
-		if _, err := sm.currentTr().GetEstimatedRangeSizeBytes(ctx, begin, end); err != nil {
-			sm.pushError(idx, err)
-		} else {
-			sm.push(idx, []byte("GOT_ESTIMATED_RANGE_SIZE"))
-		}
-
-	case "GET_RANGE_SPLIT_POINTS":
-		begin, end, chunkSize := sm.popBytes(), sm.popBytes(), sm.popInt64()
-		if _, err := sm.currentTr().GetRangeSplitPoints(ctx, begin, end, chunkSize); err != nil {
-			sm.pushError(idx, err)
-		} else {
-			sm.push(idx, []byte("GOT_RANGE_SPLIT_POINTS"))
-		}
-
-	// --- Conflict ranges ---
-	case "READ_CONFLICT_RANGE":
-		begin := sm.popBytes()
-		end := sm.popBytes()
-		if err := sm.currentTr().AddReadConflictRange(begin, end); err != nil {
-			sm.pushError(idx, err)
-		} else {
-			sm.push(idx, []byte("SET_CONFLICT_RANGE"))
-		}
-
-	case "READ_CONFLICT_KEY":
-		key := sm.popBytes()
-		sm.currentTr().AddReadConflictKey(key)
-		sm.push(idx, []byte("SET_CONFLICT_KEY"))
-
-	case "WRITE_CONFLICT_RANGE":
-		begin := sm.popBytes()
-		end := sm.popBytes()
-		if err := sm.currentTr().AddWriteConflictRange(begin, end); err != nil {
-			sm.pushError(idx, err)
-		} else {
-			sm.push(idx, []byte("SET_CONFLICT_RANGE"))
-		}
-
-	case "WRITE_CONFLICT_KEY":
-		key := sm.popBytes()
-		sm.currentTr().AddWriteConflictKey(key)
-		sm.push(idx, []byte("SET_CONFLICT_KEY"))
-
-	// --- Error handling ---
-	case "ON_ERROR":
-		code := int(sm.popInt64())
-		err := sm.currentTr().OnError(ctx, &wire.FDBError{Code: code})
-		if err != nil {
-			sm.pushError(idx, err)
-		} else {
-			sm.push(idx, []byte("RESULT_NOT_PRESENT"))
-		}
-
-	// --- Tuple operations ---
-	case "TUPLE_PACK":
-		count := int(sm.popInt64())
-		t := make(tuple.Tuple, count)
-		for i := 0; i < count; i++ {
-			t[i] = sm.pop().value
-		}
-		sm.push(idx, t.Pack())
-
-	case "TUPLE_UNPACK":
-		data := sm.popBytes()
-		t, err := tuple.Unpack(data)
-		if err != nil {
-			sm.pushError(idx, err)
-		} else {
-			for _, elem := range t {
-				sm.push(idx, tuple.Tuple{elem}.Pack())
-			}
-		}
-
-	case "TUPLE_RANGE":
-		count := int(sm.popInt64())
-		t := make(tuple.Tuple, count)
-		for i := 0; i < count; i++ {
-			t[i] = sm.pop().value
-		}
-		begin, end := t.FDBRangeKeys()
-		sm.push(idx, begin.FDBKey())
-		sm.push(idx, end.FDBKey())
-
-	case "ENCODE_FLOAT":
-		valBytes := sm.popBytes()
-		var val float32
-		binary.Read(bytes.NewReader(valBytes), binary.BigEndian, &val)
-		sm.push(idx, val)
-
-	case "ENCODE_DOUBLE":
-		valBytes := sm.popBytes()
-		var val float64
-		binary.Read(bytes.NewReader(valBytes), binary.BigEndian, &val)
-		sm.push(idx, val)
-
-	case "DECODE_FLOAT":
-		val := sm.pop().value.(float32)
-		var buf bytes.Buffer
-		binary.Write(&buf, binary.BigEndian, val)
-		sm.push(idx, buf.Bytes())
-
-	case "DECODE_DOUBLE":
-		val := sm.pop().value.(float64)
-		var buf bytes.Buffer
-		binary.Write(&buf, binary.BigEndian, val)
-		sm.push(idx, buf.Bytes())
-
-	case "TUPLE_SORT":
-		count := int(sm.popInt64())
-		items := make([][]byte, count)
-		for i := 0; i < count; i++ {
-			items[i] = sm.popBytes()
-		}
-		// Sort by byte order.
-		for i := 0; i < len(items); i++ {
-			for j := i + 1; j < len(items); j++ {
-				if bytes.Compare(items[i], items[j]) > 0 {
-					items[i], items[j] = items[j], items[i]
-				}
-			}
-		}
-		for _, item := range items {
-			sm.push(idx, item)
-		}
-
-	case "TUPLE_PACK_WITH_VERSIONSTAMP":
-		prefix := sm.popBytes()
-		// Use the pure-Go API version, not the uninitialized C binding's state.
-		t := sm.popTupleRaw()
-		packed, err := t.PackWithVersionstamp(prefix)
-		if err != nil && strings.Contains(err.Error(), "No incomplete") {
-			sm.push(idx, []byte("ERROR: NONE"))
-		} else if err != nil {
-			sm.push(idx, []byte("ERROR: MULTIPLE"))
-		} else {
-			sm.push(idx, []byte("OK"))
-			sm.push(idx, packed)
-		}
-
-	// --- Threading ---
+func (sm *StackMachine) executeThreadOp(ctx context.Context, idx int, baseOp string) (bool, error) {
+	switch baseOp {
 	case "START_THREAD":
-		prefix := sm.popBytes()
-		child := newStackMachine(sm.db, prefix, sm.transactionRegistry)
-		child.childJoinTimeout = sm.childJoinTimeout
-		child.threadPath = sm.threadPath + " -> " + string(prefix)
-		sm.childMu.Lock()
-		if sm.children == nil {
-			sm.children = make(map[string]int)
-		}
-		sm.children[string(prefix)]++
-		sm.childMu.Unlock()
-		sm.wg.Add(1)
-		go func() {
-			defer sm.wg.Done()
-			defer func() {
-				sm.childMu.Lock()
-				sm.children[string(prefix)]--
-				if sm.children[string(prefix)] == 0 {
-					delete(sm.children, string(prefix))
-				}
-				sm.childMu.Unlock()
-			}()
-			if err := child.Run(ctx); err != nil {
-				err = fmt.Errorf("child thread %q: %w", prefix, err)
-				sm.childMu.Lock()
-				if sm.childErr == nil {
-					sm.childErr = err
-				}
-				sm.childMu.Unlock()
-				if sm.cancelRun != nil {
-					sm.cancelRun(err)
-				}
-			}
-		}()
-
+		sm.startThread(ctx)
 	case "WAIT_EMPTY":
 		prefix := sm.popBytes()
 		if err := sm.waitEmpty(ctx, prefix); err != nil {
-			return err
+			return true, err
 		}
 		sm.push(idx, []byte("WAITED_FOR_EMPTY"))
-
-	case "DISABLE_WRITE_CONFLICT":
-		sm.currentTr().SetNextWriteNoWriteConflictRange()
-
 	case "WAIT_FUTURE":
 		// Our client is synchronous — all values are already resolved.
 		// No-op: the value on top of the stack is already the result.
-
 	case "UNIT_TESTS":
 		// No-op for now. Binding-specific smoke tests.
-
 	default:
-		// Try directory operations.
-		handled, err := sm.executeDirectoryOp(ctx, idx, baseOp, isDatabase, isSnapshot)
-		if err != nil {
-			return err
-		}
-		if handled {
-			return nil
-		}
-		return fmt.Errorf("unimplemented operation: %s", op)
+		return false, nil
 	}
+	return true, nil
+}
 
-	return nil
+func (sm *StackMachine) startThread(ctx context.Context) {
+	prefix := sm.popBytes()
+	child := newStackMachine(sm.db, prefix, sm.transactionRegistry)
+	child.childJoinTimeout = sm.childJoinTimeout
+	child.threadPath = sm.threadPath + " -> " + string(prefix)
+	sm.childMu.Lock()
+	if sm.children == nil {
+		sm.children = make(map[string]int)
+	}
+	sm.children[string(prefix)]++
+	sm.childMu.Unlock()
+	sm.wg.Add(1)
+	go func() {
+		defer sm.wg.Done()
+		defer func() {
+			sm.childMu.Lock()
+			sm.children[string(prefix)]--
+			if sm.children[string(prefix)] == 0 {
+				delete(sm.children, string(prefix))
+			}
+			sm.childMu.Unlock()
+		}()
+		if err := child.Run(ctx); err != nil {
+			err = fmt.Errorf("child thread %q: %w", prefix, err)
+			sm.childMu.Lock()
+			if sm.childErr == nil {
+				sm.childErr = err
+			}
+			sm.childMu.Unlock()
+			if sm.cancelRun != nil {
+				sm.cancelRun(err)
+			}
+		}
+	}()
 }
 
 func (sm *StackMachine) logStack(ctx context.Context, idx int, prefix []byte) error {
@@ -767,36 +218,5 @@ func toBigInt(v any) *big.Int {
 		return new(big.Int).SetBytes(x)
 	default:
 		panic(fmt.Sprintf("cannot convert %T to big.Int", v))
-	}
-}
-
-func atomicOpType(name string) client.MutationType {
-	switch strings.ToUpper(name) {
-	case "ADD":
-		return client.MutAddValue
-	case "AND", "BIT_AND":
-		return client.MutAnd
-	case "OR", "BIT_OR":
-		return client.MutOr
-	case "XOR", "BIT_XOR":
-		return client.MutXor
-	case "APPEND_IF_FITS":
-		return client.MutAppendIfFits
-	case "MAX":
-		return client.MutMax
-	case "MIN":
-		return client.MutMin
-	case "SET_VERSIONSTAMPED_KEY":
-		return client.MutSetVersionstampedKey
-	case "SET_VERSIONSTAMPED_VALUE":
-		return client.MutSetVersionstampedValue
-	case "BYTE_MIN":
-		return client.MutByteMin
-	case "BYTE_MAX":
-		return client.MutByteMax
-	case "COMPARE_AND_CLEAR":
-		return client.MutCompareAndClear
-	default:
-		panic(fmt.Sprintf("unknown atomic op: %s", name))
 	}
 }
