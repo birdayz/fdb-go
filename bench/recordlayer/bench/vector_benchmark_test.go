@@ -635,7 +635,7 @@ func vecLatencyPercentile(sorted []time.Duration, p float64) time.Duration {
 //
 // Run explicitly:
 //
-//	bazelisk test //pkg/recordlayer:vector_benchmark_test \
+//	bazelisk test //bench/recordlayer/bench:bench_test \
 //	  --test_arg="-test.run=TestVectorStressManual" --test_output=streamed \
 //	  --test_env=VECTOR_STRESS=1
 //
@@ -916,7 +916,7 @@ func euclideanDistance(a, b []float64) float64 {
 // profiles say whether it's CPU (distance math), network wait, or lock contention.
 //
 //	VECTOR_SCALING=1 [VECTOR_PROFILE=1] [VECTOR_BENCH_SIZE/DIMS/...] \
-//	  go test ./pkg/recordlayer/bench -run TestVectorConcurrencyScaling -v -timeout 20m
+//	  go test ./bench/recordlayer/bench -run TestVectorConcurrencyScaling -v -timeout 20m
 //
 // VECTOR_PROFILE=1 dumps cpu/block/mutex profiles for the peak concurrency
 // level to /tmp/vecprof_{cpu,block,mutex}.prof.
@@ -1138,7 +1138,7 @@ func vecWriteProfile(path, name string) {
 //
 //	VECTOR_BUILD=1 VECTOR_BENCH_SIZE=1000000 VECTOR_BENCH_DIMS=1536 \
 //	  VECTOR_BENCH_BATCH=16 \
-//	  go test ./pkg/recordlayer/bench -run TestVectorBuildLarge -v -timeout 1200m
+//	  go test ./bench/recordlayer/bench -run TestVectorBuildLarge -v -timeout 1200m
 func TestVectorBuildLarge(t *testing.T) {
 	if os.Getenv("VECTOR_BUILD") != "1" {
 		t.Skip("set VECTOR_BUILD=1 to run the large streaming build")
@@ -1272,7 +1272,7 @@ func vecDiskBackedDB(t *testing.T) *recordlayer.FDBDatabase {
 // the single-node FDB or the client cores saturate.
 //
 //	VECTOR_INGEST=1 [VECTOR_BENCH_SIZE=4000 VECTOR_BENCH_LEVELS=1,2,4,8,16,24] \
-//	  go test ./pkg/recordlayer/bench -run TestVectorIngestSweep -v -timeout 60m
+//	  go test ./bench/recordlayer/bench -run TestVectorIngestSweep -v -timeout 60m
 func TestVectorIngestSweep(t *testing.T) {
 	if os.Getenv("VECTOR_INGEST") != "1" {
 		t.Skip("set VECTOR_INGEST=1 to run")

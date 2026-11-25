@@ -8,6 +8,7 @@ go_library(
     srcs = ["isolated.go"],
     importpath = "fdb.dev/internal/testutil/allocs",
     visibility = [
+        "//bench:__subpackages__",
         "//internal/recordlayer:__subpackages__",
         "//pkg/recordlayer:__subpackages__",
     ],

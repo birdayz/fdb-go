@@ -1,7 +1,7 @@
 //go:build stress
 
 // Heavy 10K / 100K / 1M-row stress benchmarks. They run only when the `stress`
-// build tag is set: Bazel's //pkg/relational/sqldriver/stress target sets it via
+// build tag is set: Bazel's //bench/relational/stress target sets it via
 // .bazelrc, and `just stress` / `just test-full` invoke that (manual) target.
 // Ordinary CI excludes it; the opt-in full workflow dispatch includes it.
 // See README.md in this dir.

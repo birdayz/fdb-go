@@ -28,7 +28,7 @@ import (
 // force for subsets) and latency percentiles. Env-gated like the HNSW SIFT
 // benchmark so CI stays fast; A/B against TestSIFTBenchmark at the same N.
 //
-//	SPFRESH_BENCH=1 SIFT_N=50000 bazelisk test //pkg/recordlayer/bench:bench_test \
+//	SPFRESH_BENCH=1 SIFT_N=50000 bazelisk test //bench/recordlayer/bench:bench_test \
 //	  --test_arg="--test.run=TestSPFreshSIFTBenchmark" --test_output=streamed \
 //	  --test_env=SPFRESH_BENCH --test_env=SIFT_N
 func TestSPFreshSIFTBenchmark(t *testing.T) {
@@ -458,7 +458,7 @@ func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordla
 // on the grown index. The three numbers the phase cares about: write
 // throughput to fill N, query p50/p99 at N, recall@10 at N.
 //
-//	SPFRESH_BENCH=1 SIFT_N=100000 bazelisk test //pkg/recordlayer/bench:bench_test \
+//	SPFRESH_BENCH=1 SIFT_N=100000 bazelisk test //bench/recordlayer/bench:bench_test \
 //	  --test_arg="--test.run=TestSPFreshForegroundFillBenchmark" --test_output=streamed \
 //	  --test_env=SPFRESH_BENCH --test_env=SIFT_N
 func TestSPFreshForegroundFillBenchmark(t *testing.T) {

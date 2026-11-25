@@ -227,7 +227,7 @@ the topology histogram and sampled integrity:
 
 ```sh
 SPFRESH_BENCH=1 SIFT_N=10000000 SOAK_WAVES=6 bazelisk test \
-  //pkg/recordlayer/bench:bench_test --test_arg="--test.run=TestSPFreshChurnSoak" \
+  //bench/recordlayer/bench:bench_test --test_arg="--test.run=TestSPFreshChurnSoak" \
   --test_output=streamed --test_env=SPFRESH_BENCH --test_env=SIFT_N --test_env=SOAK_WAVES \
   --test_timeout=36000
 ```

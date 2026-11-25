@@ -30,7 +30,7 @@ import (
 //
 //	FDB_READVERIFY=1 [VECTOR_BENCH_PROCS=10 RV_GOROUTINES=24 RV_KEYS=2000 \
 //	  RV_VALSIZE=12288 RV_BATCH=64 RV_SECONDS=240] \
-//	  go test ./pkg/recordlayer/bench -run '^TestFDBConcurrentReadVerify$' -v -timeout 30m
+//	  go test ./bench/recordlayer/bench -run '^TestFDBConcurrentReadVerify$' -v -timeout 30m
 func TestFDBConcurrentReadVerify(t *testing.T) {
 	if os.Getenv("FDB_READVERIFY") != "1" {
 		t.Skip("set FDB_READVERIFY=1 to run")

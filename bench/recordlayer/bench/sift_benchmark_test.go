@@ -36,7 +36,7 @@ import (
 //
 // Run:
 //
-//	bazelisk test //pkg/recordlayer:sift_benchmark_test \
+//	bazelisk test //bench/recordlayer/bench:bench_test \
 //	  --test_arg="-test.run=TestSIFTBenchmark" --test_output=streamed \
 //	  --test_env=SIFT_BENCH=1
 func TestSIFTBenchmark(t *testing.T) {

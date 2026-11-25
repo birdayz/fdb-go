@@ -200,7 +200,7 @@ RFC's <8 ms p50 target stands against that phase, not this one. The
 per-query changelog refresh anti-pattern cost ~15% p50 and was removed
 during this measurement (queries now pay zero cache-maintenance I/O).
 
-Run: `SPFRESH_BENCH=1 SIFT_N=100000 bazelisk test //pkg/recordlayer/bench:bench_test
+Run: `SPFRESH_BENCH=1 SIFT_N=100000 bazelisk test //bench/recordlayer/bench:bench_test
 --test_arg="--test.run=TestSPFreshSIFTBenchmark" --test_output=streamed
 --test_env=SPFRESH_BENCH --test_env=SIFT_N`
 
@@ -227,7 +227,7 @@ multi-node cluster (higher RTT, more batches per shard) gains more.
 Run (S=8 needs `SIFT_SHARD_SAFE=1` so the metadata's RecordTypeKey-prefixed PKs
 pass RFC-103's prefix-safety gate; the default bare-PK metadata is shard-unsafe →
 S=1): `SPFRESH_BENCH=1 SIFT_N=100000 SIFT_SHARD_SAFE=1 bazelisk test
-//pkg/recordlayer/bench:bench_test --test_arg="--test.run=TestSPFreshSIFTBenchmark"
+//bench/recordlayer/bench:bench_test --test_arg="--test.run=TestSPFreshSIFTBenchmark"
 --test_output=streamed --test_env=SPFRESH_BENCH --test_env=SIFT_N --test_env=SIFT_SHARD_SAFE`
 
 ### SPFresh Lmax granularity A/B (SIFT-500k) — NEGATIVE (recall-at-scale item 4)
@@ -819,7 +819,7 @@ recall-at-fixed-probe ladder vs the papers is the separate §4.3 recall dimensio
 
 ```sh
 SPFRESH_BENCH=1 SIFT_N=100000 SOAK_WAVES=6 bazelisk test \
-  //pkg/recordlayer/bench:bench_test --test_arg="--test.run=^TestSPFreshChurnSoak$" \
+  //bench/recordlayer/bench:bench_test --test_arg="--test.run=^TestSPFreshChurnSoak$" \
   --test_output=streamed --test_env=SPFRESH_BENCH --test_env=SIFT_N --test_env=SOAK_WAVES \
   --test_timeout=3600
 ```

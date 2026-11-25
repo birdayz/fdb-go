@@ -303,7 +303,7 @@ func assertOrderedResidualPlan(t *testing.T, exp, where string) {
 // IDENTICAL code path at a fraction of the inserts, keeping it inside the per-PR
 // sqldriver_test timeout (standard + race). The production-scale (20k, default
 // Lmax) version lives in the stress target:
-// //pkg/relational/sqldriver/stress, TestFDB_VectorSearch_ColdStartCappedHonestTruncation.
+// //bench/relational/stress, TestFDB_VectorSearch_ColdStartCappedHonestTruncation.
 //
 // ROOT CAUSE (now fixed). Cold-start SaveRecord inserts pile every row into ONE
 // coarse cell with a single oversized posting (>4*Lmax entries) and a

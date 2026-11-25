@@ -8,6 +8,7 @@ go_library(
     srcs = ["benchcluster.go"],
     importpath = "fdb.dev/internal/testutil/benchcluster",
     visibility = [
+        "//bench:__subpackages__",
         "//pkg/recordlayer:__subpackages__",
         "//pkg/relational:__subpackages__",
     ],

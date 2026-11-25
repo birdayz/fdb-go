@@ -68,7 +68,7 @@ exports_files([
 # `go test ./...` must skip — `bazelrunfiles` (conformance/bindingtester, and the
 # stacktester and libfdb_c differential/interop tests, whose cgo needs @foundationdb's
 # fdb_c.h), `stress`
-# (heavy benchmarks under pkg/relational/sqldriver/stress), and `factorycorpus` (the
+# (heavy benchmarks under bench/relational/stress), and `factorycorpus` (the
 # full RFC-201 committed corpus under
 # pkg/relational/conformance/factorycorpus/full). Caveat of enabling a tag globally:
 # a `//go:build !stress` / `!bazelrunfiles` / `!factorycorpus` file would be silently

@@ -630,7 +630,7 @@ go_test(
     ],
 )
 
-# Vector/SIFT benchmarks moved to pkg/recordlayer/bench/ (separate package).
+# Vector/SIFT benchmarks moved to bench/recordlayer/bench/ (separate package).
 # Run:
-#   bazelisk test //pkg/recordlayer/bench:bench_test --test_arg="-test.bench=." --test_output=streamed
-#   bazelisk test //pkg/recordlayer/bench:bench_test --test_arg="-test.run=TestSIFTBenchmark" --test_output=streamed --test_env=SIFT_BENCH=1
+#   bazelisk test //bench/recordlayer/bench:bench_test --test_arg="-test.bench=." --test_output=streamed
+#   bazelisk test //bench/recordlayer/bench:bench_test --test_arg="-test.run=TestSIFTBenchmark" --test_output=streamed --test_env=SIFT_BENCH=1

@@ -452,6 +452,13 @@ func TestRules(t *testing.T) {
 			src:      srcImporting("sqltest", "github.com/onsi/gomega"),
 			want:     1,
 		},
+		{
+			name:     "R5 unembedded bench Bazel test package unallowlisted fails",
+			pkgPath:  "bench/recordlayer/bench/bench_test",
+			filename: "bench/recordlayer/bench/vector_benchmark_test.go",
+			src:      srcImporting("bench", "github.com/onsi/gomega"),
+			want:     1,
+		},
 
 		// R6: FDB Client Production _|_ OpenTelemetry
 		{

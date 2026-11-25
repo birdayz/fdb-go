@@ -457,19 +457,19 @@ CGO_ENABLED=1 go test -tags libfdbc -count=1 -timeout 30m -v ./pkg/fdbgo/libfdbc
 
 ## stress
 
-Million-row SQL suite (`//pkg/relational/sqldriver/stress:stress_test`): bulk-inserts a seed-42 dataset
+Million-row SQL suite (`//bench/relational/stress:stress_test`): bulk-inserts a seed-42 dataset
 into real FDB, runs ~25 query subtests logging durations and asserting **row-count correctness** + a few
 `EXPLAIN` plan-shape pins. The eyeball perf gate — run before/after any planner/cost/executor change
 against a master worktree baseline.
 
 ```sh
-bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed \
+bazelisk test //bench/relational/stress:stress_test --test_output=streamed \
   --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"
 # Fresh perf numbers (defeat the result cache) + generous timeout:
 #   … --test_arg="--test.timeout=600s" --test_timeout=600 --cache_test_results=no
 # Baseline-vs-branch compare:
 git worktree add /tmp/fdb-master master && cd /tmp/fdb-master \
-  && bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed \
+  && bazelisk test //bench/relational/stress:stress_test --test_output=streamed \
      --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"; \
   git worktree remove /tmp/fdb-master --force
 ```

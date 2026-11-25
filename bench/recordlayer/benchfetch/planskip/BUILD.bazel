@@ -1,5 +1,7 @@
 load("@rules_go//go:def.bzl", "go_test")
 
+package(default_visibility = ["//visibility:private"])
+
 # Plan-level Skip benchmarks under each index fetch method (RFC-258 #923/#929
 # trees only). The binary has no tests; run its benchmarks explicitly.
 go_test(
