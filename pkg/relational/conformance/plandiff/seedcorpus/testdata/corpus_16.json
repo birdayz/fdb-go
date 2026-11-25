@@ -1,0 +1,464 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "name": "aggregate_sum_empty",
+      "schema_template": "CREATE TABLE T_AGG_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": null,
+      "query": "SELECT SUM(v) FROM T_AGG_02"
+    },
+    {
+      "name": "aggregate_group_by_having",
+      "schema_template": "CREATE TABLE T_AGG_03 (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AGG_03 VALUES (1,1,10),(2,1,20),(3,2,30),(4,2,40),(5,2,50)"
+      ],
+      "query": "SELECT g, SUM(v) FROM T_AGG_03 GROUP BY g HAVING SUM(v) > 50 ORDER BY g"
+    },
+    {
+      "name": "cte_basic_with_aggregate",
+      "schema_template": "CREATE TABLE T_CTE_01 (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CTE_01 VALUES (1,1,10),(2,1,20),(3,2,30)"
+      ],
+      "query": "WITH sums AS (SELECT g, SUM(v) AS total FROM T_CTE_01 GROUP BY g) SELECT g, total FROM sums ORDER BY g"
+    },
+    {
+      "name": "join_self_qualified",
+      "schema_template": "CREATE TABLE T_JOIN_01 (id BIGINT, parent_id BIGINT, name STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_JOIN_01 VALUES (1, NULL, 'root'), (2, 1, 'child1'), (3, 1, 'child2')"
+      ],
+      "query": "SELECT c.name, p.name FROM T_JOIN_01 AS c, T_JOIN_01 AS p WHERE c.parent_id = p.id ORDER BY c.id"
+    },
+    {
+      "name": "distinct_on_pk",
+      "schema_template": "CREATE TABLE T_DIST_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_DIST_01 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT DISTINCT id FROM T_DIST_01 ORDER BY id"
+    },
+    {
+      "name": "coalesce_null_fallback",
+      "schema_template": "CREATE TABLE T_COAL_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_COAL_01 VALUES (1, 10), (2, NULL), (3, 30)"
+      ],
+      "query": "SELECT id, COALESCE(v, -1) FROM T_COAL_01 ORDER BY id"
+    },
+    {
+      "name": "case_when_null",
+      "schema_template": "CREATE TABLE T_CASE_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CASE_01 VALUES (1, 10), (2, NULL), (3, 30)"
+      ],
+      "query": "SELECT id, CASE WHEN v IS NULL THEN 'missing' ELSE 'present' END FROM T_CASE_01 ORDER BY id"
+    },
+    {
+      "name": "between_predicate",
+      "schema_template": "CREATE TABLE T_BTW_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BTW_01 VALUES (1,5),(2,10),(3,15),(4,20),(5,25)"
+      ],
+      "query": "SELECT id FROM T_BTW_01 WHERE v BETWEEN 10 AND 20 ORDER BY id"
+    },
+    {
+      "name": "error_not_null_violation",
+      "schema_template": "CREATE TABLE T_NN_01 (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_NN_01 VALUES (1, 'ok')"
+      ],
+      "query": "INSERT INTO T_NN_01 VALUES (2, NULL)"
+    },
+    {
+      "name": "error_in_list_null",
+      "schema_template": "CREATE TABLE T_INL_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_INL_01 VALUES (1, 10)"
+      ],
+      "query": "SELECT id FROM T_INL_01 WHERE v IN (10, NULL)"
+    },
+    {
+      "name": "error_type_mismatch_where_eq",
+      "schema_template": "CREATE TABLE T_TM_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_TM_01 VALUES (1, 10)"
+      ],
+      "query": "SELECT id FROM T_TM_01 WHERE v = 'text'"
+    },
+    {
+      "name": "error_type_mismatch_between",
+      "schema_template": "CREATE TABLE T_TM_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_TM_02 VALUES (1, 10)"
+      ],
+      "query": "SELECT id FROM T_TM_02 WHERE v BETWEEN 1 AND 'text'"
+    },
+    {
+      "name": "error_type_mismatch_in_list",
+      "schema_template": "CREATE TABLE T_TM_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_TM_03 VALUES (1, 10)"
+      ],
+      "query": "SELECT id FROM T_TM_03 WHERE v IN ('text', 'other')"
+    },
+    {
+      "name": "error_update_nonexistent_col",
+      "schema_template": "CREATE TABLE T_DML_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_DML_01 VALUES (1, 10)"
+      ],
+      "query": "UPDATE T_DML_01 SET nonexistent = 5 WHERE id = 1"
+    },
+    {
+      "name": "error_delete_nonexistent_table",
+      "schema_template": "CREATE TABLE T_DML_02 (id BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_DML_02 VALUES (1)"
+      ],
+      "query": "DELETE FROM NoSuchTable WHERE id = 1"
+    },
+    {
+      "name": "agg_min_max_with_filter",
+      "schema_template": "CREATE TABLE T_AGG_04 (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AGG_04 VALUES (1,1,10),(2,1,20),(3,2,30),(4,2,40)"
+      ],
+      "query": "SELECT g, MIN(v), MAX(v) FROM T_AGG_04 WHERE v > 15 GROUP BY g ORDER BY g"
+    },
+    {
+      "name": "exists_with_aggregate",
+      "schema_template": "CREATE TABLE T_EX_01 (id BIGINT, g BIGINT, PRIMARY KEY (id))\nCREATE TABLE T_EX_02 (id BIGINT, ref_g BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_EX_01 VALUES (1, 10), (2, 20), (3, 30)",
+        "INSERT INTO T_EX_02 VALUES (1, 10), (2, 10), (3, 20)"
+      ],
+      "query": "SELECT g, COUNT(*) FROM T_EX_01 WHERE EXISTS (SELECT 1 FROM T_EX_02 WHERE T_EX_02.ref_g = T_EX_01.g) GROUP BY g ORDER BY g"
+    },
+    {
+      "name": "left_outer_join_basic",
+      "schema_template": "CREATE TABLE T_LOJ_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))\nCREATE TABLE T_LOJ_02 (id BIGINT, ref BIGINT, label STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_LOJ_01 VALUES (1, 10), (2, 20), (3, 30)",
+        "INSERT INTO T_LOJ_02 VALUES (1, 10, 'alpha'), (2, 20, 'beta')"
+      ],
+      "query": "SELECT T_LOJ_01.id, T_LOJ_02.label FROM T_LOJ_01 LEFT OUTER JOIN T_LOJ_02 ON T_LOJ_01.v = T_LOJ_02.ref ORDER BY T_LOJ_01.id"
+    },
+    {
+      "name": "scalar_subquery_in_projection",
+      "schema_template": "CREATE TABLE T_SSQ_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SSQ_01 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT id, (SELECT MAX(v) FROM T_SSQ_01) AS max_v FROM T_SSQ_01 ORDER BY id"
+    },
+    {
+      "name": "scalar_subquery_in_where",
+      "schema_template": "CREATE TABLE T_SSQ_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SSQ_02 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT id FROM T_SSQ_02 WHERE v > (SELECT MIN(v) FROM T_SSQ_02) ORDER BY id"
+    },
+    {
+      "name": "recursive_cte_basic",
+      "schema_template": "CREATE TABLE T_RCTE_02 (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_RCTE_02 VALUES (1, NULL), (2, 1), (3, 1), (4, 2)"
+      ],
+      "query": "WITH RECURSIVE tree AS (SELECT id FROM T_RCTE_02 WHERE parent IS NULL UNION ALL SELECT c.id FROM T_RCTE_02 c, tree t WHERE c.parent = t.id) SELECT id FROM tree ORDER BY id"
+    },
+    {
+      "name": "join_aggregate_having",
+      "schema_template": "CREATE TABLE T_JAH_P (id BIGINT, cat STRING, PRIMARY KEY (id))\nCREATE TABLE T_JAH_O (id BIGINT, pid BIGINT, qty BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_JAH_P VALUES (1, 'A'), (2, 'A'), (3, 'B')",
+        "INSERT INTO T_JAH_O VALUES (1, 1, 2), (2, 1, 3), (3, 2, 1), (4, 3, 5)"
+      ],
+      "query": "SELECT p.cat, SUM(o.qty) FROM T_JAH_P p, T_JAH_O o WHERE p.id = o.pid GROUP BY p.cat HAVING SUM(o.qty) > 3 ORDER BY p.cat"
+    },
+    {
+      "name": "distinct_on_join",
+      "schema_template": "CREATE TABLE T_DOJ_P (id BIGINT, cat STRING, PRIMARY KEY (id))\nCREATE TABLE T_DOJ_O (id BIGINT, pid BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_DOJ_P VALUES (1, 'X'), (2, 'X'), (3, 'Y')",
+        "INSERT INTO T_DOJ_O VALUES (1, 1), (2, 2), (3, 3)"
+      ],
+      "query": "SELECT DISTINCT p.cat FROM T_DOJ_P p, T_DOJ_O o WHERE p.id = o.pid ORDER BY p.cat"
+    },
+    {
+      "name": "cte_join_aggregate",
+      "schema_template": "CREATE TABLE T_CJA_01 (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CJA_01 VALUES (1,1,10),(2,1,20),(3,2,30)"
+      ],
+      "query": "WITH sums AS (SELECT g, SUM(v) AS total FROM T_CJA_01 GROUP BY g) SELECT a.g, a.total, b.total FROM sums a, sums b WHERE a.g != b.g ORDER BY a.g, b.g"
+    },
+    {
+      "name": "scalar_subquery_with_aggregate",
+      "schema_template": "CREATE TABLE T_SSA_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SSA_01 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT id, v, v - (SELECT AVG(v) FROM T_SSA_01) AS diff FROM T_SSA_01 ORDER BY id"
+    },
+    {
+      "name": "dup_from_alias_referenced_unaliased",
+      "schema_template": "CREATE TABLE T_DUP_P (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_Q (qid BIGINT, PRIMARY KEY (qid))",
+      "setup_sqls": [
+        "INSERT INTO T_DUP_P VALUES (1, 10)",
+        "INSERT INTO T_DUP_Q VALUES (7)"
+      ],
+      "query": "SELECT T_DUP_P.id FROM T_DUP_P, T_DUP_Q, T_DUP_P"
+    },
+    {
+      "name": "dup_from_alias_referenced_aliased",
+      "schema_template": "CREATE TABLE T_DUP_A (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_B (qid BIGINT, PRIMARY KEY (qid))",
+      "setup_sqls": [
+        "INSERT INTO T_DUP_A VALUES (1, 10)",
+        "INSERT INTO T_DUP_B VALUES (7)"
+      ],
+      "query": "SELECT a.id FROM T_DUP_A AS a, T_DUP_B AS a"
+    },
+    {
+      "name": "dup_from_alias_disjoint_where",
+      "schema_template": "CREATE TABLE T_DUP_C (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_D (qid BIGINT, PRIMARY KEY (qid))",
+      "setup_sqls": [
+        "INSERT INTO T_DUP_C VALUES (1, 10), (2, 20)",
+        "INSERT INTO T_DUP_D VALUES (7)"
+      ],
+      "query": "SELECT a.id FROM T_DUP_C AS a, T_DUP_D AS a WHERE a.id = 2"
+    },
+    {
+      "name": "dup_from_alias_leg_independent_exists",
+      "schema_template": "CREATE TABLE T_DUP_EIP (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_EIQ (qid BIGINT, PRIMARY KEY (qid))",
+      "setup_sqls": [
+        "INSERT INTO T_DUP_EIP VALUES (1, 10), (2, 20)",
+        "INSERT INTO T_DUP_EIQ VALUES (5), (7), (9)"
+      ],
+      "query": "SELECT a.qid FROM T_DUP_EIP AS a, T_DUP_EIQ AS a WHERE EXISTS (SELECT 1 FROM T_DUP_EIP)"
+    },
+    {
+      "name": "dup_from_alias_shadowing_exists",
+      "schema_template": "CREATE TABLE T_DUP_SHP (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_SHQ (qid BIGINT, PRIMARY KEY (qid))",
+      "setup_sqls": [
+        "INSERT INTO T_DUP_SHP VALUES (1, 10), (2, 20)",
+        "INSERT INTO T_DUP_SHQ VALUES (5), (7), (9)"
+      ],
+      "query": "SELECT a.qid FROM T_DUP_SHP AS a, T_DUP_SHQ AS a WHERE EXISTS (SELECT 1 FROM T_DUP_SHP AS a WHERE a.id = 1)"
+    },
+    {
+      "name": "dup_from_alias_select_star",
+      "schema_template": "CREATE TABLE T_DUP_S (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_T (qid BIGINT, PRIMARY KEY (qid))",
+      "setup_sqls": [
+        "INSERT INTO T_DUP_S VALUES (1, 10)",
+        "INSERT INTO T_DUP_T VALUES (7)"
+      ],
+      "query": "SELECT * FROM T_DUP_S, T_DUP_T, T_DUP_S"
+    },
+    {
+      "name": "dup_from_alias_three_way_later_pair",
+      "schema_template": "CREATE TABLE T_DUP_E (pid BIGINT, PRIMARY KEY (pid)) CREATE TABLE T_DUP_F (qid BIGINT, PRIMARY KEY (qid)) CREATE TABLE T_DUP_G (qid BIGINT, gv BIGINT, PRIMARY KEY (qid))",
+      "setup_sqls": [
+        "INSERT INTO T_DUP_E VALUES (1)",
+        "INSERT INTO T_DUP_F VALUES (7)",
+        "INSERT INTO T_DUP_G VALUES (7, 70)"
+      ],
+      "query": "SELECT x.qid FROM T_DUP_E AS x, T_DUP_F AS x, T_DUP_G AS x"
+    },
+    {
+      "name": "dup_from_alias_undefined_table",
+      "schema_template": "CREATE TABLE T_DUP_H (id BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_DUP_H VALUES (1)"
+      ],
+      "query": "SELECT * FROM nosuch_dup AS a, T_DUP_H AS a",
+      "divergence": {
+        "direction": "BothErrorMessagesDrift",
+        "reason": "Both engines reject the undefined table; cosmetic message wording differs. The dup-alias check skips undefined-table pairs so 42F01 is not masked as 42702.",
+        "go_expected_rows": null,
+        "go_error_contains": "Unknown table NOSUCH_DUP"
+      }
+    },
+    {
+      "name": "dup_from_alias_cte_referenced",
+      "schema_template": "CREATE TABLE T_DUP_W (id BIGINT, wv BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_DUP_W VALUES (1, 10)"
+      ],
+      "query": "WITH w AS (SELECT id FROM T_DUP_W) SELECT w.id FROM w, w"
+    },
+    {
+      "name": "rcte_computed_join_leg",
+      "schema_template": "CREATE TABLE T_RCC_01 (id BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_RCC_01 VALUES (1), (2), (3), (4)"
+      ],
+      "query": "WITH RECURSIVE r AS (SELECT id FROM T_RCC_01 WHERE id = 1 UNION ALL SELECT b.id + 1 FROM r, T_RCC_01 b WHERE b.id = r.id AND b.id < 4) SELECT * FROM r"
+    },
+    {
+      "name": "order_by_position_over_star",
+      "schema_template": "CREATE TABLE T_OBP_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_OBP_01 VALUES (2, 20), (1, 10)"
+      ],
+      "query": "SELECT * FROM T_OBP_01 ORDER BY 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "Java cannot plan this literal sort expression; Go's positional-ordering extension resolves position 1 against the expanded star.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 1
+            },
+            {
+              "type": "float64",
+              "value": 10
+            }
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 2
+            },
+            {
+              "type": "float64",
+              "value": 20
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "dup_from_alias_generated_aggregate",
+      "schema_template": "CREATE TABLE T_DUP_GA (id BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_GB (id BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_DUP_GA VALUES (1)",
+        "INSERT INTO T_DUP_GB VALUES (2)"
+      ],
+      "query": "SELECT a.\"COUNT(*)\" FROM (SELECT COUNT(*) FROM T_DUP_GA) AS a, (SELECT COUNT(*) FROM T_DUP_GB) AS a",
+      "divergence": {
+        "direction": "BothErrorMessagesDrift",
+        "reason": "Both engines reject the generated aggregate spelling as a non-existing column. RFC-256 makes an unaliased aggregate output anonymous in Go as it is in Java; only diagnostic wording differs.",
+        "go_expected_rows": null,
+        "go_error_contains": "Attempting to query non existing column A.COUNT(*)"
+      }
+    },
+    {
+      "name": "dup_from_alias_cte_star",
+      "schema_template": "CREATE TABLE T_DUP_X (id BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_DUP_X VALUES (1)"
+      ],
+      "query": "WITH w AS (SELECT id FROM T_DUP_X) SELECT * FROM w, w"
+    },
+    {
+      "name": "exists_crossjoin_buried_first_leg",
+      "schema_template": "CREATE TABLE T_XCJ_A (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_XCJ_B (qid BIGINT, PRIMARY KEY (qid))",
+      "setup_sqls": [
+        "INSERT INTO T_XCJ_A VALUES (1, 10), (2, 20)",
+        "INSERT INTO T_XCJ_B VALUES (5), (7), (9)"
+      ],
+      "query": "SELECT a.id FROM T_XCJ_A AS a, T_XCJ_B AS b WHERE EXISTS (SELECT 1 FROM T_XCJ_B WHERE a.id = 1)"
+    },
+    {
+      "name": "exists_crossjoin_buried_second_leg",
+      "schema_template": "CREATE TABLE T_XCJ_C (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_XCJ_D (qid BIGINT, PRIMARY KEY (qid))",
+      "setup_sqls": [
+        "INSERT INTO T_XCJ_C VALUES (1, 10), (2, 20)",
+        "INSERT INTO T_XCJ_D VALUES (5), (7), (9)"
+      ],
+      "query": "SELECT b.qid FROM T_XCJ_C AS a, T_XCJ_D AS b WHERE EXISTS (SELECT 1 FROM T_XCJ_C WHERE b.qid = 7)"
+    },
+    {
+      "name": "projected_exists_over_left_join_scan_legs",
+      "schema_template": "CREATE TABLE T_F2L_P (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_F2L_Q (qid BIGINT, PRIMARY KEY (qid)) CREATE TABLE T_F2L_R (id BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_F2L_P VALUES (1, 10), (2, 20)",
+        "INSERT INTO T_F2L_Q VALUES (7)",
+        "INSERT INTO T_F2L_R VALUES (5)"
+      ],
+      "query": "SELECT p.v, EXISTS (SELECT 1 FROM T_F2L_R WHERE T_F2L_R.id = q.qid) FROM T_F2L_P p LEFT JOIN T_F2L_Q q ON q.qid = p.id"
+    },
+    {
+      "name": "dup_from_alias_exists_first_leg",
+      "schema_template": "CREATE TABLE T_XCJ_E (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_XCJ_F (qid BIGINT, PRIMARY KEY (qid))",
+      "setup_sqls": [
+        "INSERT INTO T_XCJ_E VALUES (1, 10), (2, 20)",
+        "INSERT INTO T_XCJ_F VALUES (5), (7), (9)"
+      ],
+      "query": "SELECT a.id FROM T_XCJ_E AS a, T_XCJ_F AS a WHERE EXISTS (SELECT 1 FROM T_XCJ_F WHERE a.id = 1)"
+    },
+    {
+      "name": "dup_from_alias_exists_second_leg",
+      "schema_template": "CREATE TABLE T_XCJ_G (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_XCJ_H (qid BIGINT, PRIMARY KEY (qid))",
+      "setup_sqls": [
+        "INSERT INTO T_XCJ_G VALUES (1, 10), (2, 20)",
+        "INSERT INTO T_XCJ_H VALUES (5), (7), (9)"
+      ],
+      "query": "SELECT a.qid FROM T_XCJ_G AS a, T_XCJ_H AS a WHERE EXISTS (SELECT 1 FROM T_XCJ_G WHERE a.qid = 7)"
+    },
+    {
+      "name": "dup_from_alias_order_by_second_leg",
+      "schema_template": "CREATE TABLE T_XCJ_I (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_XCJ_J (qid BIGINT, PRIMARY KEY (qid))",
+      "setup_sqls": [
+        "INSERT INTO T_XCJ_I VALUES (1, 10), (2, 20)",
+        "INSERT INTO T_XCJ_J VALUES (5), (7), (9)"
+      ],
+      "query": "SELECT a.qid FROM T_XCJ_I AS a, T_XCJ_J AS a ORDER BY a.qid DESC"
+    },
+    {
+      "name": "dup_from_alias_order_by_first_leg",
+      "schema_template": "CREATE TABLE T_XCJ_K (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_XCJ_L (qid BIGINT, PRIMARY KEY (qid))",
+      "setup_sqls": [
+        "INSERT INTO T_XCJ_K VALUES (1, 10), (2, 20)",
+        "INSERT INTO T_XCJ_L VALUES (5), (7), (9)"
+      ],
+      "query": "SELECT a.v FROM T_XCJ_K AS a, T_XCJ_L AS a ORDER BY a.v DESC",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "Java cannot plan ORDER BY over the FIRST duplicate-alias leg's unique column ('Cascades planner could not plan query', live-verified 4.12.11.0 — the second-leg form answers there); Go binds the sort key per-attribute and orders correctly. Go exceeds Java on the read side.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 20
+            }
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 20
+            }
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 20
+            }
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 10
+            }
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 10
+            }
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 10
+            }
+          ]
+        ]
+      }
+    }
+  ]
+}

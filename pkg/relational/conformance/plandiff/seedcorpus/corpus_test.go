@@ -139,6 +139,32 @@ func TestGoSQLRunner_SeedRunCorpus(t *testing.T) {
 	}
 }
 
+// TestSeedRunCorpus_IntegrityAndIsolation asserts the embedded SeedRunCorpus
+// matches the expected count and returns independent mutable copies across calls.
+func TestSeedRunCorpus_IntegrityAndIsolation(t *testing.T) {
+	t.Parallel()
+
+	baseline := SeedRunCorpus()
+	first := SeedRunCorpus()
+	if len(first) != 1645 {
+		t.Fatalf("SeedRunCorpus() len = %d, want 1645", len(first))
+	}
+	for i, q := range first {
+		if q.Name == "" || q.Query == "" {
+			t.Fatalf("entry[%d] missing Name or Query: %+v", i, q)
+		}
+	}
+
+	ApplyRFC082Divergences(first)
+	second := SeedRunCorpus()
+	assertRunQueriesBitwiseEqual(t, second, baseline)
+	for i := range second {
+		if first[i].Divergence != nil && first[i].Divergence == second[i].Divergence {
+			t.Fatalf("entry[%d] (%s): shared *Divergence pointer across calls", i, second[i].Name)
+		}
+	}
+}
+
 // isGoFeatureGap recognises errors that mean "the Go embedded engine cannot
 // represent this column type" (vs. an ordinary query rejection). Patterns:
 //   - "unsupported column type": DDL parser-level rejection.

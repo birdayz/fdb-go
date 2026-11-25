@@ -2,12 +2,15 @@ package seedcorpus
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
 	"math"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 
@@ -492,15 +495,25 @@ func TestLoadFromFS_AndEncodeJSON_Errors(t *testing.T) {
 	})
 }
 
+// preMigrationCorpusSHA256 is the canonical EncodeJSON SHA-256 of the
+// pre-migration 1,645-entry SeedRunCorpus() in corpus.go.
+const preMigrationCorpusSHA256 = "6f22acfde8a3959c058cdd56930faf9d2ca6dfa20ec9b009860faa3d4435c38a"
+
 func TestEmbeddedFixture_Completeness(t *testing.T) {
 	t.Parallel()
 
-	rawFixture, err := fs.ReadFile(embeddedCorpusFS, "testdata/sample_roundtrip.json")
+	dirEntries, err := fs.ReadDir(embeddedCorpusFS, "testdata")
 	if err != nil {
-		t.Fatalf("embedded testdata/sample_roundtrip.json missing: %v", err)
+		t.Fatalf("read embedded testdata dir: %v", err)
 	}
-	if len(rawFixture) == 0 {
-		t.Fatal("embedded testdata/sample_roundtrip.json is empty")
+	if len(dirEntries) != 17 {
+		t.Fatalf("embedded testdata file count = %d, want 17 shards", len(dirEntries))
+	}
+	for i, de := range dirEntries {
+		wantName := fmt.Sprintf("corpus_%02d.json", i)
+		if de.Name() != wantName {
+			t.Fatalf("embedded testdata[%d] = %q, want %q", i, de.Name(), wantName)
+		}
 	}
 
 	fromEmbedded, err := LoadEmbedded()
@@ -512,6 +525,79 @@ func TestEmbeddedFixture_Completeness(t *testing.T) {
 		t.Fatalf("LoadFromFS(embeddedCorpusFS, testdata) failed: %v", err)
 	}
 	assertRunQueriesBitwiseEqual(t, fromEmbedded, fromFS)
+	assertRunQueriesBitwiseEqual(t, SeedRunCorpus(), fromEmbedded)
+
+	const wantCount = 1645
+	if len(fromEmbedded) != wantCount {
+		t.Fatalf("embedded corpus count = %d, want %d", len(fromEmbedded), wantCount)
+	}
+
+	// Pre-existing legacy duplicate names carried over verbatim for SHA-256 equivalence.
+	legacyDupNames := map[string]bool{
+		"between_double_range":   true,
+		"between_negative_range": true,
+		"between_or_between":     true,
+		"bool_eq_false":          true,
+		"case_searched_no_else":  true,
+		"cast_bigint_to_double":  true,
+		"cast_string_to_bigint":  true,
+		"coalesce_all_null":      true,
+		"coalesce_in_where":      true,
+		"delete_with_in_list":    true,
+		"insert_negative_pk":     true,
+		"update_set_null":        true,
+	}
+	seen := make(map[string]int, len(fromEmbedded))
+	for i, q := range fromEmbedded {
+		if q.Name == "" {
+			t.Fatalf("entry[%d] has empty Name", i)
+		}
+		if q.Query == "" {
+			t.Fatalf("entry[%d] (%s) has empty Query", i, q.Name)
+		}
+		if prev, dup := seen[q.Name]; dup && !legacyDupNames[q.Name] {
+			t.Fatalf("unexpected duplicate Name %q at %d and %d", q.Name, prev, i)
+		}
+		seen[q.Name] = i
+	}
+	if len(seen) != wantCount-len(legacyDupNames) {
+		t.Fatalf("unique Name count = %d, want %d", len(seen), wantCount-len(legacyDupNames))
+	}
+
+	// First, last, and key sentinel entries.
+	if got := fromEmbedded[0].Name; got != "single_row_bigint" {
+		t.Fatalf("first entry = %q, want single_row_bigint", got)
+	}
+	if got := fromEmbedded[len(fromEmbedded)-1].Name; got != "dup_from_alias_order_by_first_leg" {
+		t.Fatalf("last entry = %q, want dup_from_alias_order_by_first_leg", got)
+	}
+	negZeroSentinel := fromEmbedded[449]
+	if negZeroSentinel.Name != "double_negative_zero_ge_predicate" || negZeroSentinel.Divergence == nil {
+		t.Fatalf("sentinel[449] = %+v, want double_negative_zero_ge_predicate with Divergence", negZeroSentinel.Name)
+	}
+	negZeroVal, ok := negZeroSentinel.Divergence.GoExpectedRows[1][1].(float64)
+	if !ok || negZeroVal != 0 || !math.Signbit(negZeroVal) {
+		t.Fatalf("sentinel[449] row[1][1] = %#v, want -0.0", negZeroSentinel.Divergence.GoExpectedRows[1][1])
+	}
+	nilSetupSentinel := fromEmbedded[1336]
+	if nilSetupSentinel.Name != "groupby_empty_table" || nilSetupSentinel.SetupSqls != nil ||
+		nilSetupSentinel.Divergence == nil || nilSetupSentinel.Divergence.GoExpectedRows == nil ||
+		len(nilSetupSentinel.Divergence.GoExpectedRows) != 0 {
+		t.Fatalf("sentinel[1336] unexpected shape: %+v", nilSetupSentinel)
+	}
+
+	canonical, err := EncodeJSON(fromEmbedded)
+	if err != nil {
+		t.Fatalf("EncodeJSON(fromEmbedded) failed: %v", err)
+	}
+	sum := sha256.Sum256(canonical)
+	if gotHash := hex.EncodeToString(sum[:]); gotHash != preMigrationCorpusSHA256 {
+		t.Fatalf("canonical corpus SHA-256 = %s, want %s", gotHash, preMigrationCorpusSHA256)
+	}
+}
+
+func TestSampleFixture_MapFS_Completeness(t *testing.T) {
+	t.Parallel()
 
 	want := []plandiff.RunQuery{
 		{
@@ -568,22 +654,79 @@ func TestEmbeddedFixture_Completeness(t *testing.T) {
 		},
 	}
 
-	negZeros := assertRunQueriesBitwiseEqual(t, fromEmbedded, want)
-	if negZeros != 1 {
-		t.Fatalf("expected 1 negative zero in embedded fixture, got %d", negZeros)
-	}
-
-	reencoded, err := EncodeJSON(fromEmbedded)
+	raw, err := EncodeJSON(want)
 	if err != nil {
-		t.Fatalf("EncodeJSON(fromEmbedded) failed: %v", err)
+		t.Fatalf("EncodeJSON(want) failed: %v", err)
 	}
 	roundTripped, err := LoadFromFS(fstest.MapFS{
-		"reencoded.json": &fstest.MapFile{Data: reencoded},
+		"sample_roundtrip.json": &fstest.MapFile{Data: raw},
 	}, ".")
 	if err != nil {
-		t.Fatalf("LoadFromFS(reencoded) failed: %v", err)
+		t.Fatalf("LoadFromFS(sample_roundtrip) failed: %v", err)
 	}
-	assertRunQueriesBitwiseEqual(t, roundTripped, want)
+	negZeros := assertRunQueriesBitwiseEqual(t, roundTripped, want)
+	if negZeros != 1 {
+		t.Fatalf("expected 1 negative zero in sample fixture, got %d", negZeros)
+	}
+}
+
+func TestSeedRunCorpus_IndependentCopies(t *testing.T) {
+	t.Parallel()
+
+	baseline, err := LoadEmbedded()
+	if err != nil {
+		t.Fatalf("LoadEmbedded() failed: %v", err)
+	}
+
+	c1 := SeedRunCorpus()
+	ApplyRFC082Divergences(c1)
+	c1[0].Name = "mutated_name"
+	c1[0].SetupSqls[0] = "MUTATED"
+	c1[449].Divergence.Reason = "mutated_reason"
+	c1[449].Divergence.GoExpectedRows[0][0] = float64(999)
+
+	c2 := SeedRunCorpus()
+	assertRunQueriesBitwiseEqual(t, c2, baseline)
+
+	// Verify nested []byte / []any cell cloning preserves independence and nilness.
+	synth := []plandiff.RunQuery{
+		{
+			Name:      "nested_clone",
+			SetupSqls: []string{},
+			Query:     "SELECT 1",
+			Divergence: &plandiff.Divergence{
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{[]byte{1, 2}, []byte{}, []byte(nil), []any{[]byte{3}, "x"}, []any(nil)},
+					nil,
+					{},
+				},
+			},
+		},
+	}
+	cloned := cloneRunQueries(synth)
+	assertRunQueriesBitwiseEqual(t, cloned, synth)
+	cloned[0].Divergence.GoExpectedRows[0][0].([]byte)[0] = 99
+	cloned[0].Divergence.GoExpectedRows[0][3].([]any)[0].([]byte)[0] = 88
+	if synth[0].Divergence.GoExpectedRows[0][0].([]byte)[0] != 1 ||
+		synth[0].Divergence.GoExpectedRows[0][3].([]any)[0].([]byte)[0] != 3 {
+		t.Fatal("cloneRunQueries shared mutable []byte backing array with source")
+	}
+
+	// Parallel callers mutating via ApplyRFC082Divergences must never race.
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c := SeedRunCorpus()
+			ApplyRFC082Divergences(c)
+			c[0].Name = "goroutine_mutated"
+		}()
+	}
+	wg.Wait()
+
+	assertRunQueriesBitwiseEqual(t, SeedRunCorpus(), baseline)
 }
 
 func assertRunQueriesBitwiseEqual(t *testing.T, got, want []plandiff.RunQuery) int {

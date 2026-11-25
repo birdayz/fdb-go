@@ -1,0 +1,1172 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "name": "empty_where",
+      "schema_template": "CREATE TABLE T_EMP_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": null,
+      "query": "SELECT id FROM T_EMP_03 WHERE v > 10 ORDER BY id"
+    },
+    {
+      "name": "empty_delete",
+      "schema_template": "CREATE TABLE T_EMP_04 (id BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "DELETE FROM T_EMP_04"
+      ],
+      "query": "SELECT COUNT(*) FROM T_EMP_04"
+    },
+    {
+      "name": "empty_update",
+      "schema_template": "CREATE TABLE T_EMP_05 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "UPDATE T_EMP_05 SET v = 99"
+      ],
+      "query": "SELECT COUNT(*) FROM T_EMP_05"
+    },
+    {
+      "name": "large_10_rows",
+      "schema_template": "CREATE TABLE T_LRG_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_LRG_01 VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50), (6, 60), (7, 70), (8, 80), (9, 90), (10, 100)"
+      ],
+      "query": "SELECT id, v FROM T_LRG_01 ORDER BY id"
+    },
+    {
+      "name": "large_filtered",
+      "schema_template": "CREATE TABLE T_LRG_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_LRG_02 VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50), (6, 60), (7, 70), (8, 80), (9, 90), (10, 100)"
+      ],
+      "query": "SELECT id, v FROM T_LRG_02 WHERE v > 50 ORDER BY id"
+    },
+    {
+      "name": "large_count_filtered",
+      "schema_template": "CREATE TABLE T_LRG_03 (id BIGINT, grp BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_LRG_03 VALUES (1, 1, 10), (2, 1, 20), (3, 2, 30), (4, 2, 40), (5, 3, 50), (6, 3, 60), (7, 1, 70), (8, 2, 80)"
+      ],
+      "query": "SELECT COUNT(*) FROM T_LRG_03 WHERE grp = 2"
+    },
+    {
+      "name": "coalesce_first_nonnull",
+      "schema_template": "CREATE TABLE T_COA_01 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_COA_01 VALUES (1, NULL, NULL, 30), (2, NULL, 20, 30), (3, 10, 20, 30)"
+      ],
+      "query": "SELECT id, COALESCE(a, b, c) FROM T_COA_01 ORDER BY id"
+    },
+    {
+      "name": "coalesce_all_null",
+      "schema_template": "CREATE TABLE T_COA_02 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_COA_02 VALUES (1, NULL, NULL)"
+      ],
+      "query": "SELECT id, COALESCE(a, b) FROM T_COA_02 ORDER BY id"
+    },
+    {
+      "name": "coalesce_with_literal",
+      "schema_template": "CREATE TABLE T_COA_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_COA_03 VALUES (1, NULL), (2, 42)"
+      ],
+      "query": "SELECT id, COALESCE(v, 0) FROM T_COA_03 ORDER BY id"
+    },
+    {
+      "name": "case_searched_basic",
+      "schema_template": "CREATE TABLE T_CAS_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CAS_01 VALUES (1, 10), (2, 50), (3, 100)"
+      ],
+      "query": "SELECT id, CASE WHEN v < 20 THEN 'low' WHEN v < 80 THEN 'mid' ELSE 'high' END FROM T_CAS_01 ORDER BY id"
+    },
+    {
+      "name": "case_searched_no_else",
+      "schema_template": "CREATE TABLE T_CAS_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CAS_02 VALUES (1, 10), (2, 50), (3, 100)"
+      ],
+      "query": "SELECT id, CASE WHEN v < 20 THEN 'low' WHEN v < 80 THEN 'mid' END FROM T_CAS_02 ORDER BY id"
+    },
+    {
+      "name": "case_searched_all_else",
+      "schema_template": "CREATE TABLE T_CAS_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CAS_03 VALUES (1, 100), (2, 200)"
+      ],
+      "query": "SELECT id, CASE WHEN v < 10 THEN 'small' ELSE 'big' END FROM T_CAS_03 ORDER BY id"
+    },
+    {
+      "name": "case_searched_null_when",
+      "schema_template": "CREATE TABLE T_CAS_04 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CAS_04 VALUES (1, NULL), (2, 10), (3, NULL)"
+      ],
+      "query": "SELECT id, CASE WHEN v IS NULL THEN -1 ELSE v END FROM T_CAS_04 ORDER BY id"
+    },
+    {
+      "name": "case_typed_null_then",
+      "schema_template": "CREATE TABLE T_CAS_05 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CAS_05 VALUES (1, 5), (2, 100)"
+      ],
+      "query": "SELECT id, CASE WHEN v > 50 THEN v ELSE CAST(NULL AS BIGINT) END FROM T_CAS_05 ORDER BY id"
+    },
+    {
+      "name": "between_lower_inclusive",
+      "schema_template": "CREATE TABLE T_BET_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BET_01 VALUES (1, 10), (2, 20), (3, 30), (4, 40)"
+      ],
+      "query": "SELECT id FROM T_BET_01 WHERE v BETWEEN 10 AND 25 ORDER BY id"
+    },
+    {
+      "name": "between_upper_inclusive",
+      "schema_template": "CREATE TABLE T_BET_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BET_02 VALUES (1, 5), (2, 15), (3, 25), (4, 35)"
+      ],
+      "query": "SELECT id FROM T_BET_02 WHERE v BETWEEN 15 AND 25 ORDER BY id"
+    },
+    {
+      "name": "between_degenerate_single_match",
+      "schema_template": "CREATE TABLE T_BET_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BET_03 VALUES (1, 5), (2, 10), (3, 15)"
+      ],
+      "query": "SELECT id FROM T_BET_03 WHERE v BETWEEN 10 AND 10 ORDER BY id"
+    },
+    {
+      "name": "between_reversed_numeric_bounds",
+      "schema_template": "CREATE TABLE T_BET_04 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BET_04 VALUES (1, 5), (2, 10), (3, 15)"
+      ],
+      "query": "SELECT id FROM T_BET_04 WHERE v BETWEEN 20 AND 5 ORDER BY id"
+    },
+    {
+      "name": "not_between_boundaries_excluded",
+      "schema_template": "CREATE TABLE T_BET_05 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BET_05 VALUES (1, 5), (2, 10), (3, 15), (4, 20), (5, 25)"
+      ],
+      "query": "SELECT id FROM T_BET_05 WHERE v NOT BETWEEN 10 AND 20 ORDER BY id"
+    },
+    {
+      "name": "between_negative_range",
+      "schema_template": "CREATE TABLE T_BET_06 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BET_06 VALUES (1, -30), (2, -20), (3, -10), (4, 0), (5, 10)"
+      ],
+      "query": "SELECT id FROM T_BET_06 WHERE v BETWEEN -25 AND -5 ORDER BY id"
+    },
+    {
+      "name": "between_null_column_excluded",
+      "schema_template": "CREATE TABLE T_BET_07 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BET_07 VALUES (1, 5), (2, NULL), (3, 15)"
+      ],
+      "query": "SELECT id FROM T_BET_07 WHERE v BETWEEN 0 AND 20 ORDER BY id"
+    },
+    {
+      "name": "between_string_range",
+      "schema_template": "CREATE TABLE T_BET_08 (id BIGINT, name STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BET_08 VALUES (1, 'alpha'), (2, 'beta'), (3, 'gamma'), (4, 'delta'), (5, 'zeta')"
+      ],
+      "query": "SELECT id FROM T_BET_08 WHERE name BETWEEN 'beta' AND 'gamma' ORDER BY id"
+    },
+    {
+      "name": "between_with_and_filter",
+      "schema_template": "CREATE TABLE T_BET_09 (id BIGINT, v BIGINT, region STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BET_09 VALUES (1, 10, 'us'), (2, 20, 'eu'), (3, 30, 'us'), (4, 40, 'eu')"
+      ],
+      "query": "SELECT id FROM T_BET_09 WHERE v BETWEEN 10 AND 35 AND region = 'us' ORDER BY id"
+    },
+    {
+      "name": "between_double_range",
+      "schema_template": "CREATE TABLE T_BET_10 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BET_10 VALUES (1, 0.5), (2, 1.5), (3, 2.5), (4, 3.5)"
+      ],
+      "query": "SELECT id FROM T_BET_10 WHERE v BETWEEN 1.0 AND 3.0 ORDER BY id"
+    },
+    {
+      "name": "concat_two_strings_rejected",
+      "schema_template": "CREATE TABLE T_CSL_01 (id BIGINT, a STRING, b STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CSL_01 VALUES (1, 'foo', 'bar')"
+      ],
+      "query": "SELECT CONCAT(a, b) FROM T_CSL_01 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "CONCAT is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates CONCAT('foo','bar')='foobar'. Wire-neutral.",
+        "go_expected_rows": [
+          [
+            "foobar"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "concat_three_args_rejected",
+      "schema_template": "CREATE TABLE T_CSL_02 (id BIGINT, a STRING, b STRING, c STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CSL_02 VALUES (1, 'x', 'y', 'z')"
+      ],
+      "query": "SELECT CONCAT(a, b, c) FROM T_CSL_02 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "CONCAT is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates CONCAT('x','y','z')='xyz'. Wire-neutral.",
+        "go_expected_rows": [
+          [
+            "xyz"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "concat_with_null_arg_rejected",
+      "schema_template": "CREATE TABLE T_CSL_03 (id BIGINT, a STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CSL_03 VALUES (1, 'foo')"
+      ],
+      "query": "SELECT CONCAT(a, NULL) FROM T_CSL_03 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "CONCAT is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates CONCAT('foo',NULL)='foo' (MySQL/Postgres NULL-skip semantics). Wire-neutral.",
+        "go_expected_rows": [
+          [
+            "foo"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "length_string_rejected",
+      "schema_template": "CREATE TABLE T_CSL_04 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CSL_04 VALUES (1, 'hello')"
+      ],
+      "query": "SELECT LENGTH(s) FROM T_CSL_04 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "LENGTH is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LENGTH('hello')=5 (rune count). Wire-neutral.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 5
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "length_empty_string_rejected",
+      "schema_template": "CREATE TABLE T_CSL_05 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CSL_05 VALUES (1, '')"
+      ],
+      "query": "SELECT LENGTH(s) FROM T_CSL_05 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "LENGTH is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LENGTH('')=0. Wire-neutral.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 0
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "length_null_rejected",
+      "schema_template": "CREATE TABLE T_CSL_06 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CSL_06 VALUES (1, NULL)"
+      ],
+      "query": "SELECT LENGTH(s) FROM T_CSL_06 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "LENGTH is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LENGTH(NULL)=NULL. Wire-neutral.",
+        "go_expected_rows": [
+          [
+            null
+          ]
+        ]
+      }
+    },
+    {
+      "name": "substr_two_arg_rejected",
+      "schema_template": "CREATE TABLE T_CSL_07 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CSL_07 VALUES (1, 'abcdef')"
+      ],
+      "query": "SELECT SUBSTR(s, 3) FROM T_CSL_07 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "SUBSTR is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates SUBSTR('abcdef',3)='cdef' (1-based, to end). Wire-neutral.",
+        "go_expected_rows": [
+          [
+            "cdef"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "substr_three_arg_rejected",
+      "schema_template": "CREATE TABLE T_CSL_08 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CSL_08 VALUES (1, 'abcdef')"
+      ],
+      "query": "SELECT SUBSTR(s, 2, 3) FROM T_CSL_08 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "SUBSTR is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates SUBSTR('abcdef',2,3)='bcd' (1-based start, length 3). Wire-neutral.",
+        "go_expected_rows": [
+          [
+            "bcd"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "substr_start_at_one_rejected",
+      "schema_template": "CREATE TABLE T_CSL_09 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CSL_09 VALUES (1, 'hello')"
+      ],
+      "query": "SELECT SUBSTR(s, 1, 2) FROM T_CSL_09 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "SUBSTR is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates SUBSTR('hello',1,2)='he' (1-based boundary). Wire-neutral.",
+        "go_expected_rows": [
+          [
+            "he"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "substr_empty_string_rejected",
+      "schema_template": "CREATE TABLE T_CSL_10 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CSL_10 VALUES (1, '')"
+      ],
+      "query": "SELECT SUBSTR(s, 1, 1) FROM T_CSL_10 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "SUBSTR is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates SUBSTR('',1,1)='' (empty input → empty string). Wire-neutral.",
+        "go_expected_rows": [
+          [
+            ""
+          ]
+        ]
+      }
+    },
+    {
+      "name": "lower_string_rejected",
+      "schema_template": "CREATE TABLE T_UCL_01 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_UCL_01 VALUES (1, 'HELLO')"
+      ],
+      "query": "SELECT LOWER(s) FROM T_UCL_01 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "LOWER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LOWER('HELLO')='hello'. Wire-neutral.",
+        "go_expected_rows": [
+          [
+            "hello"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "lower_null_rejected",
+      "schema_template": "CREATE TABLE T_UCL_02 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_UCL_02 VALUES (1, NULL)"
+      ],
+      "query": "SELECT LOWER(s) FROM T_UCL_02 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "LOWER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LOWER(NULL)=NULL. Wire-neutral.",
+        "go_expected_rows": [
+          [
+            null
+          ]
+        ]
+      }
+    },
+    {
+      "name": "upper_in_where_rejected",
+      "schema_template": "CREATE TABLE T_UCL_03 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_UCL_03 VALUES (1, 'hello')"
+      ],
+      "query": "SELECT id FROM T_UCL_03 WHERE UPPER(s) = 'HELLO'",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "UPPER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates UPPER('hello')='HELLO' in WHERE and returns the matching row. Wire-neutral.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 1
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "lower_in_where_rejected",
+      "schema_template": "CREATE TABLE T_UCL_04 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_UCL_04 VALUES (1, 'WORLD')"
+      ],
+      "query": "SELECT id FROM T_UCL_04 WHERE LOWER(s) = 'world'",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "LOWER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LOWER('WORLD')='world' in WHERE and returns the matching row. Wire-neutral.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 1
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "upper_concat_nested",
+      "schema_template": "CREATE TABLE T_UCL_05 (id BIGINT, a STRING, b STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_UCL_05 VALUES (1, 'foo', 'bar')"
+      ],
+      "query": "SELECT UPPER(CONCAT(a, b)) FROM T_UCL_05 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "UPPER/CONCAT are Go-only read-side scalar functions (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects the nested call, while Go evaluates UPPER(CONCAT('foo','bar')) = 'FOOBAR'. Wire-neutral (read-side only).",
+        "go_expected_rows": [
+          [
+            "FOOBAR"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "lower_in_case_rejected",
+      "schema_template": "CREATE TABLE T_UCL_06 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_UCL_06 VALUES (1, 'TEST')"
+      ],
+      "query": "SELECT CASE WHEN LOWER(s) = 'test' THEN 1 ELSE 0 END FROM T_UCL_06 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "LOWER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LOWER('TEST')='test' so the CASE yields 1. Wire-neutral.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 1
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "upper_empty_string_rejected",
+      "schema_template": "CREATE TABLE T_UCL_07 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_UCL_07 VALUES (1, '')"
+      ],
+      "query": "SELECT UPPER(s) FROM T_UCL_07 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "UPPER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates UPPER('')=''. Wire-neutral.",
+        "go_expected_rows": [
+          [
+            ""
+          ]
+        ]
+      }
+    },
+    {
+      "name": "lower_mixed_case_rejected",
+      "schema_template": "CREATE TABLE T_UCL_08 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_UCL_08 VALUES (1, 'HeLLo WoRLd')"
+      ],
+      "query": "SELECT LOWER(s) FROM T_UCL_08 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "LOWER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LOWER('HeLLo WoRLd')='hello world'. Wire-neutral.",
+        "go_expected_rows": [
+          [
+            "hello world"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "upper_multi_row_rejected",
+      "schema_template": "CREATE TABLE T_UCL_09 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_UCL_09 VALUES (1, 'a'), (2, 'b'), (3, 'c')"
+      ],
+      "query": "SELECT id, UPPER(s) FROM T_UCL_09 ORDER BY id",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "UPPER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates UPPER over each row. Wire-neutral.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 1
+            },
+            "A"
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 2
+            },
+            "B"
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 3
+            },
+            "C"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "lower_with_comparison_rejected",
+      "schema_template": "CREATE TABLE T_UCL_10 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_UCL_10 VALUES (1, 'APPLE'), (2, 'BANANA')"
+      ],
+      "query": "SELECT id FROM T_UCL_10 WHERE LOWER(s) > 'apple' ORDER BY id",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "LOWER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LOWER(s)>'apple' — only 'banana' qualifies. Wire-neutral.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 2
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "abs_positive_rejected",
+      "schema_template": "CREATE TABLE T_AMM_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AMM_01 VALUES (1, 5)"
+      ],
+      "query": "SELECT ABS(v) FROM T_AMM_01 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "ABS is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates ABS(5)=5. Wire-neutral.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 5
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "abs_negative_rejected",
+      "schema_template": "CREATE TABLE T_AMM_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AMM_02 VALUES (1, -5)"
+      ],
+      "query": "SELECT ABS(v) FROM T_AMM_02 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "ABS is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates ABS(-5)=5. Wire-neutral.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 5
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "abs_zero_rejected",
+      "schema_template": "CREATE TABLE T_AMM_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AMM_03 VALUES (1, 0)"
+      ],
+      "query": "SELECT ABS(v) FROM T_AMM_03 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "ABS is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates ABS(0)=0. Wire-neutral.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 0
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "abs_null_rejected",
+      "schema_template": "CREATE TABLE T_AMM_04 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AMM_04 VALUES (1, NULL)"
+      ],
+      "query": "SELECT ABS(v) FROM T_AMM_04 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "ABS is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates ABS(NULL)=NULL. Wire-neutral.",
+        "go_expected_rows": [
+          [
+            null
+          ]
+        ]
+      }
+    },
+    {
+      "name": "abs_in_where_rejected",
+      "schema_template": "CREATE TABLE T_AMM_05 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AMM_05 VALUES (1, -10), (2, 5)"
+      ],
+      "query": "SELECT id FROM T_AMM_05 WHERE ABS(v) > 7 ORDER BY id",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "ABS is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates ABS(v)>7 — only ABS(-10)=10 qualifies. Wire-neutral.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 1
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "mod_function_two_arg_rejected",
+      "schema_template": "CREATE TABLE T_AMM_06 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AMM_06 VALUES (1, 17)"
+      ],
+      "query": "SELECT MOD(v, 5) FROM T_AMM_06 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "MOD is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates MOD(17,5)=2. Wire-neutral.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 2
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "mod_zero_dividend_rejected",
+      "schema_template": "CREATE TABLE T_AMM_07 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AMM_07 VALUES (1, 0)"
+      ],
+      "query": "SELECT MOD(v, 3) FROM T_AMM_07 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "MOD is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates MOD(0,3)=0 (zero dividend, divisor 3 — no division-by-zero). Wire-neutral.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 0
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "abs_double_rejected",
+      "schema_template": "CREATE TABLE T_AMM_08 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AMM_08 VALUES (1, -3.14)"
+      ],
+      "query": "SELECT ABS(v) FROM T_AMM_08 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "ABS is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates ABS(-3.14)=3.14 on the DOUBLE column. Wire-neutral.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 3.14
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "abs_in_expression_rejected",
+      "schema_template": "CREATE TABLE T_AMM_09 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AMM_09 VALUES (1, -7)"
+      ],
+      "query": "SELECT ABS(v) + 1 FROM T_AMM_09 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "ABS is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates ABS(-7)+1=8. Wire-neutral.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 8
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "mod_col_divisor_rejected",
+      "schema_template": "CREATE TABLE T_AMM_10 (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AMM_10 VALUES (1, 17, 5)"
+      ],
+      "query": "SELECT MOD(x, y) FROM T_AMM_10 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "MOD is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates MOD(17,5)=2 (column divisor). Wire-neutral.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 2
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "complex_where_nested_and_or",
+      "schema_template": "CREATE TABLE T_CWH_01 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, d BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CWH_01 VALUES (1, 1, 1, 0, 0)",
+        "INSERT INTO T_CWH_01 VALUES (2, 1, 0, 1, 1)",
+        "INSERT INTO T_CWH_01 VALUES (3, 0, 0, 1, 0)",
+        "INSERT INTO T_CWH_01 VALUES (4, 1, 1, 1, 1)"
+      ],
+      "query": "SELECT id FROM T_CWH_01 WHERE (a = 1 AND b = 1) OR (c = 1 AND d = 1) ORDER BY id"
+    },
+    {
+      "name": "complex_where_not_of_or",
+      "schema_template": "CREATE TABLE T_CWH_02 (id BIGINT, v BIGINT, region STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CWH_02 VALUES (1, 10, 'us')",
+        "INSERT INTO T_CWH_02 VALUES (2, 20, 'eu')",
+        "INSERT INTO T_CWH_02 VALUES (3, 30, 'ap')",
+        "INSERT INTO T_CWH_02 VALUES (4, 40, 'us')"
+      ],
+      "query": "SELECT id FROM T_CWH_02 WHERE NOT (region = 'us' OR region = 'eu') ORDER BY id"
+    },
+    {
+      "name": "complex_where_mixed_predicates",
+      "schema_template": "CREATE TABLE T_CWH_03 (id BIGINT, v BIGINT, name STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CWH_03 VALUES (1, 5, 'alice')",
+        "INSERT INTO T_CWH_03 VALUES (2, 15, 'bob')",
+        "INSERT INTO T_CWH_03 VALUES (3, 25, 'alice_2')",
+        "INSERT INTO T_CWH_03 VALUES (4, 35, 'charlie')"
+      ],
+      "query": "SELECT id FROM T_CWH_03 WHERE v BETWEEN 5 AND 20 AND name LIKE 'a%' ORDER BY id"
+    },
+    {
+      "name": "complex_where_three_column_filter",
+      "schema_template": "CREATE TABLE T_CWH_04 (id BIGINT, x BIGINT, y BIGINT, z BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CWH_04 VALUES (1, 1, 2, 3)",
+        "INSERT INTO T_CWH_04 VALUES (2, 4, 5, 6)",
+        "INSERT INTO T_CWH_04 VALUES (3, 1, 5, 3)",
+        "INSERT INTO T_CWH_04 VALUES (4, 4, 2, 6)"
+      ],
+      "query": "SELECT id FROM T_CWH_04 WHERE x < 3 AND y > 1 AND z = 3 ORDER BY id"
+    },
+    {
+      "name": "complex_where_is_null_or_range",
+      "schema_template": "CREATE TABLE T_CWH_05 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CWH_05 VALUES (1, NULL)",
+        "INSERT INTO T_CWH_05 VALUES (2, 5)",
+        "INSERT INTO T_CWH_05 VALUES (3, 50)",
+        "INSERT INTO T_CWH_05 VALUES (4, 100)"
+      ],
+      "query": "SELECT id FROM T_CWH_05 WHERE v IS NULL OR v > 75 ORDER BY id"
+    },
+    {
+      "name": "complex_where_not_is_not_null",
+      "schema_template": "CREATE TABLE T_CWH_06 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CWH_06 VALUES (1, 10)",
+        "INSERT INTO T_CWH_06 VALUES (2, NULL)",
+        "INSERT INTO T_CWH_06 VALUES (3, 30)"
+      ],
+      "query": "SELECT id FROM T_CWH_06 WHERE NOT (v IS NOT NULL) ORDER BY id"
+    },
+    {
+      "name": "complex_where_string_and_numeric",
+      "schema_template": "CREATE TABLE T_CWH_07 (id BIGINT, region STRING, score BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CWH_07 VALUES (1, 'us', 90)",
+        "INSERT INTO T_CWH_07 VALUES (2, 'eu', 85)",
+        "INSERT INTO T_CWH_07 VALUES (3, 'us', 70)",
+        "INSERT INTO T_CWH_07 VALUES (4, 'ap', 95)"
+      ],
+      "query": "SELECT id FROM T_CWH_07 WHERE region != 'eu' AND score >= 80 ORDER BY id"
+    },
+    {
+      "name": "complex_where_in_and_between",
+      "schema_template": "CREATE TABLE T_CWH_08 (id BIGINT, cat BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CWH_08 VALUES (1, 1, 10)",
+        "INSERT INTO T_CWH_08 VALUES (2, 2, 20)",
+        "INSERT INTO T_CWH_08 VALUES (3, 1, 30)",
+        "INSERT INTO T_CWH_08 VALUES (4, 3, 15)",
+        "INSERT INTO T_CWH_08 VALUES (5, 2, 25)"
+      ],
+      "query": "SELECT id FROM T_CWH_08 WHERE cat IN (1, 2) AND v BETWEEN 15 AND 25 ORDER BY id"
+    },
+    {
+      "name": "complex_where_bool_and_numeric",
+      "schema_template": "CREATE TABLE T_CWH_09 (id BIGINT, active BOOLEAN, score BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CWH_09 VALUES (1, TRUE, 100)",
+        "INSERT INTO T_CWH_09 VALUES (2, FALSE, 200)",
+        "INSERT INTO T_CWH_09 VALUES (3, TRUE, 50)",
+        "INSERT INTO T_CWH_09 VALUES (4, NULL, 150)"
+      ],
+      "query": "SELECT id FROM T_CWH_09 WHERE active = TRUE AND score > 75 ORDER BY id"
+    },
+    {
+      "name": "complex_where_or_three_with_null",
+      "schema_template": "CREATE TABLE T_CWH_10 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CWH_10 VALUES (1, NULL, NULL, NULL)",
+        "INSERT INTO T_CWH_10 VALUES (2, 5, NULL, NULL)",
+        "INSERT INTO T_CWH_10 VALUES (3, NULL, 10, NULL)",
+        "INSERT INTO T_CWH_10 VALUES (4, NULL, NULL, 15)",
+        "INSERT INTO T_CWH_10 VALUES (5, 1, 1, 1)"
+      ],
+      "query": "SELECT id FROM T_CWH_10 WHERE a = 5 OR b = 10 OR c = 15 ORDER BY id"
+    },
+    {
+      "name": "insert_col_list_reordered",
+      "schema_template": "CREATE TABLE T_INS_06 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_INS_06 (b, id, a) VALUES (30, 1, 20)"
+      ],
+      "query": "SELECT id, a, b FROM T_INS_06 ORDER BY id"
+    },
+    {
+      "name": "insert_all_nullable_null",
+      "schema_template": "CREATE TABLE T_INS_07 (id BIGINT, a BIGINT, b STRING, c BOOLEAN, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_INS_07 VALUES (1, NULL, NULL, NULL)"
+      ],
+      "query": "SELECT id, a, b, c FROM T_INS_07 ORDER BY id"
+    },
+    {
+      "name": "insert_bigint_max",
+      "schema_template": "CREATE TABLE T_INS_08 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_INS_08 VALUES (1, 9223372036854775807)"
+      ],
+      "query": "SELECT id, v FROM T_INS_08 ORDER BY id"
+    },
+    {
+      "name": "insert_bigint_min",
+      "schema_template": "CREATE TABLE T_INS_09 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_INS_09 VALUES (1, -9223372036854775808)"
+      ],
+      "query": "SELECT id, v FROM T_INS_09 ORDER BY id"
+    },
+    {
+      "name": "null_pk_reads_back_null",
+      "schema_template": "CREATE TABLE T_NPK_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_NPK_02 VALUES (0, 1)",
+        "INSERT INTO T_NPK_02 VALUES (NULL, 2)"
+      ],
+      "query": "SELECT v FROM T_NPK_02 WHERE id IS NULL"
+    },
+    {
+      "name": "insert_multi_row_mixed_nulls",
+      "schema_template": "CREATE TABLE T_INS_10 (id BIGINT, v BIGINT, name STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_INS_10 VALUES (1, 100, 'alice'), (2, NULL, 'bob'), (3, 300, NULL), (4, NULL, NULL)"
+      ],
+      "query": "SELECT id, v, name FROM T_INS_10 ORDER BY id"
+    },
+    {
+      "name": "insert_zero_pk",
+      "schema_template": "CREATE TABLE T_INS_11 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_INS_11 VALUES (0, 100)",
+        "INSERT INTO T_INS_11 VALUES (1, 200)"
+      ],
+      "query": "SELECT id, v FROM T_INS_11 ORDER BY id"
+    },
+    {
+      "name": "insert_negative_pk",
+      "schema_template": "CREATE TABLE T_INS_12 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_INS_12 VALUES (-1, 10)",
+        "INSERT INTO T_INS_12 VALUES (0, 20)",
+        "INSERT INTO T_INS_12 VALUES (1, 30)"
+      ],
+      "query": "SELECT id, v FROM T_INS_12 ORDER BY id"
+    },
+    {
+      "name": "insert_select_with_filter",
+      "schema_template": "CREATE TABLE T_INS_SRC2 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_INS_DST2 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_INS_SRC2 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+        "INSERT INTO T_INS_DST2 SELECT id, v FROM T_INS_SRC2 WHERE v > 15"
+      ],
+      "query": "SELECT id, v FROM T_INS_DST2 ORDER BY id"
+    },
+    {
+      "name": "insert_boolean_values",
+      "schema_template": "CREATE TABLE T_INS_13 (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_INS_13 VALUES (1, TRUE), (2, FALSE), (3, NULL)"
+      ],
+      "query": "SELECT id, flag FROM T_INS_13 ORDER BY id"
+    },
+    {
+      "name": "insert_string_special_chars",
+      "schema_template": "CREATE TABLE T_INS_14 (id BIGINT, name STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_INS_14 VALUES (1, 'hello world')",
+        "INSERT INTO T_INS_14 VALUES (2, 'foo-bar')",
+        "INSERT INTO T_INS_14 VALUES (3, 'v1.2.3')"
+      ],
+      "query": "SELECT id, name FROM T_INS_14 ORDER BY id"
+    },
+    {
+      "name": "between_double_range",
+      "schema_template": "CREATE TABLE T_BET_01 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BET_01 VALUES (1, 1.5), (2, 2.5), (3, 3.5), (4, 4.5)"
+      ],
+      "query": "SELECT id FROM T_BET_01 WHERE v BETWEEN 2.0 AND 4.0 ORDER BY id"
+    },
+    {
+      "name": "between_negative_range",
+      "schema_template": "CREATE TABLE T_BET_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BET_02 VALUES (1, -10), (2, -5), (3, 0), (4, 5), (5, 10)"
+      ],
+      "query": "SELECT id FROM T_BET_02 WHERE v BETWEEN -7 AND 3 ORDER BY id"
+    },
+    {
+      "name": "between_single_value_match",
+      "schema_template": "CREATE TABLE T_BET_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BET_03 VALUES (1, 5), (2, 10), (3, 15)"
+      ],
+      "query": "SELECT id FROM T_BET_03 WHERE v BETWEEN 10 AND 10 ORDER BY id"
+    },
+    {
+      "name": "not_between_excludes_boundaries",
+      "schema_template": "CREATE TABLE T_BET_04 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BET_04 VALUES (1, 5), (2, 10), (3, 15), (4, 20), (5, 25)"
+      ],
+      "query": "SELECT id FROM T_BET_04 WHERE v NOT BETWEEN 10 AND 20 ORDER BY id"
+    },
+    {
+      "name": "between_reversed_int_bounds_empty",
+      "schema_template": "CREATE TABLE T_BET_05 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BET_05 VALUES (1, 5), (2, 10), (3, 15)"
+      ],
+      "query": "SELECT id FROM T_BET_05 WHERE v BETWEEN 15 AND 5 ORDER BY id"
+    },
+    {
+      "name": "between_and_other_pred",
+      "schema_template": "CREATE TABLE T_BET_06 (id BIGINT, v BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BET_06 VALUES (1, 5, 'a'), (2, 15, 'b'), (3, 25, 'a'), (4, 35, 'b')"
+      ],
+      "query": "SELECT id FROM T_BET_06 WHERE v BETWEEN 10 AND 30 AND s = 'b' ORDER BY id"
+    },
+    {
+      "name": "between_or_between",
+      "schema_template": "CREATE TABLE T_BET_07 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BET_07 VALUES (1, 1), (2, 5), (3, 10), (4, 15), (5, 20), (6, 25)"
+      ],
+      "query": "SELECT id FROM T_BET_07 WHERE v BETWEEN 1 AND 5 OR v BETWEEN 20 AND 25 ORDER BY id"
+    },
+    {
+      "name": "between_with_null_column",
+      "schema_template": "CREATE TABLE T_BET_08 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BET_08 VALUES (1, 5), (2, NULL), (3, 15)"
+      ],
+      "query": "SELECT id FROM T_BET_08 WHERE v BETWEEN 0 AND 20 ORDER BY id"
+    },
+    {
+      "name": "where_not_between_and_in",
+      "schema_template": "CREATE TABLE T_CW_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CW_01 VALUES (1, 5), (2, 10), (3, 15), (4, 20), (5, 25)"
+      ],
+      "query": "SELECT id FROM T_CW_01 WHERE v NOT BETWEEN 10 AND 20 AND id IN (1, 3, 5) ORDER BY id"
+    },
+    {
+      "name": "where_nested_or_in_and",
+      "schema_template": "CREATE TABLE T_CW_02 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CW_02 VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300), (4, 10, 400)"
+      ],
+      "query": "SELECT id FROM T_CW_02 WHERE a = 10 AND (b > 200 OR b < 150) ORDER BY id"
+    },
+    {
+      "name": "where_triple_or",
+      "schema_template": "CREATE TABLE T_CW_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CW_03 VALUES (1, 1), (2, 2), (3, 3), (4, 4), (5, 5)"
+      ],
+      "query": "SELECT id FROM T_CW_03 WHERE v = 1 OR v = 3 OR v = 5 ORDER BY id"
+    },
+    {
+      "name": "where_not_in_and_gt",
+      "schema_template": "CREATE TABLE T_CW_04 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CW_04 VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)"
+      ],
+      "query": "SELECT id FROM T_CW_04 WHERE v NOT IN (20, 40) AND v > 15 ORDER BY id"
+    },
+    {
+      "name": "where_like_and_range",
+      "schema_template": "CREATE TABLE T_CW_05 (id BIGINT, name STRING, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CW_05 VALUES (1, 'alice', 10), (2, 'bob', 20), (3, 'anna', 30), (4, 'amy', 5)"
+      ],
+      "query": "SELECT id FROM T_CW_05 WHERE name LIKE 'a%' AND v > 8 ORDER BY id"
+    },
+    {
+      "name": "where_is_null_or_gt",
+      "schema_template": "CREATE TABLE T_CW_06 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CW_06 VALUES (1, NULL), (2, 5), (3, 15), (4, NULL), (5, 25)"
+      ],
+      "query": "SELECT id FROM T_CW_06 WHERE v IS NULL OR v > 20 ORDER BY id"
+    },
+    {
+      "name": "where_not_like",
+      "schema_template": "CREATE TABLE T_CW_07 (id BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CW_07 VALUES (1, 'abc'), (2, 'def'), (3, 'axyz'), (4, 'ghi')"
+      ],
+      "query": "SELECT id FROM T_CW_07 WHERE s NOT LIKE 'a%' ORDER BY id"
+    },
+    {
+      "name": "where_multi_column_and_chain",
+      "schema_template": "CREATE TABLE T_CW_08 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CW_08 VALUES (1, 1, 2, 3), (2, 4, 5, 6), (3, 1, 5, 3), (4, 1, 2, 6)"
+      ],
+      "query": "SELECT id FROM T_CW_08 WHERE a = 1 AND b = 2 AND c = 3 ORDER BY id"
+    },
+    {
+      "name": "where_between_and_is_not_null",
+      "schema_template": "CREATE TABLE T_CW_09 (id BIGINT, v BIGINT, s STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CW_09 VALUES (1, 10, 'a'), (2, 20, NULL), (3, 30, 'c'), (4, 5, 'd')"
+      ],
+      "query": "SELECT id FROM T_CW_09 WHERE v BETWEEN 5 AND 25 AND s IS NOT NULL ORDER BY id"
+    },
+    {
+      "name": "where_not_eq_and_not_eq",
+      "schema_template": "CREATE TABLE T_CW_10 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CW_10 VALUES (1, 10), (2, 20), (3, 30), (4, 40)"
+      ],
+      "query": "SELECT id FROM T_CW_10 WHERE v <> 10 AND v <> 40 ORDER BY id"
+    },
+    {
+      "name": "having_min_gt",
+      "schema_template": "CREATE TABLE T_HAV_10 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_HAV_10 VALUES (1, 5), (2, 10), (3, 15)"
+      ],
+      "query": "SELECT MIN(v) FROM T_HAV_10 HAVING MIN(v) < 10"
+    },
+    {
+      "name": "having_max_lt",
+      "schema_template": "CREATE TABLE T_HAV_11 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_HAV_11 VALUES (1, 5), (2, 10), (3, 15)"
+      ],
+      "query": "SELECT MAX(v) FROM T_HAV_11 HAVING MAX(v) > 10"
+    },
+    {
+      "name": "having_avg_filters_out",
+      "schema_template": "CREATE TABLE T_HAV_12 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_HAV_12 VALUES (1, 1), (2, 2), (3, 3)"
+      ],
+      "query": "SELECT AVG(v) FROM T_HAV_12 HAVING AVG(v) > 100"
+    },
+    {
+      "name": "having_sum_eq",
+      "schema_template": "CREATE TABLE T_HAV_13 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_HAV_13 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT SUM(v) FROM T_HAV_13 HAVING SUM(v) = 60"
+    },
+    {
+      "name": "having_count_and_sum",
+      "schema_template": "CREATE TABLE T_HAV_14 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_HAV_14 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT COUNT(*), SUM(v) FROM T_HAV_14 HAVING COUNT(*) > 1 AND SUM(v) > 50"
+    },
+    {
+      "name": "having_count_star_eq_zero_empty",
+      "schema_template": "CREATE TABLE T_HAV_15 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": null,
+      "query": "SELECT COUNT(*) FROM T_HAV_15 HAVING COUNT(*) = 0"
+    },
+    {
+      "name": "agg_expr_count_minus_one",
+      "schema_template": "CREATE TABLE T_AE_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AE_01 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT COUNT(*) - 1 FROM T_AE_01"
+    }
+  ]
+}

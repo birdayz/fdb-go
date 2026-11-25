@@ -1,0 +1,940 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "name": "insert_select_coalesce_null",
+      "schema_template": "CREATE TABLE T_IS10_SRC (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE T_IS10_DST (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IS10_SRC VALUES (1, 10)",
+        "INSERT INTO T_IS10_SRC VALUES (2, NULL)",
+        "INSERT INTO T_IS10_SRC VALUES (3, 30)",
+        "INSERT INTO T_IS10_DST SELECT id, COALESCE(val, -1) FROM T_IS10_SRC"
+      ],
+      "query": "SELECT id, val FROM T_IS10_DST ORDER BY id"
+    },
+    {
+      "name": "insert_select_mixed_with_values",
+      "schema_template": "CREATE TABLE T_IS11_SRC (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE T_IS11_DST (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IS11_SRC VALUES (10, 100), (20, 200)",
+        "INSERT INTO T_IS11_DST VALUES (1, 1), (2, 2)",
+        "INSERT INTO T_IS11_DST SELECT id, val FROM T_IS11_SRC"
+      ],
+      "query": "SELECT id, val FROM T_IS11_DST ORDER BY id"
+    },
+    {
+      "name": "insert_select_from_derived",
+      "schema_template": "CREATE TABLE T_IS13_SRC (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE T_IS13_DST (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IS13_SRC VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+        "INSERT INTO T_IS13_DST SELECT d.id, d.val FROM (SELECT id, val FROM T_IS13_SRC WHERE val >= 20) AS d"
+      ],
+      "query": "SELECT id, val FROM T_IS13_DST ORDER BY id"
+    },
+    {
+      "name": "insert_select_secondary_index",
+      "schema_template": "CREATE TABLE T_IS14_SRC (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_IS14_DST (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_is14_v ON T_IS14_DST (v)",
+      "setup_sqls": [
+        "INSERT INTO T_IS14_SRC VALUES (1, 10), (2, 20), (3, 30)",
+        "INSERT INTO T_IS14_DST SELECT id, v FROM T_IS14_SRC"
+      ],
+      "query": "SELECT id, v FROM T_IS14_DST ORDER BY id"
+    },
+    {
+      "name": "mixed_like_and_gt_or_in",
+      "schema_template": "CREATE TABLE T_MP1 (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MP1 VALUES (1, 'apple', 5)",
+        "INSERT INTO T_MP1 VALUES (2, 'apricot', 50)",
+        "INSERT INTO T_MP1 VALUES (3, 'banana', 7)",
+        "INSERT INTO T_MP1 VALUES (4, 'cherry', 8)",
+        "INSERT INTO T_MP1 VALUES (5, 'almond', 100)"
+      ],
+      "query": "SELECT id FROM T_MP1 WHERE (name LIKE 'a%' AND val > 10) OR id IN (3, 4) ORDER BY id"
+    },
+    {
+      "name": "mixed_isnull_or_between_and_eq",
+      "schema_template": "CREATE TABLE T_MP2 (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MP2 VALUES (1, 'foo', 7)",
+        "INSERT INTO T_MP2 VALUES (2, NULL, 200)",
+        "INSERT INTO T_MP2 VALUES (3, 'foo', 50)",
+        "INSERT INTO T_MP2 VALUES (4, 'bar', 50)",
+        "INSERT INTO T_MP2 VALUES (5, 'foo', 4)"
+      ],
+      "query": "SELECT id FROM T_MP2 WHERE name IS NULL OR (val BETWEEN 5 AND 100 AND name = 'foo') ORDER BY id"
+    },
+    {
+      "name": "mixed_two_like_or_and_between",
+      "schema_template": "CREATE TABLE T_MP3 (id BIGINT, name STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MP3 VALUES (1, 'abc-stuff')",
+        "INSERT INTO T_MP3 VALUES (2, 'plain')",
+        "INSERT INTO T_MP3 VALUES (10, 'has-xyz-in')",
+        "INSERT INTO T_MP3 VALUES (60, 'abc-out-of-range')",
+        "INSERT INTO T_MP3 VALUES (25, 'nothing')"
+      ],
+      "query": "SELECT id FROM T_MP3 WHERE (name LIKE '%abc%' OR name LIKE '%xyz%') AND id BETWEEN 1 AND 50 ORDER BY id"
+    },
+    {
+      "name": "mixed_not_like_and_gt",
+      "schema_template": "CREATE TABLE T_MP4 (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MP4 VALUES (1, 'query', 10)",
+        "INSERT INTO T_MP4 VALUES (2, 'apple', 20)",
+        "INSERT INTO T_MP4 VALUES (3, 'banana', 3)",
+        "INSERT INTO T_MP4 VALUES (4, 'quartz', 100)",
+        "INSERT INTO T_MP4 VALUES (5, 'date', 6)"
+      ],
+      "query": "SELECT id FROM T_MP4 WHERE NOT (name LIKE 'q%') AND val > 5 ORDER BY id"
+    },
+    {
+      "name": "mixed_eq_gt_in_isnotnull_chain",
+      "schema_template": "CREATE TABLE T_MP5 (id BIGINT, name STRING, val BIGINT, tag STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MP5 VALUES (1, 'a', 100, 't1')",
+        "INSERT INTO T_MP5 VALUES (2, 'a', 50, 't2')",
+        "INSERT INTO T_MP5 VALUES (3, 'a', 5, 't3')",
+        "INSERT INTO T_MP5 VALUES (4, 'b', 100, 't4')",
+        "INSERT INTO T_MP5 VALUES (5, 'a', 100, NULL)"
+      ],
+      "query": "SELECT id FROM T_MP5 WHERE name = 'a' AND val > 10 AND id IN (1, 2, 3) AND tag IS NOT NULL ORDER BY id"
+    },
+    {
+      "name": "mixed_isnull_and_or_like_and",
+      "schema_template": "CREATE TABLE T_MP6 (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MP6 VALUES (3, NULL, 100)",
+        "INSERT INTO T_MP6 VALUES (4, NULL, 1)",
+        "INSERT INTO T_MP6 VALUES (5, 'banana', 9)",
+        "INSERT INTO T_MP6 VALUES (15, 'banana', 1)",
+        "INSERT INTO T_MP6 VALUES (8, 'cherry', 20)"
+      ],
+      "query": "SELECT id FROM T_MP6 WHERE (name IS NULL AND val > 5) OR (name LIKE 'b%' AND id < 10) ORDER BY id"
+    },
+    {
+      "name": "mixed_like_or_eq_and_between",
+      "schema_template": "CREATE TABLE T_MP7 (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MP7 VALUES (1, 'foobar', 999)",
+        "INSERT INTO T_MP7 VALUES (2, 'food', 5)",
+        "INSERT INTO T_MP7 VALUES (3, 'bar', 15)",
+        "INSERT INTO T_MP7 VALUES (4, 'bar', 25)",
+        "INSERT INTO T_MP7 VALUES (5, 'baz', 15)"
+      ],
+      "query": "SELECT id FROM T_MP7 WHERE name LIKE 'foo%' OR (name = 'bar' AND val BETWEEN 10 AND 20) ORDER BY id"
+    },
+    {
+      "name": "mixed_between_and_like_and_isnotnull",
+      "schema_template": "CREATE TABLE T_MP8 (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MP8 VALUES (1, 'unit-test-a', 10)",
+        "INSERT INTO T_MP8 VALUES (5, 'live-test-data', 20)",
+        "INSERT INTO T_MP8 VALUES (50, 'production', 30)",
+        "INSERT INTO T_MP8 VALUES (200, 'test-out', 40)",
+        "INSERT INTO T_MP8 VALUES (10, 'no-match', NULL)"
+      ],
+      "query": "SELECT id FROM T_MP8 WHERE id BETWEEN 1 AND 100 AND name LIKE '%test%' AND val IS NOT NULL ORDER BY id"
+    },
+    {
+      "name": "mixed_deep_nested_or_tree",
+      "schema_template": "CREATE TABLE T_MP9 (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MP9 VALUES (1, 'apple', 10)",
+        "INSERT INTO T_MP9 VALUES (2, 'banana', 3)",
+        "INSERT INTO T_MP9 VALUES (3, 'banana', 100)",
+        "INSERT INTO T_MP9 VALUES (15, 'x', 50)",
+        "INSERT INTO T_MP9 VALUES (20, 'y', 50)"
+      ],
+      "query": "SELECT id FROM T_MP9 WHERE ((name LIKE 'a%' OR name LIKE 'b%') AND val > 5) OR (id > 10 AND name = 'x') ORDER BY id"
+    },
+    {
+      "name": "mixed_lt_gt_like_underscore",
+      "schema_template": "CREATE TABLE T_MP10 (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MP10 VALUES (50, 'data_1', 10)",
+        "INSERT INTO T_MP10 VALUES (60, 'data_2', 20)",
+        "INSERT INTO T_MP10 VALUES (70, 'data_99', 30)",
+        "INSERT INTO T_MP10 VALUES (200, 'data_3', 5)",
+        "INSERT INTO T_MP10 VALUES (1, 'data_x', 0)"
+      ],
+      "query": "SELECT id FROM T_MP10 WHERE id < 100 AND val > 0 AND name LIKE 'data_%' ORDER BY id"
+    },
+    {
+      "name": "mixed_two_in_lists_and",
+      "schema_template": "CREATE TABLE T_MP11 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MP11 VALUES (1, 10)",
+        "INSERT INTO T_MP11 VALUES (2, 99)",
+        "INSERT INTO T_MP11 VALUES (3, 30)",
+        "INSERT INTO T_MP11 VALUES (4, 30)",
+        "INSERT INTO T_MP11 VALUES (5, 20)"
+      ],
+      "query": "SELECT id FROM T_MP11 WHERE id IN (1, 2, 3) AND val IN (10, 20, 30) ORDER BY id"
+    },
+    {
+      "name": "mixed_like_suffix_notin_isnull",
+      "schema_template": "CREATE TABLE T_MP12 (id BIGINT, name STRING, val BIGINT, tag STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MP12 VALUES (1, 'a.txt', 5, NULL)",
+        "INSERT INTO T_MP12 VALUES (2, 'b.txt', 0, NULL)",
+        "INSERT INTO T_MP12 VALUES (3, 'c.txt', 5, 't')",
+        "INSERT INTO T_MP12 VALUES (4, 'd.bin', 5, NULL)",
+        "INSERT INTO T_MP12 VALUES (5, 'e.txt', -1, NULL)"
+      ],
+      "query": "SELECT id FROM T_MP12 WHERE name LIKE '%.txt' AND val NOT IN (0, -1) AND tag IS NULL ORDER BY id"
+    },
+    {
+      "name": "mixed_balanced_or_clusters",
+      "schema_template": "CREATE TABLE T_MP13 (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MP13 VALUES (1, 'aaa', 50)",
+        "INSERT INTO T_MP13 VALUES (2, NULL, 999)",
+        "INSERT INTO T_MP13 VALUES (3, 'bbb', 200)",
+        "INSERT INTO T_MP13 VALUES (4, 'aaa', 1)",
+        "INSERT INTO T_MP13 VALUES (5, 'ccc', 200)"
+      ],
+      "query": "SELECT id FROM T_MP13 WHERE (val BETWEEN 10 AND 100 OR val = 200) AND (name LIKE 'a%' OR name IS NULL) ORDER BY id"
+    },
+    {
+      "name": "ident_lowercase_table_ref",
+      "schema_template": "CREATE TABLE T_IR1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IR1 VALUES (1, 10), (2, 20)"
+      ],
+      "query": "SELECT id FROM t_ir1 ORDER BY id"
+    },
+    {
+      "name": "ident_uppercase_col_ref",
+      "schema_template": "CREATE TABLE T_IR2 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IR2 VALUES (1, 10), (2, 20)"
+      ],
+      "query": "SELECT ID, VAL FROM T_IR2 ORDER BY ID"
+    },
+    {
+      "name": "ident_alias_in_projection",
+      "schema_template": "CREATE TABLE T_IR3 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IR3 VALUES (1, 10), (2, 20)"
+      ],
+      "query": "SELECT a.id, a.val FROM T_IR3 AS a ORDER BY a.id"
+    },
+    {
+      "name": "ident_alias_in_where",
+      "schema_template": "CREATE TABLE T_IR4 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IR4 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT a.id FROM T_IR4 AS a WHERE a.val > 15 ORDER BY a.id"
+    },
+    {
+      "name": "ident_alias_in_order_by",
+      "schema_template": "CREATE TABLE T_IR5 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IR5 VALUES (3, 10), (1, 30), (2, 20)"
+      ],
+      "query": "SELECT a.id, a.val FROM T_IR5 AS a ORDER BY a.id"
+    },
+    {
+      "name": "ident_single_letter_alias_self_join",
+      "schema_template": "CREATE TABLE T_IR6 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IR6 VALUES (1, 10), (2, 20)"
+      ],
+      "query": "SELECT a.id, b.id FROM T_IR6 a, T_IR6 b WHERE a.id = b.id ORDER BY a.id"
+    },
+    {
+      "name": "ident_mixed_case_alias",
+      "schema_template": "CREATE TABLE T_IR7 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IR7 VALUES (1, 10), (2, 20)"
+      ],
+      "query": "SELECT MyAlias.id, MyAlias.val FROM T_IR7 AS MyAlias ORDER BY MyAlias.id"
+    },
+    {
+      "name": "ident_alias_rebind_derived",
+      "schema_template": "CREATE TABLE T_IR8 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IR8 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT d.id, d.val FROM (SELECT id, val FROM T_IR8) AS d ORDER BY d.id"
+    },
+    {
+      "name": "ident_qualifier_stripping_in_cte",
+      "schema_template": "CREATE TABLE T_IR9 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IR9 VALUES (1, 10), (2, 20)"
+      ],
+      "query": "WITH x AS (SELECT a.id FROM T_IR9 AS a) SELECT count(*) FROM x"
+    },
+    {
+      "name": "ident_two_ctes_same_col_name",
+      "schema_template": "CREATE TABLE T_IR10A (id BIGINT, PRIMARY KEY (id)) CREATE TABLE T_IR10B (id BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IR10A VALUES (1), (2), (3)",
+        "INSERT INTO T_IR10B VALUES (2), (3), (4)"
+      ],
+      "query": "WITH x AS (SELECT id FROM T_IR10A), y AS (SELECT id FROM T_IR10B) SELECT count(*) FROM x, y WHERE x.id = y.id"
+    },
+    {
+      "name": "ident_quoted_canonical_col",
+      "schema_template": "CREATE TABLE T_IR11 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IR11 VALUES (1, 10), (2, 20)"
+      ],
+      "query": "SELECT \"ID\" FROM T_IR11 ORDER BY \"ID\""
+    },
+    {
+      "name": "ident_table_name_qualifier_no_alias",
+      "schema_template": "CREATE TABLE T_IR12 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IR12 VALUES (1, 10), (2, 20)"
+      ],
+      "query": "SELECT T_IR12.id, T_IR12.val FROM T_IR12 ORDER BY T_IR12.id"
+    },
+    {
+      "name": "ident_self_join_distinct_aliases",
+      "schema_template": "CREATE TABLE T_IR13 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IR13 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT a.id FROM T_IR13 AS a, T_IR13 AS b WHERE a.id < b.id ORDER BY a.id"
+    },
+    {
+      "name": "ident_lowercase_both_table_and_col",
+      "schema_template": "CREATE TABLE T_IR14 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IR14 VALUES (1, 10), (2, 20)"
+      ],
+      "query": "SELECT id, val FROM t_ir14 ORDER BY id"
+    },
+    {
+      "name": "ident_mixed_case_join_alias",
+      "schema_template": "CREATE TABLE T_IR15 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IR15 VALUES (1, 10), (2, 20)"
+      ],
+      "query": "SELECT MyA.id FROM T_IR15 AS MyA, T_IR15 AS MyB WHERE MyA.id = MyB.id ORDER BY MyA.id"
+    },
+    {
+      "name": "ident_lowercase_qualifier_in_where",
+      "schema_template": "CREATE TABLE T_IR16 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IR16 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT mya.id FROM T_IR16 AS MyA WHERE mya.val > 15 ORDER BY mya.id"
+    },
+    {
+      "name": "ident_mixed_case_cte_name_and_col",
+      "schema_template": "CREATE TABLE T_IR17 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IR17 VALUES (1, 10)"
+      ],
+      "query": "WITH MyCte AS (SELECT id, val FROM T_IR17) SELECT mycte.id FROM MYCTE"
+    },
+    {
+      "name": "ident_alias_in_projection_mixed_case",
+      "schema_template": "CREATE TABLE T_IR18 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IR18 VALUES (1, 10), (2, 20)"
+      ],
+      "query": "SELECT v.id AS MyId FROM T_IR18 AS v ORDER BY v.id"
+    },
+    {
+      "name": "ident_lowercase_qualifier_in_on_clause",
+      "schema_template": "CREATE TABLE T_IR19 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IR19 VALUES (1, 10), (2, 20)"
+      ],
+      "query": "SELECT a.id FROM T_IR19 AS A INNER JOIN T_IR19 AS B ON a.id = b.id ORDER BY a.id"
+    },
+    {
+      "name": "ident_lowercase_in_aggregate_arg",
+      "schema_template": "CREATE TABLE T_IR20 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IR20 VALUES (1, 10), (2, 20), (3, NULL)"
+      ],
+      "query": "SELECT count(t.val) FROM T_IR20 AS t"
+    },
+    {
+      "name": "ident_lowercase_through_nested_derived",
+      "schema_template": "CREATE TABLE T_IR21 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IR21 VALUES (1, 10), (2, 20)"
+      ],
+      "query": "SELECT d2.id FROM (SELECT id, val FROM (SELECT id, val FROM T_IR21) AS d1) AS d2 ORDER BY d2.id"
+    },
+    {
+      "name": "ident_mixed_case_index_column",
+      "schema_template": "CREATE TABLE T_IR22 (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE INDEX T_IR22_BY_VAL ON T_IR22 (val)",
+      "setup_sqls": [
+        "INSERT INTO T_IR22 VALUES (1, 10), (2, 20)"
+      ],
+      "query": "SELECT id FROM T_IR22 WHERE Val = 10"
+    },
+    {
+      "name": "ident_mixed_case_two_cte_chain",
+      "schema_template": "CREATE TABLE T_IR23 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IR23 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "WITH StepOne AS (SELECT id, val FROM T_IR23 WHERE val >= 20), StepTwo AS (SELECT id FROM stepone WHERE val < 30) SELECT id FROM StepTwo"
+    },
+    {
+      "name": "nested_derived_3deep_chain",
+      "schema_template": "CREATE TABLE T_ND1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ND1 VALUES (1, 10), (2, 20), (3, 30), (4, 40)"
+      ],
+      "query": "SELECT id FROM (SELECT id, val FROM (SELECT id, val FROM T_ND1 WHERE val > 5) AS d2) AS d1 ORDER BY id"
+    },
+    {
+      "name": "nested_derived_4deep_chain",
+      "schema_template": "CREATE TABLE T_ND2 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ND2 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT id FROM (SELECT id, val FROM (SELECT id, val FROM (SELECT id, val FROM T_ND2 WHERE val > 5) AS d3) AS d2) AS d1 ORDER BY id"
+    },
+    {
+      "name": "nested_derived_3deep_where_each_level",
+      "schema_template": "CREATE TABLE T_ND3 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ND3 VALUES (1, 5), (2, 15), (3, 25), (4, 35), (5, 45)"
+      ],
+      "query": "SELECT id FROM (SELECT id, val FROM (SELECT id, val FROM T_ND3 WHERE val > 10) AS d2 WHERE val > 20) AS d1 WHERE val > 30 ORDER BY id"
+    },
+    {
+      "name": "nested_derived_join_base_outer_where",
+      "schema_template": "CREATE TABLE T_ND4A (id BIGINT, gid BIGINT, PRIMARY KEY (id)) CREATE TABLE T_ND4B (gid BIGINT, label STRING, PRIMARY KEY (gid))",
+      "setup_sqls": [
+        "INSERT INTO T_ND4A VALUES (1, 10), (2, 20), (3, 10), (4, 20)",
+        "INSERT INTO T_ND4B VALUES (10, 'x'), (20, 'y')"
+      ],
+      "query": "SELECT s.id, b.label FROM (SELECT id, gid FROM T_ND4A) AS s, T_ND4B b WHERE s.gid = b.gid AND s.id > 1 ORDER BY s.id"
+    },
+    {
+      "name": "derived_projection_count_star",
+      "schema_template": "CREATE TABLE T_ND5 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ND5 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT s.c FROM (SELECT count(*) AS c FROM T_ND5 WHERE val > 15) AS s"
+    },
+    {
+      "name": "nested_derived_composite_pk_source",
+      "schema_template": "CREATE TABLE T_ND6 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+      "setup_sqls": [
+        "INSERT INTO T_ND6 VALUES ('us', 1, 10), ('us', 2, 20), ('eu', 1, 30), ('eu', 2, 40)"
+      ],
+      "query": "SELECT region, id, val FROM (SELECT region, id, val FROM (SELECT region, id, val FROM T_ND6 WHERE val > 15) AS d2) AS d1 ORDER BY region, id"
+    },
+    {
+      "name": "nested_derived_arithmetic_projection",
+      "schema_template": "CREATE TABLE T_ND7 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ND7 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT id, doubled FROM (SELECT id, val * 2 AS doubled FROM T_ND7) AS d ORDER BY id"
+    },
+    {
+      "name": "nested_derived_arithmetic_2deep",
+      "schema_template": "CREATE TABLE T_ND8 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ND8 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT id, doubled FROM (SELECT id, doubled FROM (SELECT id, val * 2 AS doubled FROM T_ND8) AS d2) AS d1 ORDER BY id"
+    },
+    {
+      "name": "count_star_over_2deep_derived",
+      "schema_template": "CREATE TABLE T_ND9 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ND9 VALUES (1, 10), (2, 20), (3, 30), (4, 40)"
+      ],
+      "query": "SELECT count(*) FROM (SELECT id FROM (SELECT id, val FROM T_ND9 WHERE val > 5) AS d2 WHERE id > 1) AS d1"
+    },
+    {
+      "name": "sum_over_2deep_derived",
+      "schema_template": "CREATE TABLE T_ND10 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ND10 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT sum(val) FROM (SELECT id, val FROM (SELECT id, val FROM T_ND10 WHERE val > 5) AS d2) AS d1"
+    },
+    {
+      "name": "nested_derived_3deep_where_innermost",
+      "schema_template": "CREATE TABLE T_ND12 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ND12 VALUES (1, 10), (2, 20), (3, 30), (4, 40)"
+      ],
+      "query": "SELECT id, val FROM (SELECT id, val FROM (SELECT id, val FROM T_ND12 WHERE val > 15) AS d2) AS d1 ORDER BY id"
+    },
+    {
+      "name": "nested_derived_aggregate_outer_select",
+      "schema_template": "CREATE TABLE T_ND13 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ND13 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT s.total FROM (SELECT sum(val) AS total FROM T_ND13 WHERE val > 5) AS s"
+    },
+    {
+      "name": "nested_derived_outer_drops_column",
+      "schema_template": "CREATE TABLE T_ND14 (id BIGINT, val BIGINT, extra BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ND14 VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300)"
+      ],
+      "query": "SELECT id FROM (SELECT id, val, extra FROM T_ND14 WHERE val > 5) AS d ORDER BY id"
+    },
+    {
+      "name": "count_over_derived_composite_pk",
+      "schema_template": "CREATE TABLE T_ND15 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+      "setup_sqls": [
+        "INSERT INTO T_ND15 VALUES ('us', 1, 10), ('us', 2, 20), ('eu', 1, 30)"
+      ],
+      "query": "SELECT count(*) FROM (SELECT region, id FROM T_ND15 WHERE val > 5) AS d"
+    },
+    {
+      "name": "where_idempotent_and",
+      "schema_template": "CREATE TABLE T_PN3 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_PN3 VALUES (1, 3)",
+        "INSERT INTO T_PN3 VALUES (2, 7)",
+        "INSERT INTO T_PN3 VALUES (3, 9)"
+      ],
+      "query": "SELECT id FROM T_PN3 WHERE val > 5 AND val > 5 ORDER BY id"
+    },
+    {
+      "name": "where_idempotent_or",
+      "schema_template": "CREATE TABLE T_PN4 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_PN4 VALUES (1, 3)",
+        "INSERT INTO T_PN4 VALUES (2, 7)",
+        "INSERT INTO T_PN4 VALUES (3, 9)"
+      ],
+      "query": "SELECT id FROM T_PN4 WHERE val > 5 OR val > 5 ORDER BY id"
+    },
+    {
+      "name": "where_not_pred",
+      "schema_template": "CREATE TABLE T_PN5 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_PN5 VALUES (1, 3)",
+        "INSERT INTO T_PN5 VALUES (2, 7)",
+        "INSERT INTO T_PN5 VALUES (3, 9)"
+      ],
+      "query": "SELECT id FROM T_PN5 WHERE NOT (val > 5) ORDER BY id"
+    },
+    {
+      "name": "where_not_is_null_v2",
+      "schema_template": "CREATE TABLE T_PN6 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_PN6 VALUES (1, 3)",
+        "INSERT INTO T_PN6 VALUES (2, NULL)",
+        "INSERT INTO T_PN6 VALUES (3, 9)"
+      ],
+      "query": "SELECT id FROM T_PN6 WHERE NOT (val IS NULL) ORDER BY id"
+    },
+    {
+      "name": "where_in_singleton",
+      "schema_template": "CREATE TABLE T_PN7 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_PN7 VALUES (1, 3)",
+        "INSERT INTO T_PN7 VALUES (2, 5)",
+        "INSERT INTO T_PN7 VALUES (3, 9)"
+      ],
+      "query": "SELECT id FROM T_PN7 WHERE val IN (5) ORDER BY id"
+    },
+    {
+      "name": "where_not_in_singleton",
+      "schema_template": "CREATE TABLE T_PN8 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_PN8 VALUES (1, 3)",
+        "INSERT INTO T_PN8 VALUES (2, 5)",
+        "INSERT INTO T_PN8 VALUES (3, 9)"
+      ],
+      "query": "SELECT id FROM T_PN8 WHERE val NOT IN (5) ORDER BY id"
+    },
+    {
+      "name": "where_literal_eq_tautology",
+      "schema_template": "CREATE TABLE T_PN9 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_PN9 VALUES (1, -1)",
+        "INSERT INTO T_PN9 VALUES (2, 0)",
+        "INSERT INTO T_PN9 VALUES (3, 4)"
+      ],
+      "query": "SELECT id FROM T_PN9 WHERE 5 = 5 AND val > 0 ORDER BY id"
+    },
+    {
+      "name": "where_literal_lt_tautology",
+      "schema_template": "CREATE TABLE T_PN10 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_PN10 VALUES (1, -1)",
+        "INSERT INTO T_PN10 VALUES (2, 0)",
+        "INSERT INTO T_PN10 VALUES (3, 4)"
+      ],
+      "query": "SELECT id FROM T_PN10 WHERE 5 < 10 AND val > 0 ORDER BY id"
+    },
+    {
+      "name": "where_additive_identity",
+      "schema_template": "CREATE TABLE T_PN11 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_PN11 VALUES (1, 3)",
+        "INSERT INTO T_PN11 VALUES (2, 7)",
+        "INSERT INTO T_PN11 VALUES (3, 9)"
+      ],
+      "query": "SELECT id FROM T_PN11 WHERE val + 0 > 5 ORDER BY id"
+    },
+    {
+      "name": "where_multiplicative_identity",
+      "schema_template": "CREATE TABLE T_PN12 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_PN12 VALUES (1, 3)",
+        "INSERT INTO T_PN12 VALUES (2, 7)",
+        "INSERT INTO T_PN12 VALUES (3, 9)"
+      ],
+      "query": "SELECT id FROM T_PN12 WHERE val * 1 > 5 ORDER BY id"
+    },
+    {
+      "name": "where_additive_identity_commuted",
+      "schema_template": "CREATE TABLE T_PN13 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_PN13 VALUES (1, 3)",
+        "INSERT INTO T_PN13 VALUES (2, 7)",
+        "INSERT INTO T_PN13 VALUES (3, 9)"
+      ],
+      "query": "SELECT id FROM T_PN13 WHERE 0 + val > 5 ORDER BY id"
+    },
+    {
+      "name": "where_between_single_value_5",
+      "schema_template": "CREATE TABLE T_PN14 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_PN14 VALUES (1, 3)",
+        "INSERT INTO T_PN14 VALUES (2, 5)",
+        "INSERT INTO T_PN14 VALUES (3, 9)"
+      ],
+      "query": "SELECT id FROM T_PN14 WHERE val BETWEEN 5 AND 5 ORDER BY id"
+    },
+    {
+      "name": "scn_compeq_id_gt",
+      "schema_template": "CREATE TABLE T_SCN1 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+      "setup_sqls": [
+        "INSERT INTO T_SCN1 VALUES ('us', 3, 30)",
+        "INSERT INTO T_SCN1 VALUES ('us', 6, 60)",
+        "INSERT INTO T_SCN1 VALUES ('us', 9, 90)",
+        "INSERT INTO T_SCN1 VALUES ('eu', 7, 70)"
+      ],
+      "query": "SELECT id, val FROM T_SCN1 WHERE region = 'us' AND id > 5 ORDER BY region, id"
+    },
+    {
+      "name": "scn_compeq_id_lt",
+      "schema_template": "CREATE TABLE T_SCN2 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+      "setup_sqls": [
+        "INSERT INTO T_SCN2 VALUES ('us', 10, 100)",
+        "INSERT INTO T_SCN2 VALUES ('us', 40, 400)",
+        "INSERT INTO T_SCN2 VALUES ('us', 80, 800)",
+        "INSERT INTO T_SCN2 VALUES ('eu', 20, 999)"
+      ],
+      "query": "SELECT id, val FROM T_SCN2 WHERE region = 'us' AND id < 50 ORDER BY region, id"
+    },
+    {
+      "name": "scn_compeq_id_between",
+      "schema_template": "CREATE TABLE T_SCN3 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+      "setup_sqls": [
+        "INSERT INTO T_SCN3 VALUES ('us', 1, 10)",
+        "INSERT INTO T_SCN3 VALUES ('us', 5, 50)",
+        "INSERT INTO T_SCN3 VALUES ('us', 10, 100)",
+        "INSERT INTO T_SCN3 VALUES ('us', 15, 150)",
+        "INSERT INTO T_SCN3 VALUES ('eu', 5, 999)"
+      ],
+      "query": "SELECT id, val FROM T_SCN3 WHERE region = 'us' AND id BETWEEN 1 AND 10 ORDER BY region, id"
+    },
+    {
+      "name": "scn_compeq_id_desc",
+      "schema_template": "CREATE TABLE T_SCN4 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+      "setup_sqls": [
+        "INSERT INTO T_SCN4 VALUES ('us', 1, 10)",
+        "INSERT INTO T_SCN4 VALUES ('us', 2, 20)",
+        "INSERT INTO T_SCN4 VALUES ('us', 3, 30)",
+        "INSERT INTO T_SCN4 VALUES ('eu', 9, 999)"
+      ],
+      "query": "SELECT id, val FROM T_SCN4 WHERE region = 'us' ORDER BY region DESC, id DESC"
+    },
+    {
+      "name": "scn_compeq3_two_eq",
+      "schema_template": "CREATE TABLE T_SCN5 (a BIGINT, b BIGINT, c BIGINT, v BIGINT, PRIMARY KEY (a, b, c))",
+      "setup_sqls": [
+        "INSERT INTO T_SCN5 VALUES (1, 2, 100, 11)",
+        "INSERT INTO T_SCN5 VALUES (1, 2, 200, 22)",
+        "INSERT INTO T_SCN5 VALUES (1, 3, 100, 33)",
+        "INSERT INTO T_SCN5 VALUES (2, 2, 100, 44)"
+      ],
+      "query": "SELECT a, b, c, v FROM T_SCN5 WHERE a = 1 AND b = 2 ORDER BY a, b, c"
+    },
+    {
+      "name": "scn_compeq3_all_eq_payload",
+      "schema_template": "CREATE TABLE T_SCN6 (a BIGINT, b BIGINT, c BIGINT, payload STRING, PRIMARY KEY (a, b, c))",
+      "setup_sqls": [
+        "INSERT INTO T_SCN6 VALUES (1, 2, 3, 'alpha')",
+        "INSERT INTO T_SCN6 VALUES (1, 2, 4, 'beta')",
+        "INSERT INTO T_SCN6 VALUES (2, 2, 3, 'gamma')"
+      ],
+      "query": "SELECT payload FROM T_SCN6 WHERE a = 1 AND b = 2 AND c = 3"
+    },
+    {
+      "name": "scn_idxonly_forward",
+      "schema_template": "CREATE TABLE T_SCN7 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_scn7_v ON T_SCN7 (v)",
+      "setup_sqls": [
+        "INSERT INTO T_SCN7 VALUES (1, 300), (2, 100), (3, 200), (4, 50)"
+      ],
+      "query": "SELECT v FROM T_SCN7 ORDER BY v"
+    },
+    {
+      "name": "scn_idxonly_reverse",
+      "schema_template": "CREATE TABLE T_SCN8 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_scn8_v ON T_SCN8 (v)",
+      "setup_sqls": [
+        "INSERT INTO T_SCN8 VALUES (1, 300), (2, 100), (3, 200), (4, 50)"
+      ],
+      "query": "SELECT v FROM T_SCN8 ORDER BY v DESC"
+    },
+    {
+      "name": "scn_compidx_range_leading",
+      "schema_template": "CREATE TABLE T_SCN9 (id BIGINT, v BIGINT, payload BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_scn9_vp ON T_SCN9 (v, payload)",
+      "setup_sqls": [
+        "INSERT INTO T_SCN9 VALUES (1, 50, 1)",
+        "INSERT INTO T_SCN9 VALUES (2, 100, 2)",
+        "INSERT INTO T_SCN9 VALUES (3, 500, 3)",
+        "INSERT INTO T_SCN9 VALUES (4, 999, 4)",
+        "INSERT INTO T_SCN9 VALUES (5, 1500, 5)"
+      ],
+      "query": "SELECT id, v, payload FROM T_SCN9 WHERE v >= 100 AND v < 1000 ORDER BY id"
+    },
+    {
+      "name": "scn_full_table_filter",
+      "schema_template": "CREATE TABLE T_SCN10 (id BIGINT, indexed_col BIGINT, unindexed_col BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_scn10_ic ON T_SCN10 (indexed_col)",
+      "setup_sqls": [
+        "INSERT INTO T_SCN10 VALUES (1, 10, 100)",
+        "INSERT INTO T_SCN10 VALUES (2, 20, 200)",
+        "INSERT INTO T_SCN10 VALUES (3, 30, 100)",
+        "INSERT INTO T_SCN10 VALUES (4, 40, 200)"
+      ],
+      "query": "SELECT id, indexed_col, unindexed_col FROM T_SCN10 WHERE unindexed_col = 200 ORDER BY id"
+    },
+    {
+      "name": "scn_pk_range_empty",
+      "schema_template": "CREATE TABLE T_SCN11 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SCN11 VALUES (1, 10), (50, 500), (100, 1000), (200, 2000)"
+      ],
+      "query": "SELECT id, val FROM T_SCN11 WHERE id > 100 AND id < 50 ORDER BY id"
+    },
+    {
+      "name": "scn_compidx_covering_range",
+      "schema_template": "CREATE TABLE T_SCN12 (id BIGINT, v BIGINT, w BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_scn12_vw ON T_SCN12 (v, w)",
+      "setup_sqls": [
+        "INSERT INTO T_SCN12 VALUES (1, 10, 100)",
+        "INSERT INTO T_SCN12 VALUES (2, 20, 200)",
+        "INSERT INTO T_SCN12 VALUES (3, 30, 300)",
+        "INSERT INTO T_SCN12 VALUES (4, 40, 400)"
+      ],
+      "query": "SELECT v, w FROM T_SCN12 WHERE v >= 20 AND v <= 30 ORDER BY v"
+    },
+    {
+      "name": "scn_compeq_id_ge_le",
+      "schema_template": "CREATE TABLE T_SCN13 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+      "setup_sqls": [
+        "INSERT INTO T_SCN13 VALUES ('us', 1, 10)",
+        "INSERT INTO T_SCN13 VALUES ('us', 5, 50)",
+        "INSERT INTO T_SCN13 VALUES ('us', 10, 100)",
+        "INSERT INTO T_SCN13 VALUES ('us', 20, 200)",
+        "INSERT INTO T_SCN13 VALUES ('eu', 5, 999)"
+      ],
+      "query": "SELECT id, val FROM T_SCN13 WHERE region = 'us' AND id >= 5 AND id <= 15 ORDER BY region, id"
+    },
+    {
+      "name": "scn_compeq_payload_only",
+      "schema_template": "CREATE TABLE T_SCN14 (region STRING, id BIGINT, payload STRING, PRIMARY KEY (region, id))",
+      "setup_sqls": [
+        "INSERT INTO T_SCN14 VALUES ('us', 1, 'a')",
+        "INSERT INTO T_SCN14 VALUES ('us', 2, 'b')",
+        "INSERT INTO T_SCN14 VALUES ('us', 3, 'c')",
+        "INSERT INTO T_SCN14 VALUES ('eu', 1, 'z')"
+      ],
+      "query": "SELECT payload FROM T_SCN14 WHERE region = 'us' ORDER BY region, id"
+    },
+    {
+      "name": "sv_two_tables_two_indexes_use_one",
+      "schema_template": "CREATE TABLE T_SV1A (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_SV1B (id BIGINT, w BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_sv1a_v ON T_SV1A (v) CREATE INDEX idx_sv1b_w ON T_SV1B (w)",
+      "setup_sqls": [
+        "INSERT INTO T_SV1A VALUES (1, 100), (2, 200), (3, 300)",
+        "INSERT INTO T_SV1B VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT id, v FROM T_SV1A WHERE v = 200 ORDER BY id"
+    },
+    {
+      "name": "sv_three_table_chain_grandchild_select",
+      "schema_template": "CREATE TABLE T_SV2P (id BIGINT, name STRING, PRIMARY KEY (id)) CREATE TABLE T_SV2C (id BIGINT, parent BIGINT, label STRING, PRIMARY KEY (id)) CREATE TABLE T_SV2G (id BIGINT, child BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SV2P VALUES (1, 'p1'), (2, 'p2')",
+        "INSERT INTO T_SV2C VALUES (10, 1, 'c10'), (11, 1, 'c11'), (12, 2, 'c12')",
+        "INSERT INTO T_SV2G VALUES (100, 10, 1000), (101, 10, 1001), (102, 12, 1002)"
+      ],
+      "query": "SELECT id, child, val FROM T_SV2G ORDER BY id"
+    },
+    {
+      "name": "sv_three_table_chain_join_two",
+      "schema_template": "CREATE TABLE T_SV3P (id BIGINT, name STRING, PRIMARY KEY (id)) CREATE TABLE T_SV3C (id BIGINT, parent BIGINT, label STRING, PRIMARY KEY (id)) CREATE TABLE T_SV3G (id BIGINT, child BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SV3P VALUES (1, 'p1'), (2, 'p2')",
+        "INSERT INTO T_SV3C VALUES (10, 1, 'c10'), (11, 2, 'c11')",
+        "INSERT INTO T_SV3G VALUES (100, 10, 1000)"
+      ],
+      "query": "SELECT p.id, c.label FROM T_SV3P p, T_SV3C c WHERE p.id = c.parent ORDER BY c.id"
+    },
+    {
+      "name": "sv_composite_pk_with_index_on_non_pk",
+      "schema_template": "CREATE TABLE T_SV4 (a BIGINT, b BIGINT, v BIGINT, PRIMARY KEY (a, b)) CREATE INDEX idx_sv4_v ON T_SV4 (v)",
+      "setup_sqls": [
+        "INSERT INTO T_SV4 VALUES (1, 1, 100), (1, 2, 200), (2, 1, 300)"
+      ],
+      "query": "SELECT a, b, v FROM T_SV4 WHERE v = 200 ORDER BY v"
+    },
+    {
+      "name": "sv_three_component_pk_roundtrip",
+      "schema_template": "CREATE TABLE T_SV5 (a BIGINT, b BIGINT, c BIGINT, payload STRING, PRIMARY KEY (a, b, c))",
+      "setup_sqls": [
+        "INSERT INTO T_SV5 VALUES (1, 10, 100, 'aaa')",
+        "INSERT INTO T_SV5 VALUES (1, 10, 200, 'aab')",
+        "INSERT INTO T_SV5 VALUES (1, 20, 100, 'aba')",
+        "INSERT INTO T_SV5 VALUES (2, 10, 100, 'baa')"
+      ],
+      "query": "SELECT a, b, c, payload FROM T_SV5 ORDER BY a, b, c"
+    },
+    {
+      "name": "sv_seven_types_roundtrip",
+      "schema_template": "CREATE TABLE T_SV7 (id BIGINT, i32 INTEGER, d DOUBLE, b BOOLEAN, s STRING, payload BYTES, u UUID, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SV7 VALUES (1, CAST(42 AS INTEGER), 1.5, TRUE, 'alpha', X'6869', CAST('11111111-1111-1111-1111-111111111111' AS UUID))",
+        "INSERT INTO T_SV7 VALUES (2, CAST(-7 AS INTEGER), -2.25, FALSE, 'beta', X'', CAST('22222222-2222-2222-2222-222222222222' AS UUID))"
+      ],
+      "query": "SELECT id, i32, d, b, s, payload, u FROM T_SV7 ORDER BY id"
+    },
+    {
+      "name": "sv_string_index_prefix_like",
+      "schema_template": "CREATE TABLE T_SV8 (id BIGINT, name STRING, PRIMARY KEY (id)) CREATE INDEX idx_sv8_name ON T_SV8 (name)",
+      "setup_sqls": [
+        "INSERT INTO T_SV8 VALUES (1, 'apple'), (2, 'apricot'), (3, 'banana'), (4, 'avocado')"
+      ],
+      "query": "SELECT id, name FROM T_SV8 WHERE name LIKE 'ap%' ORDER BY name"
+    },
+    {
+      "name": "sv_single_column_pk_only",
+      "schema_template": "CREATE TABLE T_SV9 (id BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SV9 VALUES (1), (2), (3)"
+      ],
+      "query": "SELECT id FROM T_SV9 ORDER BY id"
+    },
+    {
+      "name": "sv_same_column_names_join_third_col",
+      "schema_template": "CREATE TABLE T_SV10A (id BIGINT, val BIGINT, link BIGINT, PRIMARY KEY (id)) CREATE TABLE T_SV10B (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SV10A VALUES (1, 10, 100), (2, 20, 200)",
+        "INSERT INTO T_SV10B VALUES (100, 1000), (200, 2000)"
+      ],
+      "query": "SELECT a.id, a.val, b.val FROM T_SV10A a, T_SV10B b WHERE a.link = b.id ORDER BY a.id"
+    },
+    {
+      "name": "sv_composite_index_full_eq",
+      "schema_template": "CREATE TABLE T_SV11 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_sv11_ab ON T_SV11 (a, b)",
+      "setup_sqls": [
+        "INSERT INTO T_SV11 VALUES (1, 1, 10), (2, 1, 20), (3, 2, 10), (4, 2, 20)"
+      ],
+      "query": "SELECT id, a, b FROM T_SV11 WHERE a = 1 AND b = 20 ORDER BY id"
+    },
+    {
+      "name": "sv_composite_index_leading_only",
+      "schema_template": "CREATE TABLE T_SV12 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_sv12_ab ON T_SV12 (a, b)",
+      "setup_sqls": [
+        "INSERT INTO T_SV12 VALUES (1, 1, 10), (2, 1, 20), (3, 2, 10), (4, 2, 20)"
+      ],
+      "query": "SELECT id, a, b FROM T_SV12 WHERE a = 1 ORDER BY id"
+    },
+    {
+      "name": "pe_update_empty_table",
+      "schema_template": "CREATE TABLE T_PE1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "UPDATE T_PE1 SET val = 99 WHERE id = 1"
+      ],
+      "query": "SELECT count(*) FROM T_PE1"
+    },
+    {
+      "name": "pe_delete_empty_table",
+      "schema_template": "CREATE TABLE T_PE2 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "DELETE FROM T_PE2 WHERE id = 1"
+      ],
+      "query": "SELECT count(*) FROM T_PE2"
+    },
+    {
+      "name": "pe_delete_no_match_inequality",
+      "schema_template": "CREATE TABLE T_PE3 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_PE3 VALUES (1, 10), (2, 20), (3, 30)",
+        "DELETE FROM T_PE3 WHERE val < 0"
+      ],
+      "query": "SELECT id, val FROM T_PE3 ORDER BY id"
+    },
+    {
+      "name": "pe_insert_delete_all_insert_again",
+      "schema_template": "CREATE TABLE T_PE4 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_PE4 VALUES (1, 10), (2, 20)",
+        "DELETE FROM T_PE4 WHERE id > 0",
+        "INSERT INTO T_PE4 VALUES (3, 30), (4, 40)"
+      ],
+      "query": "SELECT id, val FROM T_PE4 ORDER BY id"
+    },
+    {
+      "name": "pe_insert_delete_some_count",
+      "schema_template": "CREATE TABLE T_PE5 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_PE5 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+        "DELETE FROM T_PE5 WHERE val > 25"
+      ],
+      "query": "SELECT count(*) FROM T_PE5"
+    },
+    {
+      "name": "pe_update_some_count_unchanged",
+      "schema_template": "CREATE TABLE T_PE6 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_PE6 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+        "UPDATE T_PE6 SET val = 999 WHERE val > 25"
+      ],
+      "query": "SELECT count(*) FROM T_PE6"
+    },
+    {
+      "name": "pe_update_nonkey_predicate_verify",
+      "schema_template": "CREATE TABLE T_PE7 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_PE7 VALUES (1, 10), (2, 20), (3, 30)",
+        "UPDATE T_PE7 SET val = 0 WHERE val = 20"
+      ],
+      "query": "SELECT id, val FROM T_PE7 ORDER BY id"
+    },
+    {
+      "name": "pe_select_empty_tautology",
+      "schema_template": "CREATE TABLE T_PE8 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": null,
+      "query": "SELECT id, val FROM T_PE8 WHERE 1 = 1 ORDER BY id"
+    },
+    {
+      "name": "pe_bulk_insert_bulk_delete",
+      "schema_template": "CREATE TABLE T_PE9 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_PE9 VALUES (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8)",
+        "DELETE FROM T_PE9 WHERE val < 7"
+      ],
+      "query": "SELECT id, val FROM T_PE9 ORDER BY id"
+    }
+  ]
+}

@@ -1,0 +1,1305 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "name": "scalar_subq_between_two_subqueries",
+      "schema_template": "CREATE TABLE T_SS_11 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS_11 VALUES (1, 10), (2, 20), (3, 30), (4, 40)"
+      ],
+      "query": "SELECT id FROM T_SS_11 WHERE v BETWEEN (SELECT MIN(v) FROM T_SS_11) AND (SELECT MAX(v) FROM T_SS_11) ORDER BY id",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "Two scalar subqueries inside BETWEEN — Java rejects. Go pre-evaluates both bounds and matches all four rows (every v is between MIN and MAX).",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 1
+            }
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 2
+            }
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 3
+            }
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 4
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "scalar_subq_two_subqueries_in_arith",
+      "schema_template": "CREATE TABLE T_SS_12 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS_12 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT (SELECT MAX(v) FROM T_SS_12) - (SELECT MIN(v) FROM T_SS_12) FROM T_SS_12 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "Two scalar subqueries in arithmetic — Java rejects. Both subqueries pre-evaluate and cache independently; result is MAX - MIN = 30 - 10 = 20.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 20
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "scalar_subq_in_having",
+      "schema_template": "CREATE TABLE T_SS_13 (id BIGINT, g STRING, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS_13 VALUES (1, 'a', 10), (2, 'a', 20), (3, 'b', 30), (4, 'b', 40)"
+      ],
+      "query": "SELECT g, SUM(v) FROM T_SS_13 GROUP BY g HAVING SUM(v) > (SELECT MAX(v) / 2 FROM T_SS_13) ORDER BY g",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "Scalar subquery in HAVING — Java rejects. Go threshold = MAX(v)/2 = 20; both groups (a:30, b:70) qualify.",
+        "go_expected_rows": [
+          [
+            "a",
+            {
+              "type": "float64",
+              "value": 30
+            }
+          ],
+          [
+            "b",
+            {
+              "type": "float64",
+              "value": 70
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "scalar_subq_is_null_predicate",
+      "schema_template": "CREATE TABLE T_SS_15 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS_15 VALUES (1, 10), (2, NULL)"
+      ],
+      "query": "SELECT id FROM T_SS_15 WHERE id = 2 AND (SELECT v FROM T_SS_15 WHERE id = 2) IS NULL",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "Scalar subquery in IS NULL — Java rejects. Inner returns NULL on the matched row; predicate is TRUE; Go returns id=2.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 2
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "scalar_subq_threshold_from_other_table",
+      "schema_template": "CREATE TABLE T_SS_16A (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_SS_16B (k STRING, n BIGINT, PRIMARY KEY (k))",
+      "setup_sqls": [
+        "INSERT INTO T_SS_16A VALUES (1, 10), (2, 20)",
+        "INSERT INTO T_SS_16B VALUES ('limit', 15)"
+      ],
+      "query": "SELECT id FROM T_SS_16A WHERE v > (SELECT n FROM T_SS_16B WHERE k = 'limit') ORDER BY id",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "Scalar subquery from a different table — Java rejects. Go's config-table threshold filters the data table; only id=2 (v=20 > 15) matches.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 2
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "scalar_subq_nested_with_derived_table",
+      "schema_template": "CREATE TABLE T_SS_19 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS_19 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT (SELECT MAX(x) FROM (SELECT v AS x FROM T_SS_19) AS s) FROM T_SS_19 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "Nested scalar subquery over a derived table — Java rejects. Go returns MAX(x)=30 from the inner derived table.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 30
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "scalar_subq_against_cte",
+      "schema_template": "CREATE TABLE T_SS_20 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS_20 VALUES (1, 10), (2, 20), (3, 30), (4, 40)"
+      ],
+      "query": "WITH high AS (SELECT v FROM T_SS_20 WHERE v > 25) SELECT id, (SELECT MIN(v) FROM high) FROM T_SS_20 WHERE id = 1",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "Scalar subquery against a CTE — Java rejects. Go pulls MIN(v)=30 from the high CTE (rows v>25 are 30 and 40).",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 1
+            },
+            {
+              "type": "float64",
+              "value": 30
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "scalar_subq_after_update_with_subq_rhs",
+      "schema_template": "CREATE TABLE T_SS_21A (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_SS_21B (k STRING, n BIGINT, PRIMARY KEY (k))",
+      "setup_sqls": [
+        "INSERT INTO T_SS_21A VALUES (1, 10), (2, 20), (3, 30)",
+        "INSERT INTO T_SS_21B VALUES ('mul', 100)",
+        "UPDATE T_SS_21A SET v = (SELECT n FROM T_SS_21B WHERE k = 'mul')"
+      ],
+      "query": "SELECT id, v FROM T_SS_21A ORDER BY id",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "UPDATE SET RHS = scalar subquery — Java rejects the UPDATE at parse time (Go-only). Go applies the broadcast: every row's v becomes 100.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 1
+            },
+            {
+              "type": "float64",
+              "value": 100
+            }
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 2
+            },
+            {
+              "type": "float64",
+              "value": 100
+            }
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 3
+            },
+            {
+              "type": "float64",
+              "value": 100
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "scalar_subq_after_delete_with_subq_threshold",
+      "schema_template": "CREATE TABLE T_SS_22A (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_SS_22B (k STRING, n BIGINT, PRIMARY KEY (k))",
+      "setup_sqls": [
+        "INSERT INTO T_SS_22A VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+        "INSERT INTO T_SS_22B VALUES ('thr', 25)",
+        "DELETE FROM T_SS_22A WHERE v > (SELECT n FROM T_SS_22B WHERE k = 'thr')"
+      ],
+      "query": "SELECT id, v FROM T_SS_22A ORDER BY id",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "DELETE WHERE RHS = scalar subquery — Java rejects the DELETE at parse time (Go-only). Go deletes rows above threshold=25; survivors are (1,10) and (2,20).",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 1
+            },
+            {
+              "type": "float64",
+              "value": 10
+            }
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 2
+            },
+            {
+              "type": "float64",
+              "value": 20
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "scalar_subq_null_inner_propagates_in_arith",
+      "schema_template": "CREATE TABLE T_SS_23 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS_23 VALUES (1, 10), (2, NULL)"
+      ],
+      "query": "SELECT id, v + (SELECT v FROM T_SS_23 WHERE id = 2) FROM T_SS_23 ORDER BY id",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "Scalar subquery returning NULL in arithmetic — Java rejects. Go's three-valued arithmetic propagates NULL: every outer row's v + NULL is NULL.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 1
+            },
+            null
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 2
+            },
+            null
+          ]
+        ]
+      }
+    },
+    {
+      "name": "scalar_subq_with_count_star",
+      "schema_template": "CREATE TABLE T_SS_24 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS_24 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT id, (SELECT COUNT(*) FROM T_SS_24) FROM T_SS_24 ORDER BY id",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "Scalar subquery wrapping COUNT(*) — Java rejects. Go broadcasts the row count (3) to every outer row.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 1
+            },
+            {
+              "type": "float64",
+              "value": 3
+            }
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 2
+            },
+            {
+              "type": "float64",
+              "value": 3
+            }
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 3
+            },
+            {
+              "type": "float64",
+              "value": 3
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "scalar_subq_in_or_predicate",
+      "schema_template": "CREATE TABLE T_SS_25 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS_25 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT id FROM T_SS_25 WHERE v = (SELECT MIN(v) FROM T_SS_25) OR v = (SELECT MAX(v) FROM T_SS_25) ORDER BY id",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "Scalar subqueries in both arms of OR — Java rejects. Go pre-evaluates both; rows matching MIN (id=1) or MAX (id=3) qualify.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 1
+            }
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 3
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "scalar_subq_with_secondary_index_max",
+      "schema_template": "CREATE TABLE T_SS_26 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_v_ss_26 ON T_SS_26 (v)",
+      "setup_sqls": [
+        "INSERT INTO T_SS_26 VALUES (1, 30), (2, 10), (3, 20)"
+      ],
+      "query": "SELECT id FROM T_SS_26 WHERE v = (SELECT MAX(v) FROM T_SS_26)",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "Scalar subquery resolved through a secondary index — Java rejects. Go's index suffix satisfies MAX(v)=30; outer WHERE finds id=1.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 1
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "scalar_subq_count_zero_filter_in_arith",
+      "schema_template": "CREATE TABLE T_SS_27 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS_27 VALUES (1, 10), (2, 20)"
+      ],
+      "query": "SELECT id + (SELECT COUNT(*) FROM T_SS_27 WHERE id = 999) FROM T_SS_27 ORDER BY id",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "COUNT(*) over a zero-row filter inside scalar subquery — Java rejects. Go returns 0 (not NULL) so id + 0 = id.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 1
+            }
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 2
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "scalar_subq_in_inequality",
+      "schema_template": "CREATE TABLE T_SS_28 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SS_28 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT id FROM T_SS_28 WHERE v <> (SELECT MIN(v) FROM T_SS_28) ORDER BY id",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "Scalar subquery as <> RHS — Java rejects. Go excludes rows whose v equals MIN(v)=10; survivors are id=2 and id=3.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 2
+            }
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 3
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "null_3vl_ne_excludes_null_operand",
+      "schema_template": "CREATE TABLE T_NL_01 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_NL_01 VALUES (1, 5, 5), (2, 5, 10), (3, NULL, 5), (4, NULL, NULL)"
+      ],
+      "query": "SELECT id FROM T_NL_01 WHERE a <> b ORDER BY id"
+    },
+    {
+      "name": "null_3vl_ne_literal_excludes_null_row",
+      "schema_template": "CREATE TABLE T_NL_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_NL_02 VALUES (1, 10), (2, NULL), (3, 20)"
+      ],
+      "query": "SELECT id FROM T_NL_02 WHERE v <> 10 ORDER BY id"
+    },
+    {
+      "name": "null_in_join_on_eq_excludes_null_keys",
+      "schema_template": "CREATE TABLE T_NL_03_A (id BIGINT, k BIGINT, PRIMARY KEY (id)) CREATE TABLE T_NL_03_B (id BIGINT, k BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_NL_03_A VALUES (1, 10), (2, NULL), (3, 30)",
+        "INSERT INTO T_NL_03_B VALUES (10, 10), (11, NULL), (12, 30)"
+      ],
+      "query": "SELECT a.id, b.id FROM T_NL_03_A a, T_NL_03_B b WHERE a.k = b.k ORDER BY a.id, b.id",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "Java Cascades planner throws UnableToPlanException for comma-join on a non-PK column; Go correctly plans the nested-loop join and applies SQL-3VL NULL-key non-match.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 1
+            },
+            {
+              "type": "float64",
+              "value": 10
+            }
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 3
+            },
+            {
+              "type": "float64",
+              "value": 12
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "null_in_coalesce_all_null_returns_null",
+      "schema_template": "CREATE TABLE T_NL_04 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_NL_04 VALUES (1, 10, NULL), (2, NULL, 20), (3, NULL, NULL)"
+      ],
+      "query": "SELECT id, COALESCE(a, b) FROM T_NL_04 ORDER BY id"
+    },
+    {
+      "name": "null_3vl_case_searched_is_null_branch",
+      "schema_template": "CREATE TABLE T_NL_05 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_NL_05 VALUES (1, 5), (2, NULL), (3, 10)"
+      ],
+      "query": "SELECT id, CASE WHEN v IS NULL THEN -1 WHEN v = 5 THEN 100 ELSE v END FROM T_NL_05 ORDER BY id"
+    },
+    {
+      "name": "null_3vl_sub_minus_typed_null",
+      "schema_template": "CREATE TABLE T_NL_06 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_NL_06 VALUES (1, 10), (2, NULL)"
+      ],
+      "query": "SELECT id, v - CAST(NULL AS BIGINT) FROM T_NL_06 ORDER BY id"
+    },
+    {
+      "name": "null_3vl_mul_zero_times_null",
+      "schema_template": "CREATE TABLE T_NL_07 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_NL_07 VALUES (1, NULL), (2, 5)"
+      ],
+      "query": "SELECT id, 0 * v FROM T_NL_07 ORDER BY id"
+    },
+    {
+      "name": "null_3vl_div_null_by_zero_returns_null",
+      "schema_template": "CREATE TABLE T_NL_08 (id BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_NL_08 VALUES (1)"
+      ],
+      "query": "SELECT CAST(NULL AS BIGINT) / 0 FROM T_NL_08"
+    },
+    {
+      "name": "null_3vl_is_not_null_on_arithmetic",
+      "schema_template": "CREATE TABLE T_NL_09 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_NL_09 VALUES (1, 10), (2, NULL)"
+      ],
+      "query": "SELECT id FROM T_NL_09 WHERE (v + 1) IS NOT NULL ORDER BY id"
+    },
+    {
+      "name": "null_in_max_min_avg_all_null",
+      "schema_template": "CREATE TABLE T_NL_10 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_NL_10 VALUES (1, NULL), (2, NULL)"
+      ],
+      "query": "SELECT MAX(v), MIN(v), AVG(v) FROM T_NL_10"
+    },
+    {
+      "name": "null_in_count_col_excludes_count_star_includes",
+      "schema_template": "CREATE TABLE T_NL_11 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_NL_11 VALUES (1, NULL), (2, NULL), (3, NULL)"
+      ],
+      "query": "SELECT COUNT(v), COUNT(*) FROM T_NL_11"
+    },
+    {
+      "name": "null_3vl_not_in_excludes_null_row",
+      "schema_template": "CREATE TABLE T_NL_12 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_NL_12 VALUES (1, 10), (2, NULL), (3, 30)"
+      ],
+      "query": "SELECT id FROM T_NL_12 WHERE v NOT IN (10) ORDER BY id"
+    },
+    {
+      "name": "null_in_union_all_null_row_participates",
+      "schema_template": "CREATE TABLE T_NL_13 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_NL_13 VALUES (1, NULL), (2, 10)"
+      ],
+      "query": "SELECT v FROM T_NL_13 WHERE id = 1 UNION ALL SELECT v FROM T_NL_13 WHERE id = 2 ORDER BY v",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "Java Cascades planner throws UnableToPlanException for UNION-ALL with outer ORDER BY on a non-PK column; Go correctly plans and emits NULLS-FIRST default ASC ordering.",
+        "go_expected_rows": [
+          [
+            null
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 10
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "null_in_case_then_bare_null_with_string_else",
+      "schema_template": "CREATE TABLE T_NL_16 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_NL_16 VALUES (1, 5), (2, 100)"
+      ],
+      "query": "SELECT id, CASE WHEN v < 10 THEN 'small' ELSE NULL END FROM T_NL_16 ORDER BY id"
+    },
+    {
+      "name": "null_in_between_null_lower_bound",
+      "schema_template": "CREATE TABLE T_NL_17 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_NL_17 VALUES (1, 10), (2, NULL), (3, 30)"
+      ],
+      "query": "SELECT id FROM T_NL_17 WHERE v BETWEEN CAST(NULL AS BIGINT) AND 100 ORDER BY id"
+    },
+    {
+      "name": "is_distinct_from_null_vs_value",
+      "schema_template": "CREATE TABLE T_IDF_01 (id BIGINT, label STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IDF_01 VALUES (1, 'alpha'), (2, 'beta'), (3, NULL), (4, NULL)"
+      ],
+      "query": "SELECT id FROM T_IDF_01 WHERE label IS DISTINCT FROM 'alpha' ORDER BY id"
+    },
+    {
+      "name": "is_not_distinct_from_null_finds_nulls",
+      "schema_template": "CREATE TABLE T_IDF_02 (id BIGINT, label STRING, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IDF_02 VALUES (1, 'alpha'), (2, NULL), (3, NULL)"
+      ],
+      "query": "SELECT id FROM T_IDF_02 WHERE label IS NOT DISTINCT FROM NULL ORDER BY id"
+    },
+    {
+      "name": "is_distinct_from_null_excludes_nulls",
+      "schema_template": "CREATE TABLE T_IDF_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IDF_03 VALUES (1, 10), (2, NULL), (3, 20)"
+      ],
+      "query": "SELECT id FROM T_IDF_03 WHERE v IS DISTINCT FROM NULL ORDER BY id"
+    },
+    {
+      "name": "is_not_distinct_from_same_value",
+      "schema_template": "CREATE TABLE T_IDF_04 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IDF_04 VALUES (1, 10), (2, 20), (3, 10)"
+      ],
+      "query": "SELECT id FROM T_IDF_04 WHERE v IS NOT DISTINCT FROM 10 ORDER BY id"
+    },
+    {
+      "name": "is_distinct_from_constant_null_null",
+      "schema_template": "CREATE TABLE T_IDF_05 (id BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IDF_05 VALUES (1), (2)"
+      ],
+      "query": "SELECT id FROM T_IDF_05 WHERE NULL IS DISTINCT FROM NULL"
+    },
+    {
+      "name": "is_distinct_from_literal_on_left",
+      "schema_template": "CREATE TABLE T_IDF_06 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IDF_06 VALUES (1, 10), (2, NULL), (3, 20)"
+      ],
+      "query": "SELECT id FROM T_IDF_06 WHERE NULL IS DISTINCT FROM v ORDER BY id"
+    },
+    {
+      "name": "is_not_distinct_from_null_both_sides",
+      "schema_template": "CREATE TABLE T_IDF_07 (id BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_IDF_07 VALUES (1), (2)"
+      ],
+      "query": "SELECT id FROM T_IDF_07 WHERE NULL IS NOT DISTINCT FROM NULL ORDER BY id"
+    },
+    {
+      "name": "join_chained_inner_three_tables",
+      "schema_template": "CREATE TABLE T_CJ_EMP (id BIGINT, name STRING, dept_id BIGINT, PRIMARY KEY (id)) CREATE TABLE T_CJ_DEPT (id BIGINT, name STRING, PRIMARY KEY (id)) CREATE TABLE T_CJ_PROJ (id BIGINT, emp_id BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CJ_EMP VALUES (1, 'Alice', 10), (2, 'Bob', 20), (3, 'Carol', 10)",
+        "INSERT INTO T_CJ_DEPT VALUES (10, 'Engineering'), (20, 'Sales')",
+        "INSERT INTO T_CJ_PROJ VALUES (100, 1), (101, 2), (102, 3)"
+      ],
+      "query": "SELECT T_CJ_EMP.name, T_CJ_DEPT.name FROM T_CJ_EMP\n\t\t\t\tINNER JOIN T_CJ_DEPT ON T_CJ_EMP.dept_id = T_CJ_DEPT.id\n\t\t\t\tINNER JOIN T_CJ_PROJ ON T_CJ_PROJ.emp_id = T_CJ_EMP.id\n\t\t\t\tORDER BY T_CJ_EMP.id"
+    },
+    {
+      "name": "join_comma_three_way_where",
+      "schema_template": "CREATE TABLE T_CJ2_A (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_CJ2_B (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) CREATE TABLE T_CJ2_C (id BIGINT, b_id BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CJ2_A VALUES (1, 10), (2, 20)",
+        "INSERT INTO T_CJ2_B VALUES (10, 1), (20, 2)",
+        "INSERT INTO T_CJ2_C VALUES (100, 10), (200, 20)"
+      ],
+      "query": "SELECT T_CJ2_A.v, T_CJ2_C.id FROM T_CJ2_A, T_CJ2_B, T_CJ2_C WHERE T_CJ2_A.id = T_CJ2_B.a_id AND T_CJ2_B.id = T_CJ2_C.b_id ORDER BY T_CJ2_A.id"
+    },
+    {
+      "name": "nested_derived_three_levels",
+      "schema_template": "CREATE TABLE T_ND_01 (id BIGINT, n BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ND_01 VALUES (1, 10), (2, 20), (3, NULL), (4, 40)"
+      ],
+      "query": "SELECT id, n FROM (SELECT id, n FROM (SELECT id, n FROM T_ND_01) AS x WHERE n IS NOT NULL) AS y ORDER BY id"
+    },
+    {
+      "name": "nested_derived_count_over_filter",
+      "schema_template": "CREATE TABLE T_ND_02 (id BIGINT, n BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ND_02 VALUES (1, 10), (2, 20), (3, NULL), (4, 40)"
+      ],
+      "query": "SELECT COUNT(*) FROM (SELECT id FROM (SELECT id, n FROM T_ND_02) AS x WHERE n IS NOT NULL) AS y"
+    },
+    {
+      "name": "nested_derived_col_rename",
+      "schema_template": "CREATE TABLE T_ND_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ND_03 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT y.a FROM (SELECT x.b AS a FROM (SELECT id AS b FROM T_ND_03) AS x WHERE b > 1) AS y ORDER BY y.a"
+    },
+    {
+      "name": "nested_derived_distinct_inner",
+      "schema_template": "CREATE TABLE T_ND_04 (id BIGINT, n BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ND_04 VALUES (1, 10), (2, 20), (3, 20), (4, 30)"
+      ],
+      "query": "SELECT sub.n FROM (SELECT DISTINCT n FROM T_ND_04 WHERE n >= 20) AS sub ORDER BY sub.n",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "Java cannot plan this ordered derived-table shape. Plain SELECT DISTINCT instead returns duplicates (DocClaimsJavaProbe); Go correctly deduplicates.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 20
+            }
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 30
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "mixed_type_eq_string_vs_bigint",
+      "schema_template": "CREATE TABLE T_MT_01 (id BIGINT, n BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MT_01 VALUES (1, 5), (2, 10)"
+      ],
+      "query": "SELECT id FROM T_MT_01 WHERE n = '5'"
+    },
+    {
+      "name": "mixed_type_in_list_string_in_bigint",
+      "schema_template": "CREATE TABLE T_MT_02 (id BIGINT, n BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_MT_02 VALUES (1, 5), (2, 10)"
+      ],
+      "query": "SELECT id FROM T_MT_02 WHERE n IN ('5', 'ten')",
+      "divergence": {
+        "direction": "BothErrorMessagesDrift",
+        "reason": "Both engines reject a STRING IN list against a BIGINT probe with 22000, the IN's promotion of its probe (Java INCOMPATIBLE_TYPE).",
+        "go_expected_rows": null,
+        "go_error_contains": "cannot be promoted to the type of the variable"
+      }
+    },
+    {
+      "name": "self_join_parent_child",
+      "schema_template": "CREATE TABLE T_SJ_01 (id BIGINT, parent BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SJ_01 VALUES (1, 0, 10), (2, 1, 20), (3, 1, 30), (4, 2, 40)"
+      ],
+      "query": "SELECT c.id, p.v FROM T_SJ_01 AS c INNER JOIN T_SJ_01 AS p ON c.parent = p.id ORDER BY c.id"
+    },
+    {
+      "name": "self_join_non_equi_less_than",
+      "schema_template": "CREATE TABLE T_SJ_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SJ_02 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT x.id, y.id FROM T_SJ_02 AS x JOIN T_SJ_02 AS y ON x.v < y.v ORDER BY x.id, y.id",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "Java Cascades planner can't plan non-equi JOIN (< predicate on ON clause); Go's nested-loop join handles it correctly.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 1
+            },
+            {
+              "type": "float64",
+              "value": 2
+            }
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 1
+            },
+            {
+              "type": "float64",
+              "value": 3
+            }
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 2
+            },
+            {
+              "type": "float64",
+              "value": 3
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "corr_exists_basic",
+      "schema_template": "CREATE TABLE T_CS_01 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_CS_02 (id BIGINT, fk BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CS_01 VALUES (1, 10), (2, 20), (3, 30)",
+        "INSERT INTO T_CS_02 VALUES (100, 1), (101, 3)"
+      ],
+      "query": "SELECT id FROM T_CS_01 WHERE EXISTS (SELECT 1 FROM T_CS_02 WHERE fk = T_CS_01.id) ORDER BY id"
+    },
+    {
+      "name": "corr_exists_with_inner_filter",
+      "schema_template": "CREATE TABLE T_CS_03 (id BIGINT, gid BIGINT, PRIMARY KEY (id)) CREATE TABLE T_CS_04 (id BIGINT, gid BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CS_03 VALUES (1, 10), (2, 20), (3, 30)",
+        "INSERT INTO T_CS_04 VALUES (100, 10, 5), (101, 20, 50), (102, 30, 200)"
+      ],
+      "query": "SELECT id FROM T_CS_03 a WHERE EXISTS (SELECT 1 FROM T_CS_04 b WHERE b.gid = a.gid AND b.val > 40) ORDER BY id"
+    },
+    {
+      "name": "corr_not_exists_basic",
+      "schema_template": "CREATE TABLE T_CS_05 (id BIGINT, gid BIGINT, PRIMARY KEY (id)) CREATE TABLE T_CS_06 (gid BIGINT, PRIMARY KEY (gid))",
+      "setup_sqls": [
+        "INSERT INTO T_CS_05 VALUES (1, 10), (2, 20), (3, 99)",
+        "INSERT INTO T_CS_06 VALUES (10), (20)"
+      ],
+      "query": "SELECT id FROM T_CS_05 a WHERE NOT EXISTS (SELECT 1 FROM T_CS_06 b WHERE b.gid = a.gid) ORDER BY id"
+    },
+    {
+      "name": "corr_exists_self_ref_alias",
+      "schema_template": "CREATE TABLE T_CS_07 (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CS_07 VALUES (1, 0), (2, 1), (3, 1), (4, 99)"
+      ],
+      "query": "SELECT o.id FROM T_CS_07 AS o WHERE EXISTS (SELECT 1 FROM T_CS_07 AS i WHERE i.id = o.parent) ORDER BY o.id"
+    },
+    {
+      "name": "corr_exists_empty_inner",
+      "schema_template": "CREATE TABLE T_CS_08 (id BIGINT, gid BIGINT, PRIMARY KEY (id)) CREATE TABLE T_CS_09 (gid BIGINT, PRIMARY KEY (gid))",
+      "setup_sqls": [
+        "INSERT INTO T_CS_08 VALUES (1, 10), (2, 20)"
+      ],
+      "query": "SELECT id FROM T_CS_08 a WHERE EXISTS (SELECT 1 FROM T_CS_09 b WHERE b.gid = a.gid) ORDER BY id"
+    },
+    {
+      "name": "uncorr_exists_baseline",
+      "schema_template": "CREATE TABLE T_CS_10 (id BIGINT, PRIMARY KEY (id)) CREATE TABLE T_CS_11 (k BIGINT, PRIMARY KEY (k))",
+      "setup_sqls": [
+        "INSERT INTO T_CS_10 VALUES (1), (2), (3)",
+        "INSERT INTO T_CS_11 VALUES (42)"
+      ],
+      "query": "SELECT id FROM T_CS_10 WHERE EXISTS (SELECT 1 FROM T_CS_11) ORDER BY id"
+    },
+    {
+      "name": "uncorr_not_exists_empty",
+      "schema_template": "CREATE TABLE T_CS_12 (id BIGINT, PRIMARY KEY (id)) CREATE TABLE T_CS_13 (k BIGINT, PRIMARY KEY (k))",
+      "setup_sqls": [
+        "INSERT INTO T_CS_12 VALUES (1), (2)"
+      ],
+      "query": "SELECT id FROM T_CS_12 WHERE NOT EXISTS (SELECT 1 FROM T_CS_13) ORDER BY id"
+    },
+    {
+      "name": "corr_exists_join_outer",
+      "schema_template": "CREATE TABLE T_CS_14 (id BIGINT, gid BIGINT, PRIMARY KEY (id)) CREATE TABLE T_CS_15 (id BIGINT, gid BIGINT, PRIMARY KEY (id)) CREATE TABLE T_CS_16 (gid BIGINT, label STRING, PRIMARY KEY (gid))",
+      "setup_sqls": [
+        "INSERT INTO T_CS_14 VALUES (1, 10), (2, 20)",
+        "INSERT INTO T_CS_15 VALUES (100, 10), (101, 20)",
+        "INSERT INTO T_CS_16 VALUES (10, 'a')"
+      ],
+      "query": "SELECT a.id FROM T_CS_14 a, T_CS_15 b WHERE a.gid = b.gid AND EXISTS (SELECT 1 FROM T_CS_16 c WHERE c.gid = a.gid) ORDER BY a.id"
+    },
+    {
+      "name": "corr_exists_aliased_save_restore",
+      "schema_template": "CREATE TABLE T_CS_17 (id BIGINT, dept BIGINT, PRIMARY KEY (id)) CREATE TABLE T_CS_18 (id BIGINT, dept BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CS_17 VALUES (1, 10), (2, 20), (3, 30)",
+        "INSERT INTO T_CS_18 VALUES (100, 10), (101, 30)"
+      ],
+      "query": "SELECT e.id FROM T_CS_17 AS e WHERE EXISTS (SELECT 1 FROM T_CS_18 AS p WHERE p.dept = e.dept) ORDER BY e.id"
+    },
+    {
+      "name": "corr_not_exists_inner_always_empty",
+      "schema_template": "CREATE TABLE T_CS_19 (id BIGINT, gid BIGINT, PRIMARY KEY (id)) CREATE TABLE T_CS_20 (id BIGINT, gid BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CS_19 VALUES (1, 10), (2, 20)",
+        "INSERT INTO T_CS_20 VALUES (100, 10)"
+      ],
+      "query": "SELECT id FROM T_CS_19 a WHERE NOT EXISTS (SELECT 1 FROM T_CS_20 b WHERE b.gid = a.gid AND b.id = 99999) ORDER BY id"
+    },
+    {
+      "name": "corr_exists_gt_comparison",
+      "schema_template": "CREATE TABLE T_CS_21 (id BIGINT, threshold BIGINT, PRIMARY KEY (id)) CREATE TABLE T_CS_22 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CS_21 VALUES (1, 50), (2, 200), (3, 10)",
+        "INSERT INTO T_CS_22 VALUES (100, 100), (101, 150)"
+      ],
+      "query": "SELECT id FROM T_CS_21 a WHERE EXISTS (SELECT 1 FROM T_CS_22 b WHERE b.val > a.threshold) ORDER BY id"
+    },
+    {
+      "name": "corr_exists_inner_group_by",
+      "schema_template": "CREATE TABLE T_CS_23 (id BIGINT, cat BIGINT, PRIMARY KEY (id)) CREATE TABLE T_CS_24 (id BIGINT, cat BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CS_23 VALUES (1, 10), (2, 20), (3, 30)",
+        "INSERT INTO T_CS_24 VALUES (100, 10, 5), (101, 10, 15), (102, 20, 25)"
+      ],
+      "query": "SELECT id FROM T_CS_23 a WHERE EXISTS (SELECT cat FROM T_CS_24 b WHERE b.cat = a.cat GROUP BY cat) ORDER BY id",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "Java's Cascades planner throws UnableToPlanException on GROUP BY inside a correlated EXISTS subquery; Go handles it correctly.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 1
+            }
+          ],
+          [
+            {
+              "type": "float64",
+              "value": 2
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "having_count_filter",
+      "schema_template": "CREATE TABLE T_CS_25 (id BIGINT, grp BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_CS_25 VALUES (1, 1), (2, 1), (3, 2), (4, 2), (5, 2)"
+      ],
+      "query": "SELECT grp, COUNT(*) FROM T_CS_25 GROUP BY grp HAVING COUNT(*) > 2 ORDER BY grp",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "Java's Cascades planner throws UnableToPlanException on HAVING COUNT(*) > N; Go handles it correctly.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 2
+            },
+            {
+              "type": "float64",
+              "value": 3
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "dml_delete_where_exists",
+      "schema_template": "CREATE TABLE T_DMS_01 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DMS_02 (k BIGINT, PRIMARY KEY (k))",
+      "setup_sqls": [
+        "INSERT INTO T_DMS_01 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+        "INSERT INTO T_DMS_02 VALUES (2), (4)",
+        "DELETE FROM T_DMS_01 WHERE EXISTS (SELECT 1 FROM T_DMS_02 WHERE T_DMS_02.k = T_DMS_01.id)"
+      ],
+      "query": "SELECT id, v FROM T_DMS_01 ORDER BY id"
+    },
+    {
+      "name": "dml_delete_where_not_exists",
+      "schema_template": "CREATE TABLE T_DMS_03 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DMS_04 (k BIGINT, PRIMARY KEY (k))",
+      "setup_sqls": [
+        "INSERT INTO T_DMS_03 VALUES (1, 10), (2, 20), (3, 30)",
+        "INSERT INTO T_DMS_04 VALUES (1), (3)",
+        "DELETE FROM T_DMS_03 WHERE NOT EXISTS (SELECT 1 FROM T_DMS_04 WHERE T_DMS_04.k = T_DMS_03.id)"
+      ],
+      "query": "SELECT id, v FROM T_DMS_03 ORDER BY id"
+    },
+    {
+      "name": "dml_update_where_exists",
+      "schema_template": "CREATE TABLE T_DMS_05 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DMS_06 (k BIGINT, PRIMARY KEY (k))",
+      "setup_sqls": [
+        "INSERT INTO T_DMS_05 VALUES (1, 10), (2, 20), (3, 30)",
+        "INSERT INTO T_DMS_06 VALUES (1), (2)",
+        "UPDATE T_DMS_05 SET v = 99 WHERE EXISTS (SELECT 1 FROM T_DMS_06 WHERE T_DMS_06.k = T_DMS_05.id)"
+      ],
+      "query": "SELECT id, v FROM T_DMS_05 ORDER BY id"
+    },
+    {
+      "name": "dml_update_where_not_exists",
+      "schema_template": "CREATE TABLE T_DMS_07 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DMS_08 (k BIGINT, PRIMARY KEY (k))",
+      "setup_sqls": [
+        "INSERT INTO T_DMS_07 VALUES (1, 10), (2, 20), (3, 30)",
+        "INSERT INTO T_DMS_08 VALUES (2)",
+        "UPDATE T_DMS_07 SET v = 0 WHERE NOT EXISTS (SELECT 1 FROM T_DMS_08 WHERE T_DMS_08.k = T_DMS_07.id)"
+      ],
+      "query": "SELECT id, v FROM T_DMS_07 ORDER BY id"
+    },
+    {
+      "name": "dml_delete_uncorr_exists",
+      "schema_template": "CREATE TABLE T_DMS_09 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DMS_10 (k BIGINT, PRIMARY KEY (k))",
+      "setup_sqls": [
+        "INSERT INTO T_DMS_09 VALUES (1, 10), (2, 20)",
+        "INSERT INTO T_DMS_10 VALUES (42)",
+        "DELETE FROM T_DMS_09 WHERE EXISTS (SELECT 1 FROM T_DMS_10)"
+      ],
+      "query": "SELECT COUNT(*) FROM T_DMS_09"
+    },
+    {
+      "name": "dml_delete_uncorr_not_exists_noop",
+      "schema_template": "CREATE TABLE T_DMS_11 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DMS_12 (k BIGINT, PRIMARY KEY (k))",
+      "setup_sqls": [
+        "INSERT INTO T_DMS_11 VALUES (1, 10), (2, 20), (3, 30)",
+        "INSERT INTO T_DMS_12 VALUES (1)",
+        "DELETE FROM T_DMS_11 WHERE NOT EXISTS (SELECT 1 FROM T_DMS_12)"
+      ],
+      "query": "SELECT id, v FROM T_DMS_11 ORDER BY id"
+    },
+    {
+      "name": "agg_empty_count_star_returns_zero",
+      "schema_template": "CREATE TABLE T_AGG_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": null,
+      "query": "SELECT COUNT(*) FROM T_AGG_01"
+    },
+    {
+      "name": "agg_empty_sum_returns_null",
+      "schema_template": "CREATE TABLE T_AGG_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": null,
+      "query": "SELECT SUM(v) FROM T_AGG_02"
+    },
+    {
+      "name": "agg_empty_min_max_return_null",
+      "schema_template": "CREATE TABLE T_AGG_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": null,
+      "query": "SELECT MIN(v), MAX(v) FROM T_AGG_03"
+    },
+    {
+      "name": "agg_empty_count_having_filters_out",
+      "schema_template": "CREATE TABLE T_AGG_04 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": null,
+      "query": "SELECT COUNT(*) FROM T_AGG_04 HAVING COUNT(*) > 0"
+    },
+    {
+      "name": "agg_empty_count_having_passes",
+      "schema_template": "CREATE TABLE T_AGG_05 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": null,
+      "query": "SELECT COUNT(*) FROM T_AGG_05 HAVING COUNT(*) >= 0"
+    },
+    {
+      "name": "greatest_all_nonnull",
+      "schema_template": "CREATE TABLE T_GL_01 (id BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_GL_01 VALUES (1)"
+      ],
+      "query": "SELECT GREATEST(1, 5, 3) FROM T_GL_01"
+    },
+    {
+      "name": "least_all_nonnull",
+      "schema_template": "CREATE TABLE T_GL_02 (id BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_GL_02 VALUES (1)"
+      ],
+      "query": "SELECT LEAST(1, 5, 3) FROM T_GL_02"
+    },
+    {
+      "name": "greatest_null_propagates",
+      "schema_template": "CREATE TABLE T_GL_03 (id BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_GL_03 VALUES (1)"
+      ],
+      "query": "SELECT GREATEST(1, NULL, 3) FROM T_GL_03"
+    },
+    {
+      "name": "least_null_propagates",
+      "schema_template": "CREATE TABLE T_GL_04 (id BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_GL_04 VALUES (1)"
+      ],
+      "query": "SELECT LEAST(1, NULL, 3) FROM T_GL_04"
+    },
+    {
+      "name": "greatest_int_double_promotion",
+      "schema_template": "CREATE TABLE T_GL_05 (id BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_GL_05 VALUES (1)"
+      ],
+      "query": "SELECT GREATEST(1, 2, 3.0, 4, 5) FROM T_GL_05"
+    },
+    {
+      "name": "least_int_double_promotion",
+      "schema_template": "CREATE TABLE T_GL_06 (id BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_GL_06 VALUES (1)"
+      ],
+      "query": "SELECT LEAST(1, 2, 3.0, 4, 5) FROM T_GL_06"
+    },
+    {
+      "name": "greatest_strings_lexicographic",
+      "schema_template": "CREATE TABLE T_GL_07 (id BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_GL_07 VALUES (1)"
+      ],
+      "query": "SELECT GREATEST('apple', 'banana', 'cherry') FROM T_GL_07"
+    },
+    {
+      "name": "having_count_gt_on_populated",
+      "schema_template": "CREATE TABLE T_HAV_01 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_HAV_01 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT COUNT(*) FROM T_HAV_01 HAVING COUNT(*) > 1"
+    },
+    {
+      "name": "having_sum_gt_filters_out",
+      "schema_template": "CREATE TABLE T_HAV_02 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_HAV_02 VALUES (1, 10), (2, 20)"
+      ],
+      "query": "SELECT SUM(val) FROM T_HAV_02 HAVING SUM(val) > 1000"
+    },
+    {
+      "name": "having_count_where_then_having",
+      "schema_template": "CREATE TABLE T_HAV_03 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_HAV_03 VALUES (1, 10), (2, 20), (3, 30), (4, 1)"
+      ],
+      "query": "SELECT COUNT(*) FROM T_HAV_03 WHERE val > 5 HAVING COUNT(*) = 3"
+    },
+    {
+      "name": "agg_expr_sum_plus_sum",
+      "schema_template": "CREATE TABLE T_AES_01 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AES_01 VALUES (1, 5, 10), (2, 20, 3)"
+      ],
+      "query": "SELECT SUM(a) + SUM(b) FROM T_AES_01"
+    },
+    {
+      "name": "agg_expr_coalesce_sum_empty",
+      "schema_template": "CREATE TABLE T_AES_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": null,
+      "query": "SELECT COALESCE(SUM(v), 0) FROM T_AES_02",
+      "divergence": {
+        "direction": "JavaWrongRowsGoCorrect",
+        "reason": "Java returns zero rows for COALESCE(SUM, 0) on empty table instead of producing the implicit aggregate row [0]. Go correctly produces the row per SQL spec.",
+        "go_expected_rows": [
+          [
+            {
+              "type": "float64",
+              "value": 0
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "agg_expr_case_over_count",
+      "schema_template": "CREATE TABLE T_AES_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AES_03 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT CASE WHEN COUNT(*) > 2 THEN 'many' ELSE 'few' END FROM T_AES_03",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "Java's IllegalStateException 'unable to eval an aggregation function with eval()' — upstream can't handle CASE wrapping aggregate. Go correctly evaluates post-aggregation.",
+        "go_expected_rows": [
+          [
+            "many"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "avg_int_returns_double",
+      "schema_template": "CREATE TABLE T_AVG_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_AVG_01 VALUES (1, 1), (2, 2), (3, 3)"
+      ],
+      "query": "SELECT AVG(v) FROM T_AVG_01"
+    },
+    {
+      "name": "bare_col_with_agg_rejected",
+      "schema_template": "CREATE TABLE T_BCA_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_BCA_01 VALUES (1, 10), (2, 20)"
+      ],
+      "query": "SELECT id, COUNT(*) FROM T_BCA_01",
+      "divergence": {
+        "direction": "BothErrorMessagesDrift",
+        "reason": "Both engines reject bare column with aggregate (42803) but error messages differ: Java references internal planner expression; Go uses SQL-spec wording.",
+        "go_expected_rows": null,
+        "go_error_contains": "must appear in the GROUP BY clause"
+      }
+    },
+    {
+      "name": "sum_all_null_returns_null",
+      "schema_template": "CREATE TABLE T_SAN_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_SAN_01 VALUES (1, NULL), (2, NULL), (3, NULL)"
+      ],
+      "query": "SELECT SUM(v) FROM T_SAN_01"
+    },
+    {
+      "name": "group_by_null_bucket",
+      "schema_template": "CREATE TABLE T_GBN_01 (id BIGINT, g STRING, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_GBN_01 VALUES (1, 'a', 1), (2, 'a', 2), (3, NULL, 3), (4, NULL, 4)"
+      ],
+      "query": "SELECT g, COUNT(*) FROM T_GBN_01 GROUP BY g ORDER BY g",
+      "divergence": {
+        "direction": "JavaErrorsGoCorrect",
+        "reason": "Java cannot plan a GROUP BY no index orders (UnableToPlanException, TODO #39). Go correctly groups NULL into its own bucket per SQL spec.",
+        "go_expected_rows": [
+          [
+            null,
+            {
+              "type": "float64",
+              "value": 2
+            }
+          ],
+          [
+            "a",
+            {
+              "type": "float64",
+              "value": 2
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "arith_bigint_add_overflow",
+      "schema_template": "CREATE TABLE T_ARI_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ARI_01 VALUES (1, 9223372036854775807)"
+      ],
+      "query": "SELECT id, v + 1 FROM T_ARI_01 ORDER BY id"
+    },
+    {
+      "name": "arith_bigint_sub_underflow",
+      "schema_template": "CREATE TABLE T_ARI_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ARI_02 VALUES (1, -9223372036854775808)"
+      ],
+      "query": "SELECT id, v - 1 FROM T_ARI_02 ORDER BY id"
+    },
+    {
+      "name": "arith_mul_by_zero",
+      "schema_template": "CREATE TABLE T_ARI_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ARI_03 VALUES (1, 100), (2, -50), (3, 0)"
+      ],
+      "query": "SELECT id, v * 0 FROM T_ARI_03 ORDER BY id"
+    },
+    {
+      "name": "arith_div_by_zero_error",
+      "schema_template": "CREATE TABLE T_ARI_04 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ARI_04 VALUES (1, 10)"
+      ],
+      "query": "SELECT id, v / 0 FROM T_ARI_04 ORDER BY id"
+    },
+    {
+      "name": "arith_int_div_truncates",
+      "schema_template": "CREATE TABLE T_ARI_05 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ARI_05 VALUES (1, 7, 2), (2, -7, 2), (3, 7, -2), (4, -7, -2)"
+      ],
+      "query": "SELECT id, a / b FROM T_ARI_05 ORDER BY id"
+    },
+    {
+      "name": "arith_precedence_mul_add",
+      "schema_template": "CREATE TABLE T_ARI_07 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ARI_07 VALUES (1, 2, 3, 4)"
+      ],
+      "query": "SELECT id, a + b * c FROM T_ARI_07 ORDER BY id"
+    },
+    {
+      "name": "arith_parenthesized_override",
+      "schema_template": "CREATE TABLE T_ARI_08 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ARI_08 VALUES (1, 2, 3, 4)"
+      ],
+      "query": "SELECT id, (a + b) * c FROM T_ARI_08 ORDER BY id"
+    },
+    {
+      "name": "arith_unary_minus",
+      "schema_template": "CREATE TABLE T_ARI_09 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ARI_09 VALUES (1, 10), (2, -20), (3, 0)"
+      ],
+      "query": "SELECT id, -v FROM T_ARI_09 ORDER BY id"
+    },
+    {
+      "name": "arith_in_where",
+      "schema_template": "CREATE TABLE T_ARI_10 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_ARI_10 VALUES (1, 10, 5), (2, 20, 10), (3, 30, 15)"
+      ],
+      "query": "SELECT id FROM T_ARI_10 WHERE a - b > 10 ORDER BY id"
+    },
+    {
+      "name": "pred_or_disjoint_ranges",
+      "schema_template": "CREATE TABLE T_PRD_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_PRD_01 VALUES (1, 5), (2, 15), (3, 50), (4, 80), (5, 100)"
+      ],
+      "query": "SELECT id FROM T_PRD_01 WHERE v < 10 OR v > 90 ORDER BY id"
+    },
+    {
+      "name": "pred_and_or_paren",
+      "schema_template": "CREATE TABLE T_PRD_02 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_PRD_02 VALUES (1, 10, 1), (2, 20, 1), (3, 10, 2), (4, 20, 2)"
+      ],
+      "query": "SELECT id FROM T_PRD_02 WHERE (a = 10 AND b = 1) OR (a = 20 AND b = 2) ORDER BY id"
+    },
+    {
+      "name": "pred_not_comparison",
+      "schema_template": "CREATE TABLE T_PRD_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+      "setup_sqls": [
+        "INSERT INTO T_PRD_03 VALUES (1, 10), (2, 20), (3, 30)"
+      ],
+      "query": "SELECT id FROM T_PRD_03 WHERE NOT (v > 20) ORDER BY id"
+    }
+  ]
+}
