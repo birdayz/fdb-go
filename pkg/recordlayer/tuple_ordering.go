@@ -11,19 +11,31 @@ import (
 
 // OrderDirection specifies how tuple values are encoded for ordered storage.
 // Matches Java's TupleOrdering.Direction enum.
-type OrderDirection = tupleordering.Direction
+type OrderDirection struct {
+	// Inverted is DESC: the packed bytes are inverted.
+	Inverted bool
+	// CounterflowNulls places NULLs opposite to their natural position.
+	CounterflowNulls bool
+}
 
 // The four order directions matching Java's TupleOrdering.Direction enum values.
 var (
 	// OrderAscNullsFirst: ascending order, nulls sort first (default tuple behavior).
-	OrderAscNullsFirst = tupleordering.AscNullsFirst
+	OrderAscNullsFirst = OrderDirection{Inverted: false, CounterflowNulls: false}
 	// OrderAscNullsLast: ascending order, nulls sort last (0xFE encoding).
-	OrderAscNullsLast = tupleordering.AscNullsLast
+	OrderAscNullsLast = OrderDirection{Inverted: false, CounterflowNulls: true}
 	// OrderDescNullsFirst: descending order, nulls sort first.
-	OrderDescNullsFirst = tupleordering.DescNullsFirst
+	OrderDescNullsFirst = OrderDirection{Inverted: true, CounterflowNulls: true}
 	// OrderDescNullsLast: descending order, nulls sort last.
-	OrderDescNullsLast = tupleordering.DescNullsLast
+	OrderDescNullsLast = OrderDirection{Inverted: true, CounterflowNulls: false}
 )
+
+func (d OrderDirection) toInternal() tupleordering.Direction {
+	return tupleordering.Direction{
+		Inverted:         d.Inverted,
+		CounterflowNulls: d.CounterflowNulls,
+	}
+}
 
 // tupleOrderingPack matches Java's TupleOrdering.pack(Tuple, Direction).
 // An incomplete versionstamp is a recoverable error, not a vanilla tuple-pack panic.
@@ -31,12 +43,12 @@ func tupleOrderingPack(t tuple.Tuple, dir OrderDirection) ([]byte, error) {
 	if tupleHasIncompleteVersionstamp(t) {
 		return nil, &IncompleteVersionstampError{Context: "tuple ordering"}
 	}
-	return tupleordering.Pack(t, dir), nil
+	return tupleordering.Pack(t, dir.toInternal()), nil
 }
 
 // tupleOrderingUnpack decodes bytes back into a tuple according to the given direction.
 func tupleOrderingUnpack(packed []byte, dir OrderDirection) (tuple.Tuple, error) {
-	return tupleordering.Unpack(packed, dir)
+	return tupleordering.Unpack(packed, dir.toInternal())
 }
 
 func packNullsLast(t tuple.Tuple) []byte               { return tupleordering.PackNullsLast(t) }

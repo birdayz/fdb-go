@@ -158,6 +158,26 @@ func (*IndexNotFoundError) javaMetaDataException()                {}
 func (*MetaDataVersionMustIncreaseError) javaMetaDataException()  {}
 func (*RecordTypeKeyTypeError) javaMetaDataException()            {}
 func (*GoOnlyCollationError) javaMetaDataException()              {}
+func (*InvalidNameError) javaMetaDataException()                  {}
+
+// boundaryErrorWrapper marks an internal wrapper that adapts an error from a
+// lower-level package (such as javanum or protoname) into a recordlayer error
+// type while preserving the outer message and original cause chain.
+// OutermostJavaError skips it so classification sees the recordlayer error.
+type boundaryErrorWrapper interface {
+	boundaryWrapper()
+}
+
+type boundaryWrappedError struct {
+	outer error
+	inner error
+}
+
+func (e *boundaryWrappedError) Error() string { return e.outer.Error() }
+
+func (e *boundaryWrappedError) Unwrap() []error { return []error{e.inner, e.outer} }
+
+func (*boundaryWrappedError) boundaryWrapper() {}
 
 // IsMetaDataException reports whether err's outermost Java exception is a
 // MetaDataException, as Java's `re instanceof MetaDataException` tests the
@@ -171,8 +191,8 @@ func IsMetaDataException(err error) bool {
 		return true
 	case *protoname.InvalidNameError:
 		// Java's ProtoUtils.InvalidNameException extends MetaDataException
-		// (ProtoUtils.java:153); its Go type lives in protoname, which this
-		// package aliases as InvalidNameError.
+		// (ProtoUtils.java:153); leaf callers of protoname may still emit
+		// *protoname.InvalidNameError directly.
 		return true
 	case *textcmp.MetaDataError:
 		return true
@@ -180,13 +200,15 @@ func IsMetaDataException(err error) bool {
 	return false
 }
 
-// OutermostJavaError is the first error of this package (or of protoname,
-// which it aliases) on err's chain of wrappers, following the first of
+// OutermostJavaError is the first error of this package (or of protoname for
+// leaf callers) on err's chain of wrappers, following the first of
 // several; nil when there is none.
 func OutermostJavaError(err error) error {
 	for e := err; e != nil; {
-		if t := reflect.TypeOf(e); t.Kind() == reflect.Pointer && javaErrorPkgPaths[t.Elem().PkgPath()] {
-			return e
+		if _, skip := e.(boundaryErrorWrapper); !skip {
+			if t := reflect.TypeOf(e); t.Kind() == reflect.Pointer && javaErrorPkgPaths[t.Elem().PkgPath()] {
+				return e
+			}
 		}
 		switch u := e.(type) {
 		case interface{ Unwrap() error }:
@@ -205,8 +227,9 @@ func OutermostJavaError(err error) error {
 }
 
 // javaErrorPkgPaths are the packages whose error types are Java exception
-// classes: this one, and protoname, whose InvalidNameError this package
-// aliases.
+// classes: this one (including IllegalArgumentError and IllegalStateError now
+// owned by recordlayer, matching Java exception hierarchy), and protoname for
+// leaf callers.
 var javaErrorPkgPaths = map[string]bool{
 	reflect.TypeOf(MetaDataError{}).PkgPath():              true,
 	reflect.TypeOf(protoname.InvalidNameError{}).PkgPath(): true,

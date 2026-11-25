@@ -12,10 +12,32 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/indexfetch"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 )
+
+func TestIndexFetchMethodOwnedType(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		method   IndexFetchMethod
+		internal indexfetch.Method
+		wantStr  string
+	}{
+		{IndexFetchScanAndFetch, indexfetch.ScanAndFetch, "SCAN_AND_FETCH"},
+		{IndexFetchUseRemoteFetch, indexfetch.UseRemoteFetch, "USE_REMOTE_FETCH"},
+		{IndexFetchUseRemoteFetchWithFallback, indexfetch.UseRemoteFetchWithFallback, "USE_REMOTE_FETCH_WITH_FALLBACK"},
+		{IndexFetchMethod(99), indexfetch.Method(99), "IndexFetchMethod(99)"},
+	} {
+		if got := tc.method.String(); got != tc.wantStr {
+			t.Errorf("IndexFetchMethod(%d).String() = %q, want %q", tc.method, got, tc.wantStr)
+		}
+		if got := tc.method.toInternal(); got != tc.internal {
+			t.Errorf("IndexFetchMethod(%d).toInternal() = %v, want %v", tc.method, got, tc.internal)
+		}
+	}
+}
 
 func TestRemoteFetchAPIVersionCheck(t *testing.T) {
 	t.Parallel()

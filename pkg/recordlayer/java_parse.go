@@ -16,10 +16,47 @@ import (
 // option parsers Java runs through the JDK: an out-of-range RankedSet level
 // count (RankedSet.ConfigBuilder.setNLevels) or an unknown enum name
 // (Enum.valueOf, as RTree.Storage.valueOf).
-type IllegalArgumentError = javanum.IllegalArgumentError
+type IllegalArgumentError struct {
+	Message string
+	Cause   error
+}
+
+func (e *IllegalArgumentError) Error() string { return e.Message }
+
+func (e *IllegalArgumentError) Unwrap() error { return e.Cause }
 
 // IllegalStateError is Java's IllegalStateException.
-type IllegalStateError = javanum.IllegalStateError
+type IllegalStateError struct {
+	Message string
+}
+
+func (e *IllegalStateError) Error() string { return e.Message }
+
+// convertJavaNumError wraps *javanum.IllegalArgumentError and
+// *javanum.IllegalStateError returned by lower-level packages (such as
+// pkg/async/rtree) with recordlayer's own defined error types at the package
+// boundary, while preserving the original error chain for callers matching
+// either type.
+func convertJavaNumError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var iae *javanum.IllegalArgumentError
+	if errors.As(err, &iae) {
+		return &boundaryWrappedError{
+			outer: err,
+			inner: &IllegalArgumentError{Message: iae.Message, Cause: iae.Cause},
+		}
+	}
+	var ise *javanum.IllegalStateError
+	if errors.As(err, &ise) {
+		return &boundaryWrappedError{
+			outer: err,
+			inner: &IllegalStateError{Message: ise.Message},
+		}
+	}
+	return err
+}
 
 // NumberFormatError is Java's NumberFormatException, raised by
 // Integer.parseInt on an index option that is not a decimal int. Java's class

@@ -230,7 +230,7 @@ func (m *multidimensionalIndexMaintainer) insertEntry(dimExpr *DimensionsKeyExpr
 	if err != nil {
 		return fmt.Errorf("MULTIDIMENSIONAL index %q: %w", m.index.Name, err)
 	}
-	return rt.InsertOrUpdate(m.tx, point, keySuffix, value)
+	return convertJavaNumError(rt.InsertOrUpdate(m.tx, point, keySuffix, value))
 }
 
 // deleteEntry removes a single index entry from the appropriate R-tree.
@@ -251,7 +251,7 @@ func (m *multidimensionalIndexMaintainer) deleteEntry(dimExpr *DimensionsKeyExpr
 	if err != nil {
 		return fmt.Errorf("MULTIDIMENSIONAL index %q: %w", m.index.Name, err)
 	}
-	return rt.Delete(m.tx, point, keySuffix)
+	return convertJavaNumError(rt.Delete(m.tx, point, keySuffix))
 }
 
 // UpdateWhileWriteOnly handles updates during WRITE_ONLY state.
@@ -580,7 +580,7 @@ func (m *multidimensionalIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error 
 	if err != nil {
 		return fmt.Errorf("MULTIDIMENSIONAL index %q: %w", m.index.Name, err)
 	}
-	return rt.Clear(m.tx)
+	return convertJavaNumError(rt.Clear(m.tx))
 }
 
 // rtreeFor is the R-tree of one prefix: under the index subspace and, for its
@@ -595,7 +595,8 @@ func (m *multidimensionalIndexMaintainer) rtreeFor(prefix tuple.Tuple) (*rtree.R
 	if env := m.store.Env(); env != nil {
 		storage = storage.WithRandom(env)
 	}
-	return rtree.NewRTree(storage, m.rTreeConfig)
+	rt, err := rtree.NewRTree(storage, m.rTreeConfig)
+	return rt, convertJavaNumError(err)
 }
 
 // rtreeScanCursor wraps an RTreeIterator into a RecordCursor with support
@@ -741,7 +742,7 @@ func (c *rtreeScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*Index
 		// Get next item from iterator.
 		item, ok, err := c.iter.Next()
 		if err != nil {
-			return RecordCursorResult[*IndexEntry]{}, err
+			return RecordCursorResult[*IndexEntry]{}, convertJavaNumError(err)
 		}
 		if !ok {
 			return NewResultNoNext[*IndexEntry](SourceExhausted, &EndContinuation{}), nil
