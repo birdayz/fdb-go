@@ -59,7 +59,7 @@ package plans
 // says FALSE — so the premise is named by the tests that HOLD it rather than by
 // a PR number, and a reader can check it in one hop:
 //
-//	executor/executor_test.go:259
+//	executor/executor_distinct_test.go
 //	  TestExecuteUnorderedPrimaryKeyDistinct_ContinuationCarriesSeenSet
 //	executor/distinct_scratch_lifecycle_test.go     (adoption + retirement)
 //	executor/distinct_continuation_growth_test.go   (the set survives paging)
