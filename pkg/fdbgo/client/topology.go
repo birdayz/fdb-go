@@ -249,8 +249,10 @@ func (db *database) handleConnError(addr string, failed *transport.Conn) {
 				delete(db.dialing, addr)
 			}
 		}
-		if hook := db.beforeConnFailureMark.Load(); hook != nil {
-			(*hook)()
+		if h := db.hooks.Load(); h != nil {
+			if hook := h.beforeConnFailureMark.Load(); hook != nil {
+				(*hook)()
+			}
 		}
 		// Under connMu, as dialAndPool's markAlive is: a redial cannot land between.
 		newlyFailed = db.failMon.markFailed(addr)
@@ -330,8 +332,10 @@ func (db *database) onCoordinatorSetAdopted() {
 // calls back into installProxySet deadlocks the calling goroutine against
 // itself. Hooks may observe and block; they may not install.
 func (db *database) observeProxyInstall() {
-	if hook := db.duringProxyInstall.Load(); hook != nil {
-		(*hook)()
+	if h := db.hooks.Load(); h != nil {
+		if hook := h.duringProxyInstall.Load(); hook != nil {
+			(*hook)()
+		}
 	}
 }
 

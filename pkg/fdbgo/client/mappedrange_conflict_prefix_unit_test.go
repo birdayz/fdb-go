@@ -111,7 +111,7 @@ func TestMappedRangeConflictPublicationRetainsIncarnation(t *testing.T) {
 				resume := sync.OnceFunc(func() { close(release) })
 				defer resume()
 				publications := 0
-				tx.beforeReadConflict = func() {
+				tx.testHooks().beforeReadConflict = func() {
 					publications++
 					if publications == tc.pauseAt {
 						close(entered)

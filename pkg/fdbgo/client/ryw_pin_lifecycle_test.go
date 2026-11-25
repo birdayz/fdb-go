@@ -69,7 +69,7 @@ func trackPins(c *rywCache) *pinTracker {
 	p := &pinTracker{c: c, pins: map[*rywWrites]int{}, unpins: map[*rywWrites]int{}, atPin: map[*rywWrites]string{}, current: map[*rywWrites]int{}}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.onPin = func(w *rywWrites, pin bool) { // under c.mu
+	c.testHooks().onPin = func(w *rywWrites, pin bool) { // under c.mu
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		fp := w.fingerprint()
@@ -92,7 +92,7 @@ func trackPins(c *rywCache) *pinTracker {
 			p.bad = append(p.bad, "a version changed while pinned (seen at release)")
 		}
 	}
-	c.onClone = func(_, _ *rywWrites) { p.mu.Lock(); p.clones++; p.mu.Unlock() }
+	c.testHooks().onClone = func(_, _ *rywWrites) { p.mu.Lock(); p.clones++; p.mu.Unlock() }
 	return p
 }
 
@@ -187,7 +187,7 @@ func TestRYWPinHookPanicDoesNotLeak(t *testing.T) {
 		t.Run(fmt.Sprintf("existing-pin=%t", held), func(t *testing.T) {
 			t.Parallel()
 			tx := &Transaction{}
-			tx.nativeRange = newMemStorage("a", "c").native
+			tx.testHooks().nativeRange = newMemStorage("a", "c").native
 			c := &tx.ryw
 			var existing, observed *rywWrites
 			var pinsAtHook int
@@ -195,7 +195,7 @@ func TestRYWPinHookPanicDoesNotLeak(t *testing.T) {
 				if held {
 					existing = c.pinWritesLocked()
 				}
-				c.onPin = func(w *rywWrites, pin bool) {
+				c.testHooks().onPin = func(w *rywWrites, pin bool) {
 					if !pin {
 						t.Error("failed pin called the unpin observer")
 						return
@@ -221,7 +221,7 @@ func TestRYWPinHookPanicDoesNotLeak(t *testing.T) {
 				t.Fatalf("pins after hook panic = %d, want %d", got, want)
 			}
 			c.withLock(func() {
-				c.onPin = nil
+				c.testHooks().onPin = nil
 				if existing != nil {
 					c.unpinWritesLocked(existing)
 				}
@@ -281,7 +281,7 @@ func TestRYWPinSharedThenCloned(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{}
 	g := newGatedStorage("a", "c")
-	tx.nativeRange = g.native
+	tx.testHooks().nativeRange = g.native
 	tr := trackPins(&tx.ryw)
 	issued := liveOf(&tx.ryw)
 	p1 := tx.StartGetKey(context.Background(), fgtSel("a"))
@@ -314,7 +314,7 @@ func TestRYWPinSharedThenCloned(t *testing.T) {
 func TestRYWLocalStartReleasesItsPin(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{}
-	tx.nativeRange = func(context.Context, KeySelector, KeySelector, rangeLimits, bool) (nativeRangeResult, error) {
+	tx.testHooks().nativeRange = func(context.Context, KeySelector, KeySelector, rangeLimits, bool) (nativeRangeResult, error) {
 		return nativeRangeResult{}, errors.New("a local read reached storage")
 	}
 	tr := trackPins(&tx.ryw)
@@ -389,7 +389,7 @@ func TestRYWLocalStartRowSurvivesInPlaceWrites(t *testing.T) {
 			name := issueName + "/" + laterName
 			m := newMemStorage("a", "c") // b is absent from storage
 			tx := &Transaction{}
-			tx.nativeRange = m.native
+			tx.testHooks().nativeRange = m.native
 			if _, _, err := tx.Snapshot().GetRangeSelectors(ctx, begin, end, 0, 0, false); err != nil {
 				t.Fatal(err) // the cache now knows [a, d)
 			}
@@ -440,7 +440,7 @@ func TestRYWPinnedAtomicStackUnchanged(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{}
 	g := newGatedStorage("a", "c")
-	tx.nativeRange = g.native
+	tx.testHooks().nativeRange = g.native
 	tr := trackPins(&tx.ryw)
 	tx.Atomic(MutAddValue, []byte("k"), pinNum(1))
 	pinned := liveOf(&tx.ryw)
@@ -470,7 +470,7 @@ func TestRYWMergeBatchOnlyOnPrivateSpan(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{}
 	g := newGatedStorage("a", "c")
-	tx.nativeRange = g.native
+	tx.testHooks().nativeRange = g.native
 	tr := trackPins(&tx.ryw)
 	tx.Atomic(MutAddValue, []byte("k"), pinNum(1))
 	p := tx.StartGetKey(context.Background(), fgtSel("a"))
@@ -548,7 +548,7 @@ func TestRYWResetWhileAwaitingStorage(t *testing.T) {
 		t.Parallel()
 		tx := &Transaction{}
 		var calls atomic.Int32
-		tx.nativeRange = func(ctx context.Context, _, _ KeySelector, _ rangeLimits, _ bool) (nativeRangeResult, error) {
+		tx.testHooks().nativeRange = func(ctx context.Context, _, _ KeySelector, _ rangeLimits, _ bool) (nativeRangeResult, error) {
 			calls.Add(1)
 			<-ctx.Done()
 			return nativeRangeResult{}, ctx.Err()
@@ -622,7 +622,7 @@ func TestRYWPinStress(t *testing.T) {
 	tx := &Transaction{}
 	var smu sync.Mutex
 	m := newMemStorage("a", "b", "c", "d", "e", "f", "g")
-	tx.nativeRange = func(ctx context.Context, b, e KeySelector, l rangeLimits, rev bool) (nativeRangeResult, error) {
+	tx.testHooks().nativeRange = func(ctx context.Context, b, e KeySelector, l rangeLimits, rev bool) (nativeRangeResult, error) {
 		time.Sleep(time.Duration(len(b.Key)%3) * 100 * time.Microsecond)
 		if err := ctx.Err(); err != nil {
 			return nativeRangeResult{}, err
@@ -674,8 +674,8 @@ func TestRYWPanicReleasesPin(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{}
 	m := newMemStorage("a", "c")
-	tx.nativeRange = m.native
-	tx.afterRangeReply = func() { panic("injected") }
+	tx.testHooks().nativeRange = m.native
+	tx.testHooks().afterRangeReply = func() { panic("injected") }
 	tr := trackPins(&tx.ryw)
 	_, err := tx.StartGetKey(context.Background(), fgtSel("a")).Get()
 	var fe *wire.FDBError
@@ -735,7 +735,7 @@ func TestRYWRepeatedGetRunsOnce(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{}
 	g := newGatedStorage("a", "c")
-	tx.nativeRange = g.native
+	tx.testHooks().nativeRange = g.native
 	tr := trackPins(&tx.ryw)
 	p := tx.StartGetKey(context.Background(), fgtSel("a"))
 	var wg sync.WaitGroup
@@ -847,7 +847,7 @@ func TestRYWStartGetKeyIssueTimeIsolation(t *testing.T) {
 	run := func(mutate func(tx *Transaction)) (string, string) {
 		tx := &Transaction{}
 		g := newGatedStorage("a", "b", "c", "d", "e")
-		tx.nativeRange = g.native
+		tx.testHooks().nativeRange = g.native
 		tx.Set([]byte("b1"), []byte("w"))
 		p := tx.StartGetKey(context.Background(), KeySelector{Key: []byte("a"), OrEqual: false, Offset: 3})
 		mutate(tx)

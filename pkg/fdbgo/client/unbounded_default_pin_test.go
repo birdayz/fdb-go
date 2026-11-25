@@ -27,7 +27,7 @@ import (
 func pinTx() *Transaction {
 	tx := &Transaction{db: &database{}}
 	tx.state.Store(int32(txStateActive))
-	tx.backoffJitter = func() float64 { return 0 }
+	tx.testHooks().backoffJitter = func() float64 { return 0 }
 	return tx
 }
 

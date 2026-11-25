@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"fdb.dev/pkg/fdbgo/internal/sendqueue"
@@ -64,23 +65,38 @@ func (c *Conn) AdaptiveLinger() time.Duration {
 
 const naHighWater = 16 << 20 // 16 MiB high-water backpressure bound when a peer socket stalls
 
+type naWriterTestHooks struct {
+	now             func() time.Time // optional clock for tests; nil uses time.Now
+	onAdaptiveYield func()           // optional observer for tests
+	onCoalesceWait  func()           // optional observer for tests
+	beforeLock      func()           // optional test seam before acquiring w.mu in naSend
+}
+
 type naWriter struct {
 	mu      sync.Mutex
 	q       []byte
 	drained chan struct{} // lazily allocated only when len(q) >= naHighWater
 	delay   bool
 	// adaptive > 0 enables Nagle-style linger on D-NG (RFC-282).
-	adaptive        time.Duration
-	now             func() time.Time // optional clock for tests; nil uses time.Now
-	onAdaptiveYield func()           // optional observer for tests
-	onCoalesceWait  func()           // optional observer for tests
-	beforeLock      func()           // optional test seam before acquiring w.mu in naSend
-	sig             chan struct{}
+	adaptive time.Duration
+	hooks    atomic.Pointer[naWriterTestHooks]
+	sig      chan struct{}
+}
+
+func (w *naWriter) testHooks() *naWriterTestHooks {
+	if h := w.hooks.Load(); h != nil {
+		return h
+	}
+	h := &naWriterTestHooks{}
+	if w.hooks.CompareAndSwap(nil, h) {
+		return h
+	}
+	return w.hooks.Load()
 }
 
 func (w *naWriter) nowTime() time.Time {
-	if w.now != nil {
-		return w.now()
+	if h := w.hooks.Load(); h != nil && h.now != nil {
+		return h.now()
 	}
 	return time.Now()
 }
@@ -92,8 +108,8 @@ func (c *Conn) naReserveOrder(permit *sendqueue.Permit) (p *sendqueue.Permit, hP
 	if !c.coldOrderActive.Load() {
 		return nil, nil
 	}
-	if c.beforeControlLock != nil {
-		c.beforeControlLock()
+	if h := c.hooks.Load(); h != nil && h.beforeControlLock != nil {
+		h.beforeControlLock()
 	}
 	c.controlMu.Lock()
 	defer c.controlMu.Unlock()
@@ -266,8 +282,8 @@ func (c *Conn) naSend(ctx context.Context, token UID, body []byte) error {
 
 func (c *Conn) naEnqueueEncoded(ctx context.Context, token UID, body, frame []byte) error {
 	w := c.na
-	if w.beforeLock != nil {
-		w.beforeLock()
+	if h := w.hooks.Load(); h != nil && h.beforeLock != nil {
+		h.beforeLock()
 	}
 	w.mu.Lock()
 	if c.ctx.Err() != nil {
@@ -286,13 +302,13 @@ func (c *Conn) naEnqueueEncoded(ctx context.Context, token UID, body, frame []by
 			return err
 		}
 	}
-	if globalWireLog.Load() != nil {
+	if wl := defaultWireLog.load(); wl != nil {
 		if permit == nil {
 			permit, _ = c.sendWaiters.Reserve()
 		}
 		defer permit.Release()
 		w.mu.Unlock()
-		LogSend(token, body)
+		wl.log('S', token, body)
 		w.mu.Lock()
 		if c.ctx.Err() != nil {
 			w.mu.Unlock()
@@ -327,11 +343,11 @@ func (c *Conn) naTrySend(token UID, body []byte) bool {
 		w.mu.Unlock()
 		return false
 	}
-	if globalWireLog.Load() != nil {
+	if wl := defaultWireLog.load(); wl != nil {
 		permit, _ := c.sendWaiters.Reserve()
 		defer permit.Release()
 		w.mu.Unlock()
-		LogSend(token, body)
+		wl.log('S', token, body)
 		w.mu.Lock()
 		if len(w.q) >= naHighWater || c.ctx.Err() != nil {
 			w.mu.Unlock()
@@ -382,8 +398,8 @@ func (c *Conn) naLoop() {
 				if c.ctx.Err() != nil {
 					return
 				}
-				if w.onAdaptiveYield != nil {
-					w.onAdaptiveYield()
+				if h := w.hooks.Load(); h != nil && h.onAdaptiveYield != nil {
+					h.onAdaptiveYield()
 				}
 				runtime.Gosched()
 			}

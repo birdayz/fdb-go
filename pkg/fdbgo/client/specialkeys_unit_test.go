@@ -553,7 +553,7 @@ func TestSpecialKeys_ReadLeaseBlocksReset(t *testing.T) {
 						wait(resetDone)
 					}
 				}()
-				tx.beforeSpecialKeyRead = func() { close(entered); <-resume }
+				tx.testHooks().beforeSpecialKeyRead = func() { close(entered); <-resume }
 				var readErr error
 				go func() { readErr = read(tx); close(readDone) }()
 				wait(entered)
@@ -584,7 +584,7 @@ func TestSpecialKeys_ReadLeaseBlocksReset(t *testing.T) {
 				if readErr != nil {
 					t.Fatalf("old relaxed read: %v", readErr)
 				}
-				tx.beforeSpecialKeyRead = nil
+				tx.testHooks().beforeSpecialKeyRead = nil
 				if err := read(tx); skCode(err) != ErrSpecialKeysNoModuleFound {
 					t.Fatalf("successor read: %v, want 2113", err)
 				}

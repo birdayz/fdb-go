@@ -94,7 +94,7 @@ func TestFallbackStartsEndAtTransportSuspension(t *testing.T) {
 			endSent, endJoined := make(chan struct{}), make(chan struct{})
 			failure := errors.New("begin resolved after release")
 			tx := &Transaction{db: db}
-			tx.resolveKeyFn = func(ctx context.Context, s KeySelector, _ int64) ([]byte, error) {
+			tx.testHooks().resolveKeyFn = func(ctx context.Context, s KeySelector, _ int64) ([]byte, error) {
 				conn, err := db.getOrDial(ctx, string(s.Key))
 				if err != nil {
 					return nil, err
@@ -153,7 +153,7 @@ func TestResolveKeyPanicPublishesAndJoins(t *testing.T) {
 	defer cancel()
 	tx := &Transaction{}
 	endStarted, endJoined := make(chan struct{}), make(chan struct{})
-	tx.resolveKeyFn = func(ctx context.Context, s KeySelector, _ int64) ([]byte, error) {
+	tx.testHooks().resolveKeyFn = func(ctx context.Context, s KeySelector, _ int64) ([]byte, error) {
 		if string(s.Key) == "begin" {
 			panic("resolver-local panic")
 		}

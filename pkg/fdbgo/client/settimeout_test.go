@@ -187,7 +187,7 @@ func TestSetTimeout_UndeliveredKeepsPipelinedReplyWait(t *testing.T) {
 	db, _, _ := timeoutObserverDatabase(t, ctx)
 	tx := db.CreateTransaction()
 	defer tx.Cancel()
-	tx.rpcTimeoutOverride = time.Hour
+	tx.testHooks().rpcTimeoutOverride = time.Hour
 	tx.SetTimeout(60000)
 	// The deadline passes; the manual queue does not run the callback.
 	tx.creationTime = time.Now().Add(-2 * time.Minute)
@@ -196,11 +196,11 @@ func TestSetTimeout_UndeliveredKeepsPipelinedReplyWait(t *testing.T) {
 	var origReplyCh <-chan transport.Response
 	delayedCh := make(chan transport.Response, 1)
 	timerChecked := false
-	tx.afterPendingSend = func(p *PendingGet) {
+	tx.testHooks().afterPendingSend = func(p *PendingGet) {
 		sent = p
 		origReplyCh = p.replyCh
 		p.replyCh = delayedCh
-		p.onReplyTimer = func(tm *time.Timer) {
+		p.testHooks().onReplyTimer = func(tm *time.Timer) {
 			timerChecked = true
 			select {
 			case <-tm.C:
@@ -234,7 +234,7 @@ func TestSetTimeout_UndeliveredKeepsPipelinedReplyWait(t *testing.T) {
 	// fast probe consumes it without acquiring a pooled reply timer.
 	var sentReady *PendingGet
 	readyTimerAcquired := false
-	tx.afterPendingSend = func(p *PendingGet) {
+	tx.testHooks().afterPendingSend = func(p *PendingGet) {
 		sentReady = p
 		orig := p.replyCh
 		readyCh := make(chan transport.Response, 1)
@@ -247,7 +247,7 @@ func TestSetTimeout_UndeliveredKeepsPipelinedReplyWait(t *testing.T) {
 			t.Error("ready reply did not arrive within 10s")
 		}
 		p.replyCh = readyCh
-		p.onReplyTimer = func(*time.Timer) {
+		p.testHooks().onReplyTimer = func(*time.Timer) {
 			readyTimerAcquired = true
 		}
 	}

@@ -190,9 +190,8 @@ type KeyRange struct {
 
 // txOptions holds every option-backing field of a Transaction — the Go analog of C++
 // TransactionOptions + the RYW-level option state (RFC-175 C2). One field per
-// fdb_transaction_set_option-style accessor (SetTenantId, SetTimeout, SetRetryLimit, …),
-// plus the two test-only knobs that behave like options. Embedded in Transaction, so
-// field promotion keeps every existing access site unchanged.
+// fdb_transaction_set_option-style accessor (SetTenantId, SetTimeout, SetRetryLimit, …).
+// Embedded in Transaction, so field promotion keeps every existing access site unchanged.
 //
 // Synchronization contract (unchanged by the move): option setters are NOT
 // concurrent-safe with operations (fdb/transaction.go) — fields here are plain unless
@@ -306,7 +305,9 @@ type txOptions struct {
 	// linkage across retries (regenerateSpan honors it). atomic.Pointer with immutable
 	// pointees — read by regenerateSpan on the commit auto-reset (RFC-115 §4).
 	spanParent atomic.Pointer[types.SpanContext]
+}
 
+type txTestHooks struct {
 	// rpcTimeoutOverride: if > 0, the per-RPC reply timeout for this
 	// transaction's READS instead of DefaultRPCTimeout. Test-only knob to
 	// drive the read path's reply-timeout retry deterministically; production
@@ -371,6 +372,9 @@ type txOptions struct {
 	// Test-only knob to make the backoff delay deterministic (production leaves it
 	// nil → real rand.Float64()).
 	backoffJitter func() float64
+
+	// onDesignWeakTimerStop observes weak timeout timer cleanup in tests.
+	onDesignWeakTimerStop func(*time.Timer)
 }
 
 // Transaction represents an FDB transaction.
@@ -597,6 +601,15 @@ type Transaction struct {
 	// conflict reply (NativeAPI.actor.cpp:6700-6717), kept across reset and OnError
 	// (cloneAndReset, :3531), read by \xff\xff/transaction/conflicting_keys/.
 	conflictingKeys atomic.Pointer[conflictingKeyMap]
+
+	hooks *txTestHooks // nil in production
+}
+
+func (tx *Transaction) testHooks() *txTestHooks {
+	if tx.hooks == nil {
+		tx.hooks = &txTestHooks{}
+	}
+	return tx.hooks
 }
 
 // TransactionPriority controls the GRV request priority.
@@ -805,8 +818,8 @@ func (tx *Transaction) readVersionForOperation(parentCtx context.Context, extraF
 	if err := tx.checkReadState(ctx); err != nil {
 		return 0, err
 	}
-	if tx.beforeReadVersionLock != nil {
-		tx.beforeReadVersionLock()
+	if tx.hooks != nil && tx.hooks.beforeReadVersionLock != nil {
+		tx.hooks.beforeReadVersionLock()
 	}
 	rv, userSet, err := tx.cachedOrFetchReadVersion(ctx, extraFlags)
 	if err != nil {
@@ -817,8 +830,8 @@ func (tx *Transaction) readVersionForOperation(parentCtx context.Context, extraF
 			return 0, err
 		}
 	}
-	if tx.afterReadVersion != nil {
-		tx.afterReadVersion()
+	if tx.hooks != nil && tx.hooks.afterReadVersion != nil {
+		tx.hooks.afterReadVersion()
 	}
 	return rv, nil
 }
@@ -981,8 +994,8 @@ func (tx *Transaction) finishPointRead(ctx context.Context, release func(), r po
 
 // pointServerRead is NativeAPI getValue, or its test seam.
 func (tx *Transaction) pointServerRead() func(context.Context, []byte) ([]byte, error) {
-	if tx.nativeGet != nil {
-		return tx.nativeGet
+	if tx.hooks != nil && tx.hooks.nativeGet != nil {
+		return tx.hooks.nativeGet
 	}
 	return tx.getValue
 }
@@ -1115,8 +1128,8 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 		} else {
 			p.key = bytes.Clone(key)
 		}
-		if tx.afterPendingSend != nil {
-			tx.afterPendingSend(p)
+		if tx.hooks != nil && tx.hooks.afterPendingSend != nil {
+			tx.hooks.afterPendingSend(p)
 		}
 		// Register under the current read incarnation: Commit drains
 		// outstanding pipelined reads (the C++ wait(reading) completion
@@ -1161,8 +1174,8 @@ type PendingGet struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
 	timer         *time.Timer
-	onReplyTimer  func(*time.Timer) // optional test hook run when timer is lazily acquired
-	sentAt        time.Time         // RFC-114: send time, for the pipelined read-latency sample
+	hooks         *pendingGetTestHooks // nil in production
+	sentAt        time.Time            // RFC-114: send time, for the pipelined read-latency sample
 	flushed       bool
 	gen           uint64        // read incarnation at issue (see Transaction.readGen)
 	tags          readTagSample // the request's draw, kept by a fallback loadBalance would retry itself
@@ -1178,6 +1191,17 @@ type PendingGet struct {
 	// is closed when done, made on demand by such a waiter.
 	settledFlag atomic.Bool
 	settled     atomic.Pointer[chan struct{}]
+}
+
+type pendingGetTestHooks struct {
+	onReplyTimer func(*time.Timer) // optional test hook run when timer is lazily acquired
+}
+
+func (p *PendingGet) testHooks() *pendingGetTestHooks {
+	if p.hooks == nil {
+		p.hooks = &pendingGetTestHooks{}
+	}
+	return p.hooks
 }
 
 // GetKey resolves a key selector to the actual key in the database: C++ RYW getKey
@@ -2254,8 +2278,8 @@ func (tx *Transaction) ensureTxSpan(ctx context.Context) {
 		}
 		if pending := tx.traceStarting; pending != nil {
 			tx.traceMu.Unlock()
-			if tx.beforeTraceWait != nil {
-				tx.beforeTraceWait(ctx)
+			if tx.hooks != nil && tx.hooks.beforeTraceWait != nil {
+				tx.hooks.beforeTraceWait(ctx)
 			}
 			select {
 			case <-pending:
@@ -2502,8 +2526,8 @@ func (tx *Transaction) stateGetVersionstamp(inc *readIncarnation) ([]byte, error
 	if e := tx.deferredErr.Load(); e != nil {
 		return nil, e
 	}
-	if tx.beforeVersionstampLookup != nil {
-		tx.beforeVersionstampLookup()
+	if tx.hooks != nil && tx.hooks.beforeVersionstampLookup != nil {
+		tx.hooks.beforeVersionstampLookup()
 	}
 	tx.readErrMu.Lock()
 	// Turnover clears the current head before draining leases. Only the
@@ -2652,8 +2676,8 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 	defer func() {
 		if rerr != nil {
 			tx.failCapturedIncarnation(op.inc, &wire.FDBError{Code: ErrTransactionCancelled})
-			if tx.beforeOnErrorWatchCleanup != nil {
-				tx.beforeOnErrorWatchCleanup()
+			if tx.hooks != nil && tx.hooks.beforeOnErrorWatchCleanup != nil {
+				tx.hooks.beforeOnErrorWatchCleanup()
 			}
 			if !owned.isActive() {
 				// Conditional turnover can reject a timeout after releasing
@@ -2856,8 +2880,8 @@ func (tx *Transaction) stateSetReadVersion(version int64) {
 	// NativeAPI::setVersion rejects any admitted GRV future, even after failure,
 	// before validating the supplied version. The void C API defers that error.
 	if tx.hasReadVersion || tx.readVersionAdmitted || tx.pendingReadVersion != nil {
-		if tx.beforeReadVersionReject != nil {
-			tx.beforeReadVersionReject()
+		if tx.hooks != nil && tx.hooks.beforeReadVersionReject != nil {
+			tx.hooks.beforeReadVersionReject()
 		}
 		err := &wire.FDBError{Code: 2010}
 		if tx.deferredErr.CompareAndSwap(nil, err) {
@@ -2866,8 +2890,8 @@ func (tx *Transaction) stateSetReadVersion(version int64) {
 		return
 	}
 	if version <= 0 {
-		if tx.beforeReadVersionReject != nil {
-			tx.beforeReadVersionReject()
+		if tx.hooks != nil && tx.hooks.beforeReadVersionReject != nil {
+			tx.hooks.beforeReadVersionReject()
 		}
 		err := &wire.FDBError{Code: 2011}
 		if tx.deferredErr.CompareAndSwap(nil, err) {
@@ -3928,8 +3952,8 @@ func (tx *Transaction) nextBackoff(errCode int) time.Duration {
 	}
 	// C++ pattern: return current * jitter, then grow for next time.
 	jitter := rand.Float64()
-	if tx.backoffJitter != nil {
-		jitter = tx.backoffJitter() // test-only deterministic override
+	if tx.hooks != nil && tx.hooks.backoffJitter != nil {
+		jitter = tx.hooks.backoffJitter() // test-only deterministic override
 	}
 	delay := time.Duration(float64(tx.backoff) * jitter)
 

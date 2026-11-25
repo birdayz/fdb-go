@@ -103,11 +103,10 @@ func TestDesignTimeoutDoesNotRetainTransaction(t *testing.T) {
 			stopOnce.Do(func() { close(stoppedCh) })
 		}
 	}
-	onDesignWeakTimerStop.Store(&hook)
-	defer onDesignWeakTimerStop.CompareAndSwap(&hook, nil)
 
 	arm := func() (weak.Pointer[Transaction], *time.Timer) {
 		tx := &Transaction{}
+		tx.testHooks().onDesignWeakTimerStop = hook
 		tx.readErrMu.Lock()
 		tx.timeoutArm++
 		tx.timeoutArmed = true
@@ -192,15 +191,15 @@ func TestDesignTimeoutProductionQueue(t *testing.T) {
 		modify func(*timeoutQueue)
 	}{
 		{"timer", func(q *timeoutQueue) { q.timer = &manualTimeoutTimer{} }},
-		{"beforeDeliver", func(q *timeoutQueue) { q.beforeDeliver = func(*timeoutNode) {} }},
-		{"beforeEagerSchedule", func(q *timeoutQueue) { q.beforeEagerSchedule = func(*timeoutNode) {} }},
-		{"compare", func(q *timeoutQueue) { q.compare = func() {} }},
-		{"afterFrontier", func(q *timeoutQueue) { q.root.afterFrontier = func(int64, uint64) {} }},
-		{"beforeScan", func(q *timeoutQueue) { q.root.beforeScan = func(*timeoutQueue) {} }},
-		{"afterScan", func(q *timeoutQueue) { q.root.afterScan = func(*timeoutQueue) {} }},
-		{"afterPop", func(q *timeoutQueue) { q.root.afterPop = func(*timeoutNode) {} }},
-		{"now", func(q *timeoutQueue) { q.now = func() int64 { return 0 } }},
-		{"deliver", func(q *timeoutQueue) { q.deliver = func(*Transaction, uint64) {} }},
+		{"beforeDeliver", func(q *timeoutQueue) { q.testHooks().beforeDeliver = func(*timeoutNode) {} }},
+		{"beforeEagerSchedule", func(q *timeoutQueue) { q.testHooks().beforeEagerSchedule = func(*timeoutNode) {} }},
+		{"compare", func(q *timeoutQueue) { q.testHooks().compare = func() {} }},
+		{"afterFrontier", func(q *timeoutQueue) { q.root.testHooks().afterFrontier = func(int64, uint64) {} }},
+		{"beforeScan", func(q *timeoutQueue) { q.root.testHooks().beforeScan = func(*timeoutQueue) {} }},
+		{"afterScan", func(q *timeoutQueue) { q.root.testHooks().afterScan = func(*timeoutQueue) {} }},
+		{"afterPop", func(q *timeoutQueue) { q.root.testHooks().afterPop = func(*timeoutNode) {} }},
+		{"now", func(q *timeoutQueue) { q.testHooks().now = func() int64 { return 0 } }},
+		{"deliver", func(q *timeoutQueue) { q.testHooks().deliver = func(*Transaction, uint64) {} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			q := newTimeoutQueue()
@@ -427,7 +426,7 @@ func TestDesignTimeoutTransactScopedPoolAndExpiry(t *testing.T) {
 		tx.SetTimeout(3600000)
 		tx.readVersion = 1
 		tx.hasReadVersion = true
-		tx.beforeRangeGoroutine = func() {
+		tx.testHooks().beforeRangeGoroutine = func() {
 			close(rangeEntered)
 			<-releaseRange
 		}

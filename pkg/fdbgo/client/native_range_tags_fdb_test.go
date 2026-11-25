@@ -63,7 +63,7 @@ func TestNativeReadTagSampling(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				t.Cleanup(cancel)
 				tx, rec, sim, draws, _, aliases := setup(t, ctx)
-				tx.rpcTimeoutOverride = 300 * time.Millisecond
+				tx.testHooks().rpcTimeoutOverride = 300 * time.Millisecond
 				var reply []byte
 				var alternative ServerInfo
 				wantDraws := 1
@@ -172,14 +172,14 @@ func TestNativeReadTagSampling(t *testing.T) {
 			t.Cleanup(cancel)
 			tx, rec, sim, draws, rv, _ := setup(t, ctx)
 			tx.db.hedgeEnabled.Store(hedge)
-			tx.rpcTimeoutOverride = time.Minute
+			tx.testHooks().rpcTimeoutOverride = time.Minute
 			plan := &replyPlan{rec: rec}
 			if hedge {
 				// Both selectors overlap: fund each, then fund the exact read after
 				// they finish. An incidental selector hedge cannot steal its budget.
 				duplicateServers(&Database{db: tx.db}, 2)
 				setSecondBudget(tx.db.queueModel, 2)
-				tx.db.readTags.draw = func() float64 {
+				tx.db.readTags.testHooks().draw = func() float64 {
 					draw := draws.draw()
 					if draws.count() == 3 {
 						setSecondBudget(tx.db.queueModel, 1)

@@ -42,7 +42,7 @@ func TestGRVCache_TryCacheReportsTheObtainInstantNotNow(t *testing.T) {
 	// would be a lie about the code, which is worse than no test at all: the
 	// no-flakes rule cuts in this direction too.
 	base := time.Now()
-	c := &grvCache{now: func() time.Time { return base }}
+	c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return base }}}
 
 	// Inside maxVersionCacheLag (100ms), so this is a HIT — but not fresh.
 	obtained := base.Add(-60 * time.Millisecond)
@@ -96,7 +96,7 @@ func TestGRVCache_MissReportsNoInstant(t *testing.T) {
 	t.Run("stale entry", func(t *testing.T) {
 		t.Parallel()
 		base := time.Now()
-		c := &grvCache{now: func() time.Time { return base }}
+		c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return base }}}
 		// Past maxVersionCacheLag: a miss, and the stamp must not leak. Frozen
 		// clock for the same reason as above — the margin here is generous, but
 		// a test that depends on wall-clock margin at all is a test that can
@@ -180,7 +180,7 @@ func TestGRVCache_FreshnessIsJudgedOnTheSeam(t *testing.T) {
 		// time is irrelevant — however long this test is descheduled for, the
 		// verdict is the same.
 		at := obtained.Add(maxVersionCacheLag - time.Nanosecond)
-		c := &grvCache{now: func() time.Time { return at }}
+		c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return at }}}
 		c.updateFromGRV(c.token(), obtained, 4242)
 		if _, _, ok := c.tryCache(grvPriorityDefault); !ok {
 			t.Fatalf("entry judged STALE at exactly maxVersionCacheLag-1ns on the seam: "+
@@ -194,7 +194,7 @@ func TestGRVCache_FreshnessIsJudgedOnTheSeam(t *testing.T) {
 		t.Parallel()
 		// One nanosecond the other side of the boundary.
 		at := obtained.Add(maxVersionCacheLag + time.Nanosecond)
-		c := &grvCache{now: func() time.Time { return at }}
+		c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return at }}}
 		c.updateFromGRV(c.token(), obtained, 4242)
 		if v, _, ok := c.tryCache(grvPriorityDefault); ok {
 			t.Fatalf("entry judged FRESH at maxVersionCacheLag+1ns on the seam (version %d): "+

@@ -48,9 +48,20 @@ type latencySketchStripe struct {
 //
 // The zero value is ready to use: each stripe creates its bucket map lazily
 // under its own lock. No constructor is needed for ClientMetrics.
-type latencySketch struct {
-	stripes      [numSketchStripes]latencySketchStripe
+type latencySketchTestHooks struct {
 	onStripeRead func(int) // optional test hook run during stats() aggregation
+}
+
+type latencySketch struct {
+	stripes [numSketchStripes]latencySketchStripe
+	hooks   *latencySketchTestHooks
+}
+
+func (s *latencySketch) testHooks() *latencySketchTestHooks {
+	if s.hooks == nil {
+		s.hooks = &latencySketchTestHooks{}
+	}
+	return s.hooks
 }
 
 func (s *latencySketch) lockAll() {
@@ -169,8 +180,8 @@ func (s *latencySketch) stats() LatencyStats {
 				}
 			}
 		}
-		if s.onStripeRead != nil {
-			s.onStripeRead(i)
+		if s.hooks != nil && s.hooks.onStripeRead != nil {
+			s.hooks.onStripeRead(i)
 		}
 	}
 	st := LatencyStats{Count: int64(populationSize)}

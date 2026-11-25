@@ -112,7 +112,7 @@ func TestNativeCommit_PublicWaitersInterruptDuringRetainedGRV(t *testing.T) {
 				arrived := make(chan struct{})
 				var once sync.Once
 				if operation != "second-commit" {
-					tx.beforeReadVersionLock = func() { once.Do(func() { close(arrived) }) }
+					tx.testHooks().beforeReadVersionLock = func() { once.Do(func() { close(arrived) }) }
 				}
 				second := make(chan error, 1)
 				go func() {

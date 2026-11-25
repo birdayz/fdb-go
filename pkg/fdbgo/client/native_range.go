@@ -73,7 +73,7 @@ func (tx *Transaction) nativeGetRangeAt(ctx context.Context, begin, end KeySelec
 	l := nativeRangeLoop{begin: begin, end: end, limits: limits, reverse: reverse}
 	l.start()
 	relocateRetries, timeoutRetries := 0, 0
-	lb := lbRetry{observe: tx.db.onReadBackoff.Load()}
+	lb := lbRetry{observe: tx.db.readBackoffObserver()}
 	var materializedBytes int64
 	var tags readTagSample
 	redraw := true
@@ -123,7 +123,7 @@ func (tx *Transaction) nativeGetRangeAt(ctx context.Context, begin, end KeySelec
 			continue
 		}
 		// The next request is a new loadBalance call.
-		lb = lbRetry{observe: tx.db.onReadBackoff.Load()}
+		lb = lbRetry{observe: tx.db.readBackoffObserver()}
 
 		if ceiling := tx.db.rangeByteCeiling; ceiling > 0 { // RFC-115 §2, as rangeScanImpl
 			for i := range kvs {
@@ -392,12 +392,16 @@ func (tx *Transaction) startResolveKey(ctx context.Context, sel KeySelector, rv 
 	}
 	fut = &keyFuture{done: make(chan struct{})}
 	var beforeWait func()
-	if hook := tx.beforeResolveKeyResume; hook != nil {
-		beforeWait = func() { hook(sel) }
+	var observe func(KeySelector)
+	var beforeReplyWait func(KeySelector, <-chan struct{})
+	if h := tx.hooks; h != nil {
+		if hook := h.beforeResolveKeyResume; hook != nil {
+			beforeWait = func() { hook(sel) }
+		}
+		observe = h.resolveKeyWorkerObserver
+		beforeReplyWait = h.beforeResolveKeyReplyWait
 	}
 	pctx, park := transport.WithSuspendHandoff(ctx, resume, beforeWait)
-	observe := tx.resolveKeyWorkerObserver
-	beforeReplyWait := tx.beforeResolveKeyReplyWait
 	replyWait := func(ctx context.Context) {
 		if beforeReplyWait != nil {
 			beforeReplyWait(sel, park.Done())

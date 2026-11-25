@@ -102,7 +102,7 @@ func controlledTimeoutQueue() (*timeoutQueue, *atomic.Int64) {
 	c := &atomic.Int64{}
 	q := newTimeoutQueue()
 	for _, shard := range q.root.shards {
-		shard.now = c.Load
+		shard.testHooks().now = c.Load
 		shard.timer = controlledTimeoutTimer{}
 	}
 	return q, c
@@ -206,7 +206,7 @@ func TestTimeoutQueuePopRaceWithRearm(t *testing.T) {
 	armTimeoutQueueForTest(tx, q, int64(time.Second))
 	parked := make(chan struct{})
 	resume, release := tasks.barrier()
-	q.beforeDeliver = func(*timeoutNode) {
+	q.testHooks().beforeDeliver = func(*timeoutNode) {
 		close(parked)
 		waitTimeoutQueueTest(t, resume, "pop/rearm delivery barrier")
 	}
@@ -228,10 +228,10 @@ func TestTimeoutQueueEagerSequencePublishedWithInsertion(t *testing.T) {
 	q, clock := controlledTimeoutQueue()
 	a, b, d := &Transaction{}, &Transaction{}, &Transaction{}
 	var order []*Transaction
-	q.deliver = func(tx *Transaction, _ uint64) { order = append(order, tx) }
+	q.testHooks().deliver = func(tx *Transaction, _ uint64) { order = append(order, tx) }
 	parked := make(chan struct{})
 	resume, release := tasks.barrier()
-	q.beforeEagerSchedule = func(n *timeoutNode) {
+	q.testHooks().beforeEagerSchedule = func(n *timeoutNode) {
 		if n.tx.Value() == a {
 			close(parked)
 			waitTimeoutQueueTest(t, resume, "eager publication barrier")
@@ -265,7 +265,7 @@ func TestTimeoutQueueCrossShardUnequalWakes(t *testing.T) {
 	armTimeoutQueueForTest(a, q, int64(20*time.Millisecond))
 	armTimeoutQueueForTest(b, q, int64(10*time.Millisecond))
 	var order []*Transaction
-	q.deliver = func(tx *Transaction, _ uint64) { order = append(order, tx) }
+	q.testHooks().deliver = func(tx *Transaction, _ uint64) { order = append(order, tx) }
 	clock.Store(int64(25 * time.Millisecond))
 	q.fire()
 	if a.timeoutNode.queue == b.timeoutNode.queue || len(order) != 2 || order[0] != a || order[1] != b {
@@ -283,10 +283,10 @@ func TestTimeoutQueueGlobalDrainerCallbackRescans(t *testing.T) {
 	armTimeoutQueueForTest(a, q, int64(time.Millisecond))
 	armTimeoutQueueForTest(b, q, int64(time.Millisecond))
 	var order []*Transaction
-	q.deliver = func(tx *Transaction, _ uint64) { order = append(order, tx) }
+	q.testHooks().deliver = func(tx *Transaction, _ uint64) { order = append(order, tx) }
 	parked := make(chan struct{})
 	resume, release := tasks.barrier()
-	q.beforeDeliver = func(n *timeoutNode) {
+	q.testHooks().beforeDeliver = func(n *timeoutNode) {
 		if n == a.timeoutNode {
 			close(parked)
 			waitTimeoutQueueTest(t, resume, "global drainer delivery barrier")
@@ -321,11 +321,11 @@ func TestTimeoutQueueShardCohortFrontier(t *testing.T) {
 	parkedA, parkedB := make(chan struct{}), make(chan struct{})
 	resumeA, releaseA := tasks.barrier()
 	resumeB, releaseB := tasks.barrier()
-	a.timeoutNode.queue.beforeEagerSchedule = func(*timeoutNode) {
+	a.timeoutNode.queue.testHooks().beforeEagerSchedule = func(*timeoutNode) {
 		close(parkedA)
 		waitTimeoutQueueTest(t, resumeA, "cohort armer A barrier")
 	}
-	b.timeoutNode.queue.beforeEagerSchedule = func(*timeoutNode) {
+	b.timeoutNode.queue.testHooks().beforeEagerSchedule = func(*timeoutNode) {
 		close(parkedB)
 		waitTimeoutQueueTest(t, resumeB, "cohort armer B barrier")
 	}
@@ -334,7 +334,7 @@ func TestTimeoutQueueShardCohortFrontier(t *testing.T) {
 	doneB := tasks.start("cohort armer B", func() { armTimeoutQueueForTest(b, q, int64(time.Second)) })
 	awaitTimeoutQueueTest(t, parkedB, "cohort armer B pause")
 	published := false
-	q.root.afterScan = func(shard *timeoutQueue) {
+	q.root.testHooks().afterScan = func(shard *timeoutQueue) {
 		if shard == a.timeoutNode.queue && !published {
 			published = true
 			releaseA()
@@ -344,7 +344,7 @@ func TestTimeoutQueueShardCohortFrontier(t *testing.T) {
 		}
 	}
 	var order []*Transaction
-	q.deliver = func(tx *Transaction, _ uint64) { order = append(order, tx) }
+	q.testHooks().deliver = func(tx *Transaction, _ uint64) { order = append(order, tx) }
 	clock.Store(int64(15 * time.Second))
 	q.fire()
 	q.fire()
@@ -370,14 +370,14 @@ func TestTimeoutQueueDeferredHeadDoesNotHideEligibleWork(t *testing.T) {
 	}
 	parked := make(chan struct{})
 	resume, release := tasks.barrier()
-	late.timeoutNode.queue.beforeEagerSchedule = func(*timeoutNode) {
+	late.timeoutNode.queue.testHooks().beforeEagerSchedule = func(*timeoutNode) {
 		close(parked)
 		waitTimeoutQueueTest(t, resume, "deferred head armer barrier")
 	}
 	done := tasks.start("deferred head armer", func() { armTimeoutQueueForTest(late, q, int64(time.Second)) })
 	awaitTimeoutQueueTest(t, parked, "deferred head armer pause")
 	cohort := 0
-	q.root.afterFrontier = func(_ int64, _ uint64) {
+	q.root.testHooks().afterFrontier = func(_ int64, _ uint64) {
 		cohort++
 		if cohort == 1 {
 			release()
@@ -386,7 +386,7 @@ func TestTimeoutQueueDeferredHeadDoesNotHideEligibleWork(t *testing.T) {
 	}
 	var order []*Transaction
 	var deliveredIn []int
-	q.deliver = func(tx *Transaction, _ uint64) {
+	q.testHooks().deliver = func(tx *Transaction, _ uint64) {
 		order = append(order, tx)
 		deliveredIn = append(deliveredIn, cohort)
 	}
@@ -425,7 +425,7 @@ func TestTimeoutQueueStaggeredExitCallbackKeepsWake(t *testing.T) {
 		}
 	}}
 	var order []*Transaction
-	q.deliver = func(tx *Transaction, _ uint64) { order = append(order, tx) }
+	q.testHooks().deliver = func(tx *Transaction, _ uint64) { order = append(order, tx) }
 	clock.Store(int64(5 * time.Second))
 	done := tasks.start("staggered exit drainer", q.fire)
 	awaitTimeoutQueueTest(t, parked, "staggered exit timer pause")
@@ -641,13 +641,13 @@ func TestTimeoutQueueResurrectionRenewalAgainstCollectedNode(t *testing.T) {
 				}
 			}
 			if stage == "popped-before-weak-read" {
-				q.root.afterPop = func(n *timeoutNode) {
+				q.root.testHooks().afterPop = func(n *timeoutNode) {
 					if n == old {
 						pause()
 					}
 				}
 			} else {
-				q.root.afterScan = func(shard *timeoutQueue) {
+				q.root.testHooks().afterScan = func(shard *timeoutQueue) {
 					if shard == old.queue {
 						pause()
 					}
@@ -673,9 +673,9 @@ func TestTimeoutQueueResurrectionRenewalAgainstCollectedNode(t *testing.T) {
 			release()
 			awaitTimeoutQueueTest(t, done, "resurrection drainer completion")
 			if stage == "immutable-ready-record" {
-				q.root.afterScan = nil
+				q.root.testHooks().afterScan = nil
 			} else {
-				q.root.afterPop = nil
+				q.root.testHooks().afterPop = nil
 			}
 			requireRenewedTimeoutDelivery(t, q, clock, held, old, fresh)
 		})
@@ -727,7 +727,7 @@ func TestTimeoutQueueConcurrentArms(t *testing.T) {
 	var tasks timeoutQueueTestTasks
 	defer tasks.finish(t)
 	q, clock := controlledTimeoutQueue()
-	q.deliver = func(*Transaction, uint64) {}
+	q.testHooks().deliver = func(*Transaction, uint64) {}
 	txs := make([]*Transaction, 32)
 	for i := range txs {
 		txs[i] = &Transaction{}

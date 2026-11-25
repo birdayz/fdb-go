@@ -318,7 +318,7 @@ func TestRawOwnedNoWriteCommitKeepsExistingCallerBehavior(t *testing.T) {
 func TestOwnedOnErrorElapsedDeadlineIsNoCause(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{}
-	tx.backoffJitter = func() float64 { return 0 }
+	tx.testHooks().backoffJitter = func() float64 { return 0 }
 	defer tx.Cancel()
 	initial := tx.enterState()
 	inc := initial.inc

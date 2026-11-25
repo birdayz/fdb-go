@@ -112,7 +112,7 @@ func TestRequestTranscriptGate(t *testing.T) {
 				setup func(tx *Transaction)
 			}{
 				{"wrong-shard", func([]byte) ([]byte, bool) { return inlineErrorReply(1001, injectPenalty), false }, nil},
-				{"reply-timeout", func([]byte) ([]byte, bool) { return nil, true }, func(tx *Transaction) { tx.rpcTimeoutOverride = 300 * time.Millisecond }},
+				{"reply-timeout", func([]byte) ([]byte, bool) { return nil, true }, func(tx *Transaction) { tx.testHooks().rpcTimeoutOverride = 300 * time.Millisecond }},
 			} {
 				fc := c
 				fc.name = c.name + "/" + fault.name

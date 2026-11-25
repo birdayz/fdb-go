@@ -4,20 +4,22 @@ import (
 	"testing"
 )
 
-// observePool swaps the package-level putReplyChannel seam for the duration of a
+// observePool installs the per-connection putReplyChannel seam for the duration of a
 // test, recording every channel returned to the pool, and restores it on cleanup.
-// Tests using it deliberately do NOT call t.Parallel(): they mutate shared
-// package state, so they must run serially (the only exception to the
-// project-wide t.Parallel() rule — they touch no FDB/Docker and are microseconds).
-func observePool(t *testing.T) *[]chan Response {
+func observePool(t *testing.T, c *Conn) *[]chan Response {
 	t.Helper()
-	orig := putReplyChannel
+	h := c.testHooks()
+	orig := h.putReplyChannel
 	pooled := &[]chan Response{}
-	putReplyChannel = func(ch chan Response) {
+	h.putReplyChannel = func(ch chan Response) {
 		*pooled = append(*pooled, ch)
-		orig(ch)
+		if orig != nil {
+			orig(ch)
+			return
+		}
+		putReplyChannelImpl(ch)
 	}
-	t.Cleanup(func() { putReplyChannel = orig })
+	t.Cleanup(func() { h.putReplyChannel = orig })
 	return pooled
 }
 
@@ -28,8 +30,8 @@ func newTestConn() *Conn {
 // TestReplyHandle_Cancel_WonRace_PoolsChannel: when Cancel runs before readLoop
 // delivers (token still pending), the channel is clean and returned to the pool.
 func TestReplyHandle_Cancel_WonRace_PoolsChannel(t *testing.T) {
-	pooled := observePool(t)
 	c := newTestConn()
+	pooled := observePool(t, c)
 
 	_, _, h := c.PrepareReply()
 	bidi := h.ch // capture before Cancel nils it
@@ -54,8 +56,8 @@ func TestReplyHandle_Cancel_WonRace_PoolsChannel(t *testing.T) {
 // (token gone, value buffered), Cancel must NOT pool the channel — a future
 // request must never read its stale buffered value.
 func TestReplyHandle_Cancel_LostRace_LeaksChannel(t *testing.T) {
-	pooled := observePool(t)
 	c := newTestConn()
+	pooled := observePool(t, c)
 
 	token, _, h := c.PrepareReply()
 	bidi := h.ch
@@ -80,8 +82,8 @@ func TestReplyHandle_Cancel_LostRace_LeaksChannel(t *testing.T) {
 // received, no Cancel), Release returns the channel to the pool — the leak the
 // false "readLoop returns it" comment hid.
 func TestReplyHandle_Release_Success_PoolsChannel(t *testing.T) {
-	pooled := observePool(t)
 	c := newTestConn()
+	pooled := observePool(t, c)
 
 	token, ch, h := c.PrepareReply()
 	bidi := h.ch
@@ -102,8 +104,8 @@ func TestReplyHandle_Release_Success_PoolsChannel(t *testing.T) {
 // TestConn_cancelPending_Discipline: SendAndWait's timeout path (cancelPending)
 // follows the same won/lost-race discipline — pool only when it beat delivery.
 func TestConn_cancelPending_Discipline(t *testing.T) {
-	pooled := observePool(t)
 	c := newTestConn()
+	pooled := observePool(t, c)
 
 	// Won race: token still pending → pool it.
 	token, _, h := c.PrepareReply()

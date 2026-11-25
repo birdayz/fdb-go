@@ -136,7 +136,7 @@ func TestSelectorRangeMatchesView(t *testing.T) {
 
 		m := newMemStorage(selectorStorageKeys...)
 		tx := &Transaction{}
-		tx.nativeRange = m.native
+		tx.testHooks().nativeRange = m.native
 		model := selectorModel{}
 		for _, k := range selectorStorageKeys {
 			model[k] = "v" + k
@@ -244,7 +244,7 @@ func TestSelectorRangeColdReadIsOneRequest(t *testing.T) {
 				t.Parallel()
 				m := newMemStorage(selectorStorageKeys...)
 				tx := &Transaction{}
-				tx.nativeRange = m.native
+				tx.testHooks().nativeRange = m.native
 				read := tx.GetRangeSelectors
 				if snapshot {
 					read = tx.Snapshot().GetRangeSelectors
@@ -332,7 +332,7 @@ func TestSelectorRangeConflict(t *testing.T) {
 			t.Parallel()
 			m := newMemStorage(selectorStorageKeys...)
 			tx := &Transaction{}
-			tx.nativeRange = m.native
+			tx.testHooks().nativeRange = m.native
 			if tc.set != "" {
 				tx.Set([]byte(tc.set), []byte("w"))
 			}
@@ -348,7 +348,7 @@ func TestSelectorRangeConflict(t *testing.T) {
 			}
 			// A snapshot read of the same range adds none (RYW:387).
 			snap := &Transaction{}
-			snap.nativeRange = newMemStorage(selectorStorageKeys...).native
+			snap.testHooks().nativeRange = newMemStorage(selectorStorageKeys...).native
 			if _, _, err := snap.Snapshot().GetRangeSelectors(context.Background(), tc.begin, tc.end, tc.limit, 0, tc.reverse); err != nil {
 				t.Fatal(err)
 			}
@@ -363,7 +363,7 @@ func TestSelectorRangeChecks(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{}
 	m := newMemStorage(selectorStorageKeys...)
-	tx.nativeRange = m.native
+	tx.testHooks().nativeRange = m.native
 	ctx := context.Background()
 	fge := func(k string) KeySelector { return firstGreaterOrEqual([]byte(k)) }
 	for _, tc := range []struct {
@@ -394,7 +394,7 @@ func TestSelectorRangeRowsAreTheCallers(t *testing.T) {
 	t.Parallel()
 	m := newMemStorage(selectorStorageKeys...)
 	tx := &Transaction{}
-	tx.nativeRange = m.native
+	tx.testHooks().nativeRange = m.native
 	tx.Set([]byte("e"), []byte("ve-written"))
 	ctx := context.Background()
 	begin := KeySelector{Key: []byte("e"), OrEqual: true, Offset: 0} // lastLessOrEqual(e)
@@ -500,9 +500,9 @@ func TestOwnedSelectorsKeepHandedKeys(t *testing.T) {
 	for _, handed := range []bool{false, true} {
 		m := newMemStorage(selectorStorageKeys...)
 		tx := &Transaction{}
-		tx.nativeRange = m.native
+		tx.testHooks().nativeRange = m.native
 		gate := make(chan struct{})
-		tx.beforeRangeGoroutine = func() { <-gate }
+		tx.testHooks().beforeRangeGoroutine = func() { <-gate }
 		b, e := []byte("b"), []byte("h")
 		var p *PendingRange
 		if handed {
@@ -543,7 +543,7 @@ func TestStartedGetKeyIsTheCallers(t *testing.T) {
 	for _, snapshot := range []bool{false, true} {
 		m := newMemStorage(selectorStorageKeys...)
 		tx := &Transaction{}
-		tx.nativeRange = m.native
+		tx.testHooks().nativeRange = m.native
 		tx.Set([]byte("e"), []byte("ve"))
 		for _, tc := range []struct {
 			sel  KeySelector
@@ -591,7 +591,7 @@ func TestStartedGetKeyIsTheCallers(t *testing.T) {
 func TestSelectorReadKeepsFullKeyspaceWriteConflict(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{writeSystemKeys: true, readSystemKeys: true}
-	tx.nativeRange = newMemStorage().native
+	tx.testHooks().nativeRange = newMemStorage().native
 	if err := tx.AddWriteConflictRange(allKeysBegin, allKeysEnd); err != nil {
 		t.Fatal(err)
 	}
@@ -660,7 +660,7 @@ func TestLocalReadsKeepInlineCacheBytesAcrossReset(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	tx := &Transaction{}
-	tx.nativeRange = newMemStorage().native
+	tx.testHooks().nativeRange = newMemStorage().native
 	c := &tx.ryw
 	c.mu.Lock()
 	c.serverCache.insertPoint([]byte("a"), []byte("va"))
@@ -705,7 +705,7 @@ func TestGetKeyOwnsItsSelectorKey(t *testing.T) {
 		for _, snapshot := range []bool{false, true} {
 			m := newMemStorage(selectorStorageKeys...)
 			tx := &Transaction{}
-			tx.nativeRange = m.native
+			tx.testHooks().nativeRange = m.native
 			buf := []byte("m")
 			getKey := tx.GetKey
 			if snapshot {
@@ -728,7 +728,7 @@ func TestSelectorRangeOwnsSelectorKeys(t *testing.T) {
 	t.Parallel()
 	m := newMemStorage(selectorStorageKeys...)
 	tx := &Transaction{}
-	tx.nativeRange = m.native
+	tx.testHooks().nativeRange = m.native
 	// lastLessThan(e) .. firstGreaterOrEqual(e)+1: no orEqual, so removeOrEqual
 	// would keep the caller's slices.
 	bk, ek := []byte("e"), []byte("e")

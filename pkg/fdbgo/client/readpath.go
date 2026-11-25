@@ -68,8 +68,8 @@ func lockAwareReadOptions() types.ReadOptions {
 // readRPCTimeout is the per-RPC reply timeout for this transaction's reads:
 // the transaction's override when set (test-only), else DefaultRPCTimeout.
 func (tx *Transaction) readRPCTimeout() time.Duration {
-	if tx.rpcTimeoutOverride > 0 {
-		return tx.rpcTimeoutOverride
+	if tx.hooks != nil && tx.hooks.rpcTimeoutOverride > 0 {
+		return tx.hooks.rpcTimeoutOverride
 	}
 	return DefaultRPCTimeout
 }
@@ -139,8 +139,8 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, readVersion int64, select
 // read loop has already published the reply. Ordinary getKey leaves it nil.
 func (tx *Transaction) getKeyImplWithReplyWait(ctx context.Context, readVersion int64, selectorKey []byte, orEqual bool, offset int32, replyWait func(context.Context)) ([]byte, bool, error) {
 	tx.hadRead.Store(true) // a read was issued — the rywDisabled GetKey choke (RFC-059)
-	if fn := tx.resolveKeyFn; fn != nil {
-		key, err := fn(ctx, KeySelector{Key: selectorKey, OrEqual: orEqual, Offset: offset}, readVersion)
+	if tx.hooks != nil && tx.hooks.resolveKeyFn != nil {
+		key, err := tx.hooks.resolveKeyFn(ctx, KeySelector{Key: selectorKey, OrEqual: orEqual, Offset: offset}, readVersion)
 		return key, false, err
 	}
 	// Three independent budgets, because getKey's loop iterates for two
@@ -179,7 +179,7 @@ func (tx *Transaction) getKeyImplWithReplyWait(ctx context.Context, readVersion 
 		// through the location lookup + proxy request + invalidate, mirroring C++ getKey's
 		// Reverse{k.isBackward()} (NativeAPI:3787-3788). See keySelectorIsBackward for the predicate.
 		isBackward := keySelectorIsBackward(orEqual, offset)
-		lb.observe = tx.db.onReadBackoff.Load()
+		lb.observe = tx.db.readBackoffObserver()
 		loc, err := tx.db.locCache.locateWithReplyWait(tx.db, ctx, selectorKey, tx.tenantId, tx.currentSpan(), isBackward, replyWait)
 		if err != nil {
 			return nil, false, fmt.Errorf("locate key: %w", err)
@@ -234,7 +234,7 @@ func (tx *Transaction) getKeyImplWithReplyWait(ctx context.Context, readVersion 
 			}
 			return nil, false, err
 		}
-		lb = lbRetry{observe: tx.db.onReadBackoff.Load()} // the next request is a new loadBalance call
+		lb = lbRetry{observe: tx.db.readBackoffObserver()} // the next request is a new loadBalance call
 
 		if progressSteps == 0 {
 			needsRangeFallback = needsRangeFallback || keyResolutionNeedsRangeFallback(replyKey, replyOrEqual, replyOffset, loc, isBackward)
@@ -456,7 +456,7 @@ func (tx *Transaction) getValueSampled(parentCtx context.Context, key []byte, ca
 func (tx *Transaction) getValueImpl(ctx context.Context, key []byte, carried *readTagSample) ([]byte, error) {
 	tx.hadRead.Store(true) // a read was issued (RFC-059 poison signal)
 	timeoutRetries := 0
-	lb := lbRetry{observe: tx.db.onReadBackoff.Load()}
+	lb := lbRetry{observe: tx.db.readBackoffObserver()}
 	var tags readTagSample
 	redraw := carried == nil
 	if carried != nil {
@@ -755,7 +755,7 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 	curEnd := end
 	relocateRetries := 0
 	timeoutRetries := 0
-	lb := lbRetry{observe: tx.db.onReadBackoff.Load()}
+	lb := lbRetry{observe: tx.db.readBackoffObserver()}
 	// C++ getRange's own loop, before any getRangeFallback, reports readThrough when the
 	// first reply's rows end a shard the range continues past (NativeAPI.actor.cpp:4762,
 	// 4795-4799). A byte-targeted call then stops; wrong_shard_server falls back (:4864-4870).
@@ -898,7 +898,7 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 					}
 					return nil, false, nil, err
 				}
-				lb = lbRetry{observe: tx.db.onReadBackoff.Load()} // the next request is a new loadBalance call
+				lb = lbRetry{observe: tx.db.readBackoffObserver()} // the next request is a new loadBalance call
 				if firstReply {
 					firstReply = false
 					if byteLimited && len(kvs) > 0 && !more {
@@ -1626,7 +1626,7 @@ func (tx *Transaction) watchPoll(watchCtx context.Context, watchCancel context.C
 	// all_alternatives is bounded (a relocate storm); the SS poll-signals below are unbounded — the
 	// watch keeps polling, as C++ does.
 	wrongShardRetries := 0
-	lb := lbRetry{observe: tx.db.onReadBackoff.Load()}
+	lb := lbRetry{observe: tx.db.readBackoffObserver()}
 	for {
 		if err := watchCtx.Err(); err != nil {
 			return err

@@ -224,7 +224,7 @@ func TestLateConnErrorKeepsReplacementConn(t *testing.T) {
 			commitReply = replyToken(req.Reply.Token)
 		})
 	}
-	db.afterLocationSend.Store(&hook)
+	db.testHooks().afterLocationSend.Store(&hook)
 
 	locCtx, cancelLoc := context.WithCancel(ctx)
 	locDone := make(chan struct{})
@@ -435,9 +435,9 @@ func TestHandleConnErrorMarkCannotOvertakeRedial(t *testing.T) {
 		}
 		go redial()
 	}
-	db.beforeConnFailureMark.Store(&hook)
+	db.testHooks().beforeConnFailureMark.Store(&hook)
 	db.handleConnError(addr, a)
-	db.beforeConnFailureMark.Store(nil)
+	db.testHooks().beforeConnFailureMark.Store(nil)
 	if err := <-redialed; err != nil {
 		t.Fatalf("redial: %v", err)
 	}
@@ -899,7 +899,7 @@ func TestHandleConnErrorClosesOutsideConnMu(t *testing.T) {
 			t.Error("the failed connection's completed dial cohort was still published before Close")
 		}
 	}
-	db.beforeConnFailureMark.Store(&hook)
+	db.testHooks().beforeConnFailureMark.Store(&hook)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -1240,7 +1240,7 @@ func TestMetricsFanoutDoesNotWaitForConnectionClose(t *testing.T) {
 				release := func() { releaseOnce.Do(func() { close(gate.release) }) }
 				db, tx := armDatabase(ctx, healthy, losing)
 				tx.tenantId = 42
-				db.altFailureDelayOverride = 30 * time.Second
+				db.testHooks().altFailureDelayOverride.Store(int64(30 * time.Second))
 				const losingAddr = "losing:4500"
 				var losingConn *transport.Conn
 				opCtx, stop := context.WithCancel(ctx)
@@ -1276,7 +1276,7 @@ func TestMetricsFanoutDoesNotWaitForConnectionClose(t *testing.T) {
 						reportOnce.Do(func() { close(reporting) })
 					}
 				}
-				db.beforeConnFailureMark.Store(&hook)
+				db.testHooks().beforeConnFailureMark.Store(&hook)
 				done = make(chan struct{})
 				go func() {
 					defer close(done)
@@ -1371,7 +1371,7 @@ func TestMetricsRequestWakesOnRecovery(t *testing.T) {
 				}
 				return dial(ctx, network, addr)
 			}
-			db.altFailureDelayOverride = 30 * time.Second
+			db.testHooks().altFailureDelayOverride.Store(int64(30 * time.Second))
 			parked := make(chan struct{})
 			var parks atomic.Int32
 			hook := func() {
@@ -1383,7 +1383,7 @@ func TestMetricsRequestWakesOnRecovery(t *testing.T) {
 					close(parked)
 				}
 			}
-			db.beforeAltFailureWait.Store(&hook)
+			db.testHooks().beforeAltFailureWait.Store(&hook)
 			startArm(t, ctx, arm.connArm(), db, tx)
 			select {
 			case <-parked:
@@ -1415,7 +1415,7 @@ func TestMetricsRecoveryIgnoresUnrelatedAfterExclusionExpires(t *testing.T) {
 	dbCtx, closeDB := context.WithCancel(ctx)
 	defer closeDB()
 	db, _ := identityDatabase(dbCtx)
-	db.altFailureDelayOverride = 30 * time.Second
+	db.testHooks().altFailureDelayOverride.Store(int64(30 * time.Second))
 	db.failMon.markFailed(armAddr)
 	entered := make(chan struct{})
 	db.dialFn = func(ctx context.Context, _, addr string) (net.Conn, error) {
@@ -1431,7 +1431,7 @@ func TestMetricsRecoveryIgnoresUnrelatedAfterExclusionExpires(t *testing.T) {
 		db.failMon.failed[armAddr].excludedUntil = nowSeconds() - 1
 		db.failMon.mu.Unlock()
 	}
-	db.beforeAltFailureWait.Store(&beforeWait)
+	db.testHooks().beforeAltFailureWait.Store(&beforeWait)
 	opCtx, stop := context.WithCancel(ctx)
 	checks := make(chan bool, 2)
 	release := make(chan struct{})
@@ -1448,7 +1448,7 @@ func TestMetricsRecoveryIgnoresUnrelatedAfterExclusionExpires(t *testing.T) {
 			}
 		}
 	}
-	db.afterAltRecoveryCheck.Store(&afterCheck)
+	db.testHooks().afterAltRecoveryCheck.Store(&afterCheck)
 	servers := []ServerInfo{{Address: armAddr, Token: armToken}}
 	recovered := db.failMon.waitForRecovery()
 	var err error
@@ -1534,7 +1534,7 @@ func TestMetricsRecoveryDoesNotWaitForOtherProbe(t *testing.T) {
 	defer cancel()
 	peer := newIdentityPeer(t)
 	db, tx := armDatabase(ctx, peer)
-	db.altFailureDelayOverride = 30 * time.Second
+	db.testHooks().altFailureDelayOverride.Store(int64(30 * time.Second))
 	const blocked = "blocked:4500"
 	db.failMon.markFailed(blocked)
 	db.failMon.markFailed(armAddr)
@@ -1556,7 +1556,7 @@ func TestMetricsRecoveryDoesNotWaitForOtherProbe(t *testing.T) {
 		db.failMon.failed[armAddr].excludedUntil = nowSeconds() + 600
 		db.failMon.mu.Unlock()
 	}
-	db.beforeAltFailureWait.Store(&hook)
+	db.testHooks().beforeAltFailureWait.Store(&hook)
 	opCtx, stop := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
@@ -1810,10 +1810,10 @@ func TestMetricsRequestProbesExcludedReplica(t *testing.T) {
 				}
 				return dial(ctx, network, addr)
 			}
-			db.altFailureDelayOverride = 30 * time.Second
+			db.testHooks().altFailureDelayOverride.Store(int64(30 * time.Second))
 			var parks atomic.Int32
 			hook := func() { parks.Add(1) }
-			db.beforeAltFailureWait.Store(&hook)
+			db.testHooks().beforeAltFailureWait.Store(&hook)
 			startArm(t, ctx, arm.connArm(), db, tx)
 			waitCtx, stop := context.WithTimeout(ctx, connFailureInitialWindow*time.Second+5*time.Second)
 			defer stop()
@@ -1915,7 +1915,7 @@ func TestMetricsRequestAllFailedDelay(t *testing.T) {
 				peer := newIdentityPeer(t)
 				db, tx := armDatabase(ctx, peer)
 				defer closeIdentityDatabase(db)
-				db.altFailureDelayOverride = 30 * time.Second
+				db.testHooks().altFailureDelayOverride.Store(int64(30 * time.Second))
 				var servers []ServerInfo
 				if !empty {
 					servers = []ServerInfo{{Address: armAddr, Token: armToken}, {Address: armAddr, Token: transport.UID{First: 0x99, Second: 0xaa}}}
@@ -1975,7 +1975,7 @@ func TestMetricsRequestDatabaseCloseInterruptsAllFailedDelay(t *testing.T) {
 				peer := newIdentityPeer(t)
 				db, tx := armDatabase(dbCtx, peer)
 				defer closeIdentityDatabase(db)
-				db.altFailureDelayOverride = 30 * time.Second
+				db.testHooks().altFailureDelayOverride.Store(int64(30 * time.Second))
 				var servers []ServerInfo
 				if !empty {
 					servers = []ServerInfo{{Address: armAddr, Token: armToken}, {Address: armAddr, Token: transport.UID{First: 0x99, Second: 0xaa}}}
@@ -2037,13 +2037,13 @@ func TestMetricsRequestDatabaseCloseInterruptsWait(t *testing.T) {
 				opCtx, stop := context.WithCancel(ctx)
 				waitCtx := &metricsWaitContext{Context: opCtx, waiting: make(chan struct{})}
 				if !backoff {
-					db.altFailureDelayOverride = 30 * time.Second
+					db.testHooks().altFailureDelayOverride.Store(int64(30 * time.Second))
 					db.failMon.markFailed(armAddr)
 					db.failMon.mu.Lock()
 					db.failMon.failed[armAddr].excludedUntil = nowSeconds() + 600
 					db.failMon.mu.Unlock()
 					hook := func() { waitCtx.observe.Store(true) }
-					db.beforeAltFailureWait.Store(&hook)
+					db.testHooks().beforeAltFailureWait.Store(&hook)
 				}
 				var err error
 				done := make(chan struct{})

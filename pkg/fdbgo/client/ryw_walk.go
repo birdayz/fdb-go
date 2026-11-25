@@ -54,8 +54,19 @@ type rywWalkState struct {
 	sub *rywWalk    // pcAwait*Key: the nested getKey, with its own requestCount
 	err error
 
+	hooks *rywWalkTestHooks
+}
+
+type rywWalkTestHooks struct {
 	// onRequest, when set, sees each storage request as it is built (S1 traces).
 	onRequest func(walkRequest)
+}
+
+func (s *rywWalkState) testHooks() *rywWalkTestHooks {
+	if s.hooks == nil {
+		s.hooks = &rywWalkTestHooks{}
+	}
+	return s.hooks
 }
 
 type walkPC uint8
@@ -241,7 +252,9 @@ func (w *rywWalk) copyIter(i int, it *rywIter) *rywIter {
 func (w *rywWalk) startSub(sel KeySelector, pc walkPC) {
 	sel.Key = bytes.Clone(sel.Key)
 	w.sub = w.c.getKeyWalk(w.view, w.cache, w.gen, sel, w.maxKey)
-	w.sub.onRequest = w.onRequest
+	if w.hooks != nil && w.hooks.onRequest != nil {
+		w.sub.testHooks().onRequest = w.hooks.onRequest
+	}
 	w.sub.start()
 	w.pc = pc
 	if !w.sub.done() {
@@ -616,8 +629,8 @@ func (w *rywWalk) await(req walkRequest) {
 	req.begin.Key = bytes.Clone(req.begin.Key)
 	req.end.Key = bytes.Clone(req.end.Key)
 	w.req, w.pc = req, pcAwaitStorage
-	if w.onRequest != nil {
-		w.onRequest(req)
+	if w.hooks != nil && w.hooks.onRequest != nil {
+		w.hooks.onRequest(req)
 	}
 }
 

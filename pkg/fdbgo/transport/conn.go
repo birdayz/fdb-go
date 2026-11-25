@@ -59,7 +59,7 @@ func (h *ReplyHandle) Cancel() {
 		// delivered and never will (we delete it here under the same lock).
 		// The channel is clean — pool it.
 		delete(s.m, h.token)
-		putReplyChannel(h.ch)
+		h.conn.putReplyCh(h.ch)
 	}
 	// Else readLoop already delivered (or is mid-delivery): h.ch may hold a
 	// buffered value, so we must NOT pool it — leave it to GC. This rare
@@ -86,7 +86,7 @@ func (h *ReplyHandle) TakeReadyOrCancel() (Response, bool) {
 	default:
 		if _, pending := s.m[h.token]; pending {
 			delete(s.m, h.token)
-			putReplyChannel(h.ch)
+			h.conn.putReplyCh(h.ch)
 		}
 		h.ch = nil
 		return Response{}, false
@@ -108,7 +108,7 @@ func (h *ReplyHandle) KeepReadyOrCancel() bool {
 	}
 	if _, pending := s.m[h.token]; pending {
 		delete(s.m, h.token)
-		putReplyChannel(h.ch)
+		h.conn.putReplyCh(h.ch)
 	}
 	h.ch = nil
 	return false
@@ -130,7 +130,7 @@ func (h *ReplyHandle) NotifyWait(ctx context.Context) {
 // publisher until deletion. Cancel nils h.ch, so the cancel path never double-pools.
 func (h *ReplyHandle) Release() {
 	if h.ch != nil {
-		putReplyChannel(h.ch)
+		h.conn.putReplyCh(h.ch)
 	}
 	h.conn = nil
 	h.ch = nil
@@ -247,17 +247,34 @@ type Conn struct {
 	turns          atomic.Int64  // turns taken, so tests can tell a sender wrote its batch
 
 	// na is the enqueue-only D-NG writer (na_writer.go).
-	na                *naWriter
-	design            string // dial-option override of envDesign; see na_writer.go
-	adaptiveLinger    time.Duration
-	coalesceSet       bool
-	coldOrderActive   atomic.Bool
-	beforeReadLoop    func() // optional test hook run in dialWith just before readLoop starts
-	beforeControlLock func() // optional test hook run in tryEnqueueNAControl before controlMu.Lock
+	na              *naWriter
+	design          string // dial-option override of envDesign; see na_writer.go
+	adaptiveLinger  time.Duration
+	coalesceSet     bool
+	coldOrderActive atomic.Bool
+	hooks           atomic.Pointer[connTestHooks]
 
 	// Debug tracing (set before first use).
 	debugFrames bool
 	debugWriter io.Writer
+}
+
+type connTestHooks struct {
+	beforeReadLoop    func() // optional test hook run in dialWith just before readLoop starts
+	beforeControlLock func() // optional test hook run in tryEnqueueNAControl before controlMu.Lock
+	putReplyChannel   func(chan Response)
+	seriousLog        func(msg string, attrs ...any)
+}
+
+func (c *Conn) testHooks() *connTestHooks {
+	if h := c.hooks.Load(); h != nil {
+		return h
+	}
+	h := &connTestHooks{}
+	if c.hooks.CompareAndSwap(nil, h) {
+		return h
+	}
+	return c.hooks.Load()
 }
 
 // writeReq is a frame queued for the write loop.
@@ -636,8 +653,8 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 		c.loopWG.Add(1)
 		go c.coldControlLoop()
 	}
-	if c.beforeReadLoop != nil {
-		c.beforeReadLoop()
+	if h := c.hooks.Load(); h != nil && h.beforeReadLoop != nil {
+		h.beforeReadLoop()
 	}
 	go c.readLoop()
 	if c.na != nil {
@@ -687,7 +704,7 @@ func (c *Conn) cancelPending(token UID, ch chan Response) {
 	s.mu.Lock()
 	if _, ok := s.m[token]; ok {
 		delete(s.m, token)
-		putReplyChannel(ch)
+		c.putReplyCh(ch)
 	}
 	s.mu.Unlock()
 }
@@ -729,11 +746,19 @@ func getReplyChannel() chan Response {
 	return replyChanPool.Get().(chan Response)
 }
 
-// putReplyChannel returns a reply channel to the pool after draining it.
-// It is a var (defaulting to putReplyChannelImpl) so the pool-discipline tests
-// can observe exactly which channels are returned to the pool, on which path,
-// without depending on sync.Pool's non-deterministic reuse.
-var putReplyChannel = putReplyChannelImpl
+// putReplyCh returns a reply channel to the pool after draining it,
+// routing through connTestHooks.putReplyChannel when installed in tests so
+// pool-discipline tests can observe exactly which channels are returned to the
+// pool, on which path, without depending on sync.Pool's non-deterministic reuse.
+func (c *Conn) putReplyCh(ch chan Response) {
+	if c != nil {
+		if h := c.hooks.Load(); h != nil && h.putReplyChannel != nil {
+			h.putReplyChannel(ch)
+			return
+		}
+	}
+	putReplyChannelImpl(ch)
+}
 
 func putReplyChannelImpl(ch chan Response) {
 	// Drain any buffered value (shouldn't normally happen).
@@ -847,8 +872,10 @@ func (c *Conn) coalesceWait(sinceWrite time.Duration) {
 		return
 	}
 	if c.coalesce.Reset(coalesceDelay(c.minCoalesce, c.maxCoalesce, sinceWrite, mathrand.Float64())) == nil {
-		if c.na != nil && c.na.onCoalesceWait != nil {
-			c.na.onCoalesceWait()
+		if c.na != nil {
+			if h := c.na.hooks.Load(); h != nil && h.onCoalesceWait != nil {
+				h.onCoalesceWait()
+			}
 		}
 		_ = c.coalesce.Wait()
 	}
@@ -1026,7 +1053,7 @@ func (c *Conn) SendAndWait(ctx context.Context, destToken UID, body []byte) ([]b
 	case resp := <-replyCh:
 		// Received: readLoop deleted the token before delivering, so no further
 		// send can race — return the channel to the pool.
-		putReplyChannel(replyCh)
+		c.putReplyCh(replyCh)
 		return resp.Body, resp.Err
 	case <-ctx.Done():
 		// Timed out: remove the still-pending token; pool the channel only if we
@@ -1093,13 +1120,19 @@ func (c *Conn) failConnection(err error) {
 	})
 }
 
-// seriousLog reports an unexpected, must-not-be-silent event (a recovered panic in
+// logSerious reports an unexpected, must-not-be-silent event (a recovered panic in
 // the connection's background goroutines) at ERROR level through log/slog, passing
 // structured attributes rather than a pre-formatted string so a JSON/structured
 // handler gets queryable fields. Routing through slog.Default() makes these
 // diagnostics pluggable via the standard Go mechanism (slog.SetDefault) with no
-// fdbgo-specific logging API. A var so tests can capture it.
-var seriousLog = func(msg string, attrs ...any) {
+// fdbgo-specific logging API.
+func (c *Conn) logSerious(msg string, attrs ...any) {
+	if c != nil {
+		if h := c.hooks.Load(); h != nil && h.seriousLog != nil {
+			h.seriousLog(msg, attrs...)
+			return
+		}
+	}
 	slog.Default().Error(msg, attrs...)
 }
 
@@ -1113,7 +1146,7 @@ var seriousLog = func(msg string, attrs ...any) {
 func (c *Conn) recoverLoop(which string) {
 	if r := recover(); r != nil {
 		err := fmt.Errorf("fdbgo: panic in %s goroutine: %v", which, r)
-		seriousLog("recovered panic in connection goroutine",
+		c.logSerious("recovered panic in connection goroutine",
 			"goroutine", which, "err", err, "stack", string(debug.Stack()))
 		c.failConnection(err)
 	}
@@ -1168,7 +1201,7 @@ func (c *Conn) readLoop() {
 	defer func() {
 		if r := recover(); r != nil {
 			exitErr = fmt.Errorf("fdbgo: panic in readLoop goroutine: %v", r)
-			seriousLog("recovered panic in readLoop goroutine",
+			c.logSerious("recovered panic in readLoop goroutine",
 				"err", exitErr, "stack", string(debug.Stack()))
 		}
 		c.failConnection(exitErr)

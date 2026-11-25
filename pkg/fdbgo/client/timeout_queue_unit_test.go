@@ -25,7 +25,7 @@ func manualTimeoutQueue() (*timeoutQueue, *atomic.Int64, *manualTimeoutTimer) {
 	clock.Store(int64(time.Hour))
 	q := newTimeoutQueue()
 	for _, shard := range q.root.shards {
-		shard.now = clock.Load
+		shard.testHooks().now = clock.Load
 		shard.timer = &manualTimeoutTimer{}
 	}
 	return q, clock, q.timer.(*manualTimeoutTimer)
@@ -110,7 +110,7 @@ func TestTimeoutQueueWake(t *testing.T) {
 			tx := &Transaction{}
 			n := q.newNode(tx)
 			delivered := 0
-			q.deliver = func(*Transaction, uint64) { delivered++ }
+			q.testHooks().deliver = func(*Transaction, uint64) { delivered++ }
 			scheduleTimeoutNode(n, 1, start+int64(tc.deadline))
 			if n.wake != start+int64(tc.wake) || timer.delay != tc.wake {
 				t.Fatalf("WAKE_POLICY: wake=%d delay=%v, want %v", n.wake-start, timer.delay, tc.wake)
@@ -169,7 +169,7 @@ func TestTimeoutQueueFIFO(t *testing.T) {
 	na, nb := q.newNode(a), q.newNode(b)
 	start := clock.Load()
 	var got []*Transaction
-	q.deliver = func(tx *Transaction, _ uint64) { got = append(got, tx) }
+	q.testHooks().deliver = func(tx *Transaction, _ uint64) { got = append(got, tx) }
 	scheduleTimeoutNode(na, 1, start+int64(20*time.Second))
 	scheduleTimeoutNode(nb, 1, start+int64(20*time.Second))
 	clock.Add(int64(timeoutInterval))
@@ -204,7 +204,7 @@ func TestTimeoutQueueBatchOrder(t *testing.T) {
 		start := clock.Load()
 		a, b := &Transaction{}, &Transaction{}
 		var got []*Transaction
-		q.deliver = func(tx *Transaction, _ uint64) { got = append(got, tx) }
+		q.testHooks().deliver = func(tx *Transaction, _ uint64) { got = append(got, tx) }
 		scheduleTimeoutNode(q.newNode(a), 1, start+int64(20*time.Millisecond-timeoutSlack))
 		scheduleTimeoutNode(q.newNode(b), 1, start+int64(10*time.Millisecond-timeoutSlack))
 		clock.Store(start + int64(dispatch))
@@ -228,14 +228,14 @@ func TestTimeoutQueueBatchWithdrawal(t *testing.T) {
 	x, y, z := &Transaction{}, &Transaction{}, &Transaction{}
 	nx, ny, nz := q.newNode(x), q.newNode(y), q.newNode(z)
 	var got []*Transaction
-	q.deliver = func(tx *Transaction, _ uint64) { got = append(got, tx) }
+	q.testHooks().deliver = func(tx *Transaction, _ uint64) { got = append(got, tx) }
 	deadline := clock.Load() + int64(time.Second)
 	for _, n := range []*timeoutNode{nx, ny, nz} {
 		scheduleTimeoutNode(n, 1, deadline)
 	}
 	clock.Store(deadline + int64(timeoutSlack))
 	parked, resume, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	q.beforeDeliver = func(n *timeoutNode) {
+	q.testHooks().beforeDeliver = func(n *timeoutNode) {
 		if n == nx {
 			close(parked)
 			<-resume
@@ -304,7 +304,7 @@ func TestTimeoutQueueSiftComparisons(t *testing.T) {
 	t.Parallel()
 	q, clock, _ := manualTimeoutQueue()
 	comparisons := 0
-	q.compare = func() { comparisons++ }
+	q.testHooks().compare = func() { comparisons++ }
 	tx := &Transaction{}
 	for i := 1; i <= 65536; i++ {
 		n := q.newNodeForShard(tx)
@@ -341,11 +341,11 @@ func TestTimeoutQueueSingleDrainer(t *testing.T) {
 	nx, ny, nz := q.newNode(x), q.newNode(y), q.newNode(z)
 	var mu sync.Mutex
 	var got []*Transaction
-	q.deliver = func(tx *Transaction, _ uint64) { mu.Lock(); got = append(got, tx); mu.Unlock() }
+	q.testHooks().deliver = func(tx *Transaction, _ uint64) { mu.Lock(); got = append(got, tx); mu.Unlock() }
 	scheduleTimeoutNode(nx, 1, clock.Load()+int64(time.Second))
 	clock.Store(nx.wake)
 	parked, resume, aDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	q.beforeDeliver = func(n *timeoutNode) {
+	q.testHooks().beforeDeliver = func(n *timeoutNode) {
 		if n == nx {
 			close(parked)
 			<-resume
@@ -398,7 +398,7 @@ func TestTimeoutQueueStaleCallback(t *testing.T) {
 	q, clock, timer := manualTimeoutQueue()
 	tx := &Transaction{}
 	n := q.newNode(tx)
-	q.deliver = func(*Transaction, uint64) { t.Error("stale callback delivered before the wake") }
+	q.testHooks().deliver = func(*Transaction, uint64) { t.Error("stale callback delivered before the wake") }
 	scheduleTimeoutNode(n, 1, clock.Load()+int64(time.Second))
 	requests := timer.requests
 	q.fire()
@@ -418,7 +418,7 @@ func TestTimeoutQueueScheduleDuringDelivery(t *testing.T) {
 	clock.Store(nx.wake)
 	timer := nz.queue.timer.(*manualTimeoutTimer)
 	requests := timer.requests
-	q.deliver = func(*Transaction, uint64) {
+	q.testHooks().deliver = func(*Transaction, uint64) {
 		scheduleTimeoutNode(nz, 1, clock.Load()+int64(time.Second)) // delivery may reenter
 		if timer.requests != requests {
 			t.Error("DRAINING_REQUEST: schedule requested while the drainer owned the queue")
@@ -436,7 +436,7 @@ func TestTimeoutQueueScheduleDuringDelivery(t *testing.T) {
 func TestTimeoutQueueConcurrent(t *testing.T) {
 	t.Parallel()
 	q, clock, _ := manualTimeoutQueue()
-	q.deliver = func(*Transaction, uint64) {}
+	q.testHooks().deliver = func(*Transaction, uint64) {}
 	var wg sync.WaitGroup
 	txs := make([]*Transaction, 32)
 	for i := range txs {

@@ -84,7 +84,7 @@ func TestHedgeBudgetRequests(t *testing.T) {
 		e.q = db.db.queueModel
 		e.tx = db.CreateTransaction()
 		t.Cleanup(e.tx.Cancel)
-		e.tx.rpcTimeoutOverride = time.Minute // no reply-timeout resend within a hold
+		e.tx.testHooks().rpcTimeoutOverride = time.Minute // no reply-timeout resend within a hold
 		var err error
 		if e.rv, err = e.tx.GetReadVersion(ctx); err != nil {
 			t.Fatal(err)
@@ -244,7 +244,7 @@ func TestGetValueFallbackTriesUnhedgedBackup(t *testing.T) {
 		if addr == backup {
 			// Dial completion publishes this before the fallback reads its timeout.
 			// Only the deliberately lost primary gets the short deadline.
-			tx.rpcTimeoutOverride = time.Minute
+			tx.testHooks().rpcTimeoutOverride = time.Minute
 		}
 		return c, err
 	}
@@ -253,7 +253,7 @@ func TestGetValueFallbackTriesUnhedgedBackup(t *testing.T) {
 	defer db.Close()
 	tx = db.CreateTransaction()
 	defer tx.Cancel()
-	tx.rpcTimeoutOverride = 300 * time.Millisecond
+	tx.testHooks().rpcTimeoutOverride = 300 * time.Millisecond
 	if _, err := tx.GetReadVersion(ctx); err != nil {
 		t.Fatal(err)
 	}

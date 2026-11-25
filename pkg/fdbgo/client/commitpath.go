@@ -42,8 +42,10 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 	// a commit with a token describing a cluster it never talked to, and no
 	// arrangement of goroutines can hit a window this narrow reliably. Nil in
 	// production; a test installs it to fire the handoff at that exact instant.
-	if hook := input.db.beforeCommitProxySelect.Load(); hook != nil {
-		(*hook)()
+	if h := input.db.hooks.Load(); h != nil {
+		if hook := h.beforeCommitProxySelect.Load(); hook != nil {
+			(*hook)()
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return result, err

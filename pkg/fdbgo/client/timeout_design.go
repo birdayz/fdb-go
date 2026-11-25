@@ -63,16 +63,19 @@ func (q *timeoutQueue) production() bool {
 	if _, real := q.timer.(*realTimer); !real {
 		return false
 	}
-	r := q.root
-	return q.beforeDeliver == nil && q.beforeEagerSchedule == nil && q.compare == nil &&
-		r.afterFrontier == nil && r.beforeScan == nil && r.afterScan == nil && r.afterPop == nil &&
-		q.now == nil && q.deliver == nil
+	if h := q.hooks; h != nil && (h.beforeDeliver != nil || h.beforeEagerSchedule != nil || h.compare != nil || h.now != nil || h.deliver != nil) {
+		return false
+	}
+	if rh := q.root.hooks; rh != nil && (rh.afterFrontier != nil || rh.beforeScan != nil || rh.afterScan != nil || rh.afterPop != nil) {
+		return false
+	}
+	return true
 }
 
 // designArmLocked takes the arm when D4 applies. Caller holds tx.readErrMu and
 // has advanced timeoutArm and set timeoutArmed.
 func (tx *Transaction) designArmLocked(q *timeoutQueue, delay time.Duration) bool {
-	if !designTimeout || tx.timeoutNode != nil || !q.production() {
+	if !designTimeout || tx.timeoutNode != nil || (q != nil && !q.production()) {
 		return false
 	}
 	tx.armDesignTimerLocked(delay)
@@ -107,17 +110,16 @@ func (tx *Transaction) armDesignTimerLocked(delay time.Duration) {
 	tx.armDesignWeakTimerLocked(delay)
 }
 
-var onDesignWeakTimerStop atomic.Pointer[func(*time.Timer)]
-
 type designWeakCleanup struct {
-	t atomic.Pointer[time.Timer]
+	t      atomic.Pointer[time.Timer]
+	onStop func(*time.Timer)
 }
 
 func stopDesignWeakTimer(c *designWeakCleanup) {
 	if tm := c.t.Swap(nil); tm != nil {
 		tm.Stop()
-		if fn := onDesignWeakTimerStop.Load(); fn != nil {
-			(*fn)(tm)
+		if c.onStop != nil {
+			c.onStop(tm)
 		}
 	}
 }
@@ -141,6 +143,9 @@ func (tx *Transaction) armDesignWeakTimerLocked(delay time.Duration) {
 		})
 		tx.designTimer = tm
 		c := &designWeakCleanup{}
+		if tx.hooks != nil {
+			c.onStop = tx.hooks.onDesignWeakTimerStop
+		}
 		c.t.Store(tm)
 		tx.designCleanup = c
 		tx.designCleanupHandle = runtime.AddCleanup(tx, stopDesignWeakTimer, c)

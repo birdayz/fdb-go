@@ -16,15 +16,12 @@ import (
 func TestRecoverLoop_ContainsPanicAndFailsConnection(t *testing.T) {
 	t.Parallel()
 	var logged string
-	orig := seriousLog
-	seriousLog = func(msg string, attrs ...any) { logged += fmt.Sprintf("%s %v", msg, attrs) }
-	t.Cleanup(func() { seriousLog = orig })
-
 	cli, srv := net.Pipe()
 	defer srv.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	c := &Conn{ctx: ctx, cancel: cancel, conn: cli}
+	c.testHooks().seriousLog = func(msg string, attrs ...any) { logged += fmt.Sprintf("%s %v", msg, attrs) }
 	pending := make(chan Response, 1)
 	c.putPending(UID{First: 1}, pendingEntry{ch: pending})
 

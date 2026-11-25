@@ -431,7 +431,7 @@ func TestReadLoopsPaceEveryRefusedReplica(t *testing.T) {
 			var attempts []int
 			var delays []time.Duration
 			observe := func(n int, d time.Duration) { attempts = append(attempts, n); delays = append(delays, d) }
-			c.db.onReadBackoff.Store(&observe)
+			c.db.testHooks().onReadBackoff.Store(&observe)
 			c.cache(
 				ServerInfo{Address: refusedSSAddr, Token: liveSSToken},
 				ServerInfo{Address: "10.9.9.8:4500", Token: liveSSToken},
@@ -471,7 +471,7 @@ func TestReadLoopsPaceEncodedMaybeDelivered(t *testing.T) {
 			var attempts []int
 			var delays []time.Duration
 			observe := func(n int, d time.Duration) { attempts = append(attempts, n); delays = append(delays, d) }
-			c.db.onReadBackoff.Store(&observe)
+			c.db.testHooks().onReadBackoff.Store(&observe)
 			c.cache(ServerInfo{Address: liveSSAddr, Token: liveSSToken})
 			result := make(chan error, 1)
 			go func() { result <- op.run(ctx, c.tx) }()
@@ -689,7 +689,7 @@ func TestReadHedgePacesFailuresNotCanceledLaggards(t *testing.T) {
 				var attempts []int
 				var delays []time.Duration
 				observe := func(n int, d time.Duration) { attempts = append(attempts, n); delays = append(delays, d) }
-				c.db.onReadBackoff.Store(&observe)
+				c.db.testHooks().onReadBackoff.Store(&observe)
 				done := make(chan struct{})
 				var readErr error
 				go func() { defer close(done); readErr = op.run(ctx, c.tx) }()
@@ -772,7 +772,7 @@ func TestReadLoopsAdvancePastEncodedMaybeDelivered(t *testing.T) {
 					delays = append(delays, d)
 					pacedAt = append(pacedAt, time.Now())
 				}
-				c.db.onReadBackoff.Store(&observe)
+				c.db.testHooks().onReadBackoff.Store(&observe)
 				done := make(chan struct{})
 				var readErr error
 				go func() { defer close(done); readErr = op.run(ctx, c.tx) }()

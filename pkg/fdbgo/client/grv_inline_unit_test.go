@@ -138,7 +138,7 @@ func TestGRVSharedBatchOutlivesOneCallersContext(t *testing.T) {
 // timerfd can be created.
 func fallbackBatcher(batchTime time.Duration) *grvBatcher {
 	b := &grvBatcher{priority: grvPriorityDefault, inFlight: 1, batchTime: batchTime}
-	b.newWindow = b.newFallbackWindowLocked
+	b.testHooks().newWindow = b.newFallbackWindowLocked
 	return b
 }
 

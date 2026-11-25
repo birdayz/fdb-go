@@ -65,7 +65,7 @@ func TestCommitWarming_DispatchedBeforeInvalidateCannotRepopulate(t *testing.T) 
 	t.Parallel()
 
 	base := time.Now()
-	c := &grvCache{now: func() time.Time { return base }}
+	c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return base }}}
 	c.publish(c.token(), base, 5000)
 
 	// The commit is dispatched: the generation is captured here, beside
@@ -96,7 +96,7 @@ func TestCommitWarming_DispatchedAfterInvalidatePopulates(t *testing.T) {
 	t.Parallel()
 
 	base := time.Now()
-	c := &grvCache{now: func() time.Time { return base }}
+	c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return base }}}
 	c.publish(c.token(), base, 5000)
 	c.invalidate()
 
@@ -126,7 +126,7 @@ func TestGRVCachePublishersAllRequireAGeneration(t *testing.T) {
 	t.Parallel()
 
 	base := time.Now()
-	c := &grvCache{now: func() time.Time { return base }}
+	c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return base }}}
 	gen := c.token()
 
 	// Each of these is a publication entry point, and each takes the
@@ -167,7 +167,7 @@ func TestCommitWarming_BlockedCommitLeavesNoStaleEntryServable(t *testing.T) {
 	t.Parallel()
 
 	base := time.Now()
-	c := &grvCache{now: func() time.Time { return base }}
+	c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return base }}}
 
 	// The commit is dispatched under the current generation.
 	commitGen := c.token()
@@ -209,7 +209,7 @@ func TestCommitWarming_BlockedCommitLeavesANewerEntryAlone(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			base := time.Now()
-			c := &grvCache{now: func() time.Time { return base }}
+			c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return base }}}
 
 			commitGen := c.token()
 			c.invalidate()
@@ -330,7 +330,7 @@ func TestCommitFloor_InFlightLowGRVCannotRepopulateAfterACommit(t *testing.T) {
 	t.Parallel()
 
 	base := time.Now()
-	c := &grvCache{now: func() time.Time { return base }}
+	c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return base }}}
 
 	commitGen := c.token() // commit dispatched
 	c.invalidate()         // overtaken by an invalidation
@@ -366,7 +366,7 @@ func TestCommitFloor_FreshGRVAtOrAboveTheFloorStillInstalls(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			base := time.Now()
-			c := &grvCache{now: func() time.Time { return base }}
+			c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return base }}}
 			gen := c.token()
 
 			c.update(gen, base, 7000) // floor := 7000
@@ -391,7 +391,7 @@ func TestCommitFloor_SurvivesInvalidation(t *testing.T) {
 	t.Parallel()
 
 	base := time.Now()
-	c := &grvCache{now: func() time.Time { return base }}
+	c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return base }}}
 
 	c.update(c.token(), base, 7000) // floor := 7000
 	c.invalidate()
@@ -417,7 +417,7 @@ func TestCommitFloor_DoesNotWedgeTheCacheForever(t *testing.T) {
 	t.Parallel()
 
 	base := time.Now()
-	c := &grvCache{now: func() time.Time { return base }}
+	c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return base }}}
 	gen := c.token()
 
 	c.update(gen, base, 7000)
@@ -535,7 +535,7 @@ func TestClusterSwitch_ResetsVersionScopedCacheState(t *testing.T) {
 	t.Parallel()
 
 	base := time.Now()
-	c := &grvCache{now: func() time.Time { return base }}
+	c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return base }}}
 
 	// Cluster A: a commit raises the floor high.
 	c.update(c.token(), base, 9_000_000)
@@ -574,7 +574,7 @@ func TestClusterSwitch_LateReplyFromTheOldClusterIsRefused(t *testing.T) {
 	t.Parallel()
 
 	base := time.Now()
-	c := &grvCache{now: func() time.Time { return base }}
+	c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return base }}}
 
 	aGen := c.token()           // dispatched against cluster A
 	c.resetForNewCoordinators() // the handle moves to cluster B
@@ -602,7 +602,7 @@ func TestClusterSwitch_SameClusterInvalidationStillPreservesTheFloor(t *testing.
 	t.Parallel()
 
 	base := time.Now()
-	c := &grvCache{now: func() time.Time { return base }}
+	c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return base }}}
 
 	c.update(c.token(), base, 7000)
 	c.invalidate()
@@ -630,7 +630,7 @@ func TestClusterSwitch_LateCommitFromOldClusterCannotRaiseTheFloor(t *testing.T)
 	t.Parallel()
 
 	base := time.Now()
-	c := &grvCache{now: func() time.Time { return base }}
+	c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return base }}}
 
 	aGen := c.token()           // a commit dispatched against cluster A
 	c.resetForNewCoordinators() // the handle moves to cluster B
@@ -675,7 +675,7 @@ func TestClusterSwitch_EpochChangesAtTheProxyHandoff(t *testing.T) {
 
 	base := time.Now()
 	db := &database{proxiesChanged: make(chan struct{})}
-	db.grvCache.now = func() time.Time { return base }
+	db.grvCache.testHooks().now = func() time.Time { return base }
 	// Cluster A's proxies are installed and its version cached.
 	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "a:4500"}}})
 	db.grvCache.publish(db.grvCache.token(), base, 9_000_000)
@@ -717,7 +717,7 @@ func TestClusterSwitch_PreAdoptionCommitLandingPostHandoffIsRefusedOnBothArms(t 
 
 	base := time.Now()
 	db := &database{proxiesChanged: make(chan struct{})}
-	db.grvCache.now = func() time.Time { return base }
+	db.grvCache.testHooks().now = func() time.Time { return base }
 	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "a:4500"}}})
 
 	// A commit dispatched against cluster A, long before any switch.
@@ -757,7 +757,7 @@ func TestClusterSwitch_PreAdoptionCommitLandingPostHandoffIsRefusedOnBothArms(t 
 func TestEpochRace_ReaderNeverServesAPreviousEpochEntry(t *testing.T) {
 	t.Parallel()
 	base := time.Now()
-	c := &grvCache{now: func() time.Time { return base }}
+	c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return base }}}
 	c.publish(c.token(), base, 9_000_000) // cluster A
 
 	c.resetForNewCoordinators() // epoch moves; the entry is deliberately left
@@ -779,7 +779,7 @@ func TestEpochRace_ReaderNeverServesAPreviousEpochEntry(t *testing.T) {
 func TestEpochRace_NewEpochPublisherIsNotErasedByTheReset(t *testing.T) {
 	t.Parallel()
 	base := time.Now()
-	c := &grvCache{now: func() time.Time { return base }}
+	c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return base }}}
 	c.publish(c.token(), base, 9_000_000)
 
 	c.resetForNewCoordinators()
@@ -817,7 +817,7 @@ func TestEpochRace_NewEpochPublisherIsNotErasedByTheReset(t *testing.T) {
 func TestEpochRace_CommitBindsItsEpochAtProxySelection(t *testing.T) {
 	t.Parallel()
 	base := time.Now()
-	c := &grvCache{now: func() time.Time { return base }}
+	c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return base }}}
 
 	// Sampled early, as the caller used to: epoch of cluster A.
 	staleEpoch := c.epochNow()
@@ -849,7 +849,7 @@ func TestEpochRace_CommitBindsItsEpochAtProxySelection(t *testing.T) {
 	// sample, reverting the commit path to a caller-side epoch left this whole
 	// test green, which is the precise shape of a test that passes because it
 	// cannot express the defect.
-	c2 := &grvCache{now: func() time.Time { return base }}
+	c2 := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return base }}}
 	c2.resetForNewCoordinators() // same handoff, same epochs
 	c2.update(c2.token().withEpoch(staleEpoch), base, 7000)
 	if v, _, ok := c2.tryCache(grvPriorityDefault); ok {
@@ -883,7 +883,7 @@ func TestInvalidate_PreservesFloorAndCooldownsAtEveryEpoch(t *testing.T) {
 		t.Run(fmt.Sprintf("after_%d_coordinator_adoptions", adoptions), func(t *testing.T) {
 			t.Parallel()
 			base := time.Now()
-			c := &grvCache{now: func() time.Time { return base }}
+			c := &grvCache{hooks: &grvCacheTestHooks{now: func() time.Time { return base }}}
 			for i := 0; i < adoptions; i++ {
 				c.resetForNewCoordinators()
 			}

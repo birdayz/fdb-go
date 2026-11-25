@@ -111,7 +111,7 @@ func (c *rywCache) pinWritesForCommitLocked() *rywWrites {
 	w := c.liveLocked()
 	w.ensureSorted()
 	w.pins++
-	if c.onPin != nil {
+	if c.hooks != nil && c.hooks.onPin != nil {
 		observed := false
 		defer func() {
 			if !observed { // a panicking observer never transfers the pin to the caller
@@ -119,7 +119,7 @@ func (c *rywCache) pinWritesForCommitLocked() *rywWrites {
 				c.dropObsoleteBaseLocked()
 			}
 		}()
-		c.onPin(w, true)
+		c.hooks.onPin(w, true)
 		observed = true
 	}
 	return w
@@ -131,8 +131,8 @@ func (c *rywCache) unpinWritesLocked(w *rywWrites) {
 		panic("rywWrites: unpin of an unpinned version")
 	}
 	w.pins--
-	if c.onPin != nil {
-		c.onPin(w, false)
+	if c.hooks != nil && c.hooks.onPin != nil {
+		c.hooks.onPin(w, false)
 	}
 	c.dropObsoleteBaseLocked()
 }
@@ -162,8 +162,8 @@ func (c *rywCache) mutableWritesLocked() *rywWrites {
 		nw := w.clone()
 		nw.ver = c.nextVer
 		c.w = nw
-		if c.onClone != nil {
-			c.onClone(w, c.w)
+		if c.hooks != nil && c.hooks.onClone != nil {
+			c.hooks.onClone(w, c.w)
 		}
 	}
 	return c.w

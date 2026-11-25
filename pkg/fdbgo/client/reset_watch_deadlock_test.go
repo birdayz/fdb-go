@@ -20,7 +20,7 @@ func TestReset_DoesNotDeadlockWithWatchSetupGRV(t *testing.T) {
 	tx := db.CreateTransaction()
 	entry := make(chan struct{})
 	releaseEntry, releaseEntryIt := releaseGate(t)
-	tx.beforeReadVersionLock = func() { close(entry); <-releaseEntry }
+	tx.testHooks().beforeReadVersionLock = func() { close(entry); <-releaseEntry }
 	watchErr := make(chan error, 1)
 	go func() { watchErr <- tx.Watch(ctx, []byte(t.Name()+"_k")) }()
 	waitReadParked(t, ctx, entry, "watch before GRV entry")
@@ -49,7 +49,7 @@ func TestReset_DoesNotDeadlockWithWatchSetupGRV(t *testing.T) {
 	}
 	gate.release()
 	<-watchErr
-	tx.beforeReadVersionLock = nil
+	tx.testHooks().beforeReadVersionLock = nil
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("post-Reset commit on the reset handle: %v", err)
 	}

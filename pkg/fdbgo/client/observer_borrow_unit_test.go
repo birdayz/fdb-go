@@ -55,7 +55,7 @@ func TestOnErrorBorrowedAdmissionIsReadOnly(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			logCalls := 0
 			tx := &Transaction{db: &database{logger: slog.New(&scopeObserver{enabled: func(context.Context) bool { logCalls++; return false }})}}
-			tx.backoffJitter = func() float64 { return 0 }
+			tx.testHooks().backoffJitter = func() float64 { return 0 }
 			defer tx.Cancel()
 			outer, release := tx.opContext(context.Background())
 			defer release()

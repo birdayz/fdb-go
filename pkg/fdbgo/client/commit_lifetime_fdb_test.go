@@ -32,8 +32,8 @@ func installOneShotCommitPause(t *testing.T, db *Database) *pausedCommit {
 		close(p.reached)
 		<-p.release
 	}
-	db.db.beforeCommitProxySelect.Store(&hook)
-	t.Cleanup(func() { db.db.beforeCommitProxySelect.Store(nil) })
+	db.db.testHooks().beforeCommitProxySelect.Store(&hook)
+	t.Cleanup(func() { db.db.testHooks().beforeCommitProxySelect.Store(nil) })
 	return p
 }
 

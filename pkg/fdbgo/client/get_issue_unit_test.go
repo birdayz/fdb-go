@@ -87,7 +87,7 @@ func TestStartGetIsIssuedInTheCall(t *testing.T) {
 					tx := &Transaction{}
 					setMode(tx)
 					g := newGatedGet(map[string]string{"k": "s"})
-					tx.nativeGet = g.get
+					tx.testHooks().nativeGet = g.get
 					want := "s"
 					if pendingAtomic {
 						tx.Atomic(MutAppendIfFits, []byte("k"), []byte("+a"))
@@ -127,9 +127,9 @@ func TestUnawaitedStartGetEndsWithTheTransaction(t *testing.T) {
 	for name, end := range ends {
 		for _, snapshot := range []bool{false, true} {
 			tx := &Transaction{}
-			tx.backoffJitter = func() float64 { return 0 }
+			tx.testHooks().backoffJitter = func() float64 { return 0 }
 			g := newGatedGet(nil) // never opened: only the transaction's end finishes the read
-			tx.nativeGet = g.get
+			tx.testHooks().nativeGet = g.get
 			p := startGet(tx, []byte("k"), snapshot)
 			<-g.calls
 			done := make(chan struct{})
@@ -163,9 +163,9 @@ func TestCommitWaitsForStartedGet(t *testing.T) {
 		case ErrInternalError:
 			g.panics = true
 		}
-		tx.nativeGet = g.get
+		tx.testHooks().nativeGet = g.get
 		waited := false
-		tx.beforeIssuedReadWait = func(n int) {
+		tx.testHooks().beforeIssuedReadWait = func(n int) {
 			if n == 1 && !waited {
 				waited = true
 				close(g.gate) // the commit is waiting for exactly the started Get
@@ -198,7 +198,7 @@ func TestStartGet_PanicFailsTheRead(t *testing.T) {
 	t.Parallel()
 	for _, snapshot := range []bool{false, true} {
 		tx := &Transaction{}
-		tx.nativeGet = func(context.Context, []byte) ([]byte, error) { panic("injected") }
+		tx.testHooks().nativeGet = func(context.Context, []byte) ([]byte, error) { panic("injected") }
 		p := startGet(tx, []byte("k"), snapshot)
 		if _, err := p.Get(); issueCode(err) != ErrInternalError {
 			t.Fatalf("snapshot=%v: read = %v, want internal_error", snapshot, err)
@@ -217,7 +217,7 @@ func TestStartGet_PanicFailsTheRead(t *testing.T) {
 func TestGetIssuePanicReleasesTheLease(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{}
-	tx.nativeGet = newGatedGet(nil).get
+	tx.testHooks().nativeGet = newGatedGet(nil).get
 	var root *pnode[rywRange]
 	for i := pfingerN - 1; i >= 0; i-- { // a left chain of pfingerN ranges, deepest first in order
 		k := []byte(fmt.Sprintf("r%03d", pfingerN-i))

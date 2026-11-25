@@ -687,10 +687,10 @@ func testTracerPublicCancellation(t *testing.T, pendingStart bool) {
 	if pendingStart {
 		// The pending channel is already captured: cancellation must use the
 		// tracing wait's select, not the earlier entry-error check.
-		tx.beforeTraceWait = func(context.Context) { parkWaiter() }
+		tx.testHooks().beforeTraceWait = func(context.Context) { parkWaiter() }
 	} else {
 		// Retain the separate public entry-cancellation control.
-		tx.beforeReadVersionLock = parkWaiter
+		tx.testHooks().beforeReadVersionLock = parkWaiter
 	}
 	waiterCtx, cancelWaiter := context.WithCancel(ctx)
 	defer cancelWaiter()

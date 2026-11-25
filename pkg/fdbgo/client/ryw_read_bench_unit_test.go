@@ -66,7 +66,7 @@ func BenchmarkRYWConcurrentReads(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
 				tx := &Transaction{}
-				tx.nativeRange = st.native
+				tx.testHooks().nativeRange = st.native
 				for i := 0; i < writes; i++ {
 					j := (i * 7919) % storageKeys
 					tx.Set(fmt.Appendf(nil, "t/%07d/w", j*4+1), []byte("entry"))
@@ -135,7 +135,7 @@ func BenchmarkRYWBunchedMapPuts(b *testing.B) {
 				b.StopTimer()
 				ctx, cancel := context.WithCancel(context.Background())
 				tx := &Transaction{}
-				tx.nativeRange = st.native
+				tx.testHooks().nativeRange = st.native
 				for i := 0; i < writes; i++ {
 					j := (i * 7919) % storageKeys
 					tx.Set(fmt.Appendf(nil, "%st/%07d/w", prefix, j*4+1), value)
@@ -200,7 +200,7 @@ func BenchmarkRYWSelectorReads(b *testing.B) {
 			for b.Loop() {
 				b.StopTimer()
 				tx := &Transaction{}
-				tx.nativeRange = st.native
+				tx.testHooks().nativeRange = st.native
 				for i := 0; i < writes; i++ {
 					j := (i * 7919) % storageKeys
 					tx.Set(fmt.Appendf(nil, "%st/%07d/w", prefix, j*4+1), value)
@@ -231,7 +231,7 @@ func BenchmarkRYWCachedReads(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tx := &Transaction{}
-	tx.nativeRange = st.native
+	tx.testHooks().nativeRange = st.native
 	key := []byte("t/0000400/q")
 	written := []byte("t/0000400/w")
 	tx.Set(written, []byte("entry"))
@@ -344,7 +344,7 @@ func BenchmarkRYWAppendIfFits(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		tx := &Transaction{}
-		tx.nativeRange = st.native
+		tx.testHooks().nativeRange = st.native
 		for i := 0; i < bunches; i += 2 {
 			tx.Set(st.m.kvs[i].Key, operand)
 		}
@@ -442,7 +442,7 @@ func BenchmarkRYWTextMaintenance(b *testing.B) {
 		b.StopTimer()
 		ctx, cancel := context.WithCancel(context.Background())
 		tx := &Transaction{}
-		tx.nativeRange = st.native
+		tx.testHooks().nativeRange = st.native
 		// The transaction read the range before: the reads below are cached.
 		if _, _, err := tx.Snapshot().GetRangeSelectors(ctx, firstGreaterOrEqual([]byte(prefix)), firstGreaterOrEqual([]byte(prefix+"u")), 0, 0, false); err != nil {
 			b.Fatal(err)

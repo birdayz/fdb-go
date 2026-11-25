@@ -34,7 +34,7 @@ func TestGRVSampleFollowsBroadcast(t *testing.T) {
 				if !failed {
 					wantPositions = append(wantPositions, n) // timeReply's final yield
 				}
-				b := &grvBatcher{now: func() time.Time {
+				b := &grvBatcher{hooks: &grvBatcherTestHooks{now: func() time.Time {
 					observations++
 					for i, req := range batch {
 						if len(req.reply) != 1 {
@@ -49,7 +49,7 @@ func TestGRVSampleFollowsBroadcast(t *testing.T) {
 					}
 					positions = append(positions, delivered)
 					clock = clock.Add(40 * time.Microsecond)
-				}}
+				}}}
 				result := grvResult{version: 777, locked: true, instant: started}
 				if failed {
 					result.err = errors.New("completed GRV error")
@@ -111,7 +111,7 @@ func TestGRVRecoveryPreservesPublishedPrefix(t *testing.T) {
 func TestGRVObservationPanicDoesNotRepublish(t *testing.T) {
 	t.Parallel()
 	var db database
-	b := &grvBatcher{now: func() time.Time { panic("sampling after publication") }}
+	b := &grvBatcher{hooks: &grvBatcherTestHooks{now: func() time.Time { panic("sampling after publication") }}}
 	batch := publicationBatch(3, 2)
 	result := grvResult{version: 777}
 	published := 0

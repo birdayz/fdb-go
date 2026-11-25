@@ -26,7 +26,7 @@ type rangeRead struct {
 	kvs               []KeyValue
 	more              bool
 	err               error
-	afterReply        func() // test seam, captured at issue
+	hooks             *readIssueTestHooks // test seam, captured at issue (nil in production)
 }
 
 type rangePath uint8
@@ -83,7 +83,9 @@ func (tx *Transaction) issueRange(parent context.Context, begin, end []byte, lim
 	if !counted && !r.local {
 		r.inc = tx.enterIssuedRead(ctx) // a borrowed operation's lease does not count
 	}
-	r.afterReply = tx.afterRangeReply
+	if tx.hooks != nil && tx.hooks.afterRangeReply != nil {
+		r.hooks = &readIssueTestHooks{afterReply: tx.hooks.afterRangeReply}
+	}
 	return r
 }
 
@@ -171,7 +173,8 @@ func (r *rangeRead) run(clone bool) (kvs []KeyValue, more bool, err error) {
 func (r *rangeRead) read(clone bool) ([]KeyValue, bool, error) {
 	tx, ctx := r.tx, r.ctx
 	var server rangeServerFunc = tx.getRangeReadThrough
-	if hook := r.afterReply; hook != nil {
+	if r.hooks != nil && r.hooks.afterReply != nil {
+		hook := r.hooks.afterReply
 		server = func(ctx context.Context, begin, end []byte, limit, byteTarget int, reverse bool) ([]KeyValue, bool, []byte, error) {
 			kvs, more, readThrough, err := tx.getRangeReadThrough(ctx, begin, end, limit, byteTarget, reverse)
 			hook()
@@ -251,8 +254,8 @@ func (tx *Transaction) waitIssuedReads(ctx context.Context, inc *readIncarnation
 			inc.issuedReadsDone = ch
 		}
 		tx.readErrMu.Unlock()
-		if tx.beforeIssuedReadWait != nil {
-			tx.beforeIssuedReadWait(n)
+		if tx.hooks != nil && tx.hooks.beforeIssuedReadWait != nil {
+			tx.hooks.beforeIssuedReadWait(n)
 		}
 		select {
 		case <-ch:
@@ -331,7 +334,10 @@ func (tx *Transaction) startRange(ctx context.Context, begin, end []byte, limit,
 // startPendingRange runs an issued read that must wait on a background goroutine.
 func (tx *Transaction) startPendingRange(r issuedRangeRead) *PendingRange {
 	p := &PendingRange{r: r, done: make(chan struct{})}
-	hook := tx.beforeRangeGoroutine
+	var hook func()
+	if tx.hooks != nil {
+		hook = tx.hooks.beforeRangeGoroutine
+	}
 	go func() {
 		if hook != nil {
 			hook()

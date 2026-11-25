@@ -54,7 +54,7 @@ func TestGRVReply_ThrottleAndFreshnessArePublishedTogether(t *testing.T) {
 			t.Parallel()
 			base := time.Now()
 			db := &database{}
-			db.grvCache.now = func() time.Time { return base }
+			db.grvCache.testHooks().now = func() time.Time { return base }
 			b := &grvBatcher{priority: grvPriorityDefault}
 
 			// Expired entry, no cooldown yet: unservable only because it is stale.
@@ -118,7 +118,7 @@ func TestGRVReply_UnthrottledReplyStillServes(t *testing.T) {
 
 	base := time.Now()
 	db := &database{}
-	db.grvCache.now = func() time.Time { return base }
+	db.grvCache.testHooks().now = func() time.Time { return base }
 	b := &grvBatcher{priority: grvPriorityDefault}
 
 	db.grvCache.publish(db.grvCache.token(), base.Add(-2*maxVersionCacheLag), 9000)
@@ -154,7 +154,7 @@ func throttleOrderingProbe(t *testing.T, replyVersion int64) {
 	for i := 0; i < attempts; i++ {
 		base := time.Now()
 		db := &database{}
-		db.grvCache.now = func() time.Time { return base }
+		db.grvCache.testHooks().now = func() time.Time { return base }
 		b := &grvBatcher{priority: grvPriorityDefault}
 
 		const cachedVersion = 9000

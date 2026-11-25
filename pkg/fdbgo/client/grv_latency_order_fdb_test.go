@@ -18,7 +18,7 @@ func TestGRVLatencyCoversRPCAndBroadcast(t *testing.T) {
 	started := time.Unix(1000, 0)
 	observations := 0
 	startSampled := make(chan struct{})
-	b := &grvBatcher{priority: grvPriorityDefault, inFlight: 1, now: func() time.Time {
+	b := &grvBatcher{priority: grvPriorityDefault, inFlight: 1, hooks: &grvBatcherTestHooks{now: func() time.Time {
 		observations++
 		if observations == 1 {
 			close(startSampled)
@@ -30,7 +30,7 @@ func TestGRVLatencyCoversRPCAndBroadcast(t *testing.T) {
 			}
 		}
 		return started.Add(2 * time.Millisecond)
-	}}
+	}}}
 	done := make(chan struct{})
 	go func() { defer close(done); b.flush(db.db, batch) }()
 	waitCommitLifetimeGate(t, ctx, gate.heldCh, "GRV reply held")

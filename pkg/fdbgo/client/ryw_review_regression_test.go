@@ -20,13 +20,13 @@ func TestRYWStartGetKeyOwnsSelector(t *testing.T) {
 				t.Parallel()
 				tx := &Transaction{}
 				m := newMemStorage("a", "c")
-				tx.nativeRange = m.native
+				tx.testHooks().nativeRange = m.native
 				entered, release := make(chan struct{}), make(chan struct{})
 				hook := func() { close(entered); <-release }
 				if afterReply {
-					tx.afterRangeReply = hook
+					tx.testHooks().afterRangeReply = hook
 				} else {
-					tx.beforeRangeGoroutine = hook
+					tx.testHooks().beforeRangeGoroutine = hook
 				}
 				key := []byte("a")
 				sel := KeySelector{Key: key, OrEqual: afterReply, Offset: 1}
@@ -84,12 +84,12 @@ func TestRYWLockedPanicReleasesRead(t *testing.T) {
 			t.Parallel()
 			tx := &Transaction{}
 			var requests atomic.Int32
-			tx.walkOnRequest = func(walkRequest) {
+			tx.testHooks().walkOnRequest = func(walkRequest) {
 				if requests.Add(1) == panicAt {
 					panic("inside locked walk")
 				}
 			}
-			tx.nativeRange = func(context.Context, KeySelector, KeySelector, rangeLimits, bool) (nativeRangeResult, error) {
+			tx.testHooks().nativeRange = func(context.Context, KeySelector, KeySelector, rangeLimits, bool) (nativeRangeResult, error) {
 				return nativeRangeResult{more: true}, nil // resume builds request 2 under c.mu
 			}
 			tr := trackPins(&tx.ryw)
@@ -106,7 +106,7 @@ func TestRYWLockedPanicReleasesRead(t *testing.T) {
 				}
 			})
 			joined(t, "Reset after panic", tx.Reset)
-			tx.walkOnRequest = nil
+			tx.testHooks().walkOnRequest = nil
 			tx.Set([]byte("k"), []byte("v"))
 			k, err := tx.StartGetKey(context.Background(), firstGreaterOrEqual([]byte("k"))).Get()
 			if err != nil || string(k) != "k" {
@@ -141,7 +141,7 @@ func TestRYWObsoleteBaseReleased(t *testing.T) {
 				t.Fatal("detaching changed the pinned version or did not detach")
 			}
 			observed := false
-			c.onPin = func(w *rywWrites, pin bool) {
+			c.testHooks().onPin = func(w *rywWrites, pin bool) {
 				if !pin {
 					observed = w == old && w.fingerprint() == before
 				}
@@ -164,7 +164,7 @@ func TestRYWResetBeatsLateStorageError(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{}
 	started, cancelled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	tx.nativeRange = func(ctx context.Context, _, _ KeySelector, _ rangeLimits, _ bool) (nativeRangeResult, error) {
+	tx.testHooks().nativeRange = func(ctx context.Context, _, _ KeySelector, _ rangeLimits, _ bool) (nativeRangeResult, error) {
 		close(started)
 		<-ctx.Done()
 		close(cancelled)
@@ -195,7 +195,7 @@ func TestGetKeyReadThroughResetBeatsLateOutcome(t *testing.T) {
 				tx := &Transaction{txOptions: txOptions{rywDisabled: true}}
 				tx.SetReadVersion(1)
 				started, cancelled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
-				tx.resolveKeyFn = func(ctx context.Context, _ KeySelector, _ int64) ([]byte, error) {
+				tx.testHooks().resolveKeyFn = func(ctx context.Context, _ KeySelector, _ int64) ([]byte, error) {
 					close(started)
 					<-ctx.Done()
 					close(cancelled)
@@ -240,14 +240,14 @@ func TestGetKeyCompletedOutcomeSurvivesReset(t *testing.T) {
 				tx := &Transaction{txOptions: txOptions{rywDisabled: disabled}}
 				tx.SetReadVersion(1)
 				failure := &wire.FDBError{Code: ErrWrongShardServer}
-				tx.resolveKeyFn = func(context.Context, KeySelector, int64) ([]byte, error) {
+				tx.testHooks().resolveKeyFn = func(context.Context, KeySelector, int64) ([]byte, error) {
 					if success {
 						return []byte("c"), nil
 					}
 					return nil, failure
 				}
 				m := newMemStorage("a", "c")
-				tx.nativeRange = func(ctx context.Context, b, e KeySelector, l rangeLimits, rev bool) (nativeRangeResult, error) {
+				tx.testHooks().nativeRange = func(ctx context.Context, b, e KeySelector, l rangeLimits, rev bool) (nativeRangeResult, error) {
 					if !success {
 						return nativeRangeResult{}, failure
 					}
@@ -281,7 +281,7 @@ func TestCompletedReadCannotPublishAfterReset(t *testing.T) {
 			t.Parallel()
 			tx := &Transaction{}
 			m := newMemStorage("a", "c")
-			tx.nativeRange = m.native
+			tx.testHooks().nativeRange = m.native
 			if route == "range" {
 				tx.ryw.withLock(func() { tx.ryw.serverCache.insert([]byte("a"), []byte("z"), m.kvs) })
 			}
@@ -295,7 +295,7 @@ func TestCompletedReadCannotPublishAfterReset(t *testing.T) {
 			entered, release := make(chan struct{}), make(chan struct{})
 			resume := sync.OnceFunc(func() { close(release) })
 			defer resume()
-			tx.beforeReadConflict = func() { close(entered); <-release }
+			tx.testHooks().beforeReadConflict = func() { close(entered); <-release }
 			parent, leave := tx.opContext(context.Background())
 			defer leave()
 			done := make(chan error, 1)
@@ -747,7 +747,7 @@ func TestGetKeyMaxSentinelConflict(t *testing.T) {
 	}
 	tx := &Transaction{}
 	tx.SetReadSystemKeys()
-	tx.nativeRange = newMemStorage("a", "\xffa").native
+	tx.testHooks().nativeRange = newMemStorage("a", "\xffa").native
 	k, err := tx.StartGetKey(context.Background(), KeySelector{Key: []byte("\xff\xff"), Offset: 0}).Get()
 	if err != nil || string(k) != "\xffa" {
 		t.Fatalf("LLT(max) = %q, %v", k, err)

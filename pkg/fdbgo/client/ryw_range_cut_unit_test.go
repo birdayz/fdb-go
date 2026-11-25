@@ -347,7 +347,7 @@ func TestPendingRangeRetainsPointCachedKeyAcrossReset(t *testing.T) {
 			tx := &Transaction{}
 			tx.ryw.set([]byte("b"), []byte("vb"))
 			ready := make(chan struct{})
-			tx.beforeRangeGoroutine = func() { <-ready }
+			tx.testHooks().beforeRangeGoroutine = func() { <-ready }
 			pr := tx.StartGetRange(context.Background(), []byte("a"), []byte("b\x00"), 0, 0, reverse)
 			tx.ryw.mu.Lock()
 			tx.ryw.serverCache.insertPoint([]byte("a"), []byte("v1"))

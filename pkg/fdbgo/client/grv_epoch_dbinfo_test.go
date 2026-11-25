@@ -56,8 +56,8 @@ func TestEpoch_CommitBindsTheEpochOfTheProxySetItUsed(t *testing.T) {
 			CommitProxies: db.db.dbInfo.Load().CommitProxies,
 		})
 	}
-	db.db.beforeCommitProxySelect.Store(&hook)
-	defer db.db.beforeCommitProxySelect.Store(nil)
+	db.db.testHooks().beforeCommitProxySelect.Store(&hook)
+	defer db.db.testHooks().beforeCommitProxySelect.Store(nil)
 
 	epochBefore := db.db.dbInfo.Load().Epoch
 
@@ -259,8 +259,8 @@ func TestEpoch_InstallIsSerialised(t *testing.T) {
 			<-release
 		})
 	}
-	db.duringProxyInstall.Store(&hook)
-	defer db.duringProxyInstall.Store(nil)
+	db.testHooks().duringProxyInstall.Store(&hook)
+	defer db.testHooks().duringProxyInstall.Store(nil)
 
 	firstDone := make(chan struct{})
 	go func() {
@@ -330,8 +330,8 @@ func TestEpoch_CommitEpochIsTheValueProxySelectionReturned(t *testing.T) {
 		fired = true
 		db.db.grvCache.resetForNewCoordinators()
 	}
-	db.db.beforeCommitProxySelect.Store(&hook)
-	defer db.db.beforeCommitProxySelect.Store(nil)
+	db.db.testHooks().beforeCommitProxySelect.Store(&hook)
+	defer db.db.testHooks().beforeCommitProxySelect.Store(nil)
 
 	boundEpoch := db.db.dbInfo.Load().Epoch
 
@@ -421,8 +421,8 @@ func TestEpoch_PublishedEpochIsTheFenceAtPublication(t *testing.T) {
 			fenceOnEntry = db.grvCache.epochNow()
 		}
 	}
-	db.duringProxyInstall.Store(&hook)
-	defer db.duringProxyInstall.Store(nil)
+	db.testHooks().duringProxyInstall.Store(&hook)
+	defer db.testHooks().duringProxyInstall.Store(nil)
 
 	db.onCoordinatorSetAdopted()
 	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "b:4500"}}})
