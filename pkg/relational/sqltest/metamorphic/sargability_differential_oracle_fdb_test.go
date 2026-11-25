@@ -11,7 +11,7 @@ package sqltest
 // making the index scan return extra rows a full scan + WHERE-clause filter
 // would have rejected. That missing-arm state was real, but in the DEAD twin
 // `scanComparisonsToTupleRange`, now retired (RFC-217). The live binder,
-// bindScanComparisonsToRangeSet (pkg/recordlayer/query/executor/scan_range_binding.go),
+// bindScanComparisonsToRangeSet (internal/recordlayer/query/executor/scan_range_binding.go),
 // HAS the STARTS_WITH arm — see :929 and the PREFIX_STRING endpoints it feeds —
 // and RFC-217 §2 retracts the earlier claim that F11's fix lived in the twin.
 // The oracle's obligation is unchanged: any arm of that switch (or of the

@@ -29,11 +29,11 @@ import (
 	"github.com/antlr4-go/antlr/v4"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/recordlayer/query/executor"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/executor"
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"

@@ -9,14 +9,14 @@
   {
     "name": "sort-nulls-placement",
     "why": "BROAD: inverts NULLS FIRST/LAST in the executor's in-memory sort; changes row ORDER only, so a multiset-only assertion is blind to it",
-    "file": "pkg/recordlayer/query/executor/executor.go",
+    "file": "internal/recordlayer/query/executor/executor.go",
     "from": "\t\t\t\t\tif k.NullsFirst {\n\t\t\t\t\t\treturn iNil\n\t\t\t\t\t}\n\t\t\t\t\treturn jNil",
     "to": "\t\t\t\t\tif k.NullsFirst {\n\t\t\t\t\t\treturn jNil\n\t\t\t\t\t}\n\t\t\t\t\treturn iNil"
   },
   {
     "name": "sort-direction",
     "why": "BROAD: inverts ASC/DESC in the executor's in-memory sort; the broadest ordering defect available",
-    "file": "pkg/recordlayer/query/executor/executor.go",
+    "file": "internal/recordlayer/query/executor/executor.go",
     "from": "\t\t\t\tif k.Desc {\n\t\t\t\t\treturn cmp > 0\n\t\t\t\t}\n\t\t\t\treturn cmp < 0",
     "to": "\t\t\t\tif k.Desc {\n\t\t\t\t\treturn cmp < 0\n\t\t\t\t}\n\t\t\t\treturn cmp > 0"
   },

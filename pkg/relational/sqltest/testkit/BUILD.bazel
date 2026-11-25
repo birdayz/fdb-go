@@ -68,12 +68,12 @@ go_library(
     importpath = "fdb.dev/pkg/relational/sqltest/testkit",
     visibility = ["//pkg/relational:__subpackages__"],
     deps = [
+        "//internal/recordlayer/query/executor",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/internal/querycensus",
         "//pkg/recordlayer",
-        "//pkg/recordlayer/query/executor",
         "//pkg/recordlayer/query/plan/cascades",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/query/plan/plans",

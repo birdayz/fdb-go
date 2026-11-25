@@ -25,11 +25,11 @@ go_test(
     ],
     deps = [
         "//gen",
+        "//internal/recordlayer/query/executor",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/wire",
         "//pkg/recordlayer",
-        "//pkg/recordlayer/query/executor",
         "//pkg/recordlayer/query/plan/plans",
         "//pkg/relational/api",
         "//pkg/relational/core/embedded",

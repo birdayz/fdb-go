@@ -172,7 +172,7 @@ pkg/recordlayer/query/plan/cascades/rule_streaming_agg_from_index.go — GROUP B
 pkg/recordlayer/query/plan/cascades/physical_wrapper.go — physical plan wrappers + HintCost(child, stats)
 pkg/recordlayer/query/plan/cascades/expression_partition.go — plan partitioning by ordering direction
 pkg/recordlayer/query/plan/cascades/properties/cost.go  — Cost, StatisticsProvider, CostHinter
-pkg/recordlayer/query/executor/executor.go              — plan execution
+internal/recordlayer/query/executor/executor.go         — plan execution
 TODO.md                                                 — perf targets + status
 ```
 

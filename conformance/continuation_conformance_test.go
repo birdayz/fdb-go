@@ -13,9 +13,9 @@ import (
 	"fdb.dev/gen"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/recordlayer/query/executor"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/executor"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"

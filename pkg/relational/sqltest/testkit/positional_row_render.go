@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"fdb.dev/pkg/recordlayer/query/executor"
+	"fdb.dev/internal/recordlayer/query/executor"
 )
 
 // Row renderers for the ordinal-row tests, shared so the ORDER dimension is

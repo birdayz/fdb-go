@@ -7,7 +7,7 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
-	"fdb.dev/pkg/recordlayer/query/executor"
+	"fdb.dev/internal/recordlayer/query/executor"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 

@@ -31,7 +31,7 @@ import (
 // live code that no SQL query reaches.
 //
 // EVIDENCE THAT EACH ADMITTED KIND EXCLUDES THE NULL BOUNDARY. The binder is
-// the authority; every citation is to pkg/recordlayer/query/executor/
+// the authority; every citation is to internal/recordlayer/query/executor/
 // scan_range_binding.go, and each is pinned by a test in
 // null_rejecting_scan_range_test.go so a change to the binder cannot silently
 // invalidate the claim.

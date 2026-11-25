@@ -266,7 +266,7 @@ func scanRangeComparisonType(t ComparisonType) scanRangeComparisonKind {
 // an ordinary exact tuple key, silently. With a float operand the rejection
 // survives only incidentally, as a comparand-type error rather than a shape one.
 // TestBindScanComparisonsToRangeSet_RejectsMalformedTailBeforeProjection in
-// pkg/recordlayer/query/executor is what catches this; its skip list mirrors the
+// internal/recordlayer/query/executor is what catches this; its skip list mirrors the
 // set below, so the two must be changed together or not at all.
 //
 // Java's EQUALITY arm is {EQUALS, IS_NULL, NOT_DISTINCT_FROM,

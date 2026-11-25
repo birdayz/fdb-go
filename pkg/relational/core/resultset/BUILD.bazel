@@ -6,10 +6,10 @@ go_library(
     importpath = "fdb.dev/pkg/relational/core/resultset",
     visibility = ["//visibility:public"],
     deps = [
+        "//internal/recordlayer/query/executor",
         "//internal/unicode15",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
-        "//pkg/recordlayer/query/executor",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",
     ],
@@ -20,8 +20,8 @@ go_test(
     srcs = ["resultset_test.go"],
     embed = [":resultset"],
     deps = [
+        "//internal/recordlayer/query/executor",
         "//pkg/recordlayer",
-        "//pkg/recordlayer/query/executor",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",
     ],

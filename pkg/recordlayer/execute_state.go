@@ -26,7 +26,7 @@ import "fmt"
 // match Java — out of scope for RFC-130, noted for the divergence ledger.
 //
 // Concurrency: the executor is single-threaded per statement (zero goroutine
-// launches in pkg/recordlayer/query/executor — pinned by
+// launches in internal/recordlayer/query/executor — pinned by
 // package_invariant_test.go), so ChargeMemory/IncrementRecursionLevel need no
 // mutex/atomic. If a future parallel-union breaks that invariant the pinned
 // test fires and the counters move to atomic / a mutex.
@@ -35,7 +35,7 @@ type ExecuteState struct {
 	memLimit int64
 
 	// recursionLevels backs the streaming recursive-CTE cycle guard
-	// (recordlayer/query/executor/recursive_union_cursor.go) — see
+	// (internal/recordlayer/query/executor/recursive_union_cursor.go) — see
 	// IncrementRecursionLevel for why it exists and exactly what it does and
 	// does not cover. Lazily allocated; nil until first use.
 	recursionLevels map[any]int

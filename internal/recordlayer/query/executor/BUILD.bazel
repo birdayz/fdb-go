@@ -1,5 +1,7 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+package(default_visibility = ["//:__subpackages__"])
+
 go_library(
     name = "executor",
     srcs = [
@@ -29,8 +31,8 @@ go_library(
         "streaming_cursors.go",
         "text_index.go",
     ],
-    importpath = "fdb.dev/pkg/recordlayer/query/executor",
-    visibility = ["//visibility:public"],
+    importpath = "fdb.dev/internal/recordlayer/query/executor",
+    visibility = ["//:__subpackages__"],
     deps = [
         "//gen",
         "//internal/unicode15",

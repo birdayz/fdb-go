@@ -157,12 +157,12 @@ go_test(
     ],
     deps = [
         "//gen",
+        "//internal/recordlayer/query/executor",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
         "//pkg/recordlayer/protoname",
-        "//pkg/recordlayer/query/executor",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/properties",
         "//pkg/recordlayer/query/plan/cascades/values",

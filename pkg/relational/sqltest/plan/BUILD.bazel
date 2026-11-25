@@ -69,11 +69,11 @@ go_test(
     deps = [
         "//gen",
         "//gen/demopb",
+        "//internal/recordlayer/query/executor",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
-        "//pkg/recordlayer/query/executor",
         "//pkg/recordlayer/vectorcodec",
         "//pkg/relational/api",
         "//pkg/relational/core/catalog",
