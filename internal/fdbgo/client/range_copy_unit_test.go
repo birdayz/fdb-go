@@ -30,6 +30,36 @@ func rangeCopyReply(rows []KeyValue, more bool) []byte {
 }
 
 // Exclusive: AllocsPerRun counts all goroutines in the test process.
+func TestGetRangeImplClosureAllocations(t *testing.T) {
+	if testing.CoverMode() != "" {
+		t.Skip("coverage instrumentation changes inlining decisions")
+	}
+	tx := rangeCopyTransaction()
+	defer tx.Cancel()
+	ctx := context.Background()
+	key := []byte("a")
+	const samples = 1000
+	plain := testing.AllocsPerRun(samples, func() {
+		kvs, more, readThrough, err := tx.getRangeImpl(ctx, key, key, newRangeLimits(2, ByteLimitUnlimited), 0, false)
+		if err != nil || more || kvs != nil || readThrough != nil {
+			t.Fatalf("empty getRangeImpl = %v, more=%t, readThrough=%v, err=%v", kvs, more, readThrough, err)
+		}
+	})
+	mapped := testing.AllocsPerRun(samples, func() {
+		rows, more, err := tx.getMappedRangeImpl(ctx, key, key, key, 2, ByteLimitUnlimited, 0, false)
+		if err != nil || more || rows != nil {
+			t.Fatalf("empty getMappedRangeImpl = %v, more=%t, err=%v", rows, more, err)
+		}
+	})
+	if plain != 0 {
+		t.Errorf("getRangeImpl closure allocations = %.0f, want 0", plain)
+	}
+	if mapped != 0 {
+		t.Errorf("getMappedRangeImpl closure allocations = %.0f, want 0", mapped)
+	}
+}
+
+// Exclusive: AllocsPerRun counts all goroutines in the test process.
 func TestRangeReplyAccumulationAllocations(t *testing.T) {
 	tx := rangeCopyTransaction()
 	defer tx.Cancel()
