@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/pkg/relational/conformance/plandiff"
+	"fdb.dev/internal/relational/conformance/plandiff"
 )
 
 // javaLeg adapts the existing conformance-server client to the factory's

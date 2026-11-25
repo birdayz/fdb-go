@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // A derived table whose BODY is an OUTER join types its null-supplying leg's

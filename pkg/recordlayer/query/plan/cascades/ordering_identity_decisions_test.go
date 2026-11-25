@@ -49,12 +49,12 @@ package cascades
 //
 // This file is named as the harness for the CQ-55 corpus numbers, and it can only
 // be half of one. A corpus census has to PLAN the corpus, the corpus harness
-// (pkg/relational/conformance/explaindiff) imports this package, and an internal
+// (internal/relational/conformance/explaindiff) imports this package, and an internal
 // test in this package therefore cannot import it back — the cycle is
 // structural, not stylistic. So the split is:
 //
 //   - the corpus-driven counts live in
-//     pkg/relational/conformance/explaindiff/ordering_census_test.go, next to the
+//     internal/relational/conformance/explaindiff/ordering_census_test.go, next to the
 //     harness that can run the corpus, reading counters this package exports from
 //     ordering_comparison_census.go;
 //   - the white-box pins that need no corpus live here and in

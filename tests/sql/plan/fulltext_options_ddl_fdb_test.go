@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/sqltest/testkit"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 var (

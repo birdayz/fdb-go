@@ -25,7 +25,7 @@ test --test_arg="-test.v"
 # framing lines (RUN/PAUSE/CONT/result) before any failure detail exists — so
 # every failure of that target was unrecoverable from the log, and a retry
 # overwrites the on-disk test.log. Raise the budget well above the framing
-# floor. //pkg/relational/conformance/factorycorpus:factorycorpus_test's
+# floor. //internal/relational/conformance/factorycorpus:factorycorpus_test's
 # TestSubtestFramingFitsLogCap reads the value below and fails when the corpus
 # grows into it, so this number cannot silently go stale.
 test --experimental_ui_max_stdouterr_bytes=16777216

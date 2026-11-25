@@ -61,7 +61,7 @@ planned for v0.3.0; each has a mitigation where one exists.
   budgets. It requires Docker and the declared external dependencies. It is not
   every extended seed, race or active-fuzz configuration.
 - `conformance/` tests shared record-store data with Java;
-  `pkg/relational/conformance/` tests SQL behavior;
+  `internal/relational/conformance/` tests SQL behavior;
   `bench/fdbgo/` contains client differentials against libfdb_c.
   A passing case establishes its tested scope, not universal parity.
 - [CI](https://github.com/birdayz/fdb-go/actions/workflows/ci.yml) and its artifacts

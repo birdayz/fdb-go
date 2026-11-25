@@ -48,7 +48,7 @@ import (
 	"sort"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // The actual reproducer of the bug the revert fixed, and the shape the

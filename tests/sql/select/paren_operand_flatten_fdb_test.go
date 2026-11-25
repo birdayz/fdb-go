@@ -46,7 +46,7 @@ import (
 	"fmt"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 
 	"fdb.dev/internal/relational/relapi"
 	"github.com/onsi/gomega"

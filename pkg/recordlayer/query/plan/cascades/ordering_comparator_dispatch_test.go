@@ -275,7 +275,7 @@ func TestPartitionRedundancyProofSeparatesSameSlotDifferentLayouts(t *testing.T)
 // the decision is FINAL. The decline costs nothing in production — over the
 // corpus neither comparator ever sees a FieldValue pair with a non-stating
 // operand, and
-// pkg/relational/conformance/explaindiff's ordering-census test keeps that
+// internal/relational/conformance/explaindiff's ordering-census test keeps that
 // residual pinned at ZERO.
 //
 // The assertion below is transitivity over the whole triple rather than the three

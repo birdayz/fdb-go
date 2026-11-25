@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"

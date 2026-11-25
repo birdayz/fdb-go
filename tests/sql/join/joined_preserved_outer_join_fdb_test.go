@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // TestFDB_JoinedPreservedSide_LeftOuterRows seeds A⋈B and a partially-matching C, then

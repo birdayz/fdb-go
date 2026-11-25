@@ -197,7 +197,7 @@ stale. Run `just sql-coverage` to regenerate; see `FEATURE_MATRIX.md` for the sc
 
 <!-- BEGIN javacorpus ledger: rendered by TestSQLConformanceStatesTheLedger -->
 Java's own yamsql corpus (fdb-record-layer 4.14.2.0, 255 files) runs against Go in
-`pkg/relational/conformance/javacorpus`, pinned by `pinned_ledger_test.go`:
+`internal/relational/conformance/javacorpus`, pinned by `pinned_ledger_test.go`:
 
 - **150 files pass, 0 fail, 105 are skipped whole**, by class: polarity:negative-execution 37, polarity:negative-parse 25, conformance:go-accepts-what-java-rejects 15, polarity:fixed-version-meta 11, conformance:java-planner-bug 4, plan-assertion 4, unsupported:continuation 3, fragment 2, unsupported:multi-cluster 2, conformance:java-disabled 1, vacuous:all-assertions-skipped 1.
 - A pass means every assertion that ran held; plan assertions never run (RFC-201 ruling 2).

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // FuzzSQL_QueryContext closes the execution half of the P0.3-F gap: an arbitrary

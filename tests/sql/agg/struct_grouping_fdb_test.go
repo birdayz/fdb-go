@@ -7,7 +7,7 @@ import (
 	"sort"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // GROUP BY over a whole STRUCT is SUPPORTED — Java answers it by flattening

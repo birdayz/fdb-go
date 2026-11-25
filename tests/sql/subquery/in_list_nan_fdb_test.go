@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // An IN list deduplicates by SQL `=`, under which every NaN equals every NaN.

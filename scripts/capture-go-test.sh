@@ -26,9 +26,9 @@
 #
 #   -timeout   `go test` applies a flat 10-minute default to EVERY package. This
 #              repo has packages whose Bazel targets declare far more than that
-#              because they legitimately need it: //pkg/relational/conformance/
+#              because they legitimately need it: //internal/relational/conformance/
 #              factorycorpus/full is `timeout = "eternal"` (3600s via .bazelrc)
-#              and //pkg/relational/conformance/rowdiff is `timeout = "long"`
+#              and //internal/relational/conformance/rowdiff is `timeout = "long"`
 #              (900s). Run under the go default and those two panic with
 #              `test timed out after 10m0s` on a busy host — MEASURED here, both
 #              in one run at load average 61 on 24 cores, with their subtests

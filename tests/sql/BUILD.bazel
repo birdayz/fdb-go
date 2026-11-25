@@ -1,9 +1,9 @@
 package(default_visibility = ["//visibility:private"])
 
 # The end-to-end SQL suite against a real FoundationDB, one Go package per area
-# (helpers in //pkg/relational/sqltest/testkit). Every package's test sources, as
+# (helpers in //internal/relational/sqltest/testkit). Every package's test sources, as
 # one corpus: the transaction-budget census reads them as data. A new package
-# must be listed here; //pkg/relational/sqltest/guard fails until it is.
+# must be listed here; //internal/relational/sqltest/guard fails until it is.
 filegroup(
     name = "corpus",
     srcs = [
@@ -39,7 +39,7 @@ filegroup(
         "//tests/sql/types:corpus",
     ],
     visibility = [
+        "//internal/relational/sqltest/guard:__pkg__",
         "//internal/testinstruments/txbudgetcensus:__pkg__",
-        "//pkg/relational/sqltest/guard:__pkg__",
     ],
 )

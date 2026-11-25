@@ -19,11 +19,11 @@ import (
 	"fdb.dev/internal/relational/keyspace"
 	"fdb.dev/internal/relational/metadata"
 	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/sqltest/testkit"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/sqltest/testkit"
 	"google.golang.org/protobuf/proto"
 )
 

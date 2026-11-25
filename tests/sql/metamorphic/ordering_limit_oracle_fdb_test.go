@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // oracleKey is one ORDER BY key: nil = NULL. nullsLast flips NULL placement.

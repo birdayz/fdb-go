@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // TestFDB_ProjectedExists_Round3 pins the three round-3 projected-EXISTS fixes

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // TestFDB_ProjectedExists_Round8 pins the two round-8 regressions, both

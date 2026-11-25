@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"fdb.dev/pkg/relational/conformance/factory"
-	"fdb.dev/pkg/relational/conformance/factorycorpus"
-	"fdb.dev/pkg/relational/conformance/yamsql"
+	"fdb.dev/internal/relational/conformance/factory"
+	"fdb.dev/internal/relational/conformance/factorycorpus"
+	"fdb.dev/internal/relational/conformance/yamsql"
 )
 
 // TestPersistKeepsFindingsWhenTheRestOfTheRunFails pins that an oracle

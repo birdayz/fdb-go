@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // PIN: a query-PARAMETER-bound scan in a join leg must plan and

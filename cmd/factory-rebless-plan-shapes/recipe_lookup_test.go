@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"fdb.dev/pkg/relational/conformance/factory"
-	"fdb.dev/pkg/relational/conformance/factorycorpus"
+	"fdb.dev/internal/relational/conformance/factory"
+	"fdb.dev/internal/relational/conformance/factorycorpus"
 )
 
 // reblessSeed is an arbitrary fixed seed. Nothing about the assertions below

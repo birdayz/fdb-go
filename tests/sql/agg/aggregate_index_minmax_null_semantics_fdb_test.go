@@ -23,7 +23,7 @@ import (
 	"context"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 func TestFDB_AggregateIndexMinMax_MixedNullGroups(t *testing.T) {

@@ -136,7 +136,7 @@ Targets:
 - `//layers/otel/otelsql:otelsql_test`.
 - `//layers/otel/cmd/otelbench:otelbench_test`.
 - `//layers/otel/bench:local_campaign_test` (sh_test).
-- `//pkg/relational/sqltest/otel`.
+- `//tests/sql/otel`.
 - `conformance` (rfc204 golden, Java probe).
 
 FDB tests use testcontainers and skip without Docker.

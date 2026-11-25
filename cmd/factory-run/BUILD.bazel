@@ -9,10 +9,10 @@ go_library(
     importpath = "fdb.dev/cmd/factory-run",
     visibility = ["//visibility:private"],
     deps = [
+        "//internal/relational/conformance/factory",
+        "//internal/relational/conformance/factorycorpus",
+        "//internal/relational/conformance/plandiff",
         "//internal/relational/relapi",
-        "//pkg/relational/conformance/factory",
-        "//pkg/relational/conformance/factorycorpus",
-        "//pkg/relational/conformance/plandiff",
         "//pkg/relational/sqldriver",
         "//pkg/testcontainers/foundationdb",
     ],
@@ -34,8 +34,8 @@ go_test(
     embed = [":factory-run_lib"],
     tags = ["resources:memory:400"],
     deps = [
-        "//pkg/relational/conformance/factory",
-        "//pkg/relational/conformance/factorycorpus",
-        "//pkg/relational/conformance/yamsql",
+        "//internal/relational/conformance/factory",
+        "//internal/relational/conformance/factorycorpus",
+        "//internal/relational/conformance/yamsql",
     ],
 )

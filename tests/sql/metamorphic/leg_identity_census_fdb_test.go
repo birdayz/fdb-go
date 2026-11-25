@@ -45,7 +45,7 @@ import (
 
 	"fdb.dev/internal/testinstruments/querycensus"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )

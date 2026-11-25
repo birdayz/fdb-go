@@ -136,7 +136,7 @@ func (r Result) Fraction() float64 {
 // TWO LINES, not one, and the reason is the failure mode this tool is meant to
 // replace rather than reproduce. A single line low enough to give useful notice
 // (~70%) sits right on top of targets that are healthy but big — measured on
-// master, //pkg/relational/conformance/rowdiff runs 659s of a 900s budget, 73%,
+// master, //internal/relational/conformance/rowdiff runs 659s of a 900s budget, 73%,
 // and passes every time. Failing there would block unrelated PRs on a busy
 // afternoon, which is the disease, not the cure. A single line high enough to
 // avoid that (~90%) gives almost no notice. So: warn early and loudly, fail

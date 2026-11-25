@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 
 	"google.golang.org/protobuf/types/dynamicpb"
 

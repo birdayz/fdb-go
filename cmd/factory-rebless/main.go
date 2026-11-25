@@ -45,8 +45,8 @@
 // would be lying about something this tool cannot honestly repair.
 //
 //	go run ./cmd/factory-rebless \
-//	  -corpus pkg/relational/conformance/factorycorpus/testdata \
-//	  -census pkg/relational/conformance/factorycorpus/census_baseline.json
+//	  -corpus internal/relational/conformance/factorycorpus/testdata \
+//	  -census internal/relational/conformance/factorycorpus/census_baseline.json
 //
 // -dry-run reports what would change and writes nothing.
 //
@@ -78,10 +78,10 @@ import (
 	"sort"
 	"strconv"
 
-	"fdb.dev/pkg/relational/conformance/explaindiff"
-	"fdb.dev/pkg/relational/conformance/factory"
-	"fdb.dev/pkg/relational/conformance/factorycorpus"
-	"fdb.dev/pkg/relational/conformance/yamsql"
+	"fdb.dev/internal/relational/conformance/explaindiff"
+	"fdb.dev/internal/relational/conformance/factory"
+	"fdb.dev/internal/relational/conformance/factorycorpus"
+	"fdb.dev/internal/relational/conformance/yamsql"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
@@ -94,9 +94,9 @@ const (
 func main() {
 	var corpusDir, censusPath string
 	var dryRun, rederiveSetup bool
-	flag.StringVar(&corpusDir, "corpus", "pkg/relational/conformance/factorycorpus/testdata",
+	flag.StringVar(&corpusDir, "corpus", "internal/relational/conformance/factorycorpus/testdata",
 		"directory holding the committed .yamsql family files")
-	flag.StringVar(&censusPath, "census", "pkg/relational/conformance/factorycorpus/census_baseline.json",
+	flag.StringVar(&censusPath, "census", "internal/relational/conformance/factorycorpus/census_baseline.json",
 		"path of the census baseline to rewrite")
 	flag.BoolVar(&dryRun, "dry-run", false, "report what would change and write nothing")
 	flag.BoolVar(&rederiveSetup, "rederive-setup", false,

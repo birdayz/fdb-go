@@ -17,8 +17,8 @@ go_test(
         "test-full",
     ],
     deps = [
-        "//pkg/relational/conformance/rowdiff",
-        "//pkg/relational/sqltest/testkit",
+        "//internal/relational/conformance/rowdiff",
+        "//internal/relational/sqltest/testkit",
     ],
 )
 

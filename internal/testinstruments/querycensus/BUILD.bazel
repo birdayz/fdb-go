@@ -29,6 +29,7 @@ go_library(
     ],
     importpath = "fdb.dev/internal/testinstruments/querycensus",
     visibility = [
+        "//internal/relational:__subpackages__",
         "//pkg:__subpackages__",
         "//tests/relational:__subpackages__",
         "//tests/sql:__subpackages__",

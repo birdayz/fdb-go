@@ -22,7 +22,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // mmInListFixture pads the probed table so an index probe beats a full scan and

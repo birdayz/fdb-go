@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/sqltest/testkit"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // A string an enum or UUID column cannot hold is Java's INVALID_ENUM_VALUE or

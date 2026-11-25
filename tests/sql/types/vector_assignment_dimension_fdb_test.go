@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"fdb.dev/internal/relational/relapi"
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // Go-only: raw vector bytes are written, and bytes of another shape fail 22000 at

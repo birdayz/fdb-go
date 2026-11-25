@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"fdb.dev/internal/recordlayer/query/executor"
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 func explainFullText(t *testing.T, ctx context.Context, db *sql.DB, query string, args ...any) string {

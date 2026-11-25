@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // TestFDB_NonCorrelatedExistsEmptySubquery pins that a non-correlated

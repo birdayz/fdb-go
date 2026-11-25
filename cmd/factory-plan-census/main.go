@@ -40,8 +40,8 @@ import (
 	"sort"
 	"strings"
 
-	"fdb.dev/pkg/relational/conformance/factory"
-	"fdb.dev/pkg/relational/conformance/factorycorpus"
+	"fdb.dev/internal/relational/conformance/factory"
+	"fdb.dev/internal/relational/conformance/factorycorpus"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 

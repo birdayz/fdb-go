@@ -75,7 +75,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // twoSourceFoldWant is the TWO-source control's answer, stated independently of

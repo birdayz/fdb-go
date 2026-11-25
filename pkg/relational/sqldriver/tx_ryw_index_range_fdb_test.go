@@ -24,8 +24,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/internal/relational/sqltest/testkit"
 	"fdb.dev/pkg/relational/sqldriver"
-	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // rfc198IndexedDB creates a table with a secondary index on v, so a predicate

@@ -7,7 +7,7 @@ import (
 	"sort"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // TestFDB_ProjectedExistsRound10 pins RFC-141 R4 round-10, two silent-wrong bugs

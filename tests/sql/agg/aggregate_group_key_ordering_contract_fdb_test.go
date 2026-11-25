@@ -48,7 +48,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 func agkoMustExec(t *testing.T, db *sql.DB, ctx context.Context, stmt string) {

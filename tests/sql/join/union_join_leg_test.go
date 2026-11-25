@@ -7,7 +7,7 @@ import (
 	"sort"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // TestFDB_UnionJoinLeg is the review regression (RFC-077 7.6): a CTE/derived-table

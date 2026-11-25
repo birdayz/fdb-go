@@ -2,7 +2,7 @@
 // candidates, executes them against a real FoundationDB through the production
 // SQL path, blesses the ones every oracle agrees on, deduplicates them against
 // the corpus already committed, and WRITES the survivors into
-// pkg/relational/conformance/factorycorpus/testdata as permanent suite content.
+// internal/relational/conformance/factorycorpus/testdata as permanent suite content.
 //
 // Generated tests are committed, not regenerated. A frozen expectation keeps
 // testing the engine when the generator, the oracles and the Java server are
@@ -38,9 +38,9 @@ import (
 	"strings"
 	"time"
 
+	"fdb.dev/internal/relational/conformance/factory"
+	"fdb.dev/internal/relational/conformance/factorycorpus"
 	"fdb.dev/internal/relational/relapi"
-	"fdb.dev/pkg/relational/conformance/factory"
-	"fdb.dev/pkg/relational/conformance/factorycorpus"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 
 	"fdb.dev/pkg/relational/sqldriver"
@@ -58,7 +58,7 @@ func main() {
 	flag.Uint64Var(&cfg.seeds, "seeds", 400, "number of seeds to sweep")
 	flag.Uint64Var(&cfg.seedStart, "seed-start", 1, "first seed")
 	flag.IntVar(&cfg.quota, "quota", 1000, "maximum scenarios committed by this batch (RFC-201 §5.2 keeps a batch PR reviewable)")
-	flag.StringVar(&cfg.out, "out", "pkg/relational/conformance/factorycorpus/testdata", "corpus directory to write scenarios into")
+	flag.StringVar(&cfg.out, "out", "internal/relational/conformance/factorycorpus/testdata", "corpus directory to write scenarios into")
 	flag.StringVar(&cfg.findings, "findings", "factory-findings", "directory oracle disagreements are persisted into")
 	flag.StringVar(&cfg.manifest, "manifest", "factory-manifest.json", "path for the run's batch manifest")
 	flag.StringVar(&cfg.prBody, "pr-body", "factory-pr-body.md",

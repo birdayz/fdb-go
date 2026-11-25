@@ -2,7 +2,7 @@
 
 <!-- GENERATED FILE — DO NOT EDIT BY HAND.
      Regenerate with `just sql-coverage` (or `go run ./cmd/gen-sql-coverage`).
-     Source: pkg/relational/conformance/yamsql/testdata/*.yaml. A drift guard
+     Source: internal/relational/conformance/yamsql/testdata/*.yaml. A drift guard
      (TestSQLCoverageUpToDate) fails CI if this file is stale. -->
 
 Ledger B of RFC-165 — the **measured** corpus number. Every count is computed by

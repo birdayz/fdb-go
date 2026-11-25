@@ -33,7 +33,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // mmdReverse returns a reversed copy, so a comparison against it reads as an

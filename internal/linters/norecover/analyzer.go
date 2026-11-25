@@ -57,7 +57,7 @@ var Allowlist = map[string]int{
 	// <PLAN-PANIC: …> marker so the corpus-wide dump still completes. Nothing is
 	// swallowed — the marker is rendered into the baseline and TestNoPlanPanics
 	// fails on any entry carrying one.
-	"pkg/relational/conformance/explaindiff/explaindiff.go": 1,
+	"internal/relational/conformance/explaindiff/explaindiff.go": 1,
 	// DST overnight hunter: a seed that panics a maintainer is the severest bug it can
 	// find — caught, recorded as a finding, and the sweep continues (an unattended run
 	// must survive one poisoned seed). The panic is surfaced on the finding, never swallowed.

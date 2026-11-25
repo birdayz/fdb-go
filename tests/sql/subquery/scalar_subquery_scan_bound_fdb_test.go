@@ -3,7 +3,7 @@ package sqltest
 import (
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // TestFDB_ScalarSubqueryAsScanBound pins that an uncorrelated scalar subquery

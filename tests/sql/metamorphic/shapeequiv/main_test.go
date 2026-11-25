@@ -3,7 +3,7 @@ package sqltest
 import (
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 func TestMain(m *testing.M) { testkit.Main(m) }

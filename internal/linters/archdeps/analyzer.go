@@ -139,6 +139,12 @@ var (
 		"fdb.dev/relational/core",
 		"fdb.dev/relational/sqldriver",
 	}
+	// relationalHarnessRoots are test/conformance harness subtrees under
+	// internal/relational/ that are NOT L6 core runtime packages.
+	relationalHarnessRoots = []string{
+		"fdb.dev/internal/relational/conformance",
+		"fdb.dev/internal/relational/sqltest",
+	}
 	coreRuntimeExemptions = []string{
 		"fdb.dev/pkg/recordlayer/chaos",
 		"fdb.dev/pkg/recordlayer/keystoretest",
@@ -147,6 +153,8 @@ var (
 		"fdb.dev/recordlayer/chaos",
 		"fdb.dev/recordlayer/keystoretest",
 		"fdb.dev/internal/relational/simgate",
+		"fdb.dev/internal/relational/conformance",
+		"fdb.dev/internal/relational/sqltest",
 	}
 	r4ForbiddenRoots = []string{
 		"fdb.dev/pkg/testcontainers",
@@ -299,7 +307,7 @@ func run(pass *analysis.Pass) (any, error) {
 	inR4 := withinAny(pkgPath, coreRuntimeRoots) && !withinAny(pkgPath, coreRuntimeExemptions)
 	inL0 := withinAny(pkgPath, r2AllowedLeaves)
 	inL3 := inR1 && !inL0 && !inR2 && !withinAny(pkgPath, executorRoots)
-	inL6 := withinAny(pkgPath, relationalCoreAPIRoots) && !withinAny(pkgPath, sqlDriverRoots)
+	inL6 := withinAny(pkgPath, relationalCoreAPIRoots) && !withinAny(pkgPath, sqlDriverRoots) && !withinAny(pkgPath, relationalHarnessRoots)
 
 	for _, file := range pass.Files {
 		filename := filepath.ToSlash(pass.Fset.Position(file.Package).Filename)

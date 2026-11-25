@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/conformance/plandiff"
+	"fdb.dev/internal/relational/conformance/plandiff"
 )
 
 // TestEntryConforms_JavaErrorClassification pins the harness's Java-error

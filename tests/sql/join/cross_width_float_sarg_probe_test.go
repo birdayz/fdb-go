@@ -42,7 +42,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // ORDER BY with two sort keys that differ ONLY in float width. Sort-key dedup

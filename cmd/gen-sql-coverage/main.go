@@ -14,11 +14,11 @@ import (
 	"log"
 	"os"
 
-	"fdb.dev/pkg/relational/conformance/yamsql"
+	"fdb.dev/internal/relational/conformance/yamsql"
 )
 
 func main() {
-	testdata := flag.String("testdata", "pkg/relational/conformance/yamsql/testdata", "directory of *.yaml conformance scenarios")
+	testdata := flag.String("testdata", "internal/relational/conformance/yamsql/testdata", "directory of *.yaml conformance scenarios")
 	coverageOut := flag.String("coverage-out", "SQL_COVERAGE.md", "output path for the measured coverage report (Ledger B)")
 	ansiOut := flag.String("ansi-out", "SQL_ANSI_CONFORMANCE.md", "output path for the ANSI conformance scorecard (Ledger A)")
 	flag.Parse()

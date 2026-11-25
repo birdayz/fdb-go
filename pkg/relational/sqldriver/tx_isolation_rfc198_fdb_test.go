@@ -30,9 +30,9 @@ import (
 	"time"
 
 	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/sqltest/testkit"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/sqldriver"
-	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func rfc198SetupDB(t *testing.T, dbPath, tmpl string) *sql.DB {

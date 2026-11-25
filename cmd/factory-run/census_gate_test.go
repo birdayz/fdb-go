@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/conformance/factory"
-	"fdb.dev/pkg/relational/conformance/factorycorpus"
+	"fdb.dev/internal/relational/conformance/factory"
+	"fdb.dev/internal/relational/conformance/factorycorpus"
 )
 
 // TestPersistVerifiesTheCommittedBaselineByDefault is the gate on the gate.
@@ -457,7 +457,7 @@ func TestPersistRejectsAdditionOnlyRetirementAuthorization(t *testing.T) {
 // picked up as a scenario and fail to parse as one.
 func TestCensusPathSitsBesideTheCorpus(t *testing.T) {
 	t.Parallel()
-	p := censusPath("pkg/relational/conformance/factorycorpus/testdata")
+	p := censusPath("internal/relational/conformance/factorycorpus/testdata")
 	if strings.HasSuffix(filepath.Dir(filepath.Clean(p)), "testdata") {
 		t.Fatalf("the census baseline resolves to %q, inside the corpus directory; the loader globs that "+
 			"directory and would read it as a scenario", p)

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // queryIDs runs q and returns the single BIGINT column of every row, sorted

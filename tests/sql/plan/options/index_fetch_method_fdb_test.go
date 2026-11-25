@@ -11,11 +11,11 @@ import (
 
 	"fdb.dev/internal/fdbclient"
 	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/sqltest/testkit"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/sqldriver"
-	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 var (

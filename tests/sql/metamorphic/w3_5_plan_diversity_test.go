@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // RFC-048 W3.5: the plan-diversity oracle (Cascades-specific, self-oracling).

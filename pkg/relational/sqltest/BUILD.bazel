@@ -1,3 +1,0 @@
-# gazelle:default_visibility //pkg/relational:__subpackages__
-
-package(default_visibility = ["//pkg/relational:__subpackages__"])

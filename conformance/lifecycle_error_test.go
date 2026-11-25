@@ -11,9 +11,9 @@ import (
 
 	"fdb.dev/internal/fdbgo/transport"
 	"fdb.dev/internal/fdbwire"
+	"fdb.dev/internal/relational/conformance/plandiff"
 	"fdb.dev/internal/relational/relapi"
 	gofdb "fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/relational/conformance/plandiff"
 )
 
 // The five failure signatures below are VERBATIM from a red

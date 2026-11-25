@@ -39,9 +39,9 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"fdb.dev/internal/relational/conformance/plandiff"
+	"fdb.dev/internal/relational/conformance/yamsql"
 	"fdb.dev/internal/relational/relapi"
-	"fdb.dev/pkg/relational/conformance/plandiff"
-	"fdb.dev/pkg/relational/conformance/yamsql"
 )
 
 // a3Key identifies a single cross-engine test (scenario name + its index in the
@@ -3655,7 +3655,7 @@ func assertRowsMatch(actual, expected [][]any, unordered bool, prefix string) {
 // as the expected-vs-actual path.
 //
 // TODO: BYTES column values from Java arrive base64-encoded as strings
-// (per `pkg/relational/conformance/plandiff/runsql.go` runsql encode);
+// (per `internal/relational/conformance/plandiff/runsql.go` runsql encode);
 // the Go runner's coerceForComparison also base64-encodes []byte to
 // match. Future scenarios that project a BYTES column directly are
 // covered by the existing string-equality path. If a future scenario

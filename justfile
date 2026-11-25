@@ -115,7 +115,7 @@ build:
 # Bazel schedules tests in command-line order and has no priority knob, so a
 # 5-10 minute target listed by label order starts minutes late and becomes the
 # tail. Ordering only; a stale entry is harmless.
-test_full_first := "//conformance:rfc257_oracle_test //tests/relational/factorycorpus/full:full_test //conformance:rfc257_guardiann_java_test //conformance:conformance_probes_test //conformance:conformance_test //internal/fdbgo/client:client_test //pkg/relational/conformance/factory:factory_test //conformance:conformance_corpora_test //pkg/recordlayer:million_record_test //internal/recordlayer/chaos:chaos_test"
+test_full_first := "//conformance:rfc257_oracle_test //tests/relational/factorycorpus/full:full_test //conformance:rfc257_guardiann_java_test //conformance:conformance_probes_test //conformance:conformance_test //internal/fdbgo/client:client_test //internal/relational/conformance/factory:factory_test //conformance:conformance_corpora_test //pkg/recordlayer:million_record_test //internal/recordlayer/chaos:chaos_test"
 
 # Standard edit/commit loop: unit tests and bounded integration tests, with nogo.
 # Heavy suites are tagged test-full (or conformance_java/stress/manual).
@@ -180,11 +180,11 @@ run-conformance-server:
     bazelisk run //conformance:conformance_server
 
 # Run SQL conformance scenarios against the Go fdbsql driver.
-# Each .yaml file under pkg/relational/conformance/yamsql/testdata/ pins a
+# Each .yaml file under internal/relational/conformance/yamsql/testdata/ pins a
 # Java-authoritative correctness property (NULL semantics, CAST rules,
 # integer arithmetic, etc.). Drift between Go and Java surfaces here first.
 conformance-sql:
-    bazelisk test //pkg/relational/conformance/yamsql:yamsql_test --test_output=streamed --test_arg=-test.v
+    bazelisk test //internal/relational/conformance/yamsql:yamsql_test --test_output=streamed --test_arg=-test.v
 
 # Check SQL engine behavior against the committed golden baselines (plan + result rows
 # over SimFDB). Fails on any drift; part of `just test` too. See internal/simfdb/hunt/golden.

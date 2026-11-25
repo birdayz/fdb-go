@@ -40,7 +40,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // openParenDB builds the two-table fixture the join arm needs. It is separate

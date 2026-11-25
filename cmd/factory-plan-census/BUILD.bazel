@@ -6,8 +6,8 @@ go_library(
     importpath = "fdb.dev/cmd/factory-plan-census",
     visibility = ["//visibility:private"],
     deps = [
-        "//pkg/relational/conformance/factory",
-        "//pkg/relational/conformance/factorycorpus",
+        "//internal/relational/conformance/factory",
+        "//internal/relational/conformance/factorycorpus",
         "//pkg/relational/core/embedded",
     ],
 )

@@ -22,8 +22,8 @@ import (
 	"fdb.dev/internal/relational/ddl"
 	"fdb.dev/internal/relational/metadata"
 	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/sqltest/testkit"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // witnessTemplate is template name@version over T(PK, C, V) with index

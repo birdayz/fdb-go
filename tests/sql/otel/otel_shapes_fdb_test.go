@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"fdb.dev/internal/relational/relapi"
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // Real-FDB OTel shapes mirror the plans/rows pinned by the Java 4.14.2

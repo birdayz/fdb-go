@@ -10,8 +10,8 @@ import (
 	"os"
 	"strings"
 
+	"fdb.dev/internal/relational/conformance/plandiff"
 	"fdb.dev/layers/otel/otelsql"
-	"fdb.dev/pkg/relational/conformance/plandiff"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"

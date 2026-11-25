@@ -59,7 +59,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 
 	"fdb.dev/gen"
 	"fdb.dev/internal/fdbwire"

@@ -47,7 +47,7 @@ Older minors are best-effort until `v1`. Security fixes land on the latest suppo
 
 The scan excludes non-shipped test, simulation, conformance, and
 tooling/linter entrypoints: `pkg/testcontainers`,
-`pkg/relational/sqltest`, `internal/linters`, `internal/simfdb`,
+`internal/linters`, `internal/simfdb`,
 `internal/testutil`, `internal/testinstruments`, `internal/dst`,
 `internal/relational/sqltest`, `internal/relational/conformance`,
 `internal/recordlayer/chaos`, and `internal/recordlayer/keystoretest`. These

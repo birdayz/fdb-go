@@ -74,7 +74,7 @@ var assignmentTable = []assigned{
 	{"pkg/relational/core/query/expr/expr.go", "narrowConstAgainstFloatColumn", "values.EvaluateConstant", 1, "coercion: the FLOAT-column narrowing"},
 	{"pkg/relational/core/query/expr/expr.go", "isTypedNullConstant", "values.EvaluateConstant", 1, "walk-time NULL: arithmetic over a typed NULL"},
 
-	{"pkg/relational/conformance/rowdiff/oracle.go", "evalLeaf", "Evaluate(nil)", 2, "harness: the rowdiff oracle evaluates its own leaves"},
+	{"internal/relational/conformance/rowdiff/oracle.go", "evalLeaf", "Evaluate(nil)", 2, "harness: the rowdiff oracle evaluates its own leaves"},
 }
 
 // assigned is one census entry: a site key, its count and its reason.

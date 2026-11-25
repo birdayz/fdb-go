@@ -15,7 +15,7 @@ go_test(
         "resources:memory:700",
         "test-full",
     ],
-    deps = ["//pkg/relational/sqltest/testkit"],
+    deps = ["//internal/relational/sqltest/testkit"],
 )
 
 # This package's test sources, for the whole-corpus census and the

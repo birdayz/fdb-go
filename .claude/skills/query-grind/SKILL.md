@@ -70,12 +70,12 @@ SimFDB is not real wire-transport fidelity. Scope all counts.
 
 | Existing home | Use |
 |---|---|
-| `pkg/relational/conformance/yamsql` | Explicit SQL expectations, typed args, exact carrier/bit assertions, metadata/errors and durable real-FDB regressions |
-| `pkg/relational/conformance/factory`, `factorycorpus`, `cmd/factory-run` | Structured candidates, alternative-plan/partition checks, provenance, corpus admission and promotion |
-| `pkg/relational/conformance/rowdiff` | Small independent expected-result models and real-FDB query/projection/paging comparisons |
+| `internal/relational/conformance/yamsql` | Explicit SQL expectations, typed args, exact carrier/bit assertions, metadata/errors and durable real-FDB regressions |
+| `internal/relational/conformance/factory`, `factorycorpus`, `cmd/factory-run` | Structured candidates, alternative-plan/partition checks, provenance, corpus admission and promotion |
+| `internal/relational/conformance/rowdiff` | Small independent expected-result models and real-FDB query/projection/paging comparisons |
 | `internal/simfdb/hunt/sqlhunt` | Fast deterministic stateful SQL exploration against focused models |
 | `internal/simfdb/hunt/metamorphic`, `cmd/dst-generate` | Hand-written and LLM-authored equivalence families replayed over SimFDB |
-| `pkg/relational/conformance/explaindiff`, `plandiff` | Observed plan contracts/diversity and shared-surface cross-engine evidence |
+| `internal/relational/conformance/explaindiff`, `plandiff` | Observed plan contracts/diversity and shared-surface cross-engine evidence |
 | `pkg/relational/sqldriver`, Cascades value/rule tests | Targeted API, storage, evaluator and planner regression pins |
 | Existing Bazel targets and PR CI | Corpus replay, fuzz seed replay, race and mutation checks (no scheduled lane runs) |
 
@@ -92,16 +92,16 @@ These are entry points, not proof that every semantic axis is implemented:
 # Read the candidate formats, models, constraints and supported CLI flags.
 rg -n 'flag\.|type Scenario|type Group|func Check|func LoadDir' \
   cmd/factory-run cmd/dst-generate internal/simfdb/hunt/metamorphic
-rg -n '^func (Test|Fuzz)' pkg/relational/conformance/yamsql \
-  pkg/relational/conformance/rowdiff internal/simfdb/hunt/sqlhunt
+rg -n '^func (Test|Fuzz)' internal/relational/conformance/yamsql \
+  internal/relational/conformance/rowdiff internal/simfdb/hunt/sqlhunt
 
 # Metamorphic replay: supply an existing-format directory, not generated shell code.
 bazelisk run //cmd/dst-generate -- -dir /absolute/path/to/candidate-json
 
 # Strict SQL/model/corpus replay through existing targets.
-bazelisk test //pkg/relational/conformance/yamsql:yamsql_test \
+bazelisk test //internal/relational/conformance/yamsql:yamsql_test \
   --nocache_test_results --test_output=all
-bazelisk test //pkg/relational/conformance/rowdiff:rowdiff_test \
+bazelisk test //internal/relational/conformance/rowdiff:rowdiff_test \
   --nocache_test_results --test_output=all
 ```
 
