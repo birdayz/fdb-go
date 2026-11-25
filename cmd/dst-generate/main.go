@@ -19,7 +19,7 @@ import (
 	"os"
 	"strings"
 
-	"fdb.dev/pkg/simfdb/hunt/metamorphic"
+	"fdb.dev/internal/simfdb/hunt/metamorphic"
 )
 
 func main() {

@@ -1,0 +1,29 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+package(default_visibility = ["//internal/simfdb:__subpackages__"])
+
+go_library(
+    name = "interleave",
+    srcs = ["interleave.go"],
+    importpath = "fdb.dev/internal/simfdb/hunt/interleave",
+    visibility = ["//cmd/dst-hunt:__pkg__"],
+    deps = [
+        "//internal/simfdb",
+        "//internal/simfdb/hunt",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+    ],
+)
+
+go_test(
+    name = "interleave_test",
+    srcs = ["interleave_test.go"],
+    embed = [":interleave"],
+    deps = [
+        "//internal/simfdb",
+        "//internal/simfdb/hunt",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+    ],
+)

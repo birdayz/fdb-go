@@ -30,7 +30,7 @@ import (
 	"testing"
 
 	"fdb.dev/internal/relational/relapi"
-	"fdb.dev/pkg/simfdb"
+	"fdb.dev/internal/simfdb"
 )
 
 // beginRelUpdateTx opens an explicit transaction and applies a relative UPDATE

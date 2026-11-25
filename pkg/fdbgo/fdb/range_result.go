@@ -327,7 +327,7 @@ func (rr goRangeResult) Iterator() RangeIterator {
 }
 
 // EffectiveRowLimit returns the row budget for a range read: Limit 0 and -1 both mean
-// unlimited. Exported because the SimFDB backend (pkg/simfdb) is a third implementation of this
+// unlimited. Exported because the SimFDB backend (internal/simfdb) is a third implementation of this
 // interface and has to interpret a row budget identically.
 //
 // Its former companion BatchSize is deliberately gone rather than left unused. It returned a

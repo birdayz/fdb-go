@@ -170,7 +170,7 @@ func TestRangeIterator_FirstFetchUsesFirstProgressionEntry(t *testing.T) {
 	db := openTestDB(t)
 
 	// Row cost against a byte target is key + value + 24 (a measured per-row server overhead;
-	// see pkg/simfdb's serverRowOverheadBytes for the evidence). A 12-byte key ("firstprog_" +
+	// see internal/simfdb's serverRowOverheadBytes for the evidence). A 12-byte key ("firstprog_" +
 	// 4 digits is 14) with a 90-byte value gives 14+90+24 = 128 bytes per row, so:
 	//   4096 / 128 = 32 rows  <- correct, iteration 1
 	//   6144 / 128 = 48 rows  <- the off-by-one

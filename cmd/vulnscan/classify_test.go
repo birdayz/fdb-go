@@ -339,7 +339,6 @@ func TestExcludedTestInfraPackages(t *testing.T) {
 	for _, pkg := range []string{
 		"fdb.dev/pkg/testcontainers",
 		"fdb.dev/pkg/testcontainers/foundationdb",
-		"fdb.dev/pkg/testutil/benchcluster",
 		"fdb.dev/pkg/relational/sqltest",
 		"fdb.dev/pkg/relational/sqltest/testkit",
 		"fdb.dev/internal/linters",
@@ -420,7 +419,6 @@ func TestScanIncludesLibraryAndReleasedCLIEntrypoints(t *testing.T) {
 	}
 	output := "\n fdb.dev/pkg/recordlayer \n" +
 		"fdb.dev/pkg/testcontainers/foundationdb\n" +
-		"fdb.dev/pkg/testutil/benchcluster\n" +
 		"fdb.dev/pkg/relational/sqltest/testkit\n" +
 		"fdb.dev/internal/unicode15\n" +
 		"fdb.dev/internal/recordlayer/query/executor\n" +

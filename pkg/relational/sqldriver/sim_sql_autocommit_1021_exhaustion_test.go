@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"fdb.dev/internal/relational/relapi"
-	"fdb.dev/pkg/simfdb"
+	"fdb.dev/internal/simfdb"
 )
 
 // TestSQLFault_AutoCommit1021ExhaustionSurfacesAs40003 retains the original

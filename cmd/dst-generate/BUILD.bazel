@@ -5,7 +5,7 @@ go_library(
     srcs = ["main.go"],
     importpath = "fdb.dev/cmd/dst-generate",
     visibility = ["//visibility:private"],
-    deps = ["//pkg/simfdb/hunt/metamorphic"],
+    deps = ["//internal/simfdb/hunt/metamorphic"],
 )
 
 go_binary(

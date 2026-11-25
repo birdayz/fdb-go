@@ -9,9 +9,9 @@ import (
 
 	"fdb.dev/internal/dst"
 	"fdb.dev/internal/dstwire"
+	"fdb.dev/internal/simfdb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/sqldriver"
-	"fdb.dev/pkg/simfdb"
 )
 
 // TestLoadFixtureReplaysOnlyALostWindow pins loadFixture's retry rule against

@@ -122,6 +122,7 @@ go_test(
         "//internal/dst",
         "//internal/dstwire",
         "//internal/relational/keyspace",
+        "//internal/simfdb",
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/properties",
@@ -129,6 +130,5 @@ go_test(
         "//pkg/recordlayer/query/plan/plans",
         "//pkg/relational/core/embedded",
         "//pkg/relational/sqldriver",
-        "//pkg/simfdb",
     ],
 )

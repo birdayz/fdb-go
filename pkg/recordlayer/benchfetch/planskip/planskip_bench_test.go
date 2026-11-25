@@ -19,6 +19,7 @@ import (
 	"fdb.dev/gen/demopb"
 	"fdb.dev/internal/recordlayer/indexfetch"
 	"fdb.dev/internal/recordlayer/query/executor"
+	"fdb.dev/internal/testutil/benchcluster"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -26,7 +27,6 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	"fdb.dev/pkg/testutil/benchcluster"
 )
 
 func TestMain(m *testing.M) { os.Exit(benchcluster.Main(m)) }

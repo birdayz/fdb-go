@@ -1,0 +1,50 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+package(default_visibility = ["//internal/simfdb:__subpackages__"])
+
+go_library(
+    name = "hunt",
+    srcs = [
+        "hunt.go",
+        "profiles.go",
+        "shrink.go",
+    ],
+    importpath = "fdb.dev/internal/simfdb/hunt",
+    visibility = [
+        "//cmd/dst-hunt:__pkg__",
+        "//internal/simfdb:__subpackages__",
+    ],
+    deps = [
+        "//gen/demopb",
+        "//internal/dst",
+        "//internal/dstwire",
+        "//internal/recordlayer/chaos",
+        "//internal/simfdb",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "hunt_test",
+    srcs = [
+        "exhaustion_test.go",
+        "hunt_test.go",
+    ],
+    embed = [":hunt"],
+    deps = [
+        "//gen/demopb",
+        "//internal/dst",
+        "//internal/dstwire",
+        "//internal/recordlayer/chaos",
+        "//internal/simfdb",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

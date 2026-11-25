@@ -2,7 +2,7 @@ package fdb_test
 
 // Per-batch pins for the CLIENT's range iterator (goRangeIterator) under a row Limit.
 //
-// The sibling arms in pkg/simfdb (TestExactModeIsStructurallySingleBatch,
+// The sibling arms in internal/simfdb (TestExactModeIsStructurallySingleBatch,
 // TestBoundedModeReDerivesRemainingBudget) assert the same properties against the SIMULATOR's
 // iterator, which is a reimplementation of this loop rather than this loop. The two share only
 // fdb.ModeTargetBytes; the `remaining -= len(kvs)` bookkeeping, the continuation advance and the

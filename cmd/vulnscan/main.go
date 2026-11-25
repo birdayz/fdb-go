@@ -92,7 +92,6 @@ func defaultScanPatterns(repoDir string) []string {
 // tooling/linter entrypoints across pkg/ and internal/.
 var excludePrefixes = []string{
 	"fdb.dev/pkg/testcontainers",
-	"fdb.dev/pkg/testutil/benchcluster",
 	"fdb.dev/pkg/relational/sqltest",
 	"fdb.dev/internal/linters",
 	"fdb.dev/internal/simfdb",

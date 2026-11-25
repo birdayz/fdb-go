@@ -8,8 +8,8 @@ import (
 
 	"fdb.dev/internal/dst"
 	"fdb.dev/internal/dstwire"
+	"fdb.dev/internal/simfdb"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/simfdb"
 )
 
 // injectSimFDB registers a SimFDB-backed FDBDatabase in the driver's cluster-file cache under

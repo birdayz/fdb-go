@@ -41,5 +41,8 @@ filegroup(
         "//pkg/relational/sqltest/subquery:corpus",
         "//pkg/relational/sqltest/types:corpus",
     ],
-    visibility = ["//pkg/relational:__subpackages__"],
+    visibility = [
+        "//internal/testinstruments/txbudgetcensus:__pkg__",
+        "//pkg/relational:__subpackages__",
+    ],
 )

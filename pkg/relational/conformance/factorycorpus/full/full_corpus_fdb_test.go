@@ -17,9 +17,9 @@ import (
 
 	"fdb.dev/internal/dst"
 	"fdb.dev/internal/dstwire"
+	"fdb.dev/internal/simfdb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/conformance/factorycorpus"
-	"fdb.dev/pkg/simfdb"
 )
 
 // corpusDir is the parent package's testdata. The corpus lives there, with the

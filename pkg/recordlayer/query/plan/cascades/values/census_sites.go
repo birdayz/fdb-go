@@ -8,7 +8,7 @@ import (
 )
 
 // The vocabulary record sites pass to CensusHooks. It stays in production because
-// the sites name it; the counting and reporting live in pkg/internal/querycensus.
+// the sites name it; the counting and reporting live in internal/testinstruments/querycensus.
 
 // AccessorPathClass is one call's outcome. These partition every call to
 // AccessorNamePath.

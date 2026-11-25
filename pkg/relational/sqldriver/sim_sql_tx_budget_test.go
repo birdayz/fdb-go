@@ -32,9 +32,9 @@ import (
 	"fdb.dev/internal/dst"
 	"fdb.dev/internal/dstwire"
 	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/simfdb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/simfdb"
 )
 
 // openSimSchemaWithEnv is openSimSchema plus the dst.Env, for tests that move

@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"fdb.dev/internal/dst"
+	"fdb.dev/internal/simfdb"
 	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/simfdb"
 )
 
 // Java's IndexingThrottle.buildCommitRetryAsync waits the runner's exponential delay, timed

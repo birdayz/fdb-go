@@ -67,7 +67,7 @@ func TestDifferential_RangeLimitInvalid(t *testing.T) {
 //     carried Exact. The pure-Go client's GetSliceWithError genuinely never passes the mode down.
 //     That is a real per-surface divergence candidate, not a symmetry to assume.
 //
-// SimFDB models this per surface (pkg/simfdb/range_result.go) and its differential arm
+// SimFDB models this per surface (internal/simfdb/range_result.go) and its differential arm
 // (TestDifferential_RangeOptionValidation) is measured against the PURE-GO client, so nothing
 // downstream of it can catch a Go-vs-C divergence here. This is the arm that can.
 func TestDifferential_ExactModeWithoutLimits(t *testing.T) {

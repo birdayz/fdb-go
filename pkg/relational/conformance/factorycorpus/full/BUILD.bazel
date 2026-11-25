@@ -43,8 +43,8 @@ go_test(
         "//internal/dst",
         "//internal/dstwire",
         "//internal/relational/keyspace",
+        "//internal/simfdb",
         "//pkg/recordlayer",
         "//pkg/relational/conformance/factorycorpus",
-        "//pkg/simfdb",
     ],
 )

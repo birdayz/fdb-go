@@ -6,13 +6,13 @@ go_library(
     importpath = "fdb.dev/cmd/dst-hunt",
     visibility = ["//visibility:private"],
     deps = [
-        "//pkg/simfdb/hunt",
-        "//pkg/simfdb/hunt/atomicops",
-        "//pkg/simfdb/hunt/continuation",
-        "//pkg/simfdb/hunt/interleave",
-        "//pkg/simfdb/hunt/rangeconflict",
-        "//pkg/simfdb/hunt/sqlhunt",
-        "//pkg/simfdb/hunt/sqlpage",
+        "//internal/simfdb/hunt",
+        "//internal/simfdb/hunt/atomicops",
+        "//internal/simfdb/hunt/continuation",
+        "//internal/simfdb/hunt/interleave",
+        "//internal/simfdb/hunt/rangeconflict",
+        "//internal/simfdb/hunt/sqlhunt",
+        "//internal/simfdb/hunt/sqlpage",
     ],
 )
 
@@ -26,5 +26,5 @@ go_test(
     name = "dst-hunt_test",
     srcs = ["main_test.go"],
     embed = [":dst-hunt_lib"],
-    deps = ["//pkg/simfdb/hunt"],
+    deps = ["//internal/simfdb/hunt"],
 )

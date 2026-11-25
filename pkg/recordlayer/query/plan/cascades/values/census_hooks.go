@@ -3,7 +3,7 @@ package values
 import "sync/atomic"
 
 // CensusHooks is the planner's test-only census sink; its storage and reports
-// live in pkg/internal/querycensus, which installs it. Production leaves it nil.
+// live in internal/testinstruments/querycensus, which installs it. Production leaves it nil.
 type CensusHooks struct {
 	LegIdentityLeg             func(leg RecordTypeLeg)
 	LegIdentityComparison      func(site LegIdentitySite, legName, corrName string)

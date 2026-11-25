@@ -10,7 +10,7 @@ go_library(
     importpath = "fdb.dev/internal/relational/simgate",
     visibility = ["//:__subpackages__"],
     deps = [
+        "//internal/simfdb",
         "//pkg/fdbgo/fdb",
-        "//pkg/simfdb",
     ],
 )

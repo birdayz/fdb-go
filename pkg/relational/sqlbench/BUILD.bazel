@@ -13,10 +13,10 @@ go_test(
     ],
     deps = [
         "//internal/relational/keyspace",
+        "//internal/testutil/benchcluster",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",
         "//pkg/relational/sqldriver",
-        "//pkg/testutil/benchcluster",
     ],
 )

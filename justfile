@@ -187,18 +187,18 @@ conformance-sql:
     bazelisk test //pkg/relational/conformance/yamsql:yamsql_test --test_output=streamed --test_arg=-test.v
 
 # Check SQL engine behavior against the committed golden baselines (plan + result rows
-# over SimFDB). Fails on any drift; part of `just test` too. See pkg/simfdb/hunt/golden.
+# over SimFDB). Fails on any drift; part of `just test` too. See internal/simfdb/hunt/golden.
 golden:
-    bazelisk test //pkg/simfdb/hunt/golden:golden_test --test_output=errors --nocache_test_results
+    bazelisk test //internal/simfdb/hunt/golden:golden_test --test_output=errors --nocache_test_results
 
 # Regenerate the SQL golden baselines after an INTENTIONAL engine change, then REVIEW the diff:
-#   just golden-update && git diff pkg/simfdb/hunt/golden/testdata/
+#   just golden-update && git diff internal/simfdb/hunt/golden/testdata/
 # A result-row change is almost always a bug; a plan change is a query-engine change (the
 # architectural review gate covers it). Capture is deterministic over SimFDB, so a rerun with
 # no engine change is a no-op.
 golden-update:
-    GOLDEN_UPDATE=1 bazelisk run //pkg/simfdb/hunt/golden:golden_test -- -test.run '^TestGolden$'
-    @echo "review the baseline diff:  git diff pkg/simfdb/hunt/golden/testdata/"
+    GOLDEN_UPDATE=1 bazelisk run //internal/simfdb/hunt/golden:golden_test -- -test.run '^TestGolden$'
+    @echo "review the baseline diff:  git diff internal/simfdb/hunt/golden/testdata/"
 
 # Re-resolve the Java oracle's Maven dependencies into maven_install.json after changing
 # maven.install in MODULE.bazel; commit both. A stale lock file fails the build.
@@ -307,7 +307,7 @@ bench-ci:
     # benches produce output. Track exit codes manually.
     set -uo pipefail
     rm -f bench-raw.txt bench-results.txt
-    bazelisk build //pkg/recordlayer:recordlayer_test //internal/fdbwire/types:types_test //pkg/recordlayer/query/plan/cascades:cascades_test //pkg/recordlayer/query/plan/cascades/expressions:expressions_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/keyspace:keyspace_test //internal/relational/relapi:relapi_test //pkg/simfdb/hunt/sqlhunt:sqlhunt_test
+    bazelisk build //pkg/recordlayer:recordlayer_test //internal/fdbwire/types:types_test //pkg/recordlayer/query/plan/cascades:cascades_test //pkg/recordlayer/query/plan/cascades/expressions:expressions_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/keyspace:keyspace_test //internal/relational/relapi:relapi_test //internal/simfdb/hunt/sqlhunt:sqlhunt_test
     BAZEL_BIN=$(bazelisk info bazel-bin)
     fail_count=0
     {
@@ -394,8 +394,8 @@ bench-ci:
         # row-path and planner-overhead numbers come from, and until it was
         # listed here NOTHING ran it — `bazelisk test` never passes -test.bench,
         # so its nine benchmarks were reported by no harness at all.
-        echo "=== Running benchmarks: //pkg/simfdb/hunt/sqlhunt:sqlhunt_test ==="
-        timeout 300 "$BAZEL_BIN/pkg/simfdb/hunt/sqlhunt/sqlhunt_test_/sqlhunt_test" \
+        echo "=== Running benchmarks: //internal/simfdb/hunt/sqlhunt:sqlhunt_test ==="
+        timeout 300 "$BAZEL_BIN/internal/simfdb/hunt/sqlhunt/sqlhunt_test_/sqlhunt_test" \
             -test.run='^$' \
             -test.bench=. \
             -test.benchmem \

@@ -633,11 +633,12 @@ go_test(
         "//internal/relational/rowstruct",
         "//internal/relational/session",
         "//internal/relational/simgate",
+        "//internal/simfdb",
+        "//internal/testinstruments/querycensus",
         "//internal/unicode15",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
-        "//pkg/internal/querycensus",
         "//pkg/recordlayer",
         "//pkg/recordlayer/metadatapb",
         "//pkg/recordlayer/query/plan/cascades",
@@ -654,7 +655,6 @@ go_test(
         "//pkg/relational/core/query/expr",
         "//pkg/relational/core/query/logical",
         "//pkg/relational/core/query/semantic",
-        "//pkg/simfdb",
         "@com_github_antlr4_go_antlr_v4//:antlr",
         "@com_github_google_uuid//:uuid",
         "@org_golang_google_protobuf//encoding/prototext",
@@ -669,5 +669,5 @@ go_test(
 filegroup(
     name = "tx_budget_census_corpus",
     srcs = glob(["*_test.go"]),
-    visibility = ["//pkg/relational/txbudgetcensus:__pkg__"],
+    visibility = ["//internal/testinstruments/txbudgetcensus:__pkg__"],
 )

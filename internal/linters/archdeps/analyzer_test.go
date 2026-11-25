@@ -41,7 +41,7 @@ var stubPkgSources = map[string]string{
 	"fdb.dev/pkg/fdbgo/fdb/tuple":                   "package tuple\ntype Tuple []any\n",
 	"fdb.dev/internal/fdbgo/client":                 "package client\ntype DB struct{}\n",
 	"fdb.dev/fdb/client":                            "package client\ntype DB struct{}\n",
-	"fdb.dev/pkg/simfdb":                            "package simfdb\nfunc Start() {}\n",
+	"fdb.dev/internal/simfdb":                       "package simfdb\nfunc Start() {}\n",
 	"fdb.dev/pkg/testcontainers/foundationdb":       "package foundationdb\nfunc Run() {}\n",
 	"fdb.dev/pkg/dst":                               "package dst\nfunc Check() {}\n",
 	"fdb.dev/internal/dst":                          "package dst\nfunc Check() {}\n",
@@ -328,7 +328,7 @@ func TestRules(t *testing.T) {
 			name:     "R4 prod fdbgo importing simfdb fails",
 			pkgPath:  "fdb.dev/internal/fdbgo/transport",
 			filename: "internal/fdbgo/transport/x.go",
-			src:      srcImporting("transport", "fdb.dev/pkg/simfdb"),
+			src:      srcImporting("transport", "fdb.dev/internal/simfdb"),
 			want:     1,
 		},
 		{
@@ -370,7 +370,7 @@ func TestRules(t *testing.T) {
 			name:     "R4 chaos package exempt in prod",
 			pkgPath:  "fdb.dev/internal/recordlayer/chaos",
 			filename: "internal/recordlayer/chaos/sim.go",
-			src:      srcImporting("chaos", "fdb.dev/pkg/simfdb"),
+			src:      srcImporting("chaos", "fdb.dev/internal/simfdb"),
 			want:     0,
 		},
 		{
@@ -398,14 +398,14 @@ func TestRules(t *testing.T) {
 			name:     "R4 simgate package exempt in prod",
 			pkgPath:  "fdb.dev/internal/relational/simgate",
 			filename: "internal/relational/simgate/simgate.go",
-			src:      srcImporting("simgate", "fdb.dev/pkg/simfdb"),
+			src:      srcImporting("simgate", "fdb.dev/internal/simfdb"),
 			want:     0,
 		},
 		{
 			name:     "R4 internal relational prod importing simfdb fails",
 			pkgPath:  "fdb.dev/internal/relational/catalog",
 			filename: "internal/relational/catalog/store.go",
-			src:      srcImporting("catalog", "fdb.dev/pkg/simfdb"),
+			src:      srcImporting("catalog", "fdb.dev/internal/simfdb"),
 			want:     1,
 		},
 		{

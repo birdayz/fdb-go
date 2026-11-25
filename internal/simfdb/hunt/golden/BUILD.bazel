@@ -1,0 +1,29 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+package(default_visibility = ["//internal/simfdb:__subpackages__"])
+
+go_library(
+    name = "golden",
+    srcs = ["golden.go"],
+    importpath = "fdb.dev/internal/simfdb/hunt/golden",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//internal/dst",
+        "//internal/dstwire",
+        "//internal/relational/relapi",
+        "//internal/simfdb",
+        "//pkg/recordlayer",
+        "//pkg/relational/sqldriver",
+    ],
+)
+
+go_test(
+    name = "golden_test",
+    srcs = [
+        "domain_registration_test.go",
+        "golden_test.go",
+    ],
+    data = glob(["testdata/**"]),
+    embed = [":golden"],
+    deps = ["//internal/relational/keyspace"],
+)

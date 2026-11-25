@@ -32,10 +32,10 @@ import (
 	"fdb.dev/internal/dst"
 	"fdb.dev/internal/dstwire"
 	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/simfdb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/simfdb"
 )
 
 // tickClock advances a fixed delta on every read. It is the smallest clock that

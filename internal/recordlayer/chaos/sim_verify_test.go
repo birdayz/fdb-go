@@ -10,10 +10,10 @@ import (
 	"fdb.dev/gen/demopb"
 	"fdb.dev/internal/dst"
 	"fdb.dev/internal/dstwire"
+	"fdb.dev/internal/simfdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/simfdb"
 )
 
 // TestSimFDB_RunRandomVerify is RFC-199 Tier 2's first deliverable and a Tier 1 fidelity

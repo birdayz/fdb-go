@@ -113,7 +113,7 @@ go_test(
         "//internal/relational/keyspace",
         "//internal/relational/metadata",
         "//internal/relational/relapi",
-        "//pkg/internal/querycensus",
+        "//internal/testinstruments/querycensus",
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
