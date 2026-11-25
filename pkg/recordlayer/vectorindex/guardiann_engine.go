@@ -153,10 +153,10 @@ func decodeTaskCount(v []byte) int64 {
 // (OnWrite), and indexes disabled because a task count went negative
 // (VectorIndexMaintainer.disableIndexOnNegativeTaskCount).
 var (
-	CountVectorVectorReads                      = recordlayer.Event{Name: "vector_vector_reads", Title: "vector references read", Kind: recordlayer.KindCount}
-	CountVectorTaskEnqueued                     = recordlayer.Event{Name: "vector_task_enqueued", Title: "vector maintenance tasks enqueued", Kind: recordlayer.KindCount}
-	CountVectorTaskExecuted                     = recordlayer.Event{Name: "vector_task_executed", Title: "vector maintenance tasks executed", Kind: recordlayer.KindCount}
-	CountVectorIndexDisabledOnNegativeTaskCount = recordlayer.Event{Name: "vector_index_disabled_on_negative_task_count", Title: "vector indexes disabled on negative task count", Kind: recordlayer.KindCount}
+	countVectorVectorReads                      = recordlayer.Event{Name: "vector_vector_reads", Title: "vector references read", Kind: recordlayer.KindCount}
+	countVectorTaskEnqueued                     = recordlayer.Event{Name: "vector_task_enqueued", Title: "vector maintenance tasks enqueued", Kind: recordlayer.KindCount}
+	countVectorTaskExecuted                     = recordlayer.Event{Name: "vector_task_executed", Title: "vector maintenance tasks executed", Kind: recordlayer.KindCount}
+	countVectorIndexDisabledOnNegativeTaskCount = recordlayer.Event{Name: "vector_index_disabled_on_negative_task_count", Title: "vector indexes disabled on negative task count", Kind: recordlayer.KindCount}
 )
 
 // guardiannRegister composes TaskCountRegister and MaintenanceControlRegister,
@@ -172,7 +172,7 @@ type guardiannRegister struct {
 }
 
 func (r *guardiannRegister) onTaskEnqueued() {
-	r.timer.Increment(CountVectorTaskEnqueued)
+	r.timer.Increment(countVectorTaskEnqueued)
 	r.counts.adjust(r.tx, r.prefix, littleEndianOne)
 	if r.control != nil && !r.signaled {
 		r.signaled = true
@@ -181,7 +181,7 @@ func (r *guardiannRegister) onTaskEnqueued() {
 }
 
 func (r *guardiannRegister) onTaskExecuted() {
-	r.timer.Increment(CountVectorTaskExecuted)
+	r.timer.Increment(countVectorTaskExecuted)
 	r.counts.adjust(r.tx, r.prefix, littleEndianMinusOne)
 }
 
@@ -434,7 +434,7 @@ func (m *vectorIndexMaintainer) disableOnNegativeTaskCount() error {
 		return func() error {
 			changed, err := s.MarkIndexDisabled(indexName)
 			if err == nil && changed {
-				s.Context().Timer().Increment(CountVectorIndexDisabledOnNegativeTaskCount)
+				s.Context().Timer().Increment(countVectorIndexDisabledOnNegativeTaskCount)
 			}
 			return err
 		}

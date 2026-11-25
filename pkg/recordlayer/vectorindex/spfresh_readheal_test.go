@@ -120,8 +120,8 @@ var _ = Describe("SPFresh read-path envelope repair", func() {
 		ids := readHealSearch(tenant, timer, targetVec, 3)
 		Expect(ids).NotTo(ContainElement(targetPK[0].(int64)),
 			"the damaged posting's tail must be invisible to the capped read — if this finds the target, the damage setup no longer balloons past the cap")
-		Expect(timer.GetCount(CountSPFreshCappedPostingReads)).To(BeNumerically(">=", 1))
-		Expect(timer.GetCount(CountSPFreshReadPathSplitFiles)).To(Equal(int64(1)))
+		Expect(timer.GetCount(countSPFreshCappedPostingReads)).To(BeNumerically(">=", 1))
+		Expect(timer.GetCount(countSPFreshReadPathSplitFiles)).To(Equal(int64(1)))
 		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			data, gerr := rtx.Transaction().Get(storage.taskKey(spfreshTaskSplit, fine)).Get()
 			Expect(gerr).NotTo(HaveOccurred())
@@ -135,8 +135,8 @@ var _ = Describe("SPFresh read-path envelope repair", func() {
 		// heal is in flight).
 		timer2 := recordlayer.NewStoreTimer()
 		_ = readHealSearch(tenant, timer2, targetVec, 3)
-		Expect(timer2.GetCount(CountSPFreshCappedPostingReads)).To(BeNumerically(">=", 1))
-		Expect(timer2.GetCount(CountSPFreshReadPathSplitFiles)).To(Equal(int64(0)))
+		Expect(timer2.GetCount(countSPFreshCappedPostingReads)).To(BeNumerically(">=", 1))
+		Expect(timer2.GetCount(countSPFreshReadPathSplitFiles)).To(Equal(int64(0)))
 
 		// Drain: the re-filed task splits the posting (chunked — it is past
 		// the envelope), after which the target is findable at its own vector.
@@ -146,7 +146,7 @@ var _ = Describe("SPFresh read-path envelope repair", func() {
 		ids = readHealSearch(tenant, timer3, targetVec, 3)
 		Expect(ids).To(ContainElement(targetPK[0].(int64)),
 			"after the read-path-filed split drains, the record must be findable at its own vector")
-		Expect(timer3.GetCount(CountSPFreshCappedPostingReads)).To(Equal(int64(0)),
+		Expect(timer3.GetCount(countSPFreshCappedPostingReads)).To(Equal(int64(0)),
 			"post-drain postings are within the envelope — no capped reads")
 	})
 
@@ -278,7 +278,7 @@ var _ = Describe("SPFresh read-path envelope repair", func() {
 		ids = readHealSearch(tenant, timer, []float64{0, 0}, 4)
 		Expect(ids).To(ContainElement(int64(1)), "moved entry must surface via the parent HDR follow on a stale cache")
 		Expect(ids).To(ContainElement(int64(7)), "the SEALED parent's residual entries must score in the same burst")
-		Expect(timer.GetCount(CountSPFreshForwardFollows)).To(BeNumerically(">=", 1),
+		Expect(timer.GetCount(countSPFreshForwardFollows)).To(BeNumerically(">=", 1),
 			"the HDR path must actually have been exercised — if this is 0 the cache refreshed and the test pinned nothing")
 	})
 
@@ -406,7 +406,7 @@ var _ = Describe("SPFresh read-path envelope repair", func() {
 			return nil, m.spfreshFileSplitsForCapped(storage, []spfreshRouted{{cellID: staleCell, fineID: movedFine}})
 		})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(timer.GetCount(CountSPFreshReadPathSplitFiles)).To(Equal(int64(0)),
+		Expect(timer.GetCount(countSPFreshReadPathSplitFiles)).To(Equal(int64(0)),
 			"the fine's CURRENT cell is pausing — filing via the stale routed cell bypasses the starvation guard")
 		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			data, gerr := rtx.Transaction().Get(storage.taskKey(spfreshTaskSplit, movedFine)).Get()
@@ -434,7 +434,7 @@ var _ = Describe("SPFresh read-path envelope repair", func() {
 			return nil, m.spfreshFileSplitsForCapped(storage, []spfreshRouted{{cellID: staleCell, fineID: movedFine}})
 		})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(timer2.GetCount(CountSPFreshReadPathSplitFiles)).To(Equal(int64(1)))
+		Expect(timer2.GetCount(countSPFreshReadPathSplitFiles)).To(Equal(int64(1)))
 	})
 
 	It("honors the csplit pause: a capped read in a pausing cell files nothing", func() {
@@ -454,8 +454,8 @@ var _ = Describe("SPFresh read-path envelope repair", func() {
 
 		timer := recordlayer.NewStoreTimer()
 		_ = readHealSearch(tenant, timer, targetVec, 3)
-		Expect(timer.GetCount(CountSPFreshCappedPostingReads)).To(BeNumerically(">=", 1))
-		Expect(timer.GetCount(CountSPFreshReadPathSplitFiles)).To(Equal(int64(0)),
+		Expect(timer.GetCount(countSPFreshCappedPostingReads)).To(BeNumerically(">=", 1))
+		Expect(timer.GetCount(countSPFreshReadPathSplitFiles)).To(Equal(int64(0)),
 			"the read path must not re-introduce the fine-split/csplit starvation the pause prevents")
 		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			data, gerr := rtx.Transaction().Get(storage.taskKey(spfreshTaskSplit, fine)).Get()

@@ -46,7 +46,7 @@ const (
 
 	// IndexScanByDistance scans a VECTOR index by distance to a query vector.
 	// Returns results sorted by distance (closest first) as a kNN search.
-	// Must be used with ScanVectorIndex which provides VectorScanBounds.
+	// Must be used with ScanVectorIndex, which encodes query vector and k/efSearch bounds.
 	// Matches Java's IndexScanType.BY_DISTANCE.
 	IndexScanByDistance IndexScanType = "BY_DISTANCE"
 

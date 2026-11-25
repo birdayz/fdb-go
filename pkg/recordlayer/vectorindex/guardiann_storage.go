@@ -100,7 +100,7 @@ func newGuardiann(ss subspace.Subspace, config guardiannConfig, env *recordlayer
 	hc.M, hc.MMax, hc.MMax0 = 16, 24, 32
 	storage := newHNSWStorage(ss.Sub(int64(gSubCentroids)), hc)
 	storage.env = env
-	return &guardiann{ss: ss, config: config, env: env, listener: listener, codec: &guardiannVectorCodec{config: config}, centroids: NewHNSWGraph(storage, hc)}
+	return &guardiann{ss: ss, config: config, env: env, listener: listener, codec: &guardiannVectorCodec{config: config}, centroids: newHNSWGraph(storage, hc)}
 }
 
 func (g *guardiann) sub(prefix int64) subspace.Subspace { return g.ss.Sub(prefix) }
@@ -401,7 +401,7 @@ func (g *guardiann) fetchVectorRefs(tx fdb.ReadTransaction, clusterID tuple.UUID
 		if err != nil {
 			return nil, err
 		}
-		g.timer.Increment(CountVectorVectorReads)
+		g.timer.Increment(countVectorVectorReads)
 		out = append(out, ref)
 	}
 	return out, nil
@@ -414,7 +414,7 @@ func (g *guardiann) fetchVectorRef(tx fdb.ReadTransaction, clusterID tuple.UUID,
 	}
 	ref, err := vectorRefFromValue(pk, b, g.codec.decode)
 	if err == nil {
-		g.timer.Increment(CountVectorVectorReads)
+		g.timer.Increment(countVectorVectorReads)
 	}
 	return &ref, err
 }

@@ -114,11 +114,11 @@ func (m *spfreshIndexMaintainer) spfreshInsert(wc *spfreshWriteContext, pk tuple
 	// attempt, not only the first (caught by the concurrent foreground-fill
 	// benchmark: phantom candidates -> reload to an empty cell -> the old
 	// single-shot retry hard-errored instead of minting).
-	defer m.timer.RecordSince(EventSPFreshInsert, time.Now())
+	defer m.timer.RecordSince(eventSPFreshInsert, time.Now())
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
-			m.timer.Increment(CountSPFreshStaleRouteRetry)
+			m.timer.Increment(countSPFreshStaleRouteRetry)
 			if rerr := wc.cache.fullReloadTxLocal(m.Transaction(), wc.storage, wc.storage.generation); rerr != nil {
 				return fmt.Errorf("spfresh index %q: stale-route reload: %w", m.Index().Name, rerr)
 			}
@@ -347,7 +347,7 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 		if len(verified) >= spfreshClosurePool(m.config.Replication) {
 			break
 		}
-		m.timer.Increment(CountSPFreshInsertFenceReads)
+		m.timer.Increment(countSPFreshInsertFenceReads)
 		row, rerr := m.spfreshConsumeCentroidRead(storage, specFuts, cand.cellID, cand.fineID)
 		if rerr != nil {
 			if errors.Is(rerr, errSPFreshNotFound) {
@@ -432,7 +432,7 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 		return fmt.Errorf("spfresh index %q: no ACTIVE fine centroid among %d routed candidates: %w", m.Index().Name, len(routed), errSPFreshStaleRoute)
 	}
 	kept := spfreshClosure(verified, m.config.Replication, m.config.Alpha)
-	m.timer.IncrementBy(CountSPFreshInsertReplicas, int64(len(kept)))
+	m.timer.IncrementBy(countSPFreshInsertReplicas, int64(len(kept)))
 
 	// (Speculative futures the cutoffs never examined are simply dropped:
 	// snapshot reads, no conflict ranges, already paid for by the burst.)

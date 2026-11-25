@@ -248,7 +248,7 @@ var _ = Describe("SPFresh ordered-stream cursor (RFC-156 Phase C)", func() {
 		// id in emission order.
 		out := drive(base, cfg, idx, query, defaultSPFreshStreamBudget(), nil, 0)
 		Expect(out.reason).To(Equal(recordlayer.SourceExhausted), "the grid exhausts within budget")
-		Expect(out.timer.GetCount(CountSPFreshStreamWiden)).To(BeNumerically(">", 0),
+		Expect(out.timer.GetCount(countSPFreshStreamWiden)).To(BeNumerically(">", 0),
 			"the grid spans multiple widen batches — the cross-batch emission path is exercised")
 
 		// IDENTICAL to the oracle: same pk order …
@@ -361,7 +361,7 @@ var _ = Describe("SPFresh ordered-stream cursor (RFC-156 Phase C)", func() {
 		out := drive(base, cfg, idx, query, defaultSPFreshStreamBudget(), nil, 0)
 		Expect(out.reason).To(Equal(recordlayer.SourceExhausted),
 			"the inner-product index exhausts within budget (materialize-then-emit)")
-		Expect(out.timer.GetCount(CountSPFreshStreamWiden)).To(BeNumerically(">", 0),
+		Expect(out.timer.GetCount(countSPFreshStreamWiden)).To(BeNumerically(">", 0),
 			"the grid spans multiple widen batches — the cross-batch materialize-then-emit path is exercised")
 		Expect(out.ids).To(Equal(oneShot),
 			"inner-product streaming (barrier disabled, materialize-then-emit) == exhaustive one-shot — exact for the −dot non-metric")
@@ -466,7 +466,7 @@ var _ = Describe("SPFresh ordered-stream cursor (RFC-156 Phase C)", func() {
 		Expect(out.satisfied).To(BeTrue(), "the 3 nearest matches must be reachable within budget")
 		Expect(out.ids).To(Equal([]int64{1001, 1002, 1003}),
 			"Phase C returns the true 3 nearest CATEGORY-match rows in distance order")
-		Expect(out.timer.GetCount(CountSPFreshStreamWiden)).To(BeNumerically(">", 0),
+		Expect(out.timer.GetCount(countSPFreshStreamWiden)).To(BeNumerically(">", 0),
 			"reaching the matches REQUIRED batched demand-driven widening")
 	})
 
@@ -476,14 +476,14 @@ var _ = Describe("SPFresh ordered-stream cursor (RFC-156 Phase C)", func() {
 
 		// (a) Budget cap hit before k: a tight candidate budget bounds the scan to
 		// the near decoys; the far matches are never reached → ScanLimitReached +
-		// the CountSPFreshFilteredTruncated telemetry, NOT a silent < k.
+		// the countSPFreshFilteredTruncated telemetry, NOT a silent < k.
 		tiny := spfreshStreamBudget{maxCells: 512, maxCandidates: 50, widenBatch: 8}
 		a := drive(base, cfg, idx, query, tiny, isMatch, 3)
 		Expect(a.satisfied).To(BeFalse())
 		Expect(a.ids).To(BeEmpty(), "no match is reachable within the tight budget")
 		Expect(a.reason).To(Equal(recordlayer.ScanLimitReached),
 			"budget hit before k → ScanLimitReached (resumable), NOT SourceExhausted")
-		Expect(a.timer.GetCount(CountSPFreshFilteredTruncated)).To(Equal(int64(1)),
+		Expect(a.timer.GetCount(countSPFreshFilteredTruncated)).To(Equal(int64(1)),
 			"the truncation telemetry fires IN ADDITION to the reason")
 
 		// (b) Only N < k rows match within an exhausted index: a generous budget
@@ -496,7 +496,7 @@ var _ = Describe("SPFresh ordered-stream cursor (RFC-156 Phase C)", func() {
 			"only N match within the exhausted index → SourceExhausted (terminal)")
 		Expect(b.ids).To(Equal([]int64{1001, 1003}),
 			"exactly the N matching rows, in distance order")
-		Expect(b.timer.GetCount(CountSPFreshFilteredTruncated)).To(Equal(int64(0)),
+		Expect(b.timer.GetCount(countSPFreshFilteredTruncated)).To(Equal(int64(0)),
 			"exhaustion is not a truncation — the metric must NOT fire")
 	})
 
@@ -690,7 +690,7 @@ var _ = Describe("SPFresh ordered-stream cursor (RFC-156 Phase C)", func() {
 
 		Expect(out.reason).To(Equal(recordlayer.ScanLimitReached),
 			"the default budget must BIND on a corpus larger than the candidate cap")
-		Expect(out.timer.GetCount(CountSPFreshFilteredTruncated)).To(Equal(int64(1)))
+		Expect(out.timer.GetCount(countSPFreshFilteredTruncated)).To(Equal(int64(1)))
 		Expect(elapsed).To(BeNumerically("<", 4500*time.Millisecond),
 			"budget-bounded search+materialize must complete within the FDB 5s tx (no timeout)")
 	})

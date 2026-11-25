@@ -132,7 +132,7 @@ type hnswGraph struct {
 	// compared in one coordinate system.
 	//
 	// A field, not a threaded parameter, because — unlike Java's single reused Hnsw
-	// object — Go builds a fresh hnswGraph per operation (NewHNSWGraph in
+	// object — Go builds a fresh hnswGraph per operation (newHNSWGraph in
 	// withPrefixWriteLock / per Search), driven single-goroutine within one FDB
 	// transaction, so there is no concurrent reader/writer to race on it.
 	opXform *hnswTransform
@@ -144,8 +144,8 @@ type hnswGraph struct {
 // validates, so it never carries 0; only a direct struct literal can omit the field.
 const defaultEfRepair = 64
 
-// NewHNSWGraph creates a new HNSW graph.
-func NewHNSWGraph(storage *hnswStorage, config HNSWConfig) *hnswGraph {
+// newHNSWGraph creates a new HNSW graph.
+func newHNSWGraph(storage *hnswStorage, config HNSWConfig) *hnswGraph {
 	// Normalize an omitted EfRepair (Go zero value) to the default, matching Java's
 	// builder default. Left at 0 it would drive the delete-repair sample rate
 	// (efRepair - |primaries|) / numCandidates negative the moment any primary neighbor

@@ -126,7 +126,7 @@ var _ = Describe("SPFresh ordered-stream re-rank budget (RFC-156 Phase B)", func
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
-			return timer.GetCount(CountSPFreshRerankReads)
+			return timer.GetCount(countSPFreshRerankReads)
 		}
 
 		const horizon = 200
