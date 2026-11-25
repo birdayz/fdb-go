@@ -37,8 +37,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -66,16 +64,19 @@ func openLateClockDB(t *testing.T, clk dst.Clock, dbPath, tmpl string) *sql.DB {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
+	t.Cleanup(rawDB.Close)
 	env := &recordlayer.Env{Clock: clk}
 	rlDB := recordlayer.NewFDBDatabase(rawDB).SetEnv(env)
-	key := "lateclock://" + t.Name()
-	t.Cleanup(sqldriver.RegisterBackend(key, rlDB))
-
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), key))
+	eng, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		Domains: []string{"FRL"},
+		Limits:  sqldriver.UnboundedJavaCompatLimits(),
+	}, sqldriver.WithDatabase(rlDB))
 	if err != nil {
-		t.Fatalf("sql.Open setup: %v", err)
+		t.Fatalf("NewEngine: %v", err)
 	}
-	defer setup.Close()
+	t.Cleanup(func() { _ = eng.Close() })
+
+	setup := testkit.OpenEngineDB(t, eng, dbPath, "")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE "+tmpl+
@@ -83,13 +84,7 @@ func openLateClockDB(t *testing.T, clk dst.Clock, dbPath, tmpl string) *sql.DB {
 			" CREATE INDEX idx_v ON t (v)")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+tmpl)
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), key))
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	db.SetMaxOpenConns(4)
-	t.Cleanup(func() { db.Close() })
-	return db
+	return testkit.OpenEngineDB(t, eng, dbPath, "s")
 }
 
 // isTxBudgetExhausted reports whether err says the transaction outlived its

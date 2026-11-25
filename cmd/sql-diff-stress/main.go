@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/rowdiff"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 
@@ -27,7 +28,6 @@ import (
 )
 
 func main() {
-	sqldriver.RegisterDomainIfNotExists("FRL")
 	seeds := flag.Uint64("seeds", 100, "number of seeds to run")
 	seedStart := flag.Uint64("seed-start", 1, "first seed number")
 	templates := flag.Bool("templates", true, "also run the directed template seeds (per-family hard gate)")
@@ -73,12 +73,27 @@ func run(seeds, seedStart uint64, templates bool) (code int) {
 	clusterFile := tmp.Name()
 
 	const dbPath = "/FRL/sqldiffstress"
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), clusterFile))
+	engine, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		ClusterFile: clusterFile,
+		Domains:     []string{"FRL"},
+		Limits:      sqldriver.UnboundedJavaCompatLimits(),
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "INFRA: engine: %v\n", err)
+		return 2
+	}
+	defer engine.Close()
+	setup, err := engine.OpenDB(strings.ToUpper(dbPath))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "INFRA: open: %v\n", err)
 		return 2
 	}
 	defer setup.Close()
+	openSchemaDB := func(schema string) (*sql.DB, error) {
+		return engine.OpenDB(strings.ToUpper(dbPath),
+			sqldriver.WithSchema(strings.ToUpper(schema)),
+			sqldriver.WithOptions(api.NoOptions().With(api.OptMaxTotalTaskCount, int(150000))))
+	}
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		fmt.Fprintf(os.Stderr, "INFRA: create database: %v\n", err)
 		return 2
@@ -121,13 +136,13 @@ func run(seeds, seedStart uint64, templates bool) (code int) {
 				continue
 			}
 			report("template "+tpl.Name,
-				rowdiff.RunCase(ctx, setup, dbPath, clusterFile, tpl.Case, "tpl"+tpl.Name, 0))
+				rowdiff.RunCaseWithOpener(ctx, setup, dbPath, openSchemaDB, tpl.Case, "tpl"+tpl.Name, 0))
 		}
 	}
 
 	for seed := seedStart; seed < seedStart+seeds; seed++ {
 		report(fmt.Sprintf("seed %d", seed),
-			rowdiff.RunSeed(ctx, setup, dbPath, clusterFile, seed))
+			rowdiff.RunSeedWithOpener(ctx, setup, dbPath, openSchemaDB, seed))
 		if (seed-seedStart+1)%100 == 0 {
 			fmt.Printf("... %d/%d seeds, %d comparisons, %d mismatches\n",
 				seed-seedStart+1, seeds, executed, mismatches)

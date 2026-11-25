@@ -6,6 +6,7 @@ go_library(
     importpath = "fdb.dev/cmd/sql-diff-stress",
     visibility = ["//visibility:private"],
     deps = [
+        "//pkg/relational/api",
         "//pkg/relational/conformance/rowdiff",
         "//pkg/relational/sqldriver",
         "//pkg/testcontainers/foundationdb",

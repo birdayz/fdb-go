@@ -13,6 +13,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdbmetrics"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/rlmetrics"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -111,13 +112,28 @@ func retainClientDatabaseForMetrics(ctx context.Context, clusterFile string, mux
 	return recordlayer.NewFDBDatabase(db), nil
 }
 
-// openTenantDB is the §2 DSN (with the security flag) plus the §3 pool caps.
-func openTenantDB(tenantID string) (*sql.DB, error) {
-	db, err := sql.Open("fdbsql",
-		"fdbsql:///T/"+tenantID+
-			"?cluster_file=/etc/foundationdb/fdb.cluster"+
-			"&schema=MAIN"+
-			"&restrict_ddl_to_session_database=true")
+// openTenantEngine constructs the shared Engine from §1/§4 and exposes its
+// StoreTimer via rlmetrics.Handler.
+func openTenantEngine(clusterFile string, mux *http.ServeMux) (*Engine, error) {
+	engine, err := NewEngine(EngineConfig{
+		ClusterFile: clusterFile,
+		Domains:     []string{"T"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	mux.Handle("/metrics/recordlayer", rlmetrics.Handler(engine.StoreTimer()))
+	return engine, nil
+}
+
+// openTenantDB is the §2/§3 Engine.OpenDB (with the security flag) plus the §3
+// pool caps.
+func openTenantDB(engine *Engine, tenantID string) (*sql.DB, error) {
+	db, err := engine.OpenDB(
+		"/T/"+tenantID,
+		WithSchema("MAIN"),
+		WithRestrictDDLToSessionDatabase(true),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +152,22 @@ func TestMTSaaSDocSnippetsCompile(t *testing.T) {
 	_ = useTenantConn
 	_ = installPlanLogger
 	_ = retainClientDatabaseForMetrics
+	_ = openTenantEngine
 	_ = openTenantDB
+	_ = func(engine *Engine, rdb *recordlayer.FDBDatabase) {
+		_, _ = NewEngine(EngineConfig{Domains: []string{"T"}, Limits: DefaultLimits()}, WithDatabase(rdb))
+		_, _ = NewEngine(EngineConfig{Domains: []string{"T"}, Limits: UnboundedJavaCompatLimits()})
+		_ = engine.Metrics().Client
+		_, _ = engine.OpenDB(
+			"/T/1",
+			WithSchema("MAIN"),
+			WithRestrictDDLToSessionDatabase(true),
+			WithResourceLimits(DefaultLimits()),
+			WithSlowQueryThreshold(500*time.Millisecond),
+			WithPlanHook(func(context.Context, PlanInfo) {}),
+			WithExecStatsHook(func(context.Context, ExecStats) {}),
+		)
+	}
 
 	// The §3 recipe's option values pass SetOption's contract checks.
 	if err := configureTenantConn(embedded.New("/T/1", nil, nil, nil, nil)); err != nil {

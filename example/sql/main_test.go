@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -49,18 +48,6 @@ func TestQuickstartRunsTwice(t *testing.T) {
 	}
 }
 
-func TestQuickstartDSN(t *testing.T) {
-	t.Parallel()
-	clusterFile := filepath.Join(t.TempDir(), "cluster & #+.file")
-	u, err := url.Parse(dsn("/FRL/QUICKSTART", clusterFile, "app"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if u.Path != "/FRL/QUICKSTART" || u.Query().Get("cluster_file") != clusterFile || u.Query().Get("schema") != "APP" {
-		t.Fatalf("DSN lost case or escaped path: %s", u)
-	}
-}
-
 func TestQuickstartRequiresClusterFile(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
@@ -76,8 +63,8 @@ func TestQuickstartStopsOnSetupError(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
 	err := run(context.Background(), filepath.Join(t.TempDir(), "missing.cluster"), &out)
-	if err == nil || !strings.Contains(err.Error(), "setup") {
-		t.Fatalf("run error = %v; want setup error", err)
+	if err == nil || !strings.Contains(err.Error(), "open engine") {
+		t.Fatalf("run error = %v; want open engine error", err)
 	}
 	if out.Len() != 0 {
 		t.Fatalf("failed setup printed success: %s", out.String())

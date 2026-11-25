@@ -38,6 +38,7 @@ import (
 	"strings"
 	"time"
 
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/factory"
 	"fdb.dev/pkg/relational/conformance/factorycorpus"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
@@ -53,7 +54,6 @@ const (
 )
 
 func main() {
-	sqldriver.RegisterDomainIfNotExists("FRL")
 	cfg := config{}
 	flag.Uint64Var(&cfg.seeds, "seeds", 400, "number of seeds to sweep")
 	flag.Uint64Var(&cfg.seedStart, "seed-start", 1, "first seed")
@@ -154,7 +154,17 @@ func run(cfg config) (code int) {
 	clusterFile := tmp.Name()
 
 	const dbPath = "/FRL/factoryrun"
-	setupDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), clusterFile))
+	engine, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		ClusterFile: clusterFile,
+		Domains:     []string{"FRL"},
+		Limits:      sqldriver.UnboundedJavaCompatLimits(),
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "INFRA: engine: %v\n", err)
+		return exitInfra
+	}
+	defer engine.Close()
+	setupDB, err := engine.OpenDB(strings.ToUpper(dbPath))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "INFRA: open: %v\n", err)
 		return exitInfra
@@ -187,12 +197,16 @@ func run(cfg config) (code int) {
 
 	var findings []*factory.Finding
 	sweep := factory.Sweep{
-		SetupDB:     setupDB,
-		DBPath:      dbPath,
-		ClusterFile: clusterFile,
-		Java:        java,
-		Date:        cfg.date,
-		Nested:      cfg.nested,
+		SetupDB: setupDB,
+		DBPath:  dbPath,
+		OpenSchemaDB: func(schema string) (*sql.DB, error) {
+			return engine.OpenDB(strings.ToUpper(dbPath),
+				sqldriver.WithSchema(strings.ToUpper(schema)),
+				sqldriver.WithOptions(api.NoOptions().With(api.OptMaxTotalTaskCount, int(150000))))
+		},
+		Java:   java,
+		Date:   cfg.date,
+		Nested: cfg.nested,
 	}
 	// A sweep failure is carried out of the loop rather than returned from
 	// inside it, so that every path with findings in hand leaves through the

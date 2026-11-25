@@ -48,6 +48,7 @@ go_library(
         "//pkg/relational/conformance:__subpackages__",
     ],
     deps = [
+        "//pkg/recordlayer",
         "//pkg/relational/api",
         "//pkg/relational/conformance/javacorpus",
         "//pkg/relational/conformance/javayamsql",

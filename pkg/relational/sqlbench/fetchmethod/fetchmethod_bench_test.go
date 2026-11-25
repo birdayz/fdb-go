@@ -17,11 +17,9 @@ import (
 	"hash/crc32"
 	"os"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 
-	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/internal/fdbclient"
 	"fdb.dev/pkg/recordlayer"
@@ -33,17 +31,12 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	// A database path is /DOMAIN/DATABASE under a registered domain; the SQL
-	// suites' testkit registers FRL the same way.
-	sqldriver.RegisterDomainIfNotExists("FRL")
 	os.Exit(benchcluster.Main(m))
 }
 
 const (
 	rowCount = 1000
 	schema   = "S"
-	// auditKey is the registered, timed backend's cluster_file key.
-	auditKey = "bench-fetch-method-audit"
 )
 
 type fixture struct {
@@ -56,12 +49,6 @@ type fixture struct {
 // once (b.N sizing, -test.count), and every run gets fresh plan caches.
 var fixtureSeq atomic.Int64
 
-var (
-	auditOnce sync.Once
-	auditDB   *recordlayer.FDBDatabase
-	auditErr  error
-)
-
 // loadFixture creates T (id, a = id, c = 'v<id>') with index IDX_A on a and
 // rowCount rows in a database of its own, dropping one an earlier process left
 // under the same name first and dropping it again when the benchmark ends.
@@ -69,11 +56,21 @@ func loadFixture(b *testing.B) *fixture {
 	b.Helper()
 	ctx := context.Background()
 	clusterFile := benchcluster.ClusterFile(b)
+	measuredEng, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		ClusterFile:       clusterFile,
+		Domains:           []string{"FRL"},
+		Limits:            sqldriver.UnboundedJavaCompatLimits(),
+		DisableStoreTimer: true,
+	})
+	if err != nil {
+		b.Fatalf("NewEngine measured: %v", err)
+	}
+	b.Cleanup(func() { _ = measuredEng.Close() })
 	seq := fixtureSeq.Add(1)
 	dbPath := fmt.Sprintf("/FRL/BENCH_FETCH_METHOD_%d", seq)
 	tmpl := fmt.Sprintf("bench_fetch_method_tmpl_%d", seq)
 	drop := func() error {
-		catalog, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s&schema=CATALOG", clusterFile))
+		catalog, err := measuredEng.OpenDB("/__SYS", sqldriver.WithSchema("CATALOG"))
 		if err != nil {
 			return err
 		}
@@ -88,15 +85,15 @@ func loadFixture(b *testing.B) *fixture {
 	if err := drop(); err != nil {
 		b.Fatal(err)
 	}
-	// Registered first, so it runs after the pools close.
+	// Registered before the pools' Close, so it runs after them (and before measuredEng.Close).
 	b.Cleanup(func() {
 		if err := drop(); err != nil {
 			b.Errorf("drop benchmark schema: %v", err)
 		}
 	})
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", dbPath, clusterFile))
+	setup, err := measuredEng.OpenDB(dbPath)
 	if err != nil {
-		b.Fatalf("sql.Open: %v", err)
+		b.Fatalf("OpenDB setup: %v", err)
 	}
 	defer setup.Close()
 	for _, stmt := range []string{
@@ -110,9 +107,9 @@ func loadFixture(b *testing.B) *fixture {
 		}
 	}
 	f := &fixture{}
-	f.measured, err = sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, clusterFile, schema))
+	f.measured, err = measuredEng.OpenDB(dbPath, sqldriver.WithSchema(schema))
 	if err != nil {
-		b.Fatalf("sql.Open: %v", err)
+		b.Fatalf("OpenDB measured: %v", err)
 	}
 	b.Cleanup(func() { f.measured.Close() })
 	for first := 0; first < rowCount; first += 100 {
@@ -124,24 +121,28 @@ func loadFixture(b *testing.B) *fixture {
 			b.Fatalf("seed rows from %d: %v", first, err)
 		}
 	}
-	auditOnce.Do(func() {
-		var backend fdb.BackendDatabase
-		backend, auditErr = fdbclient.Open(clusterFile)
-		if auditErr == nil {
-			auditDB = recordlayer.NewFDBDatabaseWithBackend(backend)
-			sqldriver.RegisterBackend(auditKey, auditDB)
-		}
-	})
-	if auditErr != nil {
-		b.Fatalf("open audit backend: %v", auditErr)
-	}
-	f.timer = sqldriver.EnableStoreTimer(auditKey)
-	f.audited, err = sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, auditKey, schema))
+	backend, err := fdbclient.Open(clusterFile)
 	if err != nil {
-		b.Fatalf("sql.Open audit: %v", err)
+		b.Fatalf("open audit backend: %v", err)
+	}
+	b.Cleanup(func() { backend.Close() })
+	auditDB := recordlayer.NewFDBDatabaseWithBackend(backend)
+	auditedEng, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		Domains: []string{"FRL"},
+		Limits:  sqldriver.UnboundedJavaCompatLimits(),
+	}, sqldriver.WithDatabase(auditDB))
+	if err != nil {
+		b.Fatalf("NewEngine audited: %v", err)
+	}
+	b.Cleanup(func() { _ = auditedEng.Close() })
+	f.timer = auditedEng.StoreTimer()
+	f.audited, err = auditedEng.OpenDB(dbPath, sqldriver.WithSchema(schema))
+	if err != nil {
+		b.Fatalf("OpenDB audited: %v", err)
 	}
 	b.Cleanup(func() { f.audited.Close() })
-	ss, err := keyspace.New(subspace.Sub()).LookupSchemaSubspace(ctx, auditDB, dbPath, schema)
+	ss, err := keyspace.NewRelationalKeyspace(subspace.Sub(), keyspace.WithDomains("FRL")).
+		LookupSchemaSubspace(ctx, auditDB, dbPath, schema)
 	if err != nil {
 		b.Fatalf("resolve store prefix: %v", err)
 	}

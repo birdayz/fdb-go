@@ -45,6 +45,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/embedded"
+	"fdb.dev/pkg/relational/sqldriver"
 )
 
 const (
@@ -271,8 +272,8 @@ func buildStatsJoinArrangement(t *testing.T, ctx context.Context, arr *statsJoin
 		return fmt.Sprintf("(%d, %d)", i, i%arr.aRows)
 	})
 
-	arr.off = openStatsJoinDB(t, h.dbPath, false)
-	arr.on = openStatsJoinDB(t, h.dbPath, true)
+	arr.off = openStatsJoinDB(t, h.engine, h.dbPath, false)
+	arr.on = openStatsJoinDB(t, h.engine, h.dbPath, true)
 
 	// Collect through the ON connection — the same Conn.Raw path `fdb rl stats
 	// collect` uses, so this exercises the shipped code rather than a test-only
@@ -311,15 +312,15 @@ func buildStatsJoinArrangement(t *testing.T, ctx context.Context, arr *statsJoin
 	arr.planOn = explainStatsJoin(t, ctx, arr.on)
 }
 
-func openStatsJoinDB(t *testing.T, dbPath string, useStats bool) *sql.DB {
+func openStatsJoinDB(t *testing.T, eng *sqldriver.Engine, dbPath string, useStats bool) *sql.DB {
 	t.Helper()
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=MAIN", strings.ToUpper(dbPath), clusterFilePath)
-	if useStats {
-		dsn += "&planner_statistics=true"
-	}
-	db, err := sql.Open("fdbsql", dsn)
+	db, err := eng.OpenDB(
+		strings.ToUpper(dbPath),
+		sqldriver.WithSchema("MAIN"),
+		sqldriver.WithPlannerStatistics(useStats),
+	)
 	if err != nil {
-		t.Fatalf("open %q: %v", dsn, err)
+		t.Fatalf("OpenDB %q (stats=%v): %v", dbPath, useStats, err)
 	}
 	t.Cleanup(func() { db.Close() })
 	return db

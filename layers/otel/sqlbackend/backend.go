@@ -21,13 +21,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"fdb.dev/layers/otel"
 	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/keyspace"
 	"fdb.dev/pkg/relational/sqldriver"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/proto"
@@ -84,26 +84,21 @@ type queryer interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// backendKeys numbers the backends' driver keys within the process.
-var backendKeys atomic.Int64
-
 // domain is the relational domain of the runs' databases: /OTELBENCH/R_<RUN>.
 const domain = "OTELBENCH"
 
 // Backend implements otel.Backend and otel.IntrinsicBackend over OTEL_V1.
 type Backend struct {
-	cfg otel.Config
-	// driverKey is the cluster_file key under which the SQL driver runs over
-	// this backend's FDB client handle (sqldriver.RegisterBackend).
-	driverKey string
-	opts      Options
-	raw       fdb.Database
-	db        *recordlayer.FDBDatabase
-	dbPath    string
-	query     *sql.DB // schema of cfg.Tenant
-	q         queryer // query, or its pinned connection
-	pinned    *sql.Conn
-	reader    *otel.SpanReader // the direct query path's
+	cfg    otel.Config
+	opts   Options
+	raw    fdb.Database
+	engine *sqldriver.Engine
+	db     *recordlayer.FDBDatabase
+	dbPath string
+	query  *sql.DB // schema of cfg.Tenant
+	q      queryer // query, or its pinned connection
+	pinned *sql.Conn
+	reader *otel.SpanReader // the direct query path's
 	// writeSer is the direct saves' serializer (nil: uncompressed); readSer
 	// is the relational engine's, which reads uncompressed and zlib records.
 	writeSer, readSer *recordlayer.TransformedRecordSerializer
@@ -114,8 +109,6 @@ type Backend struct {
 	rpcStart *fdb.MetricsSnapshot
 	queries  int64
 
-	unregister func() // the driver's backend registration
-
 	// spanWrite and save write one ingest batch (SpanWriter.Write,
 	// saveBatch); tests replace them to fail a batch after or instead of its
 	// commits.
@@ -125,6 +118,10 @@ type Backend struct {
 
 // Open opens the run's relational database; Ingest creates it.
 func Open(ctx context.Context, c otel.Config, cluster string, opts Options) (*Backend, error) {
+	return openWithObserver(ctx, c, cluster, opts, nil)
+}
+
+func openWithObserver(ctx context.Context, c otel.Config, cluster string, opts Options, onEngine func(*sqldriver.Engine, fdb.Database)) (*Backend, error) {
 	c.Backend = "sql"
 	if err := c.Validate(); err != nil {
 		return nil, err
@@ -175,7 +172,9 @@ func Open(ctx context.Context, c otel.Config, cluster string, opts Options) (*Ba
 	if err := fdb.APIVersion(730); err != nil {
 		return nil, err
 	}
-	sqldriver.RegisterDomainIfNotExists(domain)
+	// otelsql.CreateTenant / OpenTenantStore still validate database paths via
+	// keyspace.ToDatabasePath (process domain registry).
+	keyspace.RegisterDomainIfNotExists(domain)
 	cf, err := fdb.ParseClusterFile(cluster)
 	if err != nil {
 		return nil, err
@@ -191,22 +190,30 @@ func Open(ctx context.Context, c otel.Config, cluster string, opts Options) (*Ba
 		spanWrite: (*otel.SpanWriter).Write,
 	}
 	b.save = b.saveBatch
-	// The SQL driver runs over the same FDB client handle, configured as the
+	// The SQL engine runs over the same FDB client handle, configured as the
 	// driver configures the database it opens itself, so one set of client
-	// counters covers every request (OTELBENCH_SQL_RPCS). The driver keys
-	// its databases by the DSN's cluster_file, so each backend registers its
-	// own key: backends in one process must not share a handle one of them
-	// closes.
+	// counters covers every request (OTELBENCH_SQL_RPCS).
 	driverDB := recordlayer.NewFDBDatabase(raw)
 	driverDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
-	b.driverKey = "otelbench-backend-" + strconv.FormatInt(backendKeys.Add(1), 10)
-	b.unregister = sqldriver.RegisterBackend(b.driverKey, driverDB)
-	qdsn := b.dsn(tenantSchema(c.Tenant))
-	if opts.PageRows > 0 {
-		qdsn += "&execution_scanned_rows_limit=" + strconv.Itoa(opts.PageRows)
+	engine, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		Domains:           []string{domain},
+		Limits:            sqldriver.UnboundedJavaCompatLimits(),
+		DisableStoreTimer: true,
+	}, sqldriver.WithDatabase(driverDB))
+	if err != nil {
+		raw.Close()
+		return nil, err
 	}
-	if b.query, err = sql.Open("fdbsql", qdsn); err != nil {
-		b.unregister()
+	b.engine = engine
+	if onEngine != nil {
+		onEngine(b.engine, b.raw)
+	}
+	var qOpts []sqldriver.ConnOption
+	if opts.PageRows > 0 {
+		qOpts = append(qOpts, sqldriver.WithResourceLimits(&sqldriver.ResourceLimits{ScannedRowsLimit: int64(opts.PageRows)}))
+	}
+	if b.query, err = b.openDB(tenantSchema(c.Tenant), qOpts...); err != nil {
+		_ = b.engine.Close()
 		raw.Close()
 		return nil, err
 	}
@@ -214,7 +221,7 @@ func Open(ctx context.Context, c otel.Config, cluster string, opts Options) (*Ba
 	if opts.PinnedConn {
 		if b.pinned, err = b.query.Conn(ctx); err != nil {
 			b.query.Close()
-			b.unregister()
+			_ = b.engine.Close()
 			raw.Close()
 			return nil, err
 		}
@@ -236,12 +243,13 @@ func (b *Backend) effectiveCompression() string {
 	return b.cfg.RecordCompression
 }
 
-func (b *Backend) dsn(schema string) string {
-	d := fmt.Sprintf("fdbsql://%s?cluster_file=%s", b.dbPath, b.driverKey)
+func (b *Backend) openDB(schema string, extra ...sqldriver.ConnOption) (*sql.DB, error) {
+	var opts []sqldriver.ConnOption
 	if schema != "" {
-		d += "&schema=" + schema
+		opts = append(opts, sqldriver.WithSchema(schema))
 	}
-	return d
+	opts = append(opts, extra...)
+	return b.engine.OpenDB(b.dbPath, opts...)
 }
 
 func (b *Backend) Close() {
@@ -261,7 +269,7 @@ func (b *Backend) Close() {
 		b.pinned.Close()
 	}
 	b.query.Close()
-	b.unregister()
+	_ = b.engine.Close()
 	b.raw.Close()
 }
 
@@ -299,7 +307,7 @@ func (b *Backend) explain(ctx context.Context, q string, args ...any) {
 // revision's name: a shared benchmark cluster may hold OTEL_V1 as another
 // revision defined it.
 func (b *Backend) create(ctx context.Context) error {
-	setup, err := sql.Open("fdbsql", b.dsn(""))
+	setup, err := b.openDB("")
 	if err != nil {
 		return err
 	}
@@ -370,7 +378,7 @@ func (b *Backend) Ingest(ctx context.Context) (otel.Statistics, error) {
 			})
 		}
 		if b.opts.Ingest == IngestInsert {
-			if inserts[t], err = sql.Open("fdbsql", b.dsn(tenantSchema(t))); err != nil {
+			if inserts[t], err = b.openDB(tenantSchema(t)); err != nil {
 				return otel.Statistics{}, err
 			}
 			defer inserts[t].Close()
@@ -775,7 +783,7 @@ func (b *Backend) Span(ctx context.Context, span string) ([]otel.SpanMatch, erro
 func (b *Backend) Audit(ctx context.Context) (otel.Statistics, error) {
 	stats := otel.Statistics{Structures: map[string]otel.Size{}, Details: map[string]string{"storage": "FDB logical KV bytes of the tenant schema stores; catalog, replication/logs/engine compression excluded"}}
 	for t := 0; t < b.cfg.Tenants; t++ {
-		db, err := sql.Open("fdbsql", b.dsn(tenantSchema(t)))
+		db, err := b.openDB(tenantSchema(t))
 		if err != nil {
 			return stats, err
 		}
@@ -849,7 +857,7 @@ func (b *Backend) sizeStore(ctx context.Context, ts *otelsql.TenantStore, out ma
 
 // Drop removes the run's database.
 func (b *Backend) Drop(ctx context.Context) error {
-	cat, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s&schema=CATALOG", b.driverKey))
+	cat, err := b.engine.OpenDB("/__SYS", sqldriver.WithSchema("CATALOG"))
 	if err != nil {
 		return err
 	}

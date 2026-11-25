@@ -20,6 +20,8 @@ import (
 	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/sqldriver"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
@@ -62,7 +64,7 @@ func TestFDB_SQLBackend(t *testing.T) {
 		return b
 	}
 	first := open(t, testConfig("sqlb_template"), Options{})
-	tmpl, err := sql.Open("fdbsql", first.dsn(""))
+	tmpl, err := first.openDB("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,9 +77,9 @@ func TestFDB_SQLBackend(t *testing.T) {
 	}
 	tmpl.Close()
 
-	// Not parallel: it reads the driver key the failed Open registered.
-	t.Run("failed open unregisters", func(t *testing.T) {
-		testOpenFailureUnregisters(t, cluster)
+	t.Run("failed open closes engine", func(t *testing.T) {
+		t.Parallel()
+		testOpenFailureClosesEngine(t, cluster)
 	})
 	t.Run("direct writer rows are SQL rows", func(t *testing.T) {
 		t.Parallel()
@@ -287,28 +289,40 @@ func testFailedIngestAccounting(t *testing.T, open func(*testing.T, otel.Config,
 	}
 }
 
-// An Open that fails after it registered its driver backend (here sql.Open
-// refusing a page size over the driver's int32 option) unregisters it: a DSN
-// naming the backend's driver key no longer reaches its database.
-func testOpenFailureUnregisters(t *testing.T, cluster string) {
+// An Open that fails after constructing its engine (here OpenDB refusing a
+// page size over the driver's int32 limit) closes the engine cleanly without
+// touching process-global driver caches.
+func testOpenFailureClosesEngine(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
-	b, err := Open(ctx, testConfig("sqlb_unregister"), cluster, Options{PageRows: math.MaxInt32 + 1})
+	var capturedEngine *sqldriver.Engine
+	var capturedRaw fdb.Database
+	b, err := openWithObserver(ctx, testConfig("sqlb_unregister"), cluster, Options{PageRows: math.MaxInt32 + 1}, func(eng *sqldriver.Engine, raw fdb.Database) {
+		capturedEngine = eng
+		capturedRaw = raw
+	})
 	if err == nil {
 		b.Close()
 		t.Fatal("Open with a page size over the driver's limit succeeded")
 	}
-	key := "otelbench-backend-" + strconv.FormatInt(backendKeys.Load(), 10)
-	db, err := sql.Open("fdbsql", "fdbsql:///__SYS?cluster_file="+key+"&schema=CATALOG")
+	if capturedEngine == nil {
+		t.Fatal("expected Open to construct engine before failing OpenDB")
+	}
+	var ae *api.Error
+	if _, openErr := capturedEngine.OpenDB("/" + domain + "/SHOULD_FAIL"); !errors.As(openErr, &ae) || ae.Code != api.ErrCodeConnectionDoesNotExist {
+		t.Fatalf("capturedEngine.OpenDB after failed Open = %v, want ErrCodeConnectionDoesNotExist", openErr)
+	}
+	if _, rtErr := capturedRaw.ReadTransact(func(rt fdb.ReadTransaction) (any, error) {
+		return rt.Get(fdb.Key("x")).Get()
+	}); !errors.Is(rtErr, context.Canceled) {
+		t.Fatalf("capturedRaw.ReadTransact after failed Open = %v, want context.Canceled", rtErr)
+	}
+	// Verify a subsequent valid Open against the same cluster succeeds.
+	good, err := Open(ctx, testConfig("sqlb_after_fail"), cluster, Options{})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Open after failed Open: %v", err)
 	}
-	defer db.Close()
-	// Unregistered, the driver reads the key as a cluster file path, which
-	// does not exist; still registered, it would reach the closed database.
-	if err := db.PingContext(ctx); err == nil || !strings.Contains(err.Error(), "open cluster file") {
-		t.Fatalf("driver key %s still reaches the failed Open's database: %v", key, err)
-	}
+	good.Close()
 }
 
 func testConfig(run string) otel.Config {
@@ -333,8 +347,17 @@ func intKV(k string, v int64) *commonpb.KeyValue {
 func testDirectWriterRows(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
-	const path = "/" + domain + "/otel_direct_writer" // Open registered the domain
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s&schema=CATALOG", cluster))
+	const path = "/" + domain + "/otel_direct_writer"
+	eng, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		ClusterFile: cluster,
+		Domains:     []string{domain},
+		Limits:      sqldriver.UnboundedJavaCompatLimits(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+	setup, err := eng.OpenDB("/__SYS", sqldriver.WithSchema("CATALOG"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +433,7 @@ func testDirectWriterRows(t *testing.T, cluster string) {
 		t.Fatal(err)
 	}
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(path), cluster))
+	db, err := eng.OpenDB(strings.ToUpper(path), sqldriver.WithSchema("S"))
 	if err != nil {
 		t.Fatal(err)
 	}

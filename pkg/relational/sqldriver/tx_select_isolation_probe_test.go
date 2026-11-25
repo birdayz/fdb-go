@@ -31,13 +31,13 @@ func TestFDB_TxSelectIsolationProbe(t *testing.T) {
 	// the whole test is safe: preflightTxBudget runs under `if r.tx != nil`, so
 	// the DDL and the seed INSERT — all autocommit — never meet it, and the two
 	// single-statement subtests below never open a second read page.
-	key, clk := testkit.SpikedClusterKey(t, 30*time.Second)
-	setup := testkit.OpenSpiked(t, key, "/FRL/testdb_txiso", "")
+	eng, clk := testkit.SpikedEngine(t, 30*time.Second)
+	setup := testkit.OpenEngineDB(t, eng, "/FRL/testdb_txiso", "")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_txiso")
 	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE txiso CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_txiso/s WITH TEMPLATE txiso")
-	db := testkit.OpenSpiked(t, key, "/FRL/testdb_txiso", "s")
+	db := testkit.OpenEngineDB(t, eng, "/FRL/testdb_txiso", "s")
 	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
 
 	t.Run("read_your_writes_in_explicit_tx", func(t *testing.T) {

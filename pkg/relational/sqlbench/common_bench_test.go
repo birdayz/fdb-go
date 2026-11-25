@@ -29,9 +29,6 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	// A database path is /DOMAIN/DATABASE under a registered domain; the SQL
-	// suites' testkit registers FRL the same way.
-	sqldriver.RegisterDomainIfNotExists("FRL")
 	os.Exit(benchcluster.Main(m))
 }
 
@@ -61,7 +58,7 @@ func schemaPrefixBytes(b *testing.B, ctx context.Context, dbPath, schema string)
 	if prefixDBErr != nil {
 		b.Fatalf("open FDB for prefix lookup: %v", prefixDBErr)
 	}
-	ss, err := keyspace.New(subspace.Sub()).LookupSchemaSubspace(ctx, prefixDB, strings.ToUpper(dbPath), schema)
+	ss, err := keyspace.NewRelationalKeyspace(subspace.Sub(), keyspace.WithDomains("FRL")).LookupSchemaSubspace(ctx, prefixDB, strings.ToUpper(dbPath), schema)
 	if err != nil {
 		b.Fatalf("resolve %s/%s store prefix: %v", dbPath, schema, err)
 	}
@@ -75,11 +72,20 @@ func schemaPrefixBytes(b *testing.B, ctx context.Context, dbPath, schema string)
 func createSchema(b *testing.B, ctx context.Context, dbPath, tmpl, ddl string) *sql.DB {
 	b.Helper()
 	clusterFile := benchcluster.ClusterFile(b)
-	setupDSN := fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), clusterFile)
+	eng, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		ClusterFile:       clusterFile,
+		Domains:           []string{"FRL"},
+		Limits:            sqldriver.UnboundedJavaCompatLimits(),
+		DisableStoreTimer: true,
+	})
+	if err != nil {
+		b.Fatalf("NewEngine: %v", err)
+	}
+	// Registered first, so eng closes after drop() and db.Close().
+	b.Cleanup(func() { _ = eng.Close() })
 	// Drops go through the system catalog, not a connection to the database.
-	catalogDSN := fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s&schema=CATALOG", clusterFile)
 	drop := func() error {
-		catalog, err := sql.Open("fdbsql", catalogDSN)
+		catalog, err := eng.OpenDB("/__SYS", sqldriver.WithSchema("CATALOG"))
 		if err != nil {
 			return err
 		}
@@ -100,17 +106,17 @@ func createSchema(b *testing.B, ctx context.Context, dbPath, tmpl, ddl string) *
 			b.Errorf("drop benchmark schema: %v", err)
 		}
 	})
-	setup, err := sql.Open("fdbsql", setupDSN)
+	setup, err := eng.OpenDB(strings.ToUpper(dbPath))
 	if err != nil {
-		b.Fatalf("sql.Open: %v", err)
+		b.Fatalf("OpenDB setup: %v", err)
 	}
 	defer setup.Close()
 	execOrFail(b, setup, ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))
 	execOrFail(b, setup, ctx, fmt.Sprintf("CREATE SCHEMA TEMPLATE %s %s", tmpl, ddl))
 	execOrFail(b, setup, ctx, fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl))
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFile))
+	db, err := eng.OpenDB(strings.ToUpper(dbPath), sqldriver.WithSchema("STORE"))
 	if err != nil {
-		b.Fatalf("sql.Open: %v", err)
+		b.Fatalf("OpenDB: %v", err)
 	}
 	b.Cleanup(func() { db.Close() })
 	return db

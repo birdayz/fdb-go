@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/javacorpus"
 )
@@ -28,6 +29,16 @@ import (
 func RunScenario(ctx context.Context, clusterFile string, s *Scenario) javacorpus.FileResult {
 	return javacorpus.RunParsed(ctx, s.SubFile(), javacorpus.Config{
 		ClusterFile:      clusterFile,
+		IDPrefix:         "FC_" + sanitize(s.Header.Name) + "_" + rand.Text(),
+		FactoryResetLoad: true,
+	})
+}
+
+// RunScenarioWithDatabase executes one committed scenario against an
+// already-constructed *recordlayer.FDBDatabase (e.g. a SimFDB backend).
+func RunScenarioWithDatabase(ctx context.Context, db *recordlayer.FDBDatabase, s *Scenario) javacorpus.FileResult {
+	return javacorpus.RunParsed(ctx, s.SubFile(), javacorpus.Config{
+		Database:         db,
 		IDPrefix:         "FC_" + sanitize(s.Header.Name) + "_" + rand.Text(),
 		FactoryResetLoad: true,
 	})

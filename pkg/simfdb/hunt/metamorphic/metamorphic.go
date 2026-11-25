@@ -16,17 +16,14 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync/atomic"
 
 	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/recordlayer"
-	// registers the "fdbsql" driver + exposes RegisterBackend
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/sqldriver"
 	"fdb.dev/pkg/simfdb"
 )
-
-var keyCounter atomic.Uint64
 
 const dbPath = "/FRL/mmdb"
 
@@ -196,11 +193,17 @@ func setup(s Scenario) (*harness, error) {
 	simDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 
-	key := fmt.Sprintf("sim://metamorphic/%s/%d", s.Name, keyCounter.Add(1))
+	engine, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		Domains: []string{"FRL"},
+		Limits:  sqldriver.UnboundedJavaCompatLimits(),
+	}, sqldriver.WithDatabase(simDB))
+	if err != nil {
+		return nil, fmt.Errorf("new engine: %w", err)
+	}
 	h := &harness{}
-	h.closes = append(h.closes, sqldriver.RegisterBackend(key, simDB))
+	h.closes = append(h.closes, func() { _ = engine.Close() })
 
-	setupConn, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+key)
+	setupConn, err := engine.OpenDB(strings.ToUpper(dbPath))
 	if err != nil {
 		h.close()
 		return nil, fmt.Errorf("open setup: %w", err)
@@ -218,7 +221,11 @@ func setup(s Scenario) (*harness, error) {
 		}
 	}
 
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+key+"&schema=S&max_total_task_count=150000")
+	db, err := engine.OpenDB(
+		strings.ToUpper(dbPath),
+		sqldriver.WithSchema("S"),
+		sqldriver.WithOptions(api.NoOptions().With(api.OptMaxTotalTaskCount, int(150000))),
+	)
 	if err != nil {
 		h.close()
 		return nil, fmt.Errorf("open db: %w", err)

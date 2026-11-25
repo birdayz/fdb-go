@@ -100,6 +100,7 @@ go_test(
         "//pkg/fdbgo/fdbmetrics",
         "//pkg/recordlayer",
         "//pkg/recordlayer/keystoretest",
+        "//pkg/recordlayer/rlmetrics",
         "//pkg/relational/api",
         "//pkg/relational/core/catalog",
         "//pkg/relational/core/ddl",

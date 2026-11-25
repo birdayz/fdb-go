@@ -13,13 +13,9 @@ import (
 	"charm.land/fang/v2"
 
 	"fdb.dev/cmd/fdb/internal/cmd"
-	"fdb.dev/pkg/relational/core/keyspace"
 )
 
 func main() {
-	// Java's CLI (RelationalSQLLine) and server register the FRL domain at
-	// startup, so /FRL/DB paths work; fdb does the same.
-	keyspace.RegisterDomainIfNotExists("FRL")
 	// Cancel the command context on SIGINT / SIGTERM so Ctrl-C during a
 	// long `record scan` / `store dump` flows through to FDB's range
 	// iterator instead of waiting for the FDB tx timeout. signal.Stop

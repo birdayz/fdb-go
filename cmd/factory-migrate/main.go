@@ -33,6 +33,7 @@ import (
 	"strings"
 	"time"
 
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/factory"
 	"fdb.dev/pkg/relational/conformance/factorycorpus"
 	"fdb.dev/pkg/relational/conformance/yamsql"
@@ -48,7 +49,6 @@ const (
 )
 
 func main() {
-	sqldriver.RegisterDomainIfNotExists("FRL")
 	var oldDir, outDir, censusPath string
 	flag.StringVar(&oldDir, "old", "pkg/relational/conformance/factorycorpus/testdata", "directory holding the v1 fc_*.yaml corpus")
 	flag.StringVar(&outDir, "out", "", "directory the .yamsql family files are written into (must not equal -old)")
@@ -124,7 +124,17 @@ func run(oldDir, outDir, censusPath string) (code int) {
 	tmp.Close()
 
 	const dbPath = "/FRL/factorymigrate"
-	setupDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), tmp.Name()))
+	engine, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		ClusterFile: tmp.Name(),
+		Domains:     []string{"FRL"},
+		Limits:      sqldriver.UnboundedJavaCompatLimits(),
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "INFRA: engine: %v\n", err)
+		return exitInfra
+	}
+	defer engine.Close()
+	setupDB, err := engine.OpenDB(strings.ToUpper(dbPath))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "INFRA: open: %v\n", err)
 		return exitInfra
@@ -163,10 +173,14 @@ func run(oldDir, outDir, censusPath string) (code int) {
 	matchedScenarios, matchedRows, matchedCells := 0, 0, 0
 	for n, seed := range seeds {
 		sweep := factory.Sweep{
-			SetupDB:     setupDB,
-			DBPath:      dbPath,
-			ClusterFile: tmp.Name(),
-			Date:        seedDates[seed],
+			SetupDB: setupDB,
+			DBPath:  dbPath,
+			OpenSchemaDB: func(schema string) (*sql.DB, error) {
+				return engine.OpenDB(strings.ToUpper(dbPath),
+					sqldriver.WithSchema(strings.ToUpper(schema)),
+					sqldriver.WithOptions(api.NoOptions().With(api.OptMaxTotalTaskCount, int(150000))))
+			},
+			Date: seedDates[seed],
 			Filter: func(c factory.Candidate) bool {
 				_, ok := byTriple[tripleKey(c.Seed, c.QueryIndex, c.ProjIndex)]
 				return ok

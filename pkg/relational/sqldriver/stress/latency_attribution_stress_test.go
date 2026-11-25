@@ -15,7 +15,6 @@ import (
 
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/relational/sqldriver"
 )
 
 type latencyCapture struct {
@@ -205,7 +204,7 @@ func TestFDB_LatencyHarnessIsolation(t *testing.T) {
 func TestFDB_Stress_1M_LatencyAttribution(t *testing.T) {
 	t.Parallel()
 	h := newLatencyStressHarness(t)
-	timer := sqldriver.EnableStoreTimer(h.clusterFile)
+	timer := h.engine.StoreTimer()
 	h.observeQuery = func(query string, args ...any) queryResult {
 		return observedStressQuery(h, timer, query, args...)
 	}

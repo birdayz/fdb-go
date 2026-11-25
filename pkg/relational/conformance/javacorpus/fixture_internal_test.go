@@ -14,7 +14,6 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/javayamsql"
-	"fdb.dev/pkg/relational/sqldriver"
 	"fdb.dev/pkg/simfdb"
 )
 
@@ -175,15 +174,13 @@ func TestPrivateFixtureLoadCommitFaults(t *testing.T) {
 			env.Buggify = dst.DisabledBuggifier()
 			sim := simfdb.New(env)
 			backend := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(dstwire.Env(env))
-			key := "fixture/" + t.Name()
-			t.Cleanup(sqldriver.RegisterBackend(key, backend))
 			file := fixtureFile(t)
 			fixture, err := validatePrivateFixture(file, "PIN")
 			if err != nil {
 				t.Fatal(err)
 			}
 			res := FileResult{}
-			r := &runner{cfg: Config{ClusterFile: key, IDPrefix: "PIN", FactoryResetLoad: true}, result: &res, fixture: fixture, connsByResource: map[string][]connTarget{}, dbs: map[connTarget]*sql.DB{}}
+			r := &runner{cfg: Config{Database: backend, IDPrefix: "PIN", FactoryResetLoad: true}, result: &res, fixture: fixture, connsByResource: map[string][]connTarget{}, dbs: map[connTarget]*sql.DB{}}
 			defer r.teardown()
 			ctx := context.Background()
 			if err := r.executeSchemaTemplate(ctx, file.Path, file.Blocks[0]); err != nil {
@@ -244,10 +241,9 @@ func TestPrivateFixtureRunParsedAndNamespaceOwnership(t *testing.T) {
 			env := dst.NewSim(746)
 			env.Buggify = dst.DisabledBuggifier()
 			sim := simfdb.New(env)
-			key := "fixture/" + t.Name()
-			t.Cleanup(sqldriver.RegisterBackend(key, recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(dstwire.Env(env))))
+			backend := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(dstwire.Env(env))
 			file := fixtureFile(t)
-			cfg := Config{ClusterFile: key, IDPrefix: "PIN", FactoryResetLoad: factoryMode}
+			cfg := Config{Database: backend, IDPrefix: "PIN", FactoryResetLoad: factoryMode}
 			res := RunParsed(context.Background(), file, cfg)
 			wantAttempts := 0
 			if factoryMode {

@@ -24,9 +24,9 @@ import (
 	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
-// srBackend registers a record-layer database over a client of its own under
-// key, configured as the driver configures its own, and returns the client.
-func srBackend(t *testing.T, key string) fdb.Database {
+// srEngine builds an explicit *sqldriver.Engine over a record-layer database
+// with a dedicated client handle, and returns both.
+func srEngine(t *testing.T) (fdb.Database, *sqldriver.Engine) {
 	t.Helper()
 	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -39,17 +39,24 @@ func srBackend(t *testing.T, key string) fdb.Database {
 	t.Cleanup(raw.Close)
 	recordDB := recordlayer.NewFDBDatabaseWithBackend(raw)
 	recordDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
-	t.Cleanup(sqldriver.RegisterBackend(key, recordDB))
-	return raw
+	eng, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		Domains: []string{"FRL"},
+		Limits:  sqldriver.UnboundedJavaCompatLimits(),
+	}, sqldriver.WithDatabase(recordDB))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	return raw, eng
 }
 
 // srPooled is a *sql.DB of one pooled connection: every statement borrows
 // the same connection, and database/sql runs its ResetSession at each
 // checkout after the first. The connection's first pages join their
 // statements' shared transactions however long planning takes.
-func srPooled(t *testing.T, dsn string) *sql.DB {
+func srPooled(t *testing.T, eng *sqldriver.Engine, dbPath string, opts ...sqldriver.ConnOption) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("fdbsql", dsn)
+	db, err := eng.OpenDB(dbPath, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,11 +122,9 @@ func srReadVersions(t *testing.T, raw fdb.Database, db *sql.DB, q string) (strin
 func TestFDB_StatementRead_PooledSelects(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	const key = "statement-read-pooled-selects"
-	raw := srBackend(t, key)
+	raw, eng := srEngine(t)
 	const dbPath = "/FRL/SR_POOLED_SELECTS"
-	base := fmt.Sprintf("fdbsql://%s?cluster_file=%s", dbPath, key)
-	setup := srPooled(t, base)
+	setup := srPooled(t, eng, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,
 		"CREATE SCHEMA TEMPLATE sr_pooled_selects CREATE TABLE T (PK BIGINT, C BIGINT, V BIGINT, PRIMARY KEY (PK)) " +
@@ -128,7 +133,7 @@ func TestFDB_StatementRead_PooledSelects(t *testing.T) {
 	} {
 		testkit.MustExecCtx(t, setup, ctx, stmt)
 	}
-	db := srPooled(t, base+"&schema=S")
+	db := srPooled(t, eng, dbPath, sqldriver.WithSchema("S"))
 	var vals []string
 	for i := 1; i <= 7; i++ {
 		vals = append(vals, fmt.Sprintf("(%d, %d, %d)", i, i, 10*i))
@@ -150,7 +155,7 @@ func TestFDB_StatementRead_PooledSelects(t *testing.T) {
 		}
 	}
 
-	paged := srPooled(t, base+"&schema=S&execution_scanned_rows_limit=2")
+	paged := srPooled(t, eng, dbPath, sqldriver.WithSchema("S"), sqldriver.WithResourceLimits(&sqldriver.ResourceLimits{ScannedRowsLimit: 2}))
 	srReadVersions(t, raw, paged, point)
 	got, grvs := srReadVersions(t, raw, paged, "SELECT PK FROM T")
 	pks := strings.Fields(strings.NewReplacer("[", "", "]", "").Replace(got))

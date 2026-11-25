@@ -141,6 +141,7 @@ go_test(
         "//pkg/relational/core/embedded",
         "//pkg/relational/core/functions",
         "//pkg/relational/core/keyspace",
+        "//pkg/relational/sqldriver",
         "//pkg/testcontainers/foundationdb",
         "@com_github_spf13_cobra//:cobra",
         "@org_golang_google_protobuf//encoding/protojson",

@@ -19,13 +19,13 @@ func TestFDB_TxCommitRollbackProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	key, clk := testkit.SpikedClusterKey(t, 30*time.Second)
-	setup := testkit.OpenSpiked(t, key, "/FRL/testdb_tcrp", "")
+	eng, clk := testkit.SpikedEngine(t, 30*time.Second)
+	setup := testkit.OpenEngineDB(t, eng, "/FRL/testdb_tcrp", "")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_tcrp")
 	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE tcrp CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_tcrp/s WITH TEMPLATE tcrp")
-	db := testkit.OpenSpiked(t, key, "/FRL/testdb_tcrp", "s")
+	db := testkit.OpenEngineDB(t, eng, "/FRL/testdb_tcrp", "s")
 	t.Cleanup(func() { db.Close() })
 	count := func() int {
 		var n int

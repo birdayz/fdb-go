@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/sqldriver"
 	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
@@ -34,34 +35,33 @@ func rfc198IndexedDB(t *testing.T, dbPath, tmpl string) *sql.DB {
 	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	return rfc198IndexedDBOn(t, testkit.ClusterFile(), dbPath, tmpl)
+	eng, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		ClusterFile: testkit.ClusterFile(),
+		Domains:     []string{"FRL"},
+		Limits:      sqldriver.UnboundedJavaCompatLimits(),
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	return rfc198IndexedDBOn(t, eng, dbPath, tmpl)
 }
 
-// rfc198IndexedDBOn is rfc198IndexedDB against a named backend key, so a test
+// rfc198IndexedDBOn is rfc198IndexedDB against an explicit Engine, so a test
 // can put the SAME schema on a database whose record layer measures elapsed
-// time on an injected clock. Every handle in a test must come from one key or
-// the isolation assertions would be comparing two unrelated stores.
-func rfc198IndexedDBOn(t *testing.T, key, dbPath, tmpl string) *sql.DB {
+// time on an injected clock. Every handle in a test must come from one Engine
+// or the isolation assertions would be comparing two unrelated stores.
+func rfc198IndexedDBOn(t *testing.T, eng *sqldriver.Engine, dbPath, tmpl string) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), key))
-	if err != nil {
-		t.Fatalf("sql.Open setup: %v", err)
-	}
-	t.Cleanup(func() { _ = setup.Close() })
+	setup := testkit.OpenEngineDB(t, eng, dbPath, "")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE "+tmpl+
 			" CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
 			" CREATE INDEX idx_v ON t (v)")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+tmpl)
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), key))
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	db.SetMaxOpenConns(4)
-	t.Cleanup(func() { db.Close() })
-	return db
+	return testkit.OpenEngineDB(t, eng, dbPath, "S")
 }
 
 // explainInTx returns the EXPLAIN text for query, executed INSIDE tx so the
@@ -224,8 +224,8 @@ func TestFDB_RFC198_ReadYourWritesOverClearedRange(t *testing.T) {
 	//
 	// Arming it for the whole test is safe because preflightTxBudget runs under
 	// `if r.tx != nil`: the seed INSERTs below are autocommit and never meet it.
-	key, clk := testkit.SpikedClusterKey(t, 30*time.Second)
-	db := rfc198IndexedDBOn(t, key, "/FRL/testdb_rfc198_rywdel", "rfc198rywdel")
+	eng, clk := testkit.SpikedEngine(t, 30*time.Second)
+	db := rfc198IndexedDBOn(t, eng, "/FRL/testdb_rfc198_rywdel", "rfc198rywdel")
 	for _, v := range []struct{ id, v int64 }{{1, 100}, {2, 100}, {3, 100}, {4, 900}} {
 		testkit.MustExecCtx(t, db, ctx,
 			fmt.Sprintf("INSERT INTO t (id, v) VALUES (%d, %d)", v.id, v.v))

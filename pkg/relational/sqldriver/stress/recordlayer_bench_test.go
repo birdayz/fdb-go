@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	_ "fdb.dev/pkg/relational/sqldriver"
+	"fdb.dev/pkg/relational/sqldriver"
 )
 
 func TestFDB_SQLParallelConnections(t *testing.T) {
@@ -34,10 +34,21 @@ func TestFDB_SQLParallelConnections(t *testing.T) {
 			batchSize := 2000
 			dbPath := fmt.Sprintf("/FRL/sqlpar_w%d", cfg.workers)
 
-			// Setup: create database + schema using a setup connection.
+			// Setup: create database + schema using a setup engine.
 			setup := func() {
-				sysDSN := fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", clusterFilePath)
-				sysDB, _ := sql.Open("fdbsql", sysDSN)
+				sysEng, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+					ClusterFile: clusterFilePath,
+					Domains:     []string{"FRL"},
+					Limits:      sqldriver.UnboundedJavaCompatLimits(),
+				})
+				if err != nil {
+					t.Fatalf("setup NewEngine: %v", err)
+				}
+				defer sysEng.Close()
+				sysDB, err := sysEng.OpenDB("/__SYS")
+				if err != nil {
+					t.Fatalf("setup OpenDB: %v", err)
+				}
 				defer sysDB.Close()
 				sysDB.ExecContext(context.Background(), "CREATE DATABASE "+dbPath)
 				tmpl := fmt.Sprintf("sqlpar_tmpl_w%d", cfg.workers)
@@ -48,13 +59,12 @@ func TestFDB_SQLParallelConnections(t *testing.T) {
 			}
 			setup()
 
-			start := time.Now()
-			var totalWritten atomic.Int64
+			type workerSlot struct {
+				db       *sql.DB
+				from, to int
+			}
 			chunkSize := (n + cfg.workers - 1) / cfg.workers
-
-			var wg sync.WaitGroup
-			var firstErr firstStressError
-
+			var workers []workerSlot
 			for w := range cfg.workers {
 				wStart := w * chunkSize
 				wEnd := wStart + chunkSize
@@ -64,35 +74,50 @@ func TestFDB_SQLParallelConnections(t *testing.T) {
 				if wStart >= n {
 					break
 				}
-				wg.Add(1)
-				go func(from, to int) {
-					defer wg.Done()
-					dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=MAIN", strings.ToUpper(dbPath), clusterFilePath)
-					workerDB, openErr := sql.Open("fdbsql", dsn)
-					if openErr != nil {
-						firstErr.Record(openErr)
-						return
-					}
-					defer workerDB.Close()
-					workerDB.SetMaxOpenConns(1)
+				wEng, engErr := sqldriver.NewEngine(sqldriver.EngineConfig{
+					ClusterFile: clusterFilePath,
+					Domains:     []string{"FRL"},
+					Limits:      sqldriver.UnboundedJavaCompatLimits(),
+				})
+				if engErr != nil {
+					t.Fatalf("worker %d NewEngine: %v", w, engErr)
+				}
+				defer func(e *sqldriver.Engine) { _ = e.Close() }(wEng)
+				workerDB, openErr := wEng.OpenDB(strings.ToUpper(dbPath), sqldriver.WithSchema("MAIN"))
+				if openErr != nil {
+					t.Fatalf("worker %d OpenDB: %v", w, openErr)
+				}
+				defer func(db *sql.DB) { _ = db.Close() }(workerDB)
+				workerDB.SetMaxOpenConns(1)
+				workers = append(workers, workerSlot{db: workerDB, from: wStart, to: wEnd})
+			}
 
-					for offset := from; offset < to; offset += batchSize {
+			start := time.Now()
+			var totalWritten atomic.Int64
+			var wg sync.WaitGroup
+			var firstErr firstStressError
+
+			for _, ws := range workers {
+				wg.Add(1)
+				go func(ws workerSlot) {
+					defer wg.Done()
+					for offset := ws.from; offset < ws.to; offset += batchSize {
 						end := offset + batchSize
-						if end > to {
-							end = to
+						if end > ws.to {
+							end = ws.to
 						}
 						var rows []string
 						for i := offset; i < end; i++ {
 							rows = append(rows, fmt.Sprintf("(%d, %d)", i, i*7))
 						}
 						stmt := fmt.Sprintf("INSERT INTO items VALUES %s", strings.Join(rows, ", "))
-						if _, execErr := workerDB.ExecContext(context.Background(), stmt); execErr != nil {
+						if _, execErr := ws.db.ExecContext(context.Background(), stmt); execErr != nil {
 							firstErr.Record(execErr)
 							return
 						}
 						totalWritten.Add(int64(end - offset))
 					}
-				}(wStart, wEnd)
+				}(ws)
 			}
 			wg.Wait()
 

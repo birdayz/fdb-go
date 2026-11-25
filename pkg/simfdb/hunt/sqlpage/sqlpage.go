@@ -25,7 +25,6 @@ import (
 	"math/rand/v2"
 	"sort"
 	"strings"
-	"sync/atomic"
 
 	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
@@ -41,9 +40,6 @@ import (
 // would make the keyspace (and the determinism fingerprint) vary. Isolation comes from the unique
 // backend cache key instead.
 const dbPath = "/FRL/sqlpagedb"
-
-// keyCounter uniquifies each run's backend cache key so concurrent runs never share a SimFDB.
-var keyCounter atomic.Uint64
 
 // noPageLimit is the reference scanned-rows limit: large enough that no query in a run ever hits it,
 // so the reference execution never paginates.
@@ -312,11 +308,17 @@ func newHarness(seed uint64) (*harness, error) {
 	simDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 
-	key := fmt.Sprintf("sim://sqlpage/%d/%d", seed, keyCounter.Add(1))
+	engine, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		Domains: []string{"FRL"},
+		Limits:  sqldriver.UnboundedJavaCompatLimits(),
+	}, sqldriver.WithDatabase(simDB))
+	if err != nil {
+		return nil, fmt.Errorf("new engine: %w", err)
+	}
 	h := &harness{simDB: simDB}
-	h.closes = append(h.closes, sqldriver.RegisterBackend(key, simDB))
+	h.closes = append(h.closes, func() { _ = engine.Close() })
 
-	setup, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+key)
+	setup, err := engine.OpenDB(strings.ToUpper(dbPath))
 	if err != nil {
 		h.close()
 		return nil, fmt.Errorf("open setup: %w", err)
@@ -339,7 +341,11 @@ func newHarness(seed uint64) (*harness, error) {
 		}
 	}
 
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+key+"&schema=S&max_total_task_count=150000")
+	db, err := engine.OpenDB(
+		strings.ToUpper(dbPath),
+		sqldriver.WithSchema("S"),
+		sqldriver.WithOptions(api.NoOptions().With(api.OptMaxTotalTaskCount, int(150000))),
+	)
 	if err != nil {
 		h.close()
 		return nil, fmt.Errorf("open db: %w", err)

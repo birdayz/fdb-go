@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"fdb.dev/internal/dstwire"
@@ -24,8 +23,6 @@ import (
 // a per-group regression is a RATIO between two trees, and a benchmark that only
 // compiles on one of them cannot state one.
 
-var aggKeyCounter atomic.Uint64
-
 const (
 	aggBenchGroups   = 2_000
 	aggBenchPerGroup = 10
@@ -43,10 +40,16 @@ func aggBenchHarness(b *testing.B) *sql.DB {
 	simDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 
-	key := fmt.Sprintf("sim://aggbench/%d", aggKeyCounter.Add(1))
-	b.Cleanup(sqldriver.RegisterBackend(key, simDB))
+	engine, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		Domains: []string{"FRL"},
+		Limits:  sqldriver.UnboundedJavaCompatLimits(),
+	}, sqldriver.WithDatabase(simDB))
+	if err != nil {
+		b.Fatalf("new engine: %v", err)
+	}
+	b.Cleanup(func() { _ = engine.Close() })
 
-	setup, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(qcDBPath)+"?cluster_file="+key)
+	setup, err := engine.OpenDB(strings.ToUpper(qcDBPath))
 	if err != nil {
 		b.Fatalf("open setup: %v", err)
 	}
@@ -67,7 +70,7 @@ func aggBenchHarness(b *testing.B) *sql.DB {
 		}
 	}
 
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(qcDBPath)+"?cluster_file="+key+"&schema=S")
+	db, err := engine.OpenDB(strings.ToUpper(qcDBPath), sqldriver.WithSchema("S"))
 	if err != nil {
 		b.Fatalf("open db: %v", err)
 	}

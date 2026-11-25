@@ -79,7 +79,7 @@ func runCatalogRead(ctx context.Context, db *recordlayer.FDBDatabase, fn func(*r
 // under — root at the empty subspace. Both the catalog subspace and
 // per-schema store subspaces hang off it.
 func relationalKeyspace() *relkeyspace.RelationalKeyspace {
-	return relkeyspace.New(subspace.Sub())
+	return relkeyspace.NewRelationalKeyspace(subspace.Sub(), relkeyspace.WithDomains("FRL"))
 }
 
 // relationalStoreSubspace resolves the FDB subspace of the record store

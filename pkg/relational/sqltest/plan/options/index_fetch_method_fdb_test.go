@@ -38,14 +38,20 @@ func indexFetchDB(t *testing.T, tag string, rows int) (*sql.DB, *recordlayer.Sto
 	if indexFetchBackendErr != nil {
 		t.Fatalf("open FDB: %v", indexFetchBackendErr)
 	}
-	key := "index-fetch-method-" + tag
 	recordDB := recordlayer.NewFDBDatabaseWithBackend(indexFetchBackend)
-	t.Cleanup(sqldriver.RegisterBackend(key, recordDB))
-	timer := sqldriver.EnableStoreTimer(key)
+	eng, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		Domains: []string{"FRL"},
+		Limits:  sqldriver.UnboundedJavaCompatLimits(),
+	}, sqldriver.WithDatabase(recordDB))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	timer := eng.StoreTimer()
 
 	ctx := context.Background()
-	dsn := fmt.Sprintf("fdbsql:///FRL/IFM_%s?cluster_file=%s", strings.ToUpper(tag), key)
-	setup, err := sql.Open("fdbsql", dsn)
+	dbPath := "/FRL/IFM_" + strings.ToUpper(tag)
+	setup, err := eng.OpenDB(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +60,7 @@ func indexFetchDB(t *testing.T, tag string, rows int) (*sql.DB, *recordlayer.Sto
 	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE ifm_"+tag+
 		" CREATE TABLE T (id BIGINT, a BIGINT, c STRING, PRIMARY KEY (id)) CREATE INDEX idx_a ON T(a)")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/ifm_"+tag+"/s WITH TEMPLATE ifm_"+tag)
-	db, err := sql.Open("fdbsql", dsn+"&schema=S")
+	db, err := eng.OpenDB(dbPath, sqldriver.WithSchema("S"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -23,9 +23,9 @@ package testkit
 // both and why no test here matches on SQLSTATE.
 //
 // WHY NO PRODUCTION KNOB. The budget is already injectable: the comparison is
-// env.Since(instant) on the record layer's dst.Env clock, and RegisterBackend is
-// an exported seam for binding a database built with a chosen Env to a
-// cluster_file key. The condition is forced by moving the CLOCK. A knob added
+// env.Since(instant) on the record layer's dst.Env clock, and sqldriver.WithDatabase
+// binds a database built with a chosen Env to an explicit sqldriver.Engine.
+// The condition is forced by moving the CLOCK. A knob added
 // only so a test can turn it is a knob production carries forever.
 //
 // The clock is a WALL clock plus an offset, never an Epoch-pinned sim clock: on
@@ -37,7 +37,6 @@ package testkit
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -180,48 +179,50 @@ func MustHaveRetried(t *testing.T, attemptsRun int) {
 	}
 }
 
-// SpikedClusterKey registers a REAL FoundationDB-backed database whose record
-// layer measures elapsed time on a one-shot late clock, and returns the key to
-// pass as `cluster_file=` in a DSN.
+// SpikedEngine builds a *sqldriver.Engine over a REAL FoundationDB-backed
+// database whose record layer measures elapsed time on a one-shot late clock.
 //
-// Returning a KEY rather than an *sql.DB is deliberate: the tests below build
-// several handles on one backend (a setup handle, a schema-scoped handle, a
-// second connection that must observe isolation from outside), and they must
-// all reach the SAME registered database or the isolation assertions would be
-// comparing two unrelated stores.
+// Returning an *sqldriver.Engine rather than an *sql.DB is deliberate: the
+// tests below build several handles on one backend (a setup handle, a
+// schema-scoped handle, a second connection that must observe isolation from
+// outside), and they must all reach the SAME Engine/FDBDatabase or the
+// isolation assertions would be comparing two unrelated stores.
 //
 // Autocommit is unaffected by the spike, which is what makes this safe to arm
 // for a whole test: preflightTxBudget runs under `if r.tx != nil`, so DDL and
 // seed statements issued outside an explicit transaction never meet it.
-func SpikedClusterKey(t *testing.T, lateBy time.Duration) (string, *lateClock) {
+func SpikedEngine(t *testing.T, lateBy time.Duration) (*sqldriver.Engine, *lateClock) {
 	t.Helper()
 	fdb.MustAPIVersion(730)
 	rawDB, err := fdb.OpenDatabase(clusterFilePath)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
+	t.Cleanup(rawDB.Close)
 	clk := NewLateClock(lateBy)
 	rlDB := recordlayer.NewFDBDatabase(rawDB).SetEnv(&recordlayer.Env{Clock: clk})
-	key := "spikeclock://" + t.Name()
-	t.Cleanup(sqldriver.RegisterBackend(key, rlDB))
-	return key, clk
-}
-
-// SpikedDSN is the DSN form the converted tests use, so the cluster_file key is
-// the ONLY difference from the handle they opened before conversion.
-func SpikedDSN(key, dbPath, schema string) string {
-	if schema == "" {
-		return fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), key)
-	}
-	return fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(dbPath), key, strings.ToUpper(schema))
-}
-
-// OpenSpiked opens a handle on a spiked backend and closes it with the test.
-func OpenSpiked(t *testing.T, key, dbPath, schema string) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("fdbsql", SpikedDSN(key, dbPath, schema))
+	eng, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		Domains: []string{"FRL"},
+		Limits:  sqldriver.UnboundedJavaCompatLimits(),
+	}, sqldriver.WithDatabase(rlDB))
 	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
+		t.Fatalf("NewEngine: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	return eng, clk
+}
+
+// OpenEngineDB opens a handle on eng for dbPath and optional schema, closing
+// it when the test finishes.
+func OpenEngineDB(t *testing.T, eng *sqldriver.Engine, dbPath, schema string) *sql.DB {
+	t.Helper()
+	var opts []sqldriver.ConnOption
+	if schema != "" {
+		opts = append(opts, sqldriver.WithSchema(strings.ToUpper(schema)))
+	}
+	db, err := eng.OpenDB(strings.ToUpper(dbPath), opts...)
+	if err != nil {
+		t.Fatalf("engine.OpenDB(%s, %s): %v", dbPath, schema, err)
 	}
 	db.SetMaxOpenConns(4)
 	t.Cleanup(func() { _ = db.Close() })

@@ -17,14 +17,11 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
 	"log"
-	"net/url"
 	"os"
-	"strings"
 	"time"
 
 	"fdb.dev/pkg/relational/sqldriver"
@@ -46,13 +43,19 @@ func run(ctx context.Context, clusterFile string, out io.Writer) error {
 	if clusterFile == "" {
 		return errNoClusterFile
 	}
-	// Domains must be registered by the application, as in Java.
-	sqldriver.RegisterDomainIfNotExists("FRL")
+	engine, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		ClusterFile: clusterFile,
+		Domains:     []string{"FRL"},
+	})
+	if err != nil {
+		return fmt.Errorf("open engine: %w", err)
+	}
+	defer engine.Close()
 	const dbPath = "/FRL/QUICKSTART"
 
 	// A "setup" handle (no default schema) for the DDL that creates the
 	// database, the schema template, and the schema.
-	setup, err := sql.Open("fdbsql", dsn(dbPath, clusterFile, ""))
+	setup, err := engine.OpenDB(dbPath)
 	if err != nil {
 		return fmt.Errorf("open setup connection: %w", err)
 	}
@@ -74,8 +77,8 @@ func run(ctx context.Context, clusterFile string, out io.Writer) error {
 		}
 	}
 
-	// The application handle, bound to the "app" schema.
-	db, err := sql.Open("fdbsql", dsn(dbPath, clusterFile, "app"))
+	// The application handle, bound to the "APP" schema.
+	db, err := engine.OpenDB(dbPath, sqldriver.WithSchema("APP"))
 	if err != nil {
 		return fmt.Errorf("open app connection: %w", err)
 	}
@@ -134,16 +137,4 @@ func run(ctx context.Context, clusterFile string, out io.Writer) error {
 		return fmt.Errorf("rows: %w", err)
 	}
 	return nil
-}
-
-// dsn builds an fdbsql DSN. An empty schema omits the default-schema binding
-// (used for the setup handle).
-func dsn(dbPath, clusterFile, schema string) string {
-	params := url.Values{}
-	params.Set("cluster_file", clusterFile)
-	if schema != "" {
-		params.Set("schema", strings.ToUpper(schema))
-	}
-	u := url.URL{Scheme: "fdbsql", Path: dbPath, RawQuery: params.Encode()}
-	return u.String()
 }

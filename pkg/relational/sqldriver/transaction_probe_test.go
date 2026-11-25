@@ -7,7 +7,6 @@ package sqldriver_test
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"testing"
 	"time"
@@ -25,16 +24,15 @@ func TestFDB_TransactionProbe(t *testing.T) {
 	// window between statements, so they are not exposed and must not be spiked —
 	// they have no retry and a pre-emption would simply fail them. Only
 	// multi_statement_atomic_rollback arms it, for its own transaction.
-	key, clk := testkit.SpikedClusterKey(t, 30*time.Second)
+	eng, clk := testkit.SpikedEngine(t, 30*time.Second)
 	clk.Disarm()
-	setup := testkit.OpenSpiked(t, key, "/FRL/testdb_txnprobe", "")
+	setup := testkit.OpenEngineDB(t, eng, "/FRL/testdb_txnprobe", "")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_txnprobe")
 	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE txnprobe "+
 			"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_txnprobe/s WITH TEMPLATE txnprobe")
-	dsn := testkit.SpikedDSN(key, "/FRL/testdb_txnprobe", "s")
-	db := testkit.OpenSpiked(t, key, "/FRL/testdb_txnprobe", "s")
+	db := testkit.OpenEngineDB(t, eng, "/FRL/testdb_txnprobe", "s")
 	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 10)")
 
 	count := func() int64 {
@@ -108,11 +106,7 @@ func TestFDB_TransactionProbe(t *testing.T) {
 
 	t.Run("isolation_uncommitted_not_visible", func(t *testing.T) {
 		// a second connection must not see the tx's uncommitted insert.
-		other, err := sql.Open("fdbsql", dsn)
-		if err != nil {
-			t.Fatalf("open other: %v", err)
-		}
-		defer other.Close()
+		other := testkit.OpenEngineDB(t, eng, "/FRL/testdb_txnprobe", "s")
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
 			t.Fatalf("BeginTx: %v", err)

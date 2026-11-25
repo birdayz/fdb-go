@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -16,7 +15,7 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/core/functions"
-	_ "fdb.dev/pkg/relational/sqldriver"
+	"fdb.dev/pkg/relational/sqldriver"
 )
 
 // `fdb rl stats` — the offline planner-statistics maintainer (RFC-236).
@@ -134,10 +133,19 @@ func (f *statsAddressFlags) withStatsConn(
 	// rule CREATE SCHEMA applies), so `--schema main` addresses the schema that
 	// `create schema /FRL/db/main` created.
 	schema := functions.NormalizeIdentifier(f.schema)
-	dsn := buildFDBSQLDSN(f.clusterFile, functions.NormalizeIdentifier(f.database), schema)
-	db, err := sql.Open("fdbsql", dsn)
+	dbPath := functions.NormalizeIdentifier(f.database)
+	engine, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		ClusterFile: f.clusterFile,
+		Domains:     []string{"FRL"},
+		Limits:      sqldriver.UnboundedJavaCompatLimits(),
+	})
 	if err != nil {
-		return fmt.Errorf("open fdbsql %q: %w", dsn, err)
+		return fmt.Errorf("open sql engine: %w", err)
+	}
+	defer engine.Close()
+	db, err := engine.OpenDB(dbPath, sqldriver.WithSchema(schema))
+	if err != nil {
+		return fmt.Errorf("open fdbsql %s: %w", f.describe(), err)
 	}
 	defer db.Close()
 	conn, err := db.Conn(ctx)

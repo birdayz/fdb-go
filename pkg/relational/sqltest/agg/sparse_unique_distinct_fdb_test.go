@@ -51,8 +51,8 @@ func TestFDB_SparseUniqueIndexDoesNotProveDistinct(t *testing.T) {
 	// A one-shot clock spike, so the retry below fires on EVERY run. Safe to arm
 	// for the whole test: preflightTxBudget runs under `if r.tx != nil`, so the
 	// DDL and seed statements below — all autocommit — never meet it.
-	key, clk := testkit.SpikedClusterKey(t, 30*time.Second)
-	setup := testkit.OpenSpiked(t, key, "/FRL/testdb_sparseu", "")
+	eng, clk := testkit.SpikedEngine(t, 30*time.Second)
+	setup := testkit.OpenEngineDB(t, eng, "/FRL/testdb_sparseu", "")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sparseu")
 	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE sparseu "+
@@ -67,7 +67,7 @@ func TestFDB_SparseUniqueIndexDoesNotProveDistinct(t *testing.T) {
 			"CREATE UNIQUE INDEX full_u AS SELECT email FROM fu ORDER BY email")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sparseu/s WITH TEMPLATE sparseu")
 
-	db := testkit.OpenSpiked(t, key, "/FRL/testdb_sparseu", "s")
+	db := testkit.OpenEngineDB(t, eng, "/FRL/testdb_sparseu", "s")
 
 	testkit.MustExecCtx(t, db, ctx, "INSERT INTO sp (id, email, keep) VALUES "+
 		"(1, 'a@x', 1), (2, 'b@x', 1), (3, 'a@x', 0), (4, 'a@x', 0), (5, 'c@x', 0)")

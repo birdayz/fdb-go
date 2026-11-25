@@ -26,7 +26,7 @@ import (
 	"time"
 
 	"fdb.dev/pkg/relational/api"
-	_ "fdb.dev/pkg/relational/sqldriver"
+	"fdb.dev/pkg/relational/sqldriver"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 )
 
@@ -114,6 +114,7 @@ func runTests(m *testing.M) (code int) {
 
 type stressHarness struct {
 	t            *testing.T
+	engine       *sqldriver.Engine
 	db           *sql.DB
 	dbPath       string
 	schema       string
@@ -143,10 +144,19 @@ func newStressHarnessWithCluster(t *testing.T, suffix, clusterFile string) *stre
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	sysDSN := fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", clusterFile)
-	sysDB, err := sql.Open("fdbsql", sysDSN)
+	engine, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		ClusterFile: clusterFile,
+		Domains:     []string{"FRL"},
+		Limits:      sqldriver.UnboundedJavaCompatLimits(),
+	})
 	if err != nil {
-		t.Fatalf("sql.Open __SYS: %v", err)
+		t.Fatalf("NewEngine: %v", err)
+	}
+	t.Cleanup(func() { _ = engine.Close() })
+
+	sysDB, err := engine.OpenDB("/__SYS")
+	if err != nil {
+		t.Fatalf("OpenDB __SYS: %v", err)
 	}
 	defer sysDB.Close()
 
@@ -154,10 +164,9 @@ func newStressHarnessWithCluster(t *testing.T, suffix, clusterFile string) *stre
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=MAIN", strings.ToUpper(dbPath), clusterFile)
-	db, err := sql.Open("fdbsql", dsn)
+	db, err := engine.OpenDB(strings.ToUpper(dbPath), sqldriver.WithSchema("MAIN"))
 	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
+		t.Fatalf("OpenDB: %v", err)
 	}
 	db.SetMaxOpenConns(32)
 	db.SetMaxIdleConns(32)
@@ -165,6 +174,7 @@ func newStressHarnessWithCluster(t *testing.T, suffix, clusterFile string) *stre
 
 	return &stressHarness{
 		t:           t,
+		engine:      engine,
 		db:          db,
 		dbPath:      dbPath,
 		schema:      "main",
@@ -176,14 +186,12 @@ func newStressHarnessWithCluster(t *testing.T, suffix, clusterFile string) *stre
 
 func (h *stressHarness) createSchema(template string) {
 	h.t.Helper()
-	clusterFile := h.clusterFile
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	sysDSN := fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", clusterFile)
-	sysDB, err := sql.Open("fdbsql", sysDSN)
+	sysDB, err := h.engine.OpenDB("/__SYS")
 	if err != nil {
-		h.t.Fatalf("sql.Open __SYS: %v", err)
+		h.t.Fatalf("OpenDB __SYS: %v", err)
 	}
 	defer sysDB.Close()
 

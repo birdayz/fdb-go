@@ -21,14 +21,12 @@ import (
 	"math/rand/v2"
 	"sort"
 	"strings"
-	"sync/atomic"
 
 	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
-	// registers the "fdbsql" database/sql driver and exposes RegisterBackend
 	"fdb.dev/pkg/relational/sqldriver"
 	"fdb.dev/pkg/simfdb"
 	"fdb.dev/pkg/simfdb/hunt"
@@ -37,11 +35,6 @@ import (
 // sqlOpStream is the PCG stream for the SQL workload's op choices, distinct from the record
 // workload's stream and from the Env's own streams.
 const sqlOpStream = uint64(11)
-
-// keyCounter uniquifies the per-run cache key so concurrent workers (and shrink re-runs of the
-// same seed) never collide. It is NOT part of the persisted data — the database path is fixed —
-// so it does not perturb determinism (same seed ⇒ same fingerprint).
-var keyCounter atomic.Uint64
 
 // SQLWorkload is the idempotent-DML SQL workload. The zero value is ready to use.
 type SQLWorkload struct{}
@@ -227,11 +220,17 @@ func newHarness(seed uint64, faultProb float64) (*harness, error) {
 	simDB := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(dstwire.Env(env))
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 
-	key := fmt.Sprintf("sim://sqlhunt/%d/%d", seed, keyCounter.Add(1))
+	engine, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		Domains: []string{"FRL"},
+		Limits:  sqldriver.UnboundedJavaCompatLimits(),
+	}, sqldriver.WithDatabase(simDB))
+	if err != nil {
+		return nil, fmt.Errorf("new engine: %w", err)
+	}
 	h := &harness{env: env, faults: faults, simDB: simDB, backend: backend}
-	h.closes = append(h.closes, sqldriver.RegisterBackend(key, simDB))
+	h.closes = append(h.closes, func() { _ = engine.Close() })
 
-	setup, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+key)
+	setup, err := engine.OpenDB(strings.ToUpper(dbPath))
 	if err != nil {
 		h.close()
 		return nil, fmt.Errorf("open setup: %w", err)
@@ -249,7 +248,11 @@ func newHarness(seed uint64, faultProb float64) (*harness, error) {
 		}
 	}
 
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+key+"&schema=S&max_total_task_count=150000")
+	db, err := engine.OpenDB(
+		strings.ToUpper(dbPath),
+		sqldriver.WithSchema("S"),
+		sqldriver.WithOptions(api.NoOptions().With(api.OptMaxTotalTaskCount, int(150000))),
+	)
 	if err != nil {
 		h.close()
 		return nil, fmt.Errorf("open db: %w", err)

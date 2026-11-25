@@ -2,7 +2,6 @@ package sqlbackend
 
 import (
 	"context"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -14,6 +13,7 @@ import (
 	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/sqldriver"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
@@ -28,8 +28,17 @@ import (
 func testSpanReader(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
-	const path = "/" + domain + "/otel_span_reader" // Open registered the domain
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s&schema=CATALOG", cluster))
+	const path = "/" + domain + "/otel_span_reader"
+	eng, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		ClusterFile: cluster,
+		Domains:     []string{domain},
+		Limits:      sqldriver.UnboundedJavaCompatLimits(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+	setup, err := eng.OpenDB("/__SYS", sqldriver.WithSchema("CATALOG"))
 	if err != nil {
 		t.Fatal(err)
 	}
