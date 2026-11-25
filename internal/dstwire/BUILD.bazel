@@ -8,7 +8,7 @@ go_library(
     importpath = "fdb.dev/internal/dstwire",
     visibility = ["//:__subpackages__"],
     deps = [
-        "//pkg/dst",
+        "//internal/dst",
         "//pkg/recordlayer",
     ],
 )
@@ -17,5 +17,5 @@ go_test(
     name = "dstwire_test",
     srcs = ["dstwire_test.go"],
     embed = [":dstwire"],
-    deps = ["//pkg/dst"],
+    deps = ["//internal/dst"],
 )

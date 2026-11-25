@@ -8,7 +8,7 @@ package recordlayer
 import (
 	"fmt"
 
-	"fdb.dev/pkg/recordlayer/indexfetch"
+	"fdb.dev/internal/recordlayer/indexfetch"
 )
 
 // IndexFetchMethod is Java's com.apple.foundationdb.record.IndexFetchMethod.

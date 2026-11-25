@@ -7,13 +7,13 @@ import (
 
 // dot and l2Norm are TEST helpers. They used to sit in a production file
 // (vec_math.go) as a character-identical duplicate of the live pair in
-// pkg/rabitq, which is the copy the quantizer actually runs (rabitq.go, inside
+// internal/recordlayer/rabitq, which is the copy the quantizer actually runs (rabitq.go, inside
 // absOfNormalized — the port of RaBitQuantizer.absOfNormalized). Nothing in
 // pkg/recordlayer ever called this copy: it existed only for the vector tests
 // here, which use it to check that a rotation preserves norms and that a
 // decoded vector still points the same way.
 //
-// Kept here rather than imported from pkg/rabitq on purpose. A test that
+// Kept here rather than imported from internal/recordlayer/rabitq on purpose. A test that
 // measures a rotation with the same helper the quantizer uses cannot tell a
 // broken rotation from a broken dot product; an independent copy in the test
 // file is the second opinion. Its being a duplicate is the point — but a

@@ -14,13 +14,13 @@ import (
 	"sort"
 	"strings"
 
-	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+	"fdb.dev/internal/recordlayer/tuplefast"
 
 	"fdb.dev/internal/javahashmap"
+	"fdb.dev/internal/recordlayer/protoscope"
+	"fdb.dev/internal/recordlayer/protovalue"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/recordlayer/internal/protovalue"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/recordlayer/protoscope"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"

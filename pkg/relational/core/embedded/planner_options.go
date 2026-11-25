@@ -14,8 +14,8 @@ import (
 	"strconv"
 	"strings"
 
+	"fdb.dev/internal/recordlayer/indexfetch"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/indexfetch"
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/relational/api"

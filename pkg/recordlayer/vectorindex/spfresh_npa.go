@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // NPA reassignment (RFC-094 §6 step 3): after a split, vectors in the

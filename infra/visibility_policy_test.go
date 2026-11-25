@@ -448,8 +448,6 @@ func inRestrictedVisibilityScope(rel string) bool {
 		strings.Contains(rel, "/internal/") ||
 		strings.HasPrefix(rel, "pkg/testutil/") ||
 		strings.HasPrefix(rel, "pkg/simfdb/") ||
-		strings.HasPrefix(rel, "pkg/recordlayer/chaos/") ||
-		strings.HasPrefix(rel, "pkg/recordlayer/keystoretest/") ||
 		strings.HasPrefix(rel, "pkg/recordlayer/query/plan/constfoldcensus/") ||
 		strings.HasPrefix(rel, "pkg/relational/conformance/") ||
 		strings.HasPrefix(rel, "pkg/relational/sqltest/") ||
@@ -467,18 +465,17 @@ var restrictedScopeRoots = []struct {
 	{"cmd/fdb/internal/", []string{"//cmd/fdb:__subpackages__"}},
 	{"internal/", []string{"//:__subpackages__"}},
 	{"internal/linters/", []string{"//:__pkg__"}},
+	{"internal/recordlayer/chaos/", []string{"//pkg/relational/core/embedded:__pkg__", "//pkg/simfdb/hunt:__pkg__"}},
+	{"internal/recordlayer/keystoretest/", []string{"//conformance:__pkg__", "//pkg/recordlayer:__pkg__", "//pkg/relational/conformance/javacorpus:__pkg__", "//pkg/relational/sqldriver:__pkg__"}},
 	{"layers/otel/otelsql/internal/", []string{"//layers/otel/otelsql:__subpackages__"}},
 	{"pkg/internal/", []string{"//pkg:__subpackages__"}},
 	{"pkg/fdbgo/internal/", []string{"//pkg/fdbgo:__subpackages__"}},
-	{"pkg/recordlayer/internal/", []string{"//pkg/recordlayer:__subpackages__"}},
 	{"pkg/recordlayer/query/plan/cascades/internal/", []string{"//pkg/recordlayer/query/plan/cascades:__subpackages__"}},
 	{"pkg/relational/internal/", []string{"//pkg/relational:__subpackages__"}},
 	{"tools/clientbench/internal/", []string{"//tools/clientbench:__subpackages__"}},
 	{"tools/unicode15gen/internal/", []string{"//tools/unicode15gen:__subpackages__"}},
 	{"pkg/testutil/", []string{"//pkg/recordlayer:__subpackages__", "//pkg/relational:__subpackages__"}},
 	{"pkg/simfdb/", []string{"//pkg/simfdb:__subpackages__"}},
-	{"pkg/recordlayer/chaos/", []string{"//pkg/relational/core/embedded:__pkg__", "//pkg/simfdb/hunt:__pkg__"}},
-	{"pkg/recordlayer/keystoretest/", []string{"//conformance:__pkg__", "//pkg/recordlayer:__pkg__", "//pkg/relational/conformance/javacorpus:__pkg__", "//pkg/relational/sqldriver:__pkg__"}},
 	{"pkg/recordlayer/query/plan/constfoldcensus/", []string{"//visibility:private"}},
 	{"pkg/relational/conformance/", []string{"//pkg/relational/conformance:__subpackages__"}},
 	{"pkg/relational/sqltest/", []string{"//pkg/relational:__subpackages__"}},
@@ -766,8 +763,8 @@ go_library(
 		{"layers/otel/otelsql/internal/otelddl/BUILD.bazel", true},
 		{"tools/clientbench/internal/bench/BUILD.bazel", true},
 		{"tools/unicode15gen/internal/gen/BUILD.bazel", true},
-		{"pkg/recordlayer/chaos/BUILD.bazel", true},
-		{"pkg/recordlayer/keystoretest/BUILD.bazel", true},
+		{"internal/recordlayer/chaos/BUILD.bazel", true},
+		{"internal/recordlayer/keystoretest/BUILD.bazel", true},
 		{"pkg/recordlayer/query/plan/constfoldcensus/BUILD.bazel", true},
 		{"pkg/relational/txbudgetcensus/BUILD.bazel", true},
 		{"pkg/fdbgo/fdb/BUILD.bazel", false},

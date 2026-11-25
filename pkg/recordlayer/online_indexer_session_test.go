@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/dst"
+	"fdb.dev/internal/dst"
 
 	"fdb.dev/pkg/recordlayer/metadatapb"
 

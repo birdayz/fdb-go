@@ -13,7 +13,7 @@ import (
 	"math/big"
 	"sort"
 
-	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+	"fdb.dev/internal/recordlayer/tuplefast"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"

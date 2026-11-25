@@ -57,7 +57,7 @@ go_test(
         "test-full",
     ],
     deps = [
-        "//pkg/dst",
+        "//internal/dst",
         "//pkg/fdbgo/client",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/directory",

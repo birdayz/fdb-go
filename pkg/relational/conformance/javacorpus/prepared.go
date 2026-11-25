@@ -10,7 +10,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/google/uuid"
 
-	"fdb.dev/pkg/recordlayer/vectorcodec"
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/javayamsql"
 )

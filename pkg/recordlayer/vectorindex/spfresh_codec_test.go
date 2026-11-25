@@ -5,7 +5,7 @@ import (
 	"math"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/vectorcodec"
+	"fdb.dev/internal/recordlayer/vectorcodec"
 )
 
 func TestSPFreshCentroidRowRoundTrip(t *testing.T) {

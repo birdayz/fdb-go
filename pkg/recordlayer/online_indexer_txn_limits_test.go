@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"fdb.dev/gen/demopb"
-	"fdb.dev/pkg/dst"
+	"fdb.dev/internal/dst"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"

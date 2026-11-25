@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/async/rtree"
-	"fdb.dev/pkg/dst"
+	"fdb.dev/internal/dst"
+	"fdb.dev/internal/recordlayer/rtree"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 )
 

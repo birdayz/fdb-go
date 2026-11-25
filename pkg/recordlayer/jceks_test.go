@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/keystoretest"
+	"fdb.dev/internal/recordlayer/keystoretest"
 )
 
 // JCEKS stores are read as Java's JceKeyStore reads them. A store is written

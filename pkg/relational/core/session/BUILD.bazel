@@ -21,7 +21,7 @@ go_test(
     ],
     embed = [":session"],
     deps = [
-        "//pkg/dst",
+        "//internal/dst",
         "//pkg/relational/api",
         "//pkg/relational/core/keyspace",
     ],

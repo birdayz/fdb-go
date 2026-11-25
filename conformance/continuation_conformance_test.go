@@ -15,12 +15,12 @@ import (
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/internal/recordlayer/query/executor"
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"

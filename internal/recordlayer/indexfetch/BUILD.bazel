@@ -1,0 +1,10 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+package(default_visibility = ["//:__subpackages__"])
+
+go_library(
+    name = "indexfetch",
+    srcs = ["indexfetch.go"],
+    importpath = "fdb.dev/internal/recordlayer/indexfetch",
+    visibility = ["//:__subpackages__"],
+)

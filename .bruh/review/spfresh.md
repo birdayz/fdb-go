@@ -6,7 +6,7 @@ applies:
   - "pkg/recordlayer/vectorindex/hnsw_vector.go"
   - "pkg/recordlayer/vectorindex/hnsw_options.go"
   - "pkg/recordlayer/vectorindex/VECTOR_BENCHMARK_RESULTS.md"
-  - "pkg/rabitq/**"
+  - "internal/recordlayer/rabitq/**"
 references:
   - "SPANN paper: .claude/skills/spfresh-reviewer/spann-paper.pdf (arXiv:2111.08566); SPFresh paper: https://arxiv.org/pdf/2410.14452"
   - "rfcs/094-spfresh-vector-index.md: the FDB adaptation and its declared divergences"

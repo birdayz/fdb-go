@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"strings"
 
-	"fdb.dev/pkg/recordlayer/indexpredicate"
+	"fdb.dev/internal/recordlayer/indexpredicate"
 	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"

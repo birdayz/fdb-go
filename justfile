@@ -115,7 +115,7 @@ build:
 # Bazel schedules tests in command-line order and has no priority knob, so a
 # 5-10 minute target listed by label order starts minutes late and becomes the
 # tail. Ordering only; a stale entry is harmless.
-test_full_first := "//conformance:rfc257_oracle_test //pkg/relational/conformance/factorycorpus/full:full_test //conformance:rfc257_guardiann_java_test //conformance:conformance_probes_test //conformance:conformance_test //pkg/fdbgo/client:client_test //pkg/relational/conformance/factory:factory_test //conformance:conformance_corpora_test //pkg/recordlayer:million_record_test //pkg/recordlayer/chaos:chaos_test"
+test_full_first := "//conformance:rfc257_oracle_test //pkg/relational/conformance/factorycorpus/full:full_test //conformance:rfc257_guardiann_java_test //conformance:conformance_probes_test //conformance:conformance_test //pkg/fdbgo/client:client_test //pkg/relational/conformance/factory:factory_test //conformance:conformance_corpora_test //pkg/recordlayer:million_record_test //internal/recordlayer/chaos:chaos_test"
 
 # Standard edit/commit loop: unit tests and bounded integration tests, with nogo.
 # Heavy suites are tagged test-full (or conformance_java/stress/manual).
@@ -553,7 +553,7 @@ race:
 # run_sql / yamsql / fault-inject specs split out of conformance_test into
 # conformance_corpora_test are raced wherever conformance_test is.
 race-all:
-    bazelisk --output_base={{race_base}} test //pkg/fdbgo/client:client_test //pkg/recordlayer:recordlayer_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/chaos:chaos_test //conformance:conformance_test //conformance:conformance_corpora_test //pkg/recordlayer/query/plan/cascades/... --@rules_go//go/config:race --test_timeout=900
+    bazelisk --output_base={{race_base}} test //pkg/fdbgo/client:client_test //pkg/recordlayer:recordlayer_test //pkg/fdbgo/fdb:fdb_test //internal/recordlayer/chaos:chaos_test //conformance:conformance_test //conformance:conformance_corpora_test //pkg/recordlayer/query/plan/cascades/... --@rules_go//go/config:race --test_timeout=900
 
 # Extended verification: full suite + race detector + bounded fuzz smoke.
 # No CI lane runs active fuzzing; this recipe's smoke is the only routine one.

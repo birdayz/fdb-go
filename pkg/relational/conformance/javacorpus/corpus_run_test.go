@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/recordlayer/keystoretest"
+	"fdb.dev/internal/recordlayer/keystoretest"
 	"fdb.dev/pkg/relational/conformance/javacorpus"
 	"fdb.dev/pkg/relational/conformance/javayamsql"
 	_ "fdb.dev/pkg/relational/sqldriver"

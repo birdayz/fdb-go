@@ -7,9 +7,9 @@ import (
 	"math/big"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/tupleordering"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/recordlayer/tupleordering"
 )
 
 // ---------------------------------------------------------------------------

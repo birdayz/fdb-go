@@ -5,7 +5,7 @@ import (
 	"math"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/vectorcodec"
+	"fdb.dev/internal/recordlayer/vectorcodec"
 )
 
 // Java 4.14.2.0 values produced by testdata/GuardiannVectors.java.

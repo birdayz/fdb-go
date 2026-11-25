@@ -12,8 +12,8 @@ import (
 	"math"
 	"strings"
 
+	"fdb.dev/internal/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/recordlayer/protoname"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )

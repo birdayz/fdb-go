@@ -10,7 +10,7 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
-	"fdb.dev/pkg/recordlayer/vectorcodec"
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )

@@ -69,9 +69,9 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/recordlayer/protoname"
+	"fdb.dev/internal/recordlayer/protoscope"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/recordlayer/protoname"
-	"fdb.dev/pkg/recordlayer/protoscope"
 )
 
 // wrappedArrayFieldName is Java's NullableArrayTypeUtils.getRepeatedFieldName()

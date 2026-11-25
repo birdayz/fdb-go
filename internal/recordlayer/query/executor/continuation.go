@@ -17,12 +17,12 @@ import (
 	"time"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"

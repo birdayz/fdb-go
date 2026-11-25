@@ -131,7 +131,7 @@ go_test(
         "//cmd/fdb/internal/meta",
         "//gen",
         "//gen/demopb",
-        "//pkg/dst",
+        "//internal/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",

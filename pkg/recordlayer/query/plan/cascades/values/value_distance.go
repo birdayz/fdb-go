@@ -10,7 +10,7 @@ package values
 import (
 	"math"
 
-	"fdb.dev/pkg/recordlayer/vectorcodec"
+	"fdb.dev/internal/recordlayer/vectorcodec"
 )
 
 // DistanceOperator enumerates the vector-distance metrics SQL can

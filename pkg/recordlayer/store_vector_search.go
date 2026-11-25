@@ -17,8 +17,8 @@ import (
 	"context"
 	"fmt"
 
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // VectorDistanceScanRange creates a TupleRange encoding a BY_DISTANCE kNN query.

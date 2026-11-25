@@ -6,7 +6,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/vectorcodec"
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/testutil/allocs"
 )
 

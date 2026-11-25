@@ -11,7 +11,7 @@ import (
 
 	"fdb.dev/gen"
 	"fdb.dev/gen/demopb"
-	"fdb.dev/pkg/dst"
+	"fdb.dev/internal/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"

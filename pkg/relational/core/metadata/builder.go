@@ -26,10 +26,10 @@ import (
 	"github.com/google/uuid"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/recordlayer/protoscope"
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/recordlayer/protoscope"
 	"fdb.dev/pkg/relational/api"
 )
 

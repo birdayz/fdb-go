@@ -1,3 +1,0 @@
-# gazelle:default_visibility //pkg/recordlayer:__subpackages__
-
-package(default_visibility = ["//pkg/recordlayer:__subpackages__"])

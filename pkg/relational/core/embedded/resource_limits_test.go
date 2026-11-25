@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/internal/dst"
 	"fdb.dev/internal/recordlayer/query/executor"
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/session"

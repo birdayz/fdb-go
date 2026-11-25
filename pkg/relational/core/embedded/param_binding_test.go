@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/parser"
 	"github.com/google/uuid"

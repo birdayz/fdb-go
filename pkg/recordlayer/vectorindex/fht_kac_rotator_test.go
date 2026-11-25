@@ -5,7 +5,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"fdb.dev/pkg/rabitq"
+	"fdb.dev/internal/recordlayer/rabitq"
 )
 
 // --- Java Random compatibility tests ---

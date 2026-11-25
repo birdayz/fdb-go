@@ -8,8 +8,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/dst"
 	"fdb.dev/internal/dstwire"
-	"fdb.dev/pkg/dst"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"

@@ -72,10 +72,10 @@ go_library(
     importpath = "fdb.dev/pkg/recordlayer/query/plan/plans",
     visibility = ["//visibility:public"],
     deps = [
+        "//internal/recordlayer/indexfetch",
+        "//internal/recordlayer/protoname",
         "//internal/unicode15",
         "//pkg/fdbgo/fdb/tuple",
-        "//pkg/recordlayer/indexfetch",
-        "//pkg/recordlayer/protoname",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/properties",
@@ -301,9 +301,9 @@ go_test(
         "fanout_identity_test.go",
     ],
     deps = [
+        "//internal/recordlayer/indexfetch",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/internal/querycensus",
-        "//pkg/recordlayer/indexfetch",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/properties",

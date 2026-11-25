@@ -4211,7 +4211,7 @@ The configuration and node-slot-index differences below remain unchanged.
 
 Java's `MultiDimensionalIndexHelper.getConfig` takes any int for `rtreeMinimumM`,
 `rtreeMaximumM` and `rtreeSplitS` (`MultiDimensionalIndexHelper.java:44-57`), and so does Go's
-`NewRTree` (`pkg/async/rtree/rtree.go`). Both refuse to read a non-root node outside
+`NewRTree` (`internal/recordlayer/rtree/rtree.go`). Both refuse to read a non-root node outside
 [minM, maxM] (`AbstractStorageAdapter.java:180-186`; Go's `checkPacking`, `errors.go`).
 A configuration that cannot keep the node invariants fails at the step where Java's does,
 with Java's exception class (`errors.go`). Pinned by "RTree configurations"
@@ -4287,7 +4287,7 @@ accepts a size of zero or below and fails at the index's first write (a division
 negative array size). Go refuses it with `RecordCoreArgumentError` ("entry size option must be
 positive") when it builds the maintainer, since the same arithmetic would panic. The call sites
 are the maintainer (`bitmap_value_index_maintainer.go:47`), the chaos model
-(`pkg/recordlayer/chaos/verify_bitmap.go:55`), and the planner's bitmap aggregate candidate,
+(`internal/recordlayer/chaos/verify_bitmap.go:55`), and the planner's bitmap aggregate candidate,
 which declines the index instead (`tryAggregateIndexCandidate` in
 `pkg/relational/core/embedded/cascades_generator.go`).
 
@@ -4433,7 +4433,7 @@ like the enum (`status('STATUS', 'DONE')`). Java's relational DDL stores both, a
 
 **Go.** protobuf-go, like protoc, scopes an enum value BESIDE its enum, in the enclosing scope. Such
 a file does not build as stored. `protoscope.ScopeEnumValuesAsJava`
-(`pkg/recordlayer/protoscope/protoscope.go:54`) rewrites the in-memory descriptor only. Each enum
+(`internal/recordlayer/protoscope/protoscope.go:54`) rewrites the in-memory descriptor only. Each enum
 whose values collide in its scope moves into a synthetic holder message
 (`__fdbgo_enum_scope__<i>_<name>`, `protoscope.go:39`, `:158`). An enum with a value spelled like
 itself is also renamed inside the holder (`protoscope.go:48`), because no depth of scoping
@@ -4446,7 +4446,7 @@ messages (`pkg/recordlayer/metadata_evolution_validator.go:1380`) and the execut
 (`internal/recordlayer/query/executor/executor.go:6090`) use them.
 
 Wire: none. Pinned by `TestScopeBuildsWhatJavaAccepts`
-(`pkg/recordlayer/protoscope/protoscope_test.go:57`), and by
+(`internal/recordlayer/protoscope/protoscope_test.go:57`), and by
 `TestEnumsSharingAValueNameLoadAsJavaLoadsThem` and `TestAnEnumValueNamedLikeItsEnumLoadsAsJavaLoadsIt`
 (`pkg/recordlayer/enum_value_scope_test.go:89`, `:98`). Those two load, then write back, and the
 records file written back is `proto.Equal` to the one loaded (`enum_value_scope_test.go:136`).

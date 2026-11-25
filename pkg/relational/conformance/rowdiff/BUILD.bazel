@@ -119,8 +119,8 @@ go_test(
         "test-full",
     ],
     deps = [
+        "//internal/dst",
         "//internal/dstwire",
-        "//pkg/dst",
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/properties",

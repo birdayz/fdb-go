@@ -16,8 +16,8 @@ import (
 	"bytes"
 	"testing"
 
+	"fdb.dev/internal/dst"
 	"fdb.dev/internal/dstwire"
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 )
 

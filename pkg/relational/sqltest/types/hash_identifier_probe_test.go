@@ -10,7 +10,7 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
-	"fdb.dev/pkg/recordlayer/protoname"
+	"fdb.dev/internal/recordlayer/protoname"
 	"fdb.dev/pkg/relational/api"
 	"github.com/onsi/gomega"
 )

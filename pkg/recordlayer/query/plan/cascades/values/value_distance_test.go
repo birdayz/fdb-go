@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/vectorcodec"
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"github.com/stretchr/testify/require"
 )
 

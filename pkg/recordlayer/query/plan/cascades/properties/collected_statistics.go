@@ -1,6 +1,6 @@
 package properties
 
-import "fdb.dev/pkg/recordlayer/protoname"
+import "fdb.dev/internal/recordlayer/protoname"
 
 // CollectedStatistics is RFC-236's statistics provider: per-record-type row
 // counts gathered by the offline collector.

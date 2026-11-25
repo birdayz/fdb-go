@@ -15,7 +15,7 @@ package recordlayer
 import (
 	"testing"
 
-	"fdb.dev/pkg/dst"
+	"fdb.dev/internal/dst"
 	"github.com/google/uuid"
 )
 

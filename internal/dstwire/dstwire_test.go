@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/dst"
+	"fdb.dev/internal/dst"
 )
 
 func TestEnvNilReturnsNil(t *testing.T) {

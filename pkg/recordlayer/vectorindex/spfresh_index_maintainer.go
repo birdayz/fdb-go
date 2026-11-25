@@ -8,11 +8,11 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 	"google.golang.org/protobuf/proto"
 )
 

@@ -14,12 +14,12 @@ import (
 	"fmt"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/recordlayer/tuplefast"
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/internal/tuplefast"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 	"google.golang.org/protobuf/proto"
 )
 

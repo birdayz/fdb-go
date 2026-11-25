@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // SPFresh query path (RFC-094 §4): route on the cached two-level table →

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/indexfetch"
+	"fdb.dev/internal/recordlayer/indexfetch"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/api"
 )

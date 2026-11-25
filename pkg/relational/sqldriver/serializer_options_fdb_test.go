@@ -12,8 +12,8 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
+	"fdb.dev/internal/recordlayer/keystoretest"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/keystoretest"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/ddl"
 	"fdb.dev/pkg/relational/core/embedded"

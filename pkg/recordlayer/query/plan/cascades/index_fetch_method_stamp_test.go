@@ -3,7 +3,7 @@ package cascades
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/indexfetch"
+	"fdb.dev/internal/recordlayer/indexfetch"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"

@@ -6,10 +6,10 @@ import (
 	"errors"
 	"fmt"
 
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // RFC-104 online assignment refinement: re-evaluate vectors' closure copy-set

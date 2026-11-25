@@ -8,8 +8,8 @@ import (
 	"errors"
 	"unicode/utf8"
 
+	"fdb.dev/internal/recordlayer/javanum"
 	"fdb.dev/internal/unicode15"
-	"fdb.dev/pkg/recordlayer/javanum"
 )
 
 // IllegalArgumentError is Java's IllegalArgumentException, raised by the
@@ -34,7 +34,7 @@ func (e *IllegalStateError) Error() string { return e.Message }
 
 // convertJavaNumError wraps *javanum.IllegalArgumentError and
 // *javanum.IllegalStateError returned by lower-level packages (such as
-// pkg/async/rtree) with recordlayer's own defined error types at the package
+// internal/recordlayer/rtree) with recordlayer's own defined error types at the package
 // boundary, while preserving the original error chain for callers matching
 // either type.
 func convertJavaNumError(err error) error {

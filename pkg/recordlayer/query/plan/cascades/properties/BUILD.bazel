@@ -28,7 +28,7 @@ go_library(
     importpath = "fdb.dev/pkg/recordlayer/query/plan/cascades/properties",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/recordlayer/protoname",
+        "//internal/recordlayer/protoname",
         "//pkg/recordlayer/query/plan/cascades/combinatorics",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",

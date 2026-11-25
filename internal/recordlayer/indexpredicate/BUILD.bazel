@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+package(default_visibility = ["//:__subpackages__"])
+
+go_library(
+    name = "indexpredicate",
+    srcs = ["normalize.go"],
+    importpath = "fdb.dev/internal/recordlayer/indexpredicate",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//pkg/recordlayer/metadatapb",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "indexpredicate_test",
+    srcs = ["normalize_test.go"],
+    embed = [":indexpredicate"],
+    deps = [
+        "//pkg/recordlayer/metadatapb",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

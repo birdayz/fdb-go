@@ -11,8 +11,8 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"fdb.dev/pkg/recordlayer/protoname"
-	"fdb.dev/pkg/recordlayer/protoscope"
+	"fdb.dev/internal/recordlayer/protoname"
+	"fdb.dev/internal/recordlayer/protoscope"
 )
 
 // FieldTypeForProtoField maps a proto field descriptor to the logical column

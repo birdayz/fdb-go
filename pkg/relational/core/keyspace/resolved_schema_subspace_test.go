@@ -5,8 +5,8 @@ import (
 	"context"
 	"testing"
 
+	"fdb.dev/internal/dst"
 	"fdb.dev/internal/dstwire"
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/keyspace"

@@ -17,7 +17,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"fdb.dev/pkg/recordlayer/protoscope"
+	"fdb.dev/internal/recordlayer/protoscope"
 )
 
 // MetaDataEvolutionValidator validates that schema changes between an old and new

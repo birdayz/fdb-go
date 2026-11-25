@@ -9,9 +9,9 @@ package vectorindex
 import (
 	"math"
 
-	"fdb.dev/pkg/rabitq"
+	"fdb.dev/internal/recordlayer/rabitq"
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // guardiannVectorCodec owns one operation's coordinate system. Plain stored

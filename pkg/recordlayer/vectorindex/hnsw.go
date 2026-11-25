@@ -15,13 +15,13 @@ import (
 	"math/bits"
 	"sort"
 
+	"fdb.dev/internal/recordlayer/rabitq"
+	"fdb.dev/internal/recordlayer/tuplefast"
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/rabitq"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/internal/tuplefast"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // Write locks (Java's LockIdentifier / LockRegistry) are NOT needed in Go.

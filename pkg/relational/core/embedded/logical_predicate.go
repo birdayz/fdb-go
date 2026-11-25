@@ -49,9 +49,9 @@ import (
 	"slices"
 	"strings"
 
+	"fdb.dev/internal/recordlayer/protoname"
 	"fdb.dev/internal/unicode15"
 	recordlayer "fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"

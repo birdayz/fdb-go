@@ -12,7 +12,7 @@ for the design; this skill is the *usage* manual.
 ## Honest status (read this first)
 
 **SimFDB (RFC-199 Tiers 0–2) is built.** The record/relational stack now runs over a deterministic
-in-memory FDB backend (`pkg/simfdb`) with a seeded Env (`pkg/dst`: sim clock + seeded RNG + Buggify),
+in-memory FDB backend (`pkg/simfdb`) with a seeded Env (`internal/dst`: sim clock + seeded RNG + Buggify),
 so a single `uint64` seed replays the **record-layer** run bit-exactly — no Docker, no cluster — and
 the fault schedule (commit_unknown/conflict/too_old) is part of that seed with **true rollback** (unlike
 chaos's double-commit fake). The brute-force loop-until-bug hunter that rides on this is
@@ -79,7 +79,7 @@ still latent is the real danger.
 
 ## chaos
 
-Model-based oracle (RFC-002, `pkg/recordlayer/chaos/`): an in-memory `StoreModel` shadows a real FDB
+Model-based oracle (RFC-002, `internal/recordlayer/chaos/`): an in-memory `StoreModel` shadows a real FDB
 store; every op hits both; `Verify()` cross-checks **14 invariant families** (COUNT/SUM/MIN-MAX_EVER/
 PERMUTED_MIN-MAX/RANK/MULTIDIMENSIONAL/VERSION/VECTOR/SPFresh/BITMAP/TEXT + record & scan-count). Faults
 (`commit_unknown 1021` / `conflict 1020` / `too_old 1007`) are injected at the tx boundary via
@@ -87,9 +87,9 @@ PERMUTED_MIN-MAX/RANK/MULTIDIMENSIONAL/VERSION/VECTOR/SPFresh/BITMAP/TEXT + reco
 
 ```sh
 # Run one scenario (PLAIN GO TESTS — use --test.run, NOT --ginkgo.focus; anchor with $)
-bazelisk test //pkg/recordlayer/chaos:chaos_test --test_arg="--test.run=TestRandomMultiIndex$" --test_output=streamed
+bazelisk test //internal/recordlayer/chaos:chaos_test --test_arg="--test.run=TestRandomMultiIndex$" --test_output=streamed
 # Fast local loop (needs Docker). -parallel 1 is MANDATORY (BUILD bakes it; default parallelism trips a client bug, not yours)
-go test ./pkg/recordlayer/chaos/ -run TestMaxEverCommitUnknown -count=1 -parallel 1 -v
+go test ./internal/recordlayer/chaos/ -run TestMaxEverCommitUnknown -count=1 -parallel 1 -v
 ```
 
 - **Reproduce:** a violation fatals `chaos: <n> violation(s) at op <M> (seed=<S>):` + a per-invariant
@@ -527,9 +527,9 @@ bazelisk --output_base=$HOME/.cache/bazel/_race_output_base test //pkg/fdbgo/cli
   --@rules_go//go/config:race --runs_per_test=200 --cache_test_results=no --test_output=errors
 just race        # or: just race-all
 # [TODAY] scheduler knobs as a DIAGNOSTIC (can hide a race as easily as surface it)
-GOMAXPROCS=1 GODEBUG=asyncpreemptoff=1 go test -race -count=200 -failfast -run '^TestX$' ./pkg/recordlayer/chaos/
+GOMAXPROCS=1 GODEBUG=asyncpreemptoff=1 go test -race -count=200 -failfast -run '^TestX$' ./internal/recordlayer/chaos/
 # [TODAY] inter-test order dependence (prints a seed to replay)
-go test -shuffle=on -count=1 ./pkg/recordlayer/chaos/     # then: -shuffle=<printed-seed>
+go test -shuffle=on -count=1 ./internal/recordlayer/chaos/     # then: -shuffle=<printed-seed>
 # [SETUP] rr reverse-debug (rr NOT installed; `dlv replay` is NOT a dlv 1.26.3 command)
 sudo pacman -S rr && echo 1 | sudo tee /proc/sys/kernel/perf_event_paranoid
 dlv test --backend=rr ./pkg/fdbgo/client -- -test.run '^TestFlaky$'   # rev next / rev step / rewind
@@ -593,7 +593,7 @@ above.
 | Tier | Unlocks | Status |
 |---|---|---|
 | **−1** rr + Delve replay | reverse-debug a *captured* real-FDB flake | ⚠️ **setup** — `rr` not installed; `--backend=rr` |
-| **0** Clock + seeded RNG + Buggify | byte-reproducible persisted state; deterministic `CURRENT_*`; fault points | ✅ **Available** (`pkg/dst`) |
+| **0** Clock + seeded RNG + Buggify | byte-reproducible persisted state; deterministic `CURRENT_*`; fault points | ✅ **Available** (`internal/dst`) |
 | **1** SimFDB (in-mem MVCC backend) | **single-seed bit-exact replay, no Docker**; true rollback; SSI-conflict + idempotency bug hunting; the conflict-outcome differential as its oracle | ✅ **Available** (`pkg/simfdb`) |
 | **2** workload drivers + replay | seed-reproducible record workloads (**[hunt](#hunt)**: brute-force loop-until-bug + shrink); SQL workloads (`sqlhunt`); metamorphic + golden oracles; **[interleave](#interleave-concurrent-transaction-ssi-driver)** + **[rangeconflict](#rangeconflict-range-aware-ssi-driver)** SSI drivers; **[continuation](#continuation-cursor-resume-replay-driver)** cursor-resume replay driver | ✅ **Available** (`pkg/simfdb/hunt` + `sqlhunt`/`metamorphic`/`golden`/`interleave` [+ fault mode]/`rangeconflict`/`continuation`/`sqlpage`) — continuation-under-injected-fault next |
 | **3** client sim (Track B) | `synctest`-driven client concurrency + simulated server processes | ⏳ **separate RFC** (not full DST) |

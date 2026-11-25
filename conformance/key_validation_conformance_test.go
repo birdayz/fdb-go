@@ -15,10 +15,10 @@ import (
 	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/recordlayer/rabitq"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/rabitq"
 	"fdb.dev/pkg/recordlayer"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"

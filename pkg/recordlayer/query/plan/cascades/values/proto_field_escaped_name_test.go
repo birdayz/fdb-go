@@ -9,7 +9,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"fdb.dev/pkg/recordlayer/protoname"
+	"fdb.dev/internal/recordlayer/protoname"
 )
 
 // TestProtoFieldByNameResolvesEscapedNames pins the reverse of the descriptor
