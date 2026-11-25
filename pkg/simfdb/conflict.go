@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"time"
 
-	"fdb.dev/pkg/dst"
+	"fdb.dev/internal/dst"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 )
 
@@ -87,7 +87,7 @@ func clampConflictRange(begin, end []byte) (nb, ne []byte, ok bool, err error) {
 // being a hand-pinned read version), and it was unreachable.
 //
 // Returns 0 unless a Clock is actually installed, which keeps this ASYMMETRIC on purpose: a nil
-// Env is this repo's only spelling of production (see pkg/dst/env.go), and a production SimDB
+// Env is this repo's only spelling of production (see internal/dst/env.go), and a production SimDB
 // must keep minting versions from the pure logical counter. Binding it to time.Now() there would
 // make version assignment — and therefore 1007 — depend on how long the host took to run the
 // test, which is precisely the nondeterminism SimFDB exists to remove.

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/dst"
+	"fdb.dev/internal/dst"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 )
 
@@ -698,7 +698,7 @@ func TestClockMintedVersionsFollowVersionsPerSecond(t *testing.T) {
 // TestNilEnvKeepsPurelyLogicalVersions pins the ASYMMETRY, and it is the load-bearing half of the
 // clock binding.
 //
-// A nil *Env is this repo's only spelling of production (pkg/dst/env.go), and a SimDB without an
+// A nil *Env is this repo's only spelling of production (internal/dst/env.go), and a SimDB without an
 // installed Clock must keep minting versions from the pure logical counter. Binding it to
 // time.Now() instead would make version assignment — and therefore whether a transaction gets
 // 1007 — depend on how long the host took to run the code, which is exactly the nondeterminism

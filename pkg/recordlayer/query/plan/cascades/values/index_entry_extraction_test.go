@@ -3,8 +3,8 @@ package values
 import (
 	"testing"
 
+	"fdb.dev/internal/recordlayer/tupleordering"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/recordlayer/tupleordering"
 
 	"github.com/stretchr/testify/require"
 )

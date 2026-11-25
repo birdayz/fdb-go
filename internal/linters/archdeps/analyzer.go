@@ -4,8 +4,8 @@
 //
 // Layer hierarchy (L0-L7, lower layers must not depend on higher layers):
 //   - L0 (r2AllowedLeaves): pure non-storage leaf primitives shared between
-//     storage and planner (indexfetch, indexpredicate, internal/protovalue,
-//     javanum, protoname, protoscope, tupleordering, vectorcodec).
+//     storage and planner (indexfetch, indexpredicate, javanum, protoname,
+//     protoscope, protovalue, tupleordering, vectorcodec).
 //   - L1/L2 (fdbClientRoots): FDB client, wire, transport, and low-level
 //     libraries (pkg/fdbgo, internal/fdbgo, internal/fdbwire,
 //     internal/fdbclient, pkg/internal/fdbclient, fdb).
@@ -154,6 +154,7 @@ var (
 		"fdb.dev/internal/simfdb",
 		"fdb.dev/internal/linters",
 		"fdb.dev/pkg/dst",
+		"fdb.dev/internal/dst",
 	}
 	r5TestFrameworkRoots = []string{
 		"github.com/stretchr/testify",
@@ -177,10 +178,10 @@ var (
 		"fdb.dev/pkg/recordlayer/vectorcodec",
 		"fdb.dev/internal/recordlayer/indexfetch",
 		"fdb.dev/internal/recordlayer/indexpredicate",
-		"fdb.dev/internal/recordlayer/internal/protovalue",
 		"fdb.dev/internal/recordlayer/javanum",
 		"fdb.dev/internal/recordlayer/protoname",
 		"fdb.dev/internal/recordlayer/protoscope",
+		"fdb.dev/internal/recordlayer/protovalue",
 		"fdb.dev/internal/recordlayer/textcmp",
 		"fdb.dev/internal/recordlayer/tupleordering",
 		"fdb.dev/internal/recordlayer/vectorcodec",
@@ -235,7 +236,7 @@ var (
 		"fdb.dev/cmd/bench-report":                           true,
 		"fdb.dev/conformance":                                true,
 		"fdb.dev/internal/recordlayer/query/executor":        true,
-		"fdb.dev/pkg/async/rtree":                            true,
+		"fdb.dev/internal/recordlayer/rtree":                 true,
 		"fdb.dev/pkg/fdbgo/client":                           true,
 		"fdb.dev/pkg/fdbgo/fdb":                              true,
 		"fdb.dev/pkg/fdbgo/fdb/subspace":                     true,
@@ -268,7 +269,7 @@ var (
 	}
 	// l0Allow freezes the single existing upward dependency from an L0 leaf.
 	l0Allow = map[string]map[string]bool{
-		"pkg/recordlayer/tupleordering/tupleordering.go": {"fdb.dev/pkg/fdbgo/fdb/tuple": true},
+		"internal/recordlayer/tupleordering/tupleordering.go": {"fdb.dev/pkg/fdbgo/fdb/tuple": true},
 	}
 	l3Allow = map[string]map[string]bool{}
 	l6Allow = map[string]map[string]bool{}

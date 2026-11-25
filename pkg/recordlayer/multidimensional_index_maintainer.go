@@ -13,10 +13,10 @@ import (
 	"math"
 	"math/big"
 
-	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+	"fdb.dev/internal/recordlayer/tuplefast"
 
 	"fdb.dev/gen"
-	"fdb.dev/pkg/async/rtree"
+	"fdb.dev/internal/recordlayer/rtree"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"

@@ -21,7 +21,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
-	"fdb.dev/pkg/dst"
+	"fdb.dev/internal/dst"
 )
 
 // transform is transformRead with the reader of the unions these tests write

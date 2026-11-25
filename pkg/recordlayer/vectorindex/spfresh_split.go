@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"slices"
 
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // Fine-split lifecycle primitives (RFC-094 §6): SEAL → SPLIT → FORWARD as two

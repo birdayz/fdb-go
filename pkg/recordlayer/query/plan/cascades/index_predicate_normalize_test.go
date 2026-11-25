@@ -3,7 +3,7 @@ package cascades
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/indexpredicate"
+	"fdb.dev/internal/recordlayer/indexpredicate"
 	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"google.golang.org/protobuf/proto"

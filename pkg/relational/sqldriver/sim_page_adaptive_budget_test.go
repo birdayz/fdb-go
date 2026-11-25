@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/internal/dst"
 	"fdb.dev/internal/dstwire"
-	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/simfdb"

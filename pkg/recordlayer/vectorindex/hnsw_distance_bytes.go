@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"math"
 
-	"fdb.dev/pkg/recordlayer/vectorcodec"
+	"fdb.dev/internal/recordlayer/vectorcodec"
 )
 
 // vectorDistanceFromBytes computes the metric distance between a query vector

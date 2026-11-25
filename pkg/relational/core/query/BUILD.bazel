@@ -109,9 +109,9 @@ go_test(
     embed = [":query"],
     deps = [
         "//gen/demopb",
+        "//internal/recordlayer/protoname",
         "//pkg/internal/querycensus",
         "//pkg/recordlayer",
-        "//pkg/recordlayer/protoname",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",

@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/protoname"
+	"fdb.dev/internal/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/query/expr"

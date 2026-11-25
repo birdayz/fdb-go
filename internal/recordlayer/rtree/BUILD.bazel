@@ -1,0 +1,47 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+package(default_visibility = ["//:__subpackages__"])
+
+go_library(
+    name = "rtree",
+    srcs = [
+        "errors.go",
+        "hilbert.go",
+        "rtree.go",
+        "storage.go",
+        "types.go",
+    ],
+    importpath = "fdb.dev/internal/recordlayer/rtree",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/recordlayer/javanum",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+    ],
+)
+
+go_test(
+    name = "rtree_test",
+    srcs = [
+        "dst_nonce_test.go",
+        "hilbert_test.go",
+        "layout_test.go",
+        "rtree_config_test.go",
+        "rtree_suite_test.go",
+        "rtree_test.go",
+        "storage_hilbert_fdb_test.go",
+        "storage_hilbert_test.go",
+    ],
+    embed = [":rtree"],
+    deps = [
+        "//internal/dst",
+        "//internal/recordlayer/javanum",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_onsi_ginkgo_v2//:ginkgo",
+        "@com_github_onsi_gomega//:gomega",
+    ],
+)

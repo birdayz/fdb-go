@@ -3,7 +3,7 @@ package query
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/protoname"
+	"fdb.dev/internal/recordlayer/protoname"
 	"fdb.dev/pkg/relational/core/query/semantic"
 
 	"google.golang.org/protobuf/proto"

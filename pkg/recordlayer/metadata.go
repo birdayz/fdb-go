@@ -14,9 +14,9 @@ import (
 	"sort"
 	"sync/atomic"
 
+	"fdb.dev/internal/recordlayer/protoname"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/recordlayer/protoname"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"

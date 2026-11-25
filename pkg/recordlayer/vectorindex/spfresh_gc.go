@@ -6,10 +6,10 @@ import (
 	"errors"
 	"fmt"
 
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // GC (RFC-094 §6): FORWARD/DEAD rows past the horizon are purged. The FORWARD

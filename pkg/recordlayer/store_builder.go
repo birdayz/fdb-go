@@ -17,7 +17,7 @@ import (
 	"math"
 	"time"
 
-	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+	"fdb.dev/internal/recordlayer/tuplefast"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"

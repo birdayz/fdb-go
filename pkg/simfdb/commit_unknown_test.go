@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"fdb.dev/pkg/dst"
+	"fdb.dev/internal/dst"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 )
 

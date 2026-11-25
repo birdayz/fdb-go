@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"fdb.dev/pkg/dst"
+	"fdb.dev/internal/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/simfdb"
 )

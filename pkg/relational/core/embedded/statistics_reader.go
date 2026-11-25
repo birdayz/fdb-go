@@ -5,9 +5,9 @@ import (
 	"database/sql/driver"
 	"sort"
 
+	"fdb.dev/internal/recordlayer/protoname"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/relational/api"
 )

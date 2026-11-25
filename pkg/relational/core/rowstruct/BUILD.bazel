@@ -10,8 +10,8 @@ go_library(
     importpath = "fdb.dev/pkg/relational/core/rowstruct",
     visibility = ["//visibility:public"],
     deps = [
+        "//internal/recordlayer/protoname",
         "//pkg/fdbgo/fdb/tuple",
-        "//pkg/recordlayer/protoname",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",
         "//pkg/relational/core/functions",

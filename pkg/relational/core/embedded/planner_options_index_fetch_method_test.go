@@ -3,7 +3,7 @@ package embedded
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/indexfetch"
+	"fdb.dev/internal/recordlayer/indexfetch"
 	"fdb.dev/pkg/relational/api"
 )
 

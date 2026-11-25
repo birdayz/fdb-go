@@ -8,8 +8,8 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/recordlayer/protoscope"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/recordlayer/protoscope"
 )
 
 // sharedEnumValueMetaData is the MetaData Java's relational DDL stores for

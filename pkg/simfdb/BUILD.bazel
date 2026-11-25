@@ -36,13 +36,14 @@ go_library(
     ],
     importpath = "fdb.dev/pkg/simfdb",
     visibility = [
+        "//internal/recordlayer/chaos:__pkg__",
         "//pkg/fdbgo:__subpackages__",
         "//pkg/recordlayer:__subpackages__",
         "//pkg/relational:__subpackages__",
         "//pkg/simfdb:__subpackages__",
     ],
     deps = [
-        "//pkg/dst",
+        "//internal/dst",
         "//pkg/fdbgo/fdb",
     ],
 )
@@ -92,8 +93,8 @@ go_test(
     tags = ["resources:memory:400"],
     deps = [
         "//gen/demopb",
+        "//internal/dst",
         "//internal/dstwire",
-        "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",

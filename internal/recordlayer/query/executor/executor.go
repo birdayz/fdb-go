@@ -33,18 +33,18 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/recordlayer/indexfetch"
+	"fdb.dev/internal/recordlayer/indexpredicate"
+	"fdb.dev/internal/recordlayer/protoname"
+	"fdb.dev/internal/recordlayer/protoscope"
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/indexfetch"
-	"fdb.dev/pkg/recordlayer/indexpredicate"
-	"fdb.dev/pkg/recordlayer/protoname"
-	"fdb.dev/pkg/recordlayer/protoscope"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 type RecursiveCTEDepthExceededError struct {

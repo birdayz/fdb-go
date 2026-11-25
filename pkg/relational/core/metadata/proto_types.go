@@ -12,8 +12,8 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 
+	"fdb.dev/internal/recordlayer/protoscope"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/recordlayer/protoscope"
 	"fdb.dev/pkg/relational/api"
 )
 

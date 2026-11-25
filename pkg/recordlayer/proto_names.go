@@ -7,11 +7,11 @@ package recordlayer
 import (
 	"errors"
 
-	"fdb.dev/pkg/recordlayer/protoname"
+	"fdb.dev/internal/recordlayer/protoname"
 )
 
 // The protobuf identifier escaping moved to the leaf package
-// pkg/recordlayer/protoname so the plan-time descriptor emitter in
+// internal/recordlayer/protoname so the plan-time descriptor emitter in
 // cascades/values can share it — values cannot import this package, which
 // already imports values. This package owns InvalidNameError and delegates the
 // escaping implementation to protoname, which holds the doc comment and its

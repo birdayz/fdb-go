@@ -1,0 +1,11 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+package(default_visibility = ["//:__subpackages__"])
+
+go_library(
+    name = "tupleordering",
+    srcs = ["tupleordering.go"],
+    importpath = "fdb.dev/internal/recordlayer/tupleordering",
+    visibility = ["//:__subpackages__"],
+    deps = ["//pkg/fdbgo/fdb/tuple"],
+)

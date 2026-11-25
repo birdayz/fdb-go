@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/keystoretest"
+	"fdb.dev/internal/recordlayer/keystoretest"
 )
 
 // These tests read key stores keystoretest writes into a temp dir, in the JDK

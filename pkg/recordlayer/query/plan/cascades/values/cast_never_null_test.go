@@ -3,7 +3,7 @@ package values
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/vectorcodec"
+	"fdb.dev/internal/recordlayer/vectorcodec"
 )
 
 // A CAST takes its operand's nullability (CastValue.Type, Java

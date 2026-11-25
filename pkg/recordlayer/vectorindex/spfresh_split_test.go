@@ -9,11 +9,11 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/dst"
 	"fdb.dev/internal/dstwire"
-	"fdb.dev/pkg/dst"
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 )

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"unicode/utf16"
 
-	"fdb.dev/pkg/recordlayer/keystoretest"
+	"fdb.dev/internal/recordlayer/keystoretest"
 )
 
 // Malformed serialized objects and JCEKS stores are refused, each for its

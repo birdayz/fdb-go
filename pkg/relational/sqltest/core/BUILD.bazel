@@ -35,9 +35,9 @@ go_test(
         "test-full",
     ],
     deps = [
+        "//internal/dst",
         "//internal/dstwire",
         "//internal/recordlayer/query/executor",
-        "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",

@@ -10,9 +10,9 @@ import (
 	"math"
 	"sort"
 
-	"fdb.dev/pkg/rabitq"
+	"fdb.dev/internal/recordlayer/rabitq"
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // Java package com.apple.foundationdb.kmeans: KMeans.fit and

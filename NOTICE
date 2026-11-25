@@ -17,7 +17,7 @@ Generated code derived from those definitions remains subject to their
 upstream notices. See third_party/apple/fdb-record-layer/VERSION for the
 vendored corpus revision.
 
-The half-precision conversion in pkg/recordlayer/vectorcodec/vectorcodec.go
+The half-precision conversion in internal/recordlayer/vectorcodec/vectorcodec.go
 is derived from the Record Layer's Half.java (HALF4J):
 Copyright 2023 Christian Heina
 Modifications Copyright 2015-2025 Apple Inc. and the FoundationDB project authors.
@@ -35,7 +35,7 @@ FoundationDB C client and its Go bindings.
 pyjks
 -----
 The JCEKS key store reader in pkg/recordlayer/jceks.go, and the test writer in
-pkg/recordlayer/keystoretest/jceks.go, are Go ports of parts of pyjks
+internal/recordlayer/keystoretest/jceks.go, are Go ports of parts of pyjks
 (https://github.com/kurtbrose/pyjks), version 20.0.0, licensed under the MIT
 License:
 

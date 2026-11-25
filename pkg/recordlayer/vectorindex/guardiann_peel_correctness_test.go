@@ -5,9 +5,9 @@ import (
 	"math"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // Keep the peel's encoded-operand and full-iteration refit paths exercised

@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"fdb.dev/gen"
-	"fdb.dev/pkg/recordlayer/indexfetch"
+	"fdb.dev/internal/recordlayer/indexfetch"
 	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"

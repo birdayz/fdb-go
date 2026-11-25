@@ -10,11 +10,11 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"fdb.dev/internal/recordlayer/rabitq"
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/rabitq"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // SPFresh bulk build (RFC-094 §8): two-level clustering with a real state

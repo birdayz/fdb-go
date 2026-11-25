@@ -12,10 +12,10 @@ import (
 
 	"github.com/google/uuid"
 
+	"fdb.dev/internal/recordlayer/protoname"
 	"fdb.dev/internal/recordlayer/textcmp"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/recordlayer/protoname"
 )
 
 // Phase 1: Store existence errors (replace sentinels from store.go)

@@ -9,8 +9,8 @@ package vectorindex
 import (
 	"fmt"
 
+	"fdb.dev/internal/recordlayer/rabitq"
 	"fdb.dev/internal/unicode15"
-	"fdb.dev/pkg/rabitq"
 	"fdb.dev/pkg/recordlayer"
 )
 

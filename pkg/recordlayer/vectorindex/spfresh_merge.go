@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // Merge lifecycle (RFC-094 §6): a posting drained below Lmin folds its

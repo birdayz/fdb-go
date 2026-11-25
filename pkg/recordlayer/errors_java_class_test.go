@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/javanum"
+	"fdb.dev/internal/recordlayer/protoname"
 	"fdb.dev/internal/recordlayer/textcmp"
-	"fdb.dev/pkg/recordlayer/javanum"
-	"fdb.dev/pkg/recordlayer/protoname"
 )
 
 // IsMetaDataException tests the outermost Java exception, as Java's

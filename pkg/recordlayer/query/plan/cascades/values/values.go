@@ -61,10 +61,10 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"fdb.dev/internal/recordlayer/javanum"
+	"fdb.dev/internal/recordlayer/protoname"
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/internal/unicode15"
-	"fdb.dev/pkg/recordlayer/javanum"
-	"fdb.dev/pkg/recordlayer/protoname"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // Canonical ISO 8601 layouts of the text every DATE and TIMESTAMP value

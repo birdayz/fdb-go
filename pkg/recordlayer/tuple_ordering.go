@@ -5,8 +5,8 @@
 package recordlayer
 
 import (
+	"fdb.dev/internal/recordlayer/tupleordering"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/recordlayer/tupleordering"
 )
 
 // OrderDirection specifies how tuple values are encoded for ordered storage.

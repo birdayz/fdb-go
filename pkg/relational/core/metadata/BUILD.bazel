@@ -19,10 +19,10 @@ go_library(
     deps = [
         "//gen",
         "//internal/javahashmap",
+        "//internal/recordlayer/protoscope",
         "//internal/unicode15",
         "//pkg/recordlayer",
         "//pkg/recordlayer/metadatapb",
-        "//pkg/recordlayer/protoscope",
         "//pkg/relational/api",
         "@com_github_google_uuid//:uuid",
         "@org_golang_google_protobuf//proto",

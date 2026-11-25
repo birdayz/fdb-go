@@ -7,12 +7,12 @@ go_test(
     srcs = ["planskip_bench_test.go"],
     deps = [
         "//gen/demopb",
+        "//internal/recordlayer/indexfetch",
         "//internal/recordlayer/query/executor",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
-        "//pkg/recordlayer/indexfetch",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/query/plan/plans",

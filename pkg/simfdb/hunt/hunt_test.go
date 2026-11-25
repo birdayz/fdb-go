@@ -11,12 +11,12 @@ import (
 	"time"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/dst"
 	"fdb.dev/internal/dstwire"
-	"fdb.dev/pkg/dst"
+	"fdb.dev/internal/recordlayer/chaos"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/chaos"
 	"fdb.dev/pkg/simfdb"
 
 	"google.golang.org/protobuf/proto"

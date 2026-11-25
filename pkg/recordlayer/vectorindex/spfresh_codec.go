@@ -4,8 +4,8 @@ import (
 	"encoding/binary"
 	"fmt"
 
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // SPFresh value codecs (RFC-094 §3). Vector-bearing values are RAW fixed-width

@@ -16,9 +16,9 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/recordlayer/keystoretest"
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/keystoretest"
 	"fdb.dev/pkg/relational/core/parser"
 	"fdb.dev/pkg/relational/core/query/semantic"
 )

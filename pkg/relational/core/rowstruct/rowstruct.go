@@ -23,7 +23,7 @@
 package rowstruct
 
 import (
-	"fdb.dev/pkg/recordlayer/protoname"
+	"fdb.dev/internal/recordlayer/protoname"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"

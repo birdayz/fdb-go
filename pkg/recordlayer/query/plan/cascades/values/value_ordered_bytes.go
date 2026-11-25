@@ -10,8 +10,8 @@ package values
 import (
 	"fmt"
 
+	"fdb.dev/internal/recordlayer/tupleordering"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/recordlayer/tupleordering"
 )
 
 // OrderedBytesDirection enumerates the four ordering modes Java's

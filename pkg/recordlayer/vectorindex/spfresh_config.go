@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"fdb.dev/pkg/rabitq"
+	"fdb.dev/internal/recordlayer/rabitq"
 	"fdb.dev/pkg/recordlayer"
 )
 

@@ -32,7 +32,7 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
-	"fdb.dev/pkg/dst"
+	"fdb.dev/internal/dst"
 
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/internal/fdbclient"

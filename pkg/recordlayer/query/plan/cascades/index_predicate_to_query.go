@@ -10,7 +10,7 @@ package cascades
 import (
 	"fmt"
 
-	"fdb.dev/pkg/recordlayer/internal/protovalue"
+	"fdb.dev/internal/recordlayer/protovalue"
 	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"

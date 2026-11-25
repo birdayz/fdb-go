@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // Golden values produced by the Java 4.14.2.0 GuardiANN classes

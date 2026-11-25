@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // Race instrumentation changes the CPU budget's meaning; the untagged peel

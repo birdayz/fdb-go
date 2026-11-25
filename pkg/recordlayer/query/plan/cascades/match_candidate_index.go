@@ -11,10 +11,10 @@ package cascades
 import (
 	"sync"
 
+	"fdb.dev/internal/recordlayer/indexpredicate"
+	"fdb.dev/internal/recordlayer/protoname"
 	"fdb.dev/internal/unicode15"
-	"fdb.dev/pkg/recordlayer/indexpredicate"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"

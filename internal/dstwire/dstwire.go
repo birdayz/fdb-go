@@ -1,9 +1,9 @@
-// Package dstwire adapts pkg/dst simulation environments into stdlib-only
-// recordlayer seams so pkg/recordlayer never exposes pkg/dst in its public API.
+// Package dstwire adapts internal/dst simulation environments into stdlib-only
+// recordlayer seams so pkg/recordlayer never exposes internal/dst in its public API.
 package dstwire
 
 import (
-	"fdb.dev/pkg/dst"
+	"fdb.dev/internal/dst"
 	"fdb.dev/pkg/recordlayer"
 )
 

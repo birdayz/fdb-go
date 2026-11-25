@@ -7,9 +7,9 @@ import (
 	"reflect"
 	"testing"
 
-	"fdb.dev/pkg/rabitq"
+	"fdb.dev/internal/recordlayer/rabitq"
+	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // The fit kMeansFit replaced with its pass kernels, kept verbatim (with the

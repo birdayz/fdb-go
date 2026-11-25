@@ -19,7 +19,7 @@ import (
 
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"fdb.dev/pkg/recordlayer/protoname"
+	"fdb.dev/internal/recordlayer/protoname"
 )
 
 // findMsg returns the emitted message with the given name.
@@ -263,7 +263,7 @@ func TestProtoType_DedupsAcrossNullabilityAndRepeatedCalls(t *testing.T) {
 }
 
 // Names reaching the descriptor go through the SAME escaping as the stored
-// schema (pkg/recordlayer/protoname, Java's ProtoUtils). The witnesses are the
+// schema (internal/recordlayer/protoname, Java's ProtoUtils). The witnesses are the
 // live-JVM measured ones the stored-schema tests already use, so a divergence
 // between the two emitters shows up as this test failing rather than as two
 // spellings of one name.
