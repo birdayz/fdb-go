@@ -6,11 +6,11 @@ import (
 	"testing"
 
 	"fdb.dev/internal/recordlayer/query/executor"
+	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/resultset"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/resultset"
 )
 
 func executeInlineValuesPlan(t testing.TB, plan plans.RecordQueryPlan) []executor.QueryResult {

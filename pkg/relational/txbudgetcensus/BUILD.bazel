@@ -26,6 +26,6 @@ go_test(
     ],
     deps = [
         ":txbudgetcensus",
-        "//pkg/relational/core/keyspace",
+        "//internal/relational/keyspace",
     ],
 )

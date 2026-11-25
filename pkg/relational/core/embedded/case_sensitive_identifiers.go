@@ -7,8 +7,8 @@ package embedded
 import (
 	"sort"
 
+	"fdb.dev/internal/relational/functions"
 	"fdb.dev/internal/unicode15"
-	"fdb.dev/pkg/relational/core/functions"
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query/expr"

@@ -13,11 +13,11 @@ go_test(
     ],
     tags = ["resources:memory:700"],
     deps = [
+        "//internal/relational/relapi",
         "//layers/otel/otelsql",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
-        "//pkg/relational/api",
         "//pkg/relational/sqltest/testkit",
         "@io_opentelemetry_go_proto_otlp//common/v1:common",
         "@io_opentelemetry_go_proto_otlp//trace/v1:trace",

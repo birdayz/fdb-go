@@ -22,7 +22,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"fdb.dev/cmd/fdb/internal/config"
-	relapi "fdb.dev/pkg/relational/api"
+	relapi "fdb.dev/internal/relational/relapi"
 )
 
 func writeSQLWorkflowConfig(t *testing.T, clusterFile, database string) {

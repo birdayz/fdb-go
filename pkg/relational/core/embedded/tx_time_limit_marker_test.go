@@ -22,8 +22,8 @@ import (
 	"testing"
 
 	"fdb.dev/internal/fdbwire"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/relational/api"
 )
 
 func TestTranslateFDBError_SeparatesALostWindowFromAConflict(t *testing.T) {

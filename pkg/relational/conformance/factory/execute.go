@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/relational/conformance/explaindiff"
 	"fdb.dev/pkg/relational/conformance/factorycorpus"
 	"fdb.dev/pkg/relational/conformance/yamsql"

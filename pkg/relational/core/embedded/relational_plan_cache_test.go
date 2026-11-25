@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // fakeClock is a settable clock for the cache's TTLs.

@@ -6,10 +6,10 @@ import (
 	"errors"
 	"testing"
 
+	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/simgate"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/internal/simgate"
 )
 
 // panicStruct is an api.Struct whose every method panics, the shape of a

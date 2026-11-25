@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"fdb.dev/internal/fdbwire"
+	"fdb.dev/internal/relational/relapi"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/relational/api"
 )
 
 // translateExecError's FDB tail is the last thing standing between a raw FDB

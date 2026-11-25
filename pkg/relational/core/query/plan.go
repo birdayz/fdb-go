@@ -34,7 +34,7 @@ import (
 // current schema, and options.
 type Generator interface {
 	// Plan parses, semantically analyzes, and plans a SQL string.
-	// Errors are typed via pkg/relational/api — callers should not
+	// Errors are typed via internal/relational/relapi — callers should not
 	// need to wrap them.
 	Plan(ctx context.Context, sql string) (Plan, error)
 }

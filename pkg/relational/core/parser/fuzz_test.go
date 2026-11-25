@@ -6,7 +6,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // FuzzParse ensures that the public Parse function never panics on any

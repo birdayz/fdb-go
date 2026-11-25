@@ -16,9 +16,9 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"fdb.dev/internal/relational/catalog"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/relational/core/catalog"
 )
 
 // clearProto2Defaults recursively clears proto2 optional fields that are

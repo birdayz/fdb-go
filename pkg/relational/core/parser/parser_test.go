@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"github.com/antlr4-go/antlr/v4"
 )

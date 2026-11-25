@@ -468,7 +468,6 @@ var restrictedScopeRoots = []struct {
 	{"layers/otel/otelsql/internal/", []string{"//layers/otel/otelsql:__subpackages__"}},
 	{"pkg/internal/", []string{"//pkg:__subpackages__"}},
 	{"pkg/recordlayer/query/plan/cascades/internal/", []string{"//pkg/recordlayer/query/plan/cascades:__subpackages__"}},
-	{"pkg/relational/internal/", []string{"//pkg/relational:__subpackages__"}},
 	{"tools/clientbench/internal/", []string{"//tools/clientbench:__subpackages__"}},
 	{"tools/unicode15gen/internal/", []string{"//tools/unicode15gen:__subpackages__"}},
 	{"pkg/testutil/", []string{"//pkg/recordlayer:__subpackages__", "//pkg/relational:__subpackages__"}},

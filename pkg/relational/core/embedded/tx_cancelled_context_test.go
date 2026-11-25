@@ -24,12 +24,12 @@ import (
 
 	"fdb.dev/internal/dst"
 	"fdb.dev/internal/dstwire"
+	"fdb.dev/internal/relational/catalog"
+	"fdb.dev/internal/relational/ddl"
+	"fdb.dev/internal/relational/keyspace"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/catalog"
-	"fdb.dev/pkg/relational/core/ddl"
-	"fdb.dev/pkg/relational/core/keyspace"
 	"fdb.dev/pkg/simfdb"
 )
 

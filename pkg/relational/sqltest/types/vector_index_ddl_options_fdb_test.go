@@ -8,7 +8,7 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // Vector index DDL options as Java 4.14's DdlVisitor.parseVectorOptions.

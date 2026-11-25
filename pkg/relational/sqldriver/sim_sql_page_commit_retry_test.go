@@ -70,16 +70,16 @@ import (
 
 	"fdb.dev/internal/dst"
 	"fdb.dev/internal/dstwire"
+	"fdb.dev/internal/relational/connknob"
+	relkeyspace "fdb.dev/internal/relational/keyspace"
+	"fdb.dev/internal/relational/metadata"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
-	relkeyspace "fdb.dev/pkg/relational/core/keyspace"
-	"fdb.dev/pkg/relational/core/metadata"
-	"fdb.dev/pkg/relational/internal/connknob"
 	"fdb.dev/pkg/simfdb"
 )
 

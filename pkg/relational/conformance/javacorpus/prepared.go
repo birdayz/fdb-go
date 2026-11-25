@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"fdb.dev/internal/recordlayer/vectorcodec"
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/relational/conformance/javayamsql"
 )
 

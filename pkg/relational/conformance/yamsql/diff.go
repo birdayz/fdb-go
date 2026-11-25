@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // diffRows compares an expected row set against an actual row set.

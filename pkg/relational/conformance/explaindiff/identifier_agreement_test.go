@@ -12,7 +12,7 @@ import (
 
 	"github.com/antlr4-go/antlr/v4"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/relational/conformance/explaindiff"
 	"fdb.dev/pkg/relational/conformance/yamsql"
 	"fdb.dev/pkg/relational/core/embedded"

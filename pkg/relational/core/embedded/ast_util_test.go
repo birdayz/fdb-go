@@ -3,7 +3,7 @@ package embedded
 import (
 	"testing"
 
-	"fdb.dev/pkg/relational/core/functions"
+	"fdb.dev/internal/relational/functions"
 )
 
 // TestNormalizeIdentifier pins the SQL identifier normalization

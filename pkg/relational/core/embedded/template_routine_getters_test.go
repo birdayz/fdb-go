@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // The template's views, routines and stored queries, as Java's

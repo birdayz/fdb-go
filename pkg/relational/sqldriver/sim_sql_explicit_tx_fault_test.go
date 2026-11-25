@@ -29,7 +29,7 @@ import (
 	"errors"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/simfdb"
 )
 

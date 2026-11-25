@@ -16,9 +16,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/rowstruct"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/relational/core/rowstruct"
 )
 
 // openDirectAccessDB creates dbPath with schema S over Java's UniqueIndexTests

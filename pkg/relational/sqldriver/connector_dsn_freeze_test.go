@@ -19,7 +19,7 @@ package sqldriver
 import (
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 const freezeDSN = "fdbsql:///tenant-a" +

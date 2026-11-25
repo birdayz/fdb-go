@@ -10,12 +10,12 @@ import (
 	"testing"
 
 	"fdb.dev/internal/fdbwire"
+	"fdb.dev/internal/relational/functions"
+	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/session"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/functions"
-	"fdb.dev/pkg/relational/core/session"
 )
 
 func TestParseSchemaIdentifier_AbsolutePath(t *testing.T) {

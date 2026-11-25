@@ -17,14 +17,14 @@ import (
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"fdb.dev/internal/relational/functions"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/functions"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 

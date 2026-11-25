@@ -46,7 +46,7 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // TestFDB_NullPK_ExplicitNull_SingleColumn: INSERT of an explicit NULL

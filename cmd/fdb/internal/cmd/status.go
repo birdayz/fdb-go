@@ -10,8 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"fdb.dev/internal/relational/catalog"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/core/catalog"
 )
 
 // newStatusCmd is the "is everything wired?" one-shot (RFC-174 §3.4):

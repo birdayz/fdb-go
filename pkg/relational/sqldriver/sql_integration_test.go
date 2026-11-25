@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 	// Blank import registers the "fdbsql" driver.
 	_ "fdb.dev/pkg/relational/sqldriver"
 )

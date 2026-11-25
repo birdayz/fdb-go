@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/logical"
 )

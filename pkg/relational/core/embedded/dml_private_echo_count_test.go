@@ -3,7 +3,7 @@ package embedded
 import (
 	"testing"
 
-	"fdb.dev/pkg/relational/core/resultset"
+	"fdb.dev/internal/relational/resultset"
 )
 
 // UPDATE/INSERT/DELETE expose only RowsAffected. Their physical rows are

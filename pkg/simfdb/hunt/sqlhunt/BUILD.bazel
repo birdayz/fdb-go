@@ -15,9 +15,9 @@ go_library(
     deps = [
         "//internal/dst",
         "//internal/dstwire",
+        "//internal/relational/relapi",
         "//pkg/fdbgo/fdb",
         "//pkg/recordlayer",
-        "//pkg/relational/api",
         "//pkg/relational/sqldriver",
         "//pkg/simfdb",
         "//pkg/simfdb/hunt",
@@ -42,10 +42,10 @@ go_test(
     deps = [
         "//internal/dst",
         "//internal/dstwire",
+        "//internal/relational/keyspace",
+        "//internal/relational/relapi",
         "//pkg/fdbgo/fdb",
         "//pkg/recordlayer",
-        "//pkg/relational/api",
-        "//pkg/relational/core/keyspace",
         "//pkg/relational/sqldriver",
         "//pkg/simfdb",
         "//pkg/simfdb/hunt",

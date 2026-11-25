@@ -9,7 +9,7 @@ package embedded
 import (
 	"github.com/antlr4-go/antlr/v4"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query/expr"
 )

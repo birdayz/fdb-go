@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 func siCanon(a, c sql.NullInt64) string {

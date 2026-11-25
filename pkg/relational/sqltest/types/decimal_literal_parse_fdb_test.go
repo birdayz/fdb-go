@@ -10,7 +10,7 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // A decimal literal is parsed as Java's ParseHelpers.parseDecimal parses it,

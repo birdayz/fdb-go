@@ -19,9 +19,9 @@ import (
 	"errors"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/session"
 	"fdb.dev/pkg/relational/core/parser"
-	"fdb.dev/pkg/relational/core/session"
 )
 
 // scopeTestConn builds the minimum connection state both guards read: the

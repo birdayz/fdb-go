@@ -10,9 +10,9 @@ import (
 	"testing"
 
 	"fdb.dev/internal/fdbclient"
+	"fdb.dev/internal/relational/relapi"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/sqldriver"
 	"fdb.dev/pkg/relational/sqltest/testkit"

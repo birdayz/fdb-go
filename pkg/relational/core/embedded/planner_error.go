@@ -12,10 +12,10 @@ package embedded
 import (
 	"errors"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/relational/api"
 )
 
 // plannerUnableToPlanMessage is the wording Java's

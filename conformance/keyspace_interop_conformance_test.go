@@ -12,9 +12,9 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"fdb.dev/internal/relational/keyspace"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/core/keyspace"
 )
 
 // The relational key space is Java's RelationalKeyspaceProvider byte for byte:

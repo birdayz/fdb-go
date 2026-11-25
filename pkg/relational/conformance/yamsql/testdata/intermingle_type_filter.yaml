@@ -1,7 +1,7 @@
 # intermingle_type_filter.yaml
 #
 # INTERMINGLE_TABLES=true puts every table's primary key in the SAME FDB
-# key range (buildPrimaryKeyExpression in pkg/relational/core/metadata/
+# key range (buildPrimaryKeyExpression in internal/relational/metadata/
 # builder.go skips the RecordTypeKey() prefix it otherwise prepends). A
 # primary-scan match candidate over such a store genuinely CAN produce rows
 # of any available type, so PrimaryScanMatchCandidate.ToScanPlan must wrap

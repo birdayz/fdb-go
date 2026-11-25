@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/session"
+	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/session"
 )
 
 type nopPlanLogger struct{}

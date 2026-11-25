@@ -18,7 +18,7 @@ import (
 	"sync"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // errorTestTemplates is every schema-template name SetupErrorDB has

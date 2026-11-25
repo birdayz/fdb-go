@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/session"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/query/expr"
 	"fdb.dev/pkg/relational/core/query/semantic"
-	"fdb.dev/pkg/relational/core/session"
 )
 
 func TestSystemFilterTypedSchema(t *testing.T) {

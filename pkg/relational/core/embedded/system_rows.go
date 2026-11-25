@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"sort"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/internal/unicode15"
-	"fdb.dev/pkg/relational/api"
 )
 
 // driver.Rows shims for pre-materialised result sets.

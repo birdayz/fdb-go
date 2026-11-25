@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
-	"fdb.dev/pkg/relational/api"
 )
 
 // A filter over a table with two indexes reaches rules over references with

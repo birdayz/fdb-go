@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // TestLimitedJoinContinuation checks semantic inner LIMIT/OFFSET windows under

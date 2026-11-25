@@ -22,15 +22,15 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/relational/catalog"
+	"fdb.dev/internal/relational/ddl"
+	"fdb.dev/internal/relational/fleet"
+	"fdb.dev/internal/relational/metadata"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/catalog"
-	"fdb.dev/pkg/relational/core/ddl"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/relational/core/fleet"
-	"fdb.dev/pkg/relational/core/metadata"
 )
 
 // carryTemplate is the template Go's DDL builds from body, at template version

@@ -19,9 +19,9 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	"fdb.dev/pkg/relational/api"
 )
 
 const rfc153mxSchema = `

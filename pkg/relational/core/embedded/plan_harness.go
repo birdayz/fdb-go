@@ -6,17 +6,17 @@ import (
 	"fmt"
 	"sync"
 
+	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/resultset"
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/parser"
 	"fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/logical"
-	"fdb.dev/pkg/relational/core/resultset"
 	"github.com/antlr4-go/antlr/v4"
 )
 

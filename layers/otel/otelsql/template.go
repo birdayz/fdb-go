@@ -10,9 +10,9 @@ import (
 	"fmt"
 	"strings"
 
+	"fdb.dev/internal/relational/keyspace"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/layers/otel/otelsql/internal/otelddl"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/keyspace"
 )
 
 // TemplateName names the schema template; a schema of every tenant database

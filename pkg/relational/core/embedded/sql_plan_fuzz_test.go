@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 
+	"fdb.dev/internal/relational/session"
 	"fdb.dev/pkg/relational/core/parser"
-	"fdb.dev/pkg/relational/core/session"
 )
 
 // FuzzSQLPlan closes the front-end half of the P0.3-F gap: a SQL *string* driven

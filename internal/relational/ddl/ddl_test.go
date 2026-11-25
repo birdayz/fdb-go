@@ -1,0 +1,447 @@
+package ddl_test
+
+import (
+	"errors"
+	"testing"
+
+	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/relational/catalog"
+	"fdb.dev/internal/relational/ddl"
+	"fdb.dev/internal/relational/metadata"
+	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/pkg/recordlayer"
+	"github.com/onsi/gomega"
+)
+
+// buildTemplate creates a simple named schema template using the demo proto.
+func buildTemplate(t *testing.T, name string, version int) api.SchemaTemplate {
+	t.Helper()
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
+	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	md, err := b.Build()
+	if err != nil {
+		t.Fatalf("build metadata: %v", err)
+	}
+	tmpl, err := metadata.NewRecordLayerSchemaTemplateWithVersion(name, md, version)
+	if err != nil {
+		t.Fatalf("NewRecordLayerSchemaTemplateWithVersion: %v", err)
+	}
+	return tmpl
+}
+
+func newEnv(t *testing.T) (api.StoreCatalog, api.Transaction, *ddl.RecordLayerMetadataOperationsFactory) {
+	t.Helper()
+	cat := catalog.NewInMemoryStoreCatalog()
+	txn := catalog.NewInMemoryTransaction()
+	f := ddl.NewRecordLayerMetadataOperationsFactory(cat)
+	return cat, txn, f
+}
+
+func TestCreateDatabase(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	cat, txn, f := newEnv(t)
+
+	g.Expect(f.CreateDatabase("/TEST/db", api.Options{}).Execute(txn)).To(gomega.Succeed())
+
+	exists, err := cat.DoesDatabaseExist(txn, "/TEST/db")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(exists).To(gomega.BeTrue())
+}
+
+func TestCreateDatabase_Duplicate(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	g.Expect(f.CreateDatabase("/TEST/db", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	err := f.CreateDatabase("/TEST/db", api.Options{}).Execute(txn)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(err).To(gomega.BeAssignableToTypeOf(apiErr))
+}
+
+func TestDropDatabase(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	cat, txn, f := newEnv(t)
+
+	g.Expect(f.CreateDatabase("/TEST/db", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.DropDatabase("/TEST/db", true, api.Options{}).Execute(txn)).To(gomega.Succeed())
+
+	exists, err := cat.DoesDatabaseExist(txn, "/TEST/db")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(exists).To(gomega.BeFalse())
+}
+
+func TestDropDatabase_ThrowIfNotExist(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	g.Expect(f.DropDatabase("/FRL/nope", true, api.Options{}).Execute(txn)).NotTo(gomega.Succeed())
+	g.Expect(f.DropDatabase("/FRL/nope", false, api.Options{}).Execute(txn)).To(gomega.Succeed())
+}
+
+func TestDropDatabase_ProtectedSys(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	err := f.DropDatabase("/__SYS", false, api.Options{}).Execute(txn)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(err).To(gomega.BeAssignableToTypeOf(apiErr))
+}
+
+func TestDropDatabase_DropsSchemasFirst(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	cat, txn, f := newEnv(t)
+
+	tmpl := buildTemplate(t, "T1", 1)
+	g.Expect(f.SaveSchemaTemplate(tmpl, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateDatabase("/FRL/db1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateSchema("/FRL/db1", "s1", "T1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+
+	g.Expect(f.DropDatabase("/FRL/db1", true, api.Options{}).Execute(txn)).To(gomega.Succeed())
+
+	exists, err := cat.DoesDatabaseExist(txn, "/FRL/db1")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(exists).To(gomega.BeFalse())
+}
+
+func TestCreateSchema(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	cat, txn, f := newEnv(t)
+
+	tmpl := buildTemplate(t, "T1", 1)
+	g.Expect(f.SaveSchemaTemplate(tmpl, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateDatabase("/FRL/db1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateSchema("/FRL/db1", "s1", "T1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+
+	schema, err := cat.LoadSchema(txn, "/FRL/db1", "s1")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(schema.MetadataName()).To(gomega.Equal("s1"))
+}
+
+func TestCreateSchema_DatabaseNotExist(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	tmpl := buildTemplate(t, "T1", 1)
+	g.Expect(f.SaveSchemaTemplate(tmpl, api.Options{}).Execute(txn)).To(gomega.Succeed())
+
+	err := f.CreateSchema("/FRL/nodb", "s1", "T1", api.Options{}).Execute(txn)
+	wantDDLError(g, err, api.ErrCodeUndefinedDatabase, "Database /FRL/nodb does not exist")
+	// The database is checked before the template.
+	err = f.CreateSchema("/FRL/nodb", "s1", "ghost", api.Options{}).Execute(txn)
+	wantDDLError(g, err, api.ErrCodeUndefinedDatabase, "Database /FRL/nodb does not exist")
+}
+
+// wantDDLError asserts a DDL action's refusal is the target's: its SQLSTATE and
+// its message.
+func wantDDLError(g *gomega.WithT, err error, code api.ErrorCode, message string) {
+	var ae *api.Error
+	g.Expect(errors.As(err, &ae)).To(gomega.BeTrue(), "%v", err)
+	g.Expect(ae.Code).To(gomega.Equal(code), ae.Message)
+	g.Expect(ae.Message).To(gomega.Equal(message))
+}
+
+func TestCreateSchema_AlreadyExists(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	tmpl := buildTemplate(t, "T1", 1)
+	g.Expect(f.SaveSchemaTemplate(tmpl, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateDatabase("/FRL/db1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateSchema("/FRL/db1", "s1", "T1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+
+	err := f.CreateSchema("/FRL/db1", "s1", "T1", api.Options{}).Execute(txn)
+	wantDDLError(g, err, api.ErrCodeSchemaAlreadyExists, "Schema /FRL/db1/s1 already exists.")
+	// The template is loaded before the existing schema is refused.
+	err = f.CreateSchema("/FRL/db1", "s1", "ghost", api.Options{}).Execute(txn)
+	wantDDLError(g, err, api.ErrCodeUnknownSchemaTemplate, "SchemaTemplate 'ghost' is not in catalog")
+}
+
+// CREATE SCHEMA over a schema whose bound template version is gone is refused as
+// the target refuses it: the catalog's save loads the stored row with its
+// template first, which fails with UNKNOWN_SCHEMA_TEMPLATE, as Java's catalog
+// load does.
+func TestCreateSchema_OverAGoneVersion(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	g.Expect(f.SaveSchemaTemplate(buildTemplate(t, "T1", 1), api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.SaveSchemaTemplate(buildTemplate(t, "T2", 1), api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateDatabase("/FRL/db1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateSchema("/FRL/db1", "s1", "T1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.DropSchemaTemplate("T1", true, api.Options{}).Execute(txn)).To(gomega.Succeed())
+
+	err := f.CreateSchema("/FRL/db1", "s1", "T2", api.Options{}).Execute(txn)
+	wantDDLError(g, err, api.ErrCodeUnknownSchemaTemplate, "SchemaTemplate=T1, version=1 is not in catalog")
+}
+
+func TestDropSchema(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	cat, txn, f := newEnv(t)
+
+	tmpl := buildTemplate(t, "T1", 1)
+	g.Expect(f.SaveSchemaTemplate(tmpl, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateDatabase("/FRL/db1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateSchema("/FRL/db1", "s1", "T1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.DropSchema("/FRL/db1", "s1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+
+	_, err := cat.LoadSchema(txn, "/FRL/db1", "s1")
+	g.Expect(err).To(gomega.HaveOccurred())
+}
+
+func TestDropSchema_ProtectedSys(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	err := f.DropSchema("/__SYS", "CATALOG", api.Options{}).Execute(txn)
+	g.Expect(err).To(gomega.HaveOccurred())
+}
+
+func TestSaveAndDropSchemaTemplate(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	cat, txn, f := newEnv(t)
+
+	tmpl := buildTemplate(t, "T1", 1)
+	g.Expect(f.SaveSchemaTemplate(tmpl, api.Options{}).Execute(txn)).To(gomega.Succeed())
+
+	loaded, err := cat.SchemaTemplateCatalog().LoadSchemaTemplate(txn, "T1")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(loaded.MetadataName()).To(gomega.Equal("T1"))
+
+	g.Expect(f.DropSchemaTemplate("T1", true, api.Options{}).Execute(txn)).To(gomega.Succeed())
+
+	_, err = cat.SchemaTemplateCatalog().LoadSchemaTemplate(txn, "T1")
+	g.Expect(err).To(gomega.HaveOccurred())
+}
+
+func TestDropSchemaTemplate_NotExist(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	// throwIfDoesNotExist=true → error.
+	g.Expect(f.DropSchemaTemplate("NoSuchTemplate", true, api.Options{}).Execute(txn)).NotTo(gomega.Succeed())
+	// throwIfDoesNotExist=false → no-op, no error.
+	g.Expect(f.DropSchemaTemplate("NoSuchTemplate", false, api.Options{}).Execute(txn)).To(gomega.Succeed())
+}
+
+func TestCreateSchema_MissingTemplate(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	g.Expect(f.CreateDatabase("/FRL/db", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	// Template "ghost" was never saved — CreateSchema must fail.
+	err := f.CreateSchema("/FRL/db", "s1", "ghost", api.Options{}).Execute(txn)
+	wantDDLError(g, err, api.ErrCodeUnknownSchemaTemplate, "SchemaTemplate 'ghost' is not in catalog")
+}
+
+// --- Schema evolution validator tests ---
+
+type tableSpec struct {
+	name   string
+	cols   []metadata.ColumnSpec
+	pkCols []string
+}
+
+func evolutionTemplate(t *testing.T, name string, version int, tables []tableSpec) api.SchemaTemplate {
+	t.Helper()
+	b := metadata.NewSchemaTemplateBuilder().SetName(name).SetVersion(version).SetIntermingleTables(true)
+	for _, ts := range tables {
+		b = b.AddTable(ts.name, ts.cols, ts.pkCols)
+	}
+	tmpl, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	return tmpl
+}
+
+func ordersTable(extra ...metadata.ColumnSpec) []metadata.ColumnSpec {
+	base := []metadata.ColumnSpec{
+		metadata.NewColumnSpec("order_id", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("amount", api.NewDoubleType(true), 2),
+	}
+	return append(base, extra...)
+}
+
+func TestSchemaEvolution_AddColumn_Allowed(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	v1 := evolutionTemplate(t, "evo", 1, []tableSpec{{
+		name: "Order", cols: ordersTable(), pkCols: []string{"order_id"},
+	}})
+	v2 := evolutionTemplate(t, "evo", 2, []tableSpec{{
+		name:   "Order",
+		cols:   ordersTable(metadata.NewColumnSpec("note", api.NewStringType(true), 3)),
+		pkCols: []string{"order_id"},
+	}})
+
+	g.Expect(f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.SaveSchemaTemplate(v2, api.Options{}).Execute(txn)).To(gomega.Succeed())
+}
+
+func TestSchemaEvolution_RemoveColumn_Rejected(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	v1 := evolutionTemplate(t, "evo", 1, []tableSpec{{
+		name:   "Order",
+		cols:   ordersTable(metadata.NewColumnSpec("note", api.NewStringType(true), 3)),
+		pkCols: []string{"order_id"},
+	}})
+	v2 := evolutionTemplate(t, "evo", 2, []tableSpec{{
+		name: "Order", cols: ordersTable(), pkCols: []string{"order_id"},
+	}})
+
+	g.Expect(f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	err := f.SaveSchemaTemplate(v2, api.Options{}).Execute(txn)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(err).To(gomega.BeAssignableToTypeOf(apiErr))
+}
+
+func TestSchemaEvolution_RemoveTable_Rejected(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	v1 := evolutionTemplate(t, "evo", 1, []tableSpec{
+		{name: "Order", cols: ordersTable(), pkCols: []string{"order_id"}},
+		{name: "Customer", cols: []metadata.ColumnSpec{metadata.NewColumnSpec("id", api.NewLongType(false), 1)}, pkCols: []string{"id"}},
+	})
+	v2 := evolutionTemplate(t, "evo", 2, []tableSpec{{
+		name: "Order", cols: ordersTable(), pkCols: []string{"order_id"},
+	}})
+
+	g.Expect(f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	err := f.SaveSchemaTemplate(v2, api.Options{}).Execute(txn)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(err).To(gomega.BeAssignableToTypeOf(apiErr))
+}
+
+func TestSchemaEvolution_ChangeColumnType_Rejected(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	v1 := evolutionTemplate(t, "evo", 1, []tableSpec{{
+		name: "Order", cols: ordersTable(), pkCols: []string{"order_id"},
+	}})
+	// Change "amount" from DOUBLE to STRING — must be rejected.
+	v2 := evolutionTemplate(t, "evo", 2, []tableSpec{{
+		name: "Order",
+		cols: []metadata.ColumnSpec{
+			metadata.NewColumnSpec("order_id", api.NewLongType(false), 1),
+			metadata.NewColumnSpec("amount", api.NewStringType(true), 2),
+		},
+		pkCols: []string{"order_id"},
+	}})
+
+	g.Expect(f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	err := f.SaveSchemaTemplate(v2, api.Options{}).Execute(txn)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(err).To(gomega.BeAssignableToTypeOf(apiErr))
+}
+
+func TestSchemaEvolution_ReorderColumns_Rejected(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	v1 := evolutionTemplate(t, "evo", 1, []tableSpec{{
+		name: "Order", cols: ordersTable(), pkCols: []string{"order_id"},
+	}})
+	// Swap order_id and amount positions.
+	v2 := evolutionTemplate(t, "evo", 2, []tableSpec{{
+		name: "Order",
+		cols: []metadata.ColumnSpec{
+			metadata.NewColumnSpec("amount", api.NewDoubleType(true), 1),
+			metadata.NewColumnSpec("order_id", api.NewLongType(false), 2),
+		},
+		pkCols: []string{"order_id"},
+	}})
+
+	g.Expect(f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	err := f.SaveSchemaTemplate(v2, api.Options{}).Execute(txn)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(err).To(gomega.BeAssignableToTypeOf(apiErr))
+}
+
+func TestSchemaEvolution_AddTable_Allowed(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	v1 := evolutionTemplate(t, "evo", 1, []tableSpec{{
+		name: "Order", cols: ordersTable(), pkCols: []string{"order_id"},
+	}})
+	v2 := evolutionTemplate(t, "evo", 2, []tableSpec{
+		{name: "Order", cols: ordersTable(), pkCols: []string{"order_id"}},
+		{name: "Customer", cols: []metadata.ColumnSpec{metadata.NewColumnSpec("id", api.NewLongType(false), 1)}, pkCols: []string{"id"}},
+	})
+
+	g.Expect(f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.SaveSchemaTemplate(v2, api.Options{}).Execute(txn)).To(gomega.Succeed())
+}
+
+func TestSchemaEvolution_VersionRollback_Rejected(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	v2 := evolutionTemplate(t, "evo", 2, []tableSpec{{
+		name: "Order", cols: ordersTable(), pkCols: []string{"order_id"},
+	}})
+	v1 := evolutionTemplate(t, "evo", 1, []tableSpec{{
+		name: "Order", cols: ordersTable(), pkCols: []string{"order_id"},
+	}})
+
+	g.Expect(f.SaveSchemaTemplate(v2, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	err := f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeInvalidSchemaTemplate))
+}
+
+func TestSchemaEvolution_SameVersion_Rejected(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	v1 := evolutionTemplate(t, "evo", 1, []tableSpec{{
+		name: "Order", cols: ordersTable(), pkCols: []string{"order_id"},
+	}})
+
+	g.Expect(f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	err := f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)
+	g.Expect(err).To(gomega.HaveOccurred())
+	// An exact duplicate is Java's one refusal, first: DUPLICATE_SCHEMA_TEMPLATE,
+	// not the INVALID_SCHEMA_TEMPLATE of a version below the latest.
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeDuplicateSchemaTemplate))
+}

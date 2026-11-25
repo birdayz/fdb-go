@@ -18,9 +18,9 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/metadata"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/relational/core/metadata"
 )
 
 func TestFDB_ComputedRecordArrayAggContinuation(t *testing.T) {

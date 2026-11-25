@@ -15,7 +15,7 @@ import (
 // TestFDB_MultiwayJoinOrder_Nway: a primary-scan candidate whose key is
 // ordered by the record-type key (the default for every SQL-created table
 // that does not opt into intermingled storage — see
-// buildPrimaryKeyExpression in pkg/relational/core/metadata/builder.go)
+// buildPrimaryKeyExpression in internal/relational/metadata/builder.go)
 // physically cannot return rows of any type but the one queried, because
 // executeScan prefixes the FDB key range with the record-type ordinal. A
 // TypeFilterPlan wrapped on top of such a scan is pure overhead — worse, it

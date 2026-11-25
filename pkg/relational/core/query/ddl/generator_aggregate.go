@@ -16,10 +16,10 @@ import (
 	"fmt"
 	"strconv"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/relational/api"
 )
 
 // generateAggregate is the aggregate arm of generate() (Java 4.14.2.0,

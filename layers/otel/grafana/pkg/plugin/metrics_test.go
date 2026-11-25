@@ -10,8 +10,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/layers/otel"
-	"fdb.dev/pkg/relational/api"
 )
 
 func counter(c *prometheus.CounterVec, l prometheus.Labels) float64 {

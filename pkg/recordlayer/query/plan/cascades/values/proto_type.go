@@ -19,7 +19,7 @@ package values
 // WHY IT HAS TO EXIST. A COMPUTED record — `(1, 1.0, 'a', true)`, the result
 // of RecordConstructorValue.Type() — is an ANONYMOUS *RecordType. It has no
 // target column and therefore no stored descriptor, so the DDL-time emitter
-// (pkg/relational/core/metadata) cannot serve it: that one works from
+// (internal/relational/metadata) cannot serve it: that one works from
 // api.DataType and rejects an empty struct name, which is exactly what a
 // computed record has. Java has the same split and resolves it the same way:
 // the stored schema comes from RecordMetaData, and anything computed gets a
@@ -29,7 +29,7 @@ package values
 //
 // WIRE STATUS: NONE. Every descriptor built here is synthesised per query and
 // thrown away; it never reaches FDB. The stored-schema emitter in
-// pkg/relational/core/metadata is the one whose bytes are wire, and it is
+// internal/relational/metadata is the one whose bytes are wire, and it is
 // deliberately NOT reused here — its inputs and its error rules are the DDL's.
 // What the two share is the escaping (pkg/recordlayer/protoname) and the
 // structural choices, which are copied from the same Java methods.
@@ -77,7 +77,7 @@ import (
 // wrappedArrayFieldName is Java's NullableArrayTypeUtils.getRepeatedFieldName()
 // — the single repeated field inside a NullableArrayWrapper message. Kept
 // equal to the DDL emitter's constant of the same name
-// (pkg/relational/core/metadata/proto_types.go): the wrapper IDENTITY is
+// (internal/relational/metadata/proto_types.go): the wrapper IDENTITY is
 // structural (readers check the shape, never the message name), and the shape
 // is this field name.
 const wrappedArrayFieldName = "values"

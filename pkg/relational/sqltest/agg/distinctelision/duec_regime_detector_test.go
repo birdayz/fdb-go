@@ -29,8 +29,8 @@ import (
 	"time"
 
 	"fdb.dev/internal/fdbwire"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/relational/api"
 )
 
 // duecSamplesMs builds a series from per-rep millisecond durations.

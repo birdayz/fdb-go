@@ -1368,7 +1368,7 @@ func TestIntegration_FilterSortLimit_Pipeline(t *testing.T) {
 }
 
 // ---------- Ordinal output rows over real FDB ----------
-// pkg/relational/core/resultset reads these rows by ordinal and tests its accessors.
+// internal/relational/resultset reads these rows by ordinal and tests its accessors.
 
 // collectSlots drains cursor and returns each row's positional slots.
 func collectSlots(t *testing.T, ctx context.Context, cursor recordlayer.RecordCursor[QueryResult]) [][]any {

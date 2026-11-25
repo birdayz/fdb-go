@@ -7,7 +7,7 @@
 # Two independent conditions have to hold at once and neither is exotic:
 #
 #   1. INTERMINGLE_TABLES=true, so buildPrimaryKeyExpression
-#      (pkg/relational/core/metadata/builder.go) skips the RecordTypeKey()
+#      (internal/relational/metadata/builder.go) skips the RecordTypeKey()
 #      prefix. FDBRecordStore.ScanRecordsByType then takes its SLOW path --
 #      full scan plus a per-record type predicate -- instead of a prefix range.
 #   2. A table name that ESCAPES: `MY$TABLE` is stored as the protobuf

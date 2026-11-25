@@ -55,9 +55,9 @@ import (
 	"strings"
 	"sync"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/yamsql"
 	"fdb.dev/pkg/relational/core/embedded"
 )

@@ -10,10 +10,10 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"fdb.dev/internal/relational/functions"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/functions"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )
 

@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/resultset"
 	"fdb.dev/pkg/relational/conformance/javayamsql"
-	"fdb.dev/pkg/relational/core/resultset"
 )
 
 // The descending branches are exercised here directly, against the semantics

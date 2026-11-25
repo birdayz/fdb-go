@@ -606,7 +606,7 @@ jobs:
           echo "RACE_JOB_START=$(date -u +%FT%TZ)" >> "$GITHUB_ENV"
           bazelisk shutdown
           RACE_BASE="$HOME/.cache/bazel/_race_output_base"
-          REL_SCOPE="//pkg/relational/... -//pkg/relational/conformance/... -//pkg/relational/sqltest/..."
+          REL_SCOPE="//pkg/relational/... //internal/relational/... -//pkg/relational/conformance/... -//pkg/relational/sqltest/..."
           CLIENT_SCOPE="//internal/fdbgo/client/... //internal/fdbgo/transport/... //pkg/fdbgo/fdb/... //tests/fdbgo/rywlocal/..."
           CASCADES_SCOPE="//pkg/recordlayer/query/plan/cascades/..."
           # No-op guard PER SCOPE: count each gate independently. Counting the

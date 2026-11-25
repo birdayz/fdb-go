@@ -307,7 +307,7 @@ bench-ci:
     # benches produce output. Track exit codes manually.
     set -uo pipefail
     rm -f bench-raw.txt bench-results.txt
-    bazelisk build //pkg/recordlayer:recordlayer_test //internal/fdbwire/types:types_test //pkg/recordlayer/query/plan/cascades:cascades_test //pkg/recordlayer/query/plan/cascades/expressions:expressions_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/keyspace:keyspace_test //pkg/relational/api:api_test //pkg/simfdb/hunt/sqlhunt:sqlhunt_test
+    bazelisk build //pkg/recordlayer:recordlayer_test //internal/fdbwire/types:types_test //pkg/recordlayer/query/plan/cascades:cascades_test //pkg/recordlayer/query/plan/cascades/expressions:expressions_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/keyspace:keyspace_test //internal/relational/relapi:relapi_test //pkg/simfdb/hunt/sqlhunt:sqlhunt_test
     BAZEL_BIN=$(bazelisk info bazel-bin)
     fail_count=0
     {
@@ -378,15 +378,15 @@ bench-ci:
             echo "!!! keyspace_test bench binary exited with $rc (124 = timeout)"
             fail_count=$((fail_count + 1))
         fi
-        echo "=== Running benchmarks: //pkg/relational/api:api_test ==="
-        timeout 60 "$BAZEL_BIN/pkg/relational/api/api_test_/api_test" \
+        echo "=== Running benchmarks: //internal/relational/relapi:relapi_test ==="
+        timeout 60 "$BAZEL_BIN/internal/relational/relapi/relapi_test_/relapi_test" \
             -test.run='^$' \
             -test.bench=. \
             -test.benchmem \
             -test.benchtime=1s 2>&1
         rc=$?
         if [ "$rc" -ne 0 ]; then
-            echo "!!! api_test bench binary exited with $rc (124 = timeout)"
+            echo "!!! relapi_test bench binary exited with $rc (124 = timeout)"
             fail_count=$((fail_count + 1))
         fi
         # sqlhunt is the END-TO-END SQL bench: plan + execute a query against

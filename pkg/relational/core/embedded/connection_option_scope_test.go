@@ -6,8 +6,8 @@ import (
 	"math"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/session"
+	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/session"
 )
 
 // SetOption merges one checked option into the connection's set, keeping the

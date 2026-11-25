@@ -23,7 +23,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // mmTwin is a pair of connections to two schemas over the same table shapes:

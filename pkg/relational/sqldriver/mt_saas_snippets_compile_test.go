@@ -10,11 +10,11 @@ import (
 	"time"
 
 	"fdb.dev/internal/fdbgo/client"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdbmetrics"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/rlmetrics"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 

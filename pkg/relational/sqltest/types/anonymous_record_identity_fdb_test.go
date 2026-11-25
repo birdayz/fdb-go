@@ -11,8 +11,8 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/internal/queryfixtures"
+	"fdb.dev/internal/relational/queryfixtures"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // TestFDB_AnonymousRecordsThroughADerivedRowKeepDistinctIdentities pins that a

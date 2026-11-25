@@ -23,7 +23,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 	"gopkg.in/yaml.v3"
 )
 

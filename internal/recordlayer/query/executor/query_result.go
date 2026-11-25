@@ -23,7 +23,7 @@ import (
 
 // uuidProtoMessageName is the fully-qualified tuple_fields.UUID message that
 // fdb-relational stores UUID column values in. (Canonical copy lives in
-// pkg/relational/core/functions/proto_value.go; duplicated here because the
+// internal/relational/functions/proto_value.go; duplicated here because the
 // record-layer executor cannot depend on the relational layer.)
 const uuidProtoMessageName = "com.apple.foundationdb.record.UUID"
 

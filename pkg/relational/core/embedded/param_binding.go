@@ -19,9 +19,9 @@ import (
 	"unicode/utf8"
 
 	"fdb.dev/internal/recordlayer/vectorcodec"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/relational/api"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query/expr"
 	"github.com/antlr4-go/antlr/v4"

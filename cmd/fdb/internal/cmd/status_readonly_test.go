@@ -18,12 +18,12 @@ import (
 
 	"fdb.dev/gen"
 	"fdb.dev/internal/dst"
+	"fdb.dev/internal/relational/catalog"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/relational/core/catalog"
 )
 
 func TestRunCatalogRead_RejectsUnsupportedReader(t *testing.T) {

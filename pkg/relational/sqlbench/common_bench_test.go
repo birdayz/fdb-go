@@ -20,10 +20,10 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"fdb.dev/internal/relational/keyspace"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/core/keyspace"
 	"fdb.dev/pkg/relational/sqldriver"
 	"fdb.dev/pkg/testutil/benchcluster"
 )

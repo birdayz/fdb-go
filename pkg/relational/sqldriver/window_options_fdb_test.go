@@ -7,7 +7,7 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // A window's OPTIONS EF_SEARCH is parsed, checked and applied as the target's

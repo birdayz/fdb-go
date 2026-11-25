@@ -9,10 +9,10 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	"fdb.dev/pkg/relational/api"
 )
 
 func TestFullTextLiteralMetadataPinsCachedPlans(t *testing.T) {

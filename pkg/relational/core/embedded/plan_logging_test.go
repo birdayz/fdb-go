@@ -9,15 +9,15 @@ import (
 
 	cascadesvalues "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/internal/queryfixtures"
+	"fdb.dev/internal/relational/queryfixtures"
+	"fdb.dev/internal/relational/relapi"
 
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 
+	"fdb.dev/internal/relational/session"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
-	"fdb.dev/pkg/relational/core/session"
 )
 
 // captureLogger records every PlanGenerationInfo it receives.

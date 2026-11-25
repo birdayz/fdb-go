@@ -8,7 +8,7 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // avgInsertDB sets up src (seeded 10/20/30), a BIGINT-valued dbig, and a

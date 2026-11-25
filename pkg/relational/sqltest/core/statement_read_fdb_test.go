@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/internal/relational/connknob"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/internal/connknob"
 	"fdb.dev/pkg/relational/sqldriver"
 	"fdb.dev/pkg/relational/sqltest/testkit"
 )

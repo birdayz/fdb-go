@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // CollectRows runs a query and returns rows as [][]any.

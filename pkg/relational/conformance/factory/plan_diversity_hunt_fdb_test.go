@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/relational/conformance/rowdiff"
 	"fdb.dev/pkg/relational/core/embedded"
 )

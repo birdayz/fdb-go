@@ -11,8 +11,8 @@ import (
 	"errors"
 	"fmt"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
 )
 
 // defaultRelationalSerializer is Java's StoreConfig.DEFAULT_RELATIONAL_SERIALIZER

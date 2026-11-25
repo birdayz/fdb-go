@@ -20,7 +20,7 @@ go_test(
     srcs = ["sqlapi_test.go"],
     deps = [
         ":sqlapi",
-        "//pkg/relational/api",
+        "//internal/relational/relapi",
     ],
 )
 

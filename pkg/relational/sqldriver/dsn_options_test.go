@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // An unknown DSN parameter is refused, naming it and every accepted one, so a

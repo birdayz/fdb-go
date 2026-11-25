@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/internal/simgate"
+	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/simgate"
 )
 
 // gatedConnector opens connections over a gatedSim, so database/sql's own Tx,

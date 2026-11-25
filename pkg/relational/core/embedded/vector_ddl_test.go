@@ -3,9 +3,9 @@ package embedded
 import (
 	"testing"
 
+	"fdb.dev/internal/relational/metadata"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/metadata"
 )
 
 // TestVectorDDL_PartitionedIndexShape drives the full DDL parse path

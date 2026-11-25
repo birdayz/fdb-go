@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/rowstruct"
+	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/rowstruct"
 )
 
 // theDriverStructTypeIsCoveredByTheStructArm is the load-bearing link between

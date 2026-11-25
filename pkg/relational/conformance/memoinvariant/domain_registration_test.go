@@ -1,6 +1,6 @@
 package memoinvariant
 
-import "fdb.dev/pkg/relational/core/keyspace"
+import "fdb.dev/internal/relational/keyspace"
 
 // A database path is /DOMAIN/DATABASE under a registered domain. Java's tests
 // register theirs before connecting: FRL (the yaml runner, the JDBC test) and

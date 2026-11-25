@@ -8,9 +8,9 @@ import (
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/layers/otel"
 	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/relational/api"
 )
 
 func health(t *testing.T, h *harness) (*backend.CheckHealthResult, map[string]string) {

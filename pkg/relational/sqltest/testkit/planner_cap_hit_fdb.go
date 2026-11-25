@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
-	"fdb.dev/pkg/relational/api"
 )
 
 // AssertPlannerCapHit pins the properties that distinguish an exhausted

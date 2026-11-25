@@ -5,12 +5,12 @@ import (
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"fdb.dev/internal/relational/functions"
+	"fdb.dev/internal/relational/metadata"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/functions"
-	"fdb.dev/pkg/relational/core/metadata"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )
 

@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/relational/api"
 )
 
 // The accessor comparisons the generator makes are three different relations in

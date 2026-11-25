@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 )
 

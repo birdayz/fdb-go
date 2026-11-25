@@ -25,8 +25,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
 )
 
 // TestStoreCache_PagesDoNotCostStoreOpens measures Decision 10's whole reason
