@@ -31,14 +31,14 @@ func (c *CompositeKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Mess
 	result := make([]any, 0, len(c.expressions))
 	for _, expr := range c.expressions {
 		// Try scalar first (zero alloc per value)
-		if se, ok := expr.(ScalarEvaluator); ok {
+		if se, ok := expr.(scalarEvaluator); ok {
 			val, err := se.EvaluateScalar(record, msg)
 			if err == nil {
 				result = append(result, val)
 				continue
 			}
 		}
-		if fe, ok := expr.(FlatEvaluator); ok {
+		if fe, ok := expr.(flatEvaluator); ok {
 			childFlat, err := fe.EvaluateFlat(record, msg)
 			if err == nil {
 				result = append(result, childFlat...)
@@ -61,7 +61,7 @@ func (c *CompositeKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Mess
 // Returns false if any child can't be directly packed.
 func (c *CompositeKeyExpression) PackDirect(pk *tuple.Packer, record *FDBStoredRecord[proto.Message], msg proto.Message) bool {
 	for _, expr := range c.expressions {
-		if dp, ok := expr.(DirectPacker); ok {
+		if dp, ok := expr.(directPacker); ok {
 			if !dp.PackDirect(pk, record, msg) {
 				return false
 			}
@@ -146,7 +146,7 @@ func (c *CompositeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message]
 	for i, expr := range c.expressions {
 		start := len(flat)
 		if !createsDuplicatesRec(expr, true) {
-			if se, ok := expr.(ScalarEvaluator); ok {
+			if se, ok := expr.(scalarEvaluator); ok {
 				if val, err := se.EvaluateScalar(record, msg); err == nil {
 					flat = append(flat, val)
 					parts = appendFlatPart(parts, start, len(flat))
@@ -154,7 +154,7 @@ func (c *CompositeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message]
 				}
 				// Fall through on error (e.g. repeated field)
 			}
-			if fe, ok := expr.(FlatEvaluator); ok {
+			if fe, ok := expr.(flatEvaluator); ok {
 				if childFlat, err := fe.EvaluateFlat(record, msg); err == nil {
 					flat = append(flat, childFlat...)
 					parts = appendFlatPart(parts, start, len(flat))
@@ -372,7 +372,7 @@ func (n *NestingKeyExpression) evaluateRepeated(record *FDBStoredRecord[proto.Me
 	result := make([][]any, 0, count)
 	// A child that cannot fan out is one tuple per element: its flat form
 	// skips Evaluate's one-tuple wrapper.
-	fe, flat := n.child.(FlatEvaluator)
+	fe, flat := n.child.(flatEvaluator)
 	flat = flat && !createsDuplicatesRec(n.child, true)
 	for i := 0; i < count; i++ {
 		subMsg := list.Get(i).Message().Interface()

@@ -19,7 +19,7 @@ import (
 	"google.golang.org/protobuf/types/known/anypb"
 )
 
-const PendingWritesQueueVersion = 1
+const pendingWritesQueueVersion = 1
 
 var (
 	CountPendingWritesQueueWrite                 = Event{"pending_writes_queue_write", "Pending writes queue write", KindCount}
@@ -88,7 +88,7 @@ func (q *PendingWritesQueue[T]) Enqueue(rc *FDBRecordContext, payload T, incarna
 	if err != nil {
 		return err
 	}
-	envelope, err := proto.Marshal(&gen.PendingWriteItem{Version: proto.Int32(PendingWritesQueueVersion), Payload: packed, EnqueueTimestamp: proto.Int64(rc.env.Now().UnixMilli())})
+	envelope, err := proto.Marshal(&gen.PendingWriteItem{Version: proto.Int32(pendingWritesQueueVersion), Payload: packed, EnqueueTimestamp: proto.Int64(rc.env.Now().UnixMilli())})
 	if err != nil {
 		return err
 	}
@@ -189,8 +189,8 @@ func (q *PendingWritesQueue[T]) decode(key tuple.Tuple, data []byte) (*PendingWr
 	if err := UnmarshalAsJava(data, envelope); err != nil {
 		return nil, storageError("Failed to parse pending writes queue entry", err)
 	}
-	if envelope.GetVersion() > PendingWritesQueueVersion {
-		e.Version, e.StoredVersion = proto.Int32(PendingWritesQueueVersion), proto.Int32(envelope.GetVersion())
+	if envelope.GetVersion() > pendingWritesQueueVersion {
+		e.Version, e.StoredVersion = proto.Int32(pendingWritesQueueVersion), proto.Int32(envelope.GetVersion())
 		return nil, storageError("Pending writes queue entry version is newer than this reader supports", nil)
 	}
 	packed := envelope.GetPayload()

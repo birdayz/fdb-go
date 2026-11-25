@@ -39,10 +39,10 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
-// StatisticsFormatVersion is written with every entry so a reader can refuse a
+// statisticsFormatVersion is written with every entry so a reader can refuse a
 // layout it does not understand rather than misparse one. Bump it when the
 // tuple below changes shape; readers reject anything they do not recognise.
-const StatisticsFormatVersion = 1
+const statisticsFormatVersion = 1
 
 // statisticsHeaderKey names the per-store header entry. It is a distinct tuple
 // element rather than a reserved record-type name so it can never collide with
@@ -117,7 +117,7 @@ func (s StatisticsSubspace) forStore(storeSubspace subspace.Subspace) subspace.S
 // reject an unknown layout before interpreting anything after it.
 func packStatistic(st RecordTypeStatistic) []byte {
 	return tuple.Tuple{
-		int64(StatisticsFormatVersion),
+		int64(statisticsFormatVersion),
 		st.Count,
 		st.CollectedAtVersion,
 		st.CollectedAtUnixNanos,
@@ -136,7 +136,7 @@ func unpackStatistic(b []byte) (RecordTypeStatistic, bool) {
 		return RecordTypeStatistic{}, false
 	}
 	version, ok := t[0].(int64)
-	if !ok || version != StatisticsFormatVersion {
+	if !ok || version != statisticsFormatVersion {
 		return RecordTypeStatistic{}, false
 	}
 	count, ok1 := t[1].(int64)

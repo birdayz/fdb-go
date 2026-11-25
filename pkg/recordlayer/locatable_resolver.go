@@ -134,9 +134,9 @@ func ReadInTransaction(rctx *FDBRecordContext, r LocatableResolver, name string)
 	return *res, true, nil
 }
 
-// ReverseLookup is LocatableResolver.reverseLookup: the name a value maps to,
+// reverseLookup is LocatableResolver.reverseLookup: the name a value maps to,
 // or NoSuchElementException "reverse lookup of <value>".
-func ReverseLookup(rctx *FDBRecordContext, r LocatableResolver, value int64) (string, error) {
+func reverseLookup(rctx *FDBRecordContext, r LocatableResolver, value int64) (string, error) {
 	db := rctx.GetDatabase()
 	key := reverseCacheKey(r, value)
 	if db != nil {

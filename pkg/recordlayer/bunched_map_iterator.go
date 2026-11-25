@@ -17,27 +17,27 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
-// SubspaceSplitter determines which sub-map a given FDB key belongs to.
-// Used by BunchedMapMultiIterator to partition scans across multiple BunchedMaps.
+// subspaceSplitter determines which sub-map a given FDB key belongs to.
+// Used by bunchedMapMultiIterator to partition scans across multiple BunchedMaps.
 // Matches Java's com.apple.foundationdb.map.SubspaceSplitter.
-type SubspaceSplitter interface {
+type subspaceSplitter interface {
 	SubspaceOf(keyBytes []byte) (subspace.Subspace, error)
 	SubspaceTag(ss subspace.Subspace) (tuple.Tuple, error)
 }
 
-// TextSubspaceSplitter splits TEXT index keys by grouping columns.
+// textSubspaceSplitter splits TEXT index keys by grouping columns.
 // Given an FDB key in the index subspace, extracts the first groupingColumns
 // elements as the subspace prefix for that token's BunchedMap.
 // Matches Java's TextSubspaceSplitter.
-type TextSubspaceSplitter struct {
+type textSubspaceSplitter struct {
 	indexSubspace   subspace.Subspace
 	groupingColumns int  // textPosition + 1 (grouping columns + token column)
 	logicalBounds   bool // the TupleRange restricts entries within one token map
 }
 
-// NewTextSubspaceSplitter creates a splitter for TEXT index scans.
-func NewTextSubspaceSplitter(indexSubspace subspace.Subspace, groupingColumns int) *TextSubspaceSplitter {
-	return &TextSubspaceSplitter{
+// newTextSubspaceSplitter creates a splitter for TEXT index scans.
+func newTextSubspaceSplitter(indexSubspace subspace.Subspace, groupingColumns int) *textSubspaceSplitter {
+	return &textSubspaceSplitter{
 		indexSubspace:   indexSubspace,
 		groupingColumns: groupingColumns,
 	}
@@ -45,8 +45,8 @@ func NewTextSubspaceSplitter(indexSubspace subspace.Subspace, groupingColumns in
 
 // newTextSubspaceSplitterForRange derives logical suffix bounds from tuple
 // endpoints, before an exclusive bound's strinc can make its bytes undecodable.
-func newTextSubspaceSplitterForRange(indexSubspace subspace.Subspace, groupingColumns int, scanRange TupleRange) *TextSubspaceSplitter {
-	s := NewTextSubspaceSplitter(indexSubspace, groupingColumns)
+func newTextSubspaceSplitterForRange(indexSubspace subspace.Subspace, groupingColumns int, scanRange TupleRange) *textSubspaceSplitter {
+	s := newTextSubspaceSplitter(indexSubspace, groupingColumns)
 	if len(scanRange.Low) < groupingColumns || len(scanRange.High) < groupingColumns {
 		return s
 	}
@@ -66,7 +66,7 @@ func newTextSubspaceSplitterForRange(indexSubspace subspace.Subspace, groupingCo
 
 // SubspaceOf extracts the subspace for a given FDB key by taking the first
 // groupingColumns elements of the unpacked tuple.
-func (s *TextSubspaceSplitter) SubspaceOf(keyBytes []byte) (subspace.Subspace, error) {
+func (s *textSubspaceSplitter) SubspaceOf(keyBytes []byte) (subspace.Subspace, error) {
 	t, err := tuplefast.SubspaceUnpack(keyBytes, len(s.indexSubspace.Bytes()))
 	if err != nil {
 		return nil, &BunchedSerializationError{
@@ -86,7 +86,7 @@ func (s *TextSubspaceSplitter) SubspaceOf(keyBytes []byte) (subspace.Subspace, e
 }
 
 // SubspaceTag returns the grouping key tuple for a subspace.
-func (s *TextSubspaceSplitter) SubspaceTag(ss subspace.Subspace) (tuple.Tuple, error) {
+func (s *textSubspaceSplitter) SubspaceTag(ss subspace.Subspace) (tuple.Tuple, error) {
 	t, err := tuplefast.SubspaceUnpack(ss.Bytes(), len(s.indexSubspace.Bytes()))
 	if err != nil {
 		return nil, &BunchedSerializationError{
@@ -106,32 +106,32 @@ func tupleToTupleElements(t tuple.Tuple) []tuple.TupleElement {
 	return result
 }
 
-// BunchedMapScanEntry is a single entry from a multi-map scan.
+// bunchedMapScanEntry is a single entry from a multi-map scan.
 // Contains the entry data plus the subspace it belongs to.
-type BunchedMapScanEntry struct {
+type bunchedMapScanEntry struct {
 	Subspace    subspace.Subspace
 	SubspaceTag tuple.Tuple
 	Key         tuple.Tuple
 	Value       []int
 }
 
-// KVCallback is called for each raw FDB key-value pair read during iteration.
+// kvCallback is called for each raw FDB key-value pair read during iteration.
 // Used for byte scan limiting — the callback receives the raw key and value
 // lengths before deserialization. Matches Java's Consumer<KeyValue> callback
-// passed to BunchedMapMultiIterator.
-type KVCallback func(keyLen, valueLen int)
+// passed to bunchedMapMultiIterator.
+type kvCallback func(keyLen, valueLen int)
 
-// BunchedMapMultiIterator iterates over multiple BunchedMaps within a parent subspace.
+// bunchedMapMultiIterator iterates over multiple BunchedMaps within a parent subspace.
 // Entries are returned sorted first by subspace, then by key within subspace.
 // Streams from FDB lazily — only one bunch is in memory at a time.
 // Matches Java's BunchedMapMultiIterator.
-type BunchedMapMultiIterator struct {
+type bunchedMapMultiIterator struct {
 	serializer *TextIndexBunchedSerializer
-	splitter   SubspaceSplitter
+	splitter   subspaceSplitter
 	parentKey  []byte // parent subspace bytes
 	reverse    bool
 	limit      int
-	callback   KVCallback // per-KV callback for byte tracking
+	callback   kvCallback // per-KV callback for byte tracking
 
 	// FDB streaming iterator
 	rangeIter rangeIterator
@@ -170,44 +170,44 @@ type BunchedMapMultiIterator struct {
 	lastKey   tuple.Tuple
 	returned  int
 	done      bool
-	nextEntry *BunchedMapScanEntry
+	nextEntry *bunchedMapScanEntry
 }
 
-// NewBunchedMapMultiIterator creates a multi-map iterator.
+// newBunchedMapMultiIterator creates a multi-map iterator.
 // Streams from FDB lazily — only one bunch in memory at a time.
-func NewBunchedMapMultiIterator(
+func newBunchedMapMultiIterator(
 	tx fdb.ReadTransaction,
 	parentSubspace subspace.Subspace,
-	splitter SubspaceSplitter,
+	splitter subspaceSplitter,
 	beginBytes, endBytes []byte,
 	continuation []byte,
 	limit int,
 	reverse bool,
 	serializer *TextIndexBunchedSerializer,
-) *BunchedMapMultiIterator {
-	return NewBunchedMapMultiIteratorWithCallback(
+) *bunchedMapMultiIterator {
+	return newBunchedMapMultiIteratorWithCallback(
 		tx, parentSubspace, splitter,
 		beginBytes, endBytes, continuation,
 		limit, nil, reverse, serializer,
 	)
 }
 
-// NewBunchedMapMultiIteratorWithCallback creates a multi-map iterator with a
+// newBunchedMapMultiIteratorWithCallback creates a multi-map iterator with a
 // per-KV callback for byte tracking. The callback fires once per raw FDB
 // key-value pair read, before deserialization. Matches Java's scanMulti()
 // with Consumer<KeyValue> callback parameter.
-func NewBunchedMapMultiIteratorWithCallback(
+func newBunchedMapMultiIteratorWithCallback(
 	tx fdb.ReadTransaction,
 	parentSubspace subspace.Subspace,
-	splitter SubspaceSplitter,
+	splitter subspaceSplitter,
 	beginBytes, endBytes []byte,
 	continuation []byte,
 	limit int,
-	callback KVCallback,
+	callback kvCallback,
 	reverse bool,
 	serializer *TextIndexBunchedSerializer,
-) *BunchedMapMultiIterator {
-	it := &BunchedMapMultiIterator{
+) *bunchedMapMultiIterator {
+	it := &bunchedMapMultiIterator{
 		serializer:            serializer,
 		splitter:              splitter,
 		parentKey:             parentSubspace.Bytes(),
@@ -224,7 +224,7 @@ func NewBunchedMapMultiIteratorWithCallback(
 
 	// A TEXT suffix bounds logical entries, not the physical bunch signpost.
 	// Include the predecessor bunch and filter its decoded entries below.
-	if text, ok := splitter.(*TextSubspaceSplitter); ok {
+	if text, ok := splitter.(*textSubspaceSplitter); ok {
 		it.logicalBounds = text.logicalBounds
 	}
 	// A resumed range needs the same predecessor-inclusive lower bound.
@@ -269,7 +269,7 @@ func NewBunchedMapMultiIteratorWithCallback(
 }
 
 // HasNext returns true if there are more entries to return.
-func (it *BunchedMapMultiIterator) HasNext() bool {
+func (it *bunchedMapMultiIterator) HasNext() bool {
 	if it.done {
 		return false
 	}
@@ -281,7 +281,7 @@ func (it *BunchedMapMultiIterator) HasNext() bool {
 }
 
 // Next returns the next entry and advances the iterator.
-func (it *BunchedMapMultiIterator) Next() *BunchedMapScanEntry {
+func (it *bunchedMapMultiIterator) Next() *bunchedMapScanEntry {
 	if !it.HasNext() {
 		return nil
 	}
@@ -299,7 +299,7 @@ func (it *BunchedMapMultiIterator) Next() *BunchedMapScanEntry {
 // Returns (kv, true) on success, (zero, false) when exhausted or on error
 // (the error is recorded in iterErr and surfaced via Err()).
 // Fires the KV callback if set.
-func (it *BunchedMapMultiIterator) nextKV() (fdb.KeyValue, bool) {
+func (it *bunchedMapMultiIterator) nextKV() (fdb.KeyValue, bool) {
 	if !it.rangeIter.Advance() {
 		// Advance()==false on exhaustion OR a transient FDB error (1007, timeout);
 		// capture the stored Get() error so Err() surfaces it instead of looking like
@@ -323,7 +323,7 @@ func (it *BunchedMapMultiIterator) nextKV() (fdb.KeyValue, bool) {
 }
 
 // advance finds the next valid entry.
-func (it *BunchedMapMultiIterator) advance() {
+func (it *bunchedMapMultiIterator) advance() {
 	for {
 		// Try to get next entry from current bunch.
 		if it.currentEntries != nil {
@@ -340,7 +340,7 @@ func (it *BunchedMapMultiIterator) advance() {
 				if !it.withinLogicalBounds(it.currentSubspaceKey, e.Key) {
 					continue
 				}
-				it.nextEntry = &BunchedMapScanEntry{
+				it.nextEntry = &bunchedMapScanEntry{
 					Subspace:    it.currentSubspace,
 					SubspaceTag: it.currentSubspaceTag,
 					Key:         e.Key,
@@ -486,7 +486,7 @@ func (it *BunchedMapMultiIterator) advance() {
 		if !it.withinLogicalBounds(it.currentSubspaceKey, e.Key) {
 			continue
 		}
-		it.nextEntry = &BunchedMapScanEntry{
+		it.nextEntry = &bunchedMapScanEntry{
 			Subspace:    it.currentSubspace,
 			SubspaceTag: it.currentSubspaceTag,
 			Key:         e.Key,
@@ -496,7 +496,7 @@ func (it *BunchedMapMultiIterator) advance() {
 	}
 }
 
-func (it *BunchedMapMultiIterator) withinLogicalBounds(prefix []byte, key tuple.Tuple) bool {
+func (it *bunchedMapMultiIterator) withinLogicalBounds(prefix []byte, key tuple.Tuple) bool {
 	if !it.logicalBounds {
 		return true
 	}
@@ -506,7 +506,7 @@ func (it *BunchedMapMultiIterator) withinLogicalBounds(prefix []byte, key tuple.
 
 // GetContinuation returns a continuation token for resuming the scan.
 // Returns nil if the scan is exhausted.
-func (it *BunchedMapMultiIterator) GetContinuation() []byte {
+func (it *bunchedMapMultiIterator) GetContinuation() []byte {
 	if it.lastKey == nil || it.currentSubspaceKey == nil {
 		return nil
 	}
@@ -525,7 +525,7 @@ func (it *BunchedMapMultiIterator) GetContinuation() []byte {
 // Search the loaded bunch first; otherwise reopen at the target’s predecessor signpost.
 //
 // This leapfrog extension is described in DIVERGENCES.md, "TEXT intersections seek".
-func (it *BunchedMapMultiIterator) seekTo(target tuple.Tuple) {
+func (it *bunchedMapMultiIterator) seekTo(target tuple.Tuple) {
 	if it.done || it.nextEntry != nil || it.lastKey == nil || it.currentSubspaceKey == nil {
 		return
 	}
@@ -578,7 +578,7 @@ func (it *BunchedMapMultiIterator) seekTo(target tuple.Tuple) {
 
 // seekWithin returns the first entry at/past the pending target, or skip for an earlier bunch.
 // Skipped entries update the continuation’s last key.
-func (it *BunchedMapMultiIterator) seekWithin(subspaceKey []byte, entries []BunchedEntry[tuple.Tuple, []int]) (int, bool, error) {
+func (it *bunchedMapMultiIterator) seekWithin(subspaceKey []byte, entries []BunchedEntry[tuple.Tuple, []int]) (int, bool, error) {
 	if !bytes.Equal(subspaceKey, it.seekSubspaceKey) {
 		// advance handles the logical reverse predecessor boundary. Any other
 		// foreign map violates seekTo's single-map precondition.
@@ -611,12 +611,12 @@ func (it *BunchedMapMultiIterator) seekWithin(subspaceKey []byte, entries []Bunc
 }
 
 // Cancel stops the iterator.
-func (it *BunchedMapMultiIterator) Cancel() {
+func (it *bunchedMapMultiIterator) Cancel() {
 	it.done = true
 }
 
 // Err returns the first error encountered during iteration, if any.
-func (it *BunchedMapMultiIterator) Err() error {
+func (it *bunchedMapMultiIterator) Err() error {
 	return it.iterErr
 }
 

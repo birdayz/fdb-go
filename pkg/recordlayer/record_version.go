@@ -33,8 +33,8 @@ const (
 	VersionBytes = 12
 	// GlobalVersionBytes is the size of the FDB versionstamp portion.
 	GlobalVersionBytes = 10
-	// LocalVersionBytes is the size of the local version counter.
-	LocalVersionBytes = 2
+	// localVersionBytes is the size of the local version counter.
+	localVersionBytes = 2
 )
 
 // incompleteGlobalVersionMarker is 10 bytes of 0xFF, indicating an incomplete version.

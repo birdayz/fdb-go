@@ -54,7 +54,7 @@ func assertFastPathAgreementForRecord(t *testing.T, expr KeyExpression, record *
 
 	slow, slowBytes := packSlow(t, expr, record, msg)
 
-	if fe, ok := expr.(FlatEvaluator); ok {
+	if fe, ok := expr.(flatEvaluator); ok {
 		flat, err := fe.EvaluateFlat(record, msg)
 		g.Expect(err).NotTo(HaveOccurred(), "EvaluateFlat errored where Evaluate succeeded")
 		ft := make(tuple.Tuple, len(flat))
@@ -64,13 +64,13 @@ func assertFastPathAgreementForRecord(t *testing.T, expr KeyExpression, record *
 		g.Expect(ft.Pack()).To(Equal(slowBytes), "EvaluateFlat packed different bytes than Evaluate")
 	}
 
-	if se, ok := expr.(ScalarEvaluator); ok && expr.ColumnSize() == 1 {
+	if se, ok := expr.(scalarEvaluator); ok && expr.ColumnSize() == 1 {
 		v, err := se.EvaluateScalar(record, msg)
 		g.Expect(err).NotTo(HaveOccurred(), "EvaluateScalar errored where Evaluate succeeded")
 		g.Expect(tuple.Tuple{v}.Pack()).To(Equal(slowBytes), "EvaluateScalar packed different bytes than Evaluate")
 	}
 
-	if ie, ok := expr.(Int64Evaluator); ok && expr.ColumnSize() == 1 {
+	if ie, ok := expr.(int64Evaluator); ok && expr.ColumnSize() == 1 {
 		v, accepted, err := ie.EvaluateInt64(record, msg)
 		g.Expect(err).NotTo(HaveOccurred(), "EvaluateInt64 errored where Evaluate succeeded")
 		if accepted {
@@ -78,7 +78,7 @@ func assertFastPathAgreementForRecord(t *testing.T, expr KeyExpression, record *
 		}
 	}
 
-	if dp, ok := expr.(DirectPacker); ok {
+	if dp, ok := expr.(directPacker); ok {
 		pk := tuple.GetPacker()
 		pk.Reset()
 		accepted := dp.PackDirect(pk, record, msg)
@@ -451,11 +451,11 @@ func TestKeyExpressionFastPath_FanOutFieldDeclinesFastPath(t *testing.T) {
 
 	pk := tuple.GetPacker()
 	pk.Reset()
-	g.Expect(expr.(DirectPacker).PackDirect(pk, record, msg)).To(BeFalse(),
+	g.Expect(expr.(directPacker).PackDirect(pk, record, msg)).To(BeFalse(),
 		"PackDirect accepted a fan-out field — it would collapse 2 index entries into 1")
 	tuple.PutPacker(pk)
 
-	_, accepted, ierr := expr.(Int64Evaluator).EvaluateInt64(record, msg)
+	_, accepted, ierr := expr.(int64Evaluator).EvaluateInt64(record, msg)
 	g.Expect(ierr).NotTo(HaveOccurred())
 	g.Expect(accepted).To(BeFalse(), "EvaluateInt64 accepted a repeated field")
 }
@@ -470,7 +470,7 @@ func TestKeyExpressionFastPath_RepeatedFieldInCompositeDeclinesFastPath(t *testi
 
 	pk := tuple.GetPacker()
 	pk.Reset()
-	g.Expect(expr.(DirectPacker).PackDirect(pk, record, msg)).To(BeFalse(),
+	g.Expect(expr.(directPacker).PackDirect(pk, record, msg)).To(BeFalse(),
 		"composite PackDirect accepted a fan-out child")
 	tuple.PutPacker(pk)
 
@@ -515,12 +515,12 @@ func TestKeyExpressionFastPath_NestedRecordTypeKeyKeepsAllColumns(t *testing.T) 
 			g.Expect(slow[i]).To(Equal(v), "%s: column %d", c.name, i)
 		}
 
-		flat, err := c.expr.(FlatEvaluator).EvaluateFlat(record, c.msg)
+		flat, err := c.expr.(flatEvaluator).EvaluateFlat(record, c.msg)
 		g.Expect(err).NotTo(HaveOccurred(), c.name)
 		g.Expect(flat).To(Equal(c.want),
 			"%s: EvaluateFlat dropped a column — a short index key that Evaluate-based deletes can never match", c.name)
 
-		if se, ok := c.expr.(ScalarEvaluator); ok {
+		if se, ok := c.expr.(scalarEvaluator); ok {
 			_, serr := se.EvaluateScalar(record, c.msg)
 			g.Expect(serr).To(HaveOccurred(),
 				"%s: EvaluateScalar returned a single value for a %d-column expression", c.name, len(c.want))
@@ -528,7 +528,7 @@ func TestKeyExpressionFastPath_NestedRecordTypeKeyKeepsAllColumns(t *testing.T) 
 
 		pk := tuple.GetPacker()
 		pk.Reset()
-		if c.expr.(DirectPacker).PackDirect(pk, record, c.msg) {
+		if c.expr.(directPacker).PackDirect(pk, record, c.msg) {
 			var buf []byte
 			g.Expect(pk.AppendInto(&buf, nil)).To(Equal(slowBytes),
 				"%s: PackDirect packed a key other than the slow path's", c.name)
@@ -576,12 +576,12 @@ func TestKeyExpressionFastPath_NestingExpressionDeclinesFastPath(t *testing.T) {
 	// none of the fast-path interfaces, so every caller structurally falls back.
 	expr := Nest("flower", Field("type"))
 
-	_, isDirect := expr.(DirectPacker)
-	g.Expect(isDirect).To(BeFalse(), "NestingKeyExpression must not implement DirectPacker")
-	_, isInt64 := expr.(Int64Evaluator)
-	g.Expect(isInt64).To(BeFalse(), "NestingKeyExpression must not implement Int64Evaluator")
-	_, isScalar := expr.(ScalarEvaluator)
-	g.Expect(isScalar).To(BeFalse(), "NestingKeyExpression must not implement ScalarEvaluator")
+	_, isDirect := expr.(directPacker)
+	g.Expect(isDirect).To(BeFalse(), "NestingKeyExpression must not implement directPacker")
+	_, isInt64 := expr.(int64Evaluator)
+	g.Expect(isInt64).To(BeFalse(), "NestingKeyExpression must not implement int64Evaluator")
+	_, isScalar := expr.(scalarEvaluator)
+	g.Expect(isScalar).To(BeFalse(), "NestingKeyExpression must not implement scalarEvaluator")
 }
 
 // --- The divergence this file exists to pin ---
@@ -623,20 +623,20 @@ func TestKeyExpressionFastPath_UnknownFieldErrorsEverywhere(t *testing.T) {
 	_, err := expr.Evaluate(record, msg)
 	assertUnknownFieldError(err, "Evaluate")
 
-	_, ferr := expr.(FlatEvaluator).EvaluateFlat(record, msg)
+	_, ferr := expr.(flatEvaluator).EvaluateFlat(record, msg)
 	assertUnknownFieldError(ferr, "EvaluateFlat")
 
-	_, serr := expr.(ScalarEvaluator).EvaluateScalar(record, msg)
+	_, serr := expr.(scalarEvaluator).EvaluateScalar(record, msg)
 	assertUnknownFieldError(serr, "EvaluateScalar")
 
-	_, _, ierr := expr.(Int64Evaluator).EvaluateInt64(record, msg)
+	_, _, ierr := expr.(int64Evaluator).EvaluateInt64(record, msg)
 	assertUnknownFieldError(ierr, "EvaluateInt64")
 
 	// PackDirect has no error channel, so its contract is to DECLINE, routing
 	// the caller to the erroring path rather than packing a guess.
 	pk := tuple.GetPacker()
 	pk.Reset()
-	g.Expect(expr.(DirectPacker).PackDirect(pk, record, msg)).To(BeFalse(),
+	g.Expect(expr.(directPacker).PackDirect(pk, record, msg)).To(BeFalse(),
 		"PackDirect packed an unknown field instead of declining to the erroring path")
 	tuple.PutPacker(pk)
 }
@@ -657,13 +657,13 @@ func TestKeyExpressionFastPath_UnknownFieldInCompositeErrors(t *testing.T) {
 	g.Expect(errors.As(err, &want)).To(BeTrue(),
 		"composite Evaluate swallowed an unknown-field child and packed a key: %v", err)
 
-	_, ferr := expr.(FlatEvaluator).EvaluateFlat(record, msg)
+	_, ferr := expr.(flatEvaluator).EvaluateFlat(record, msg)
 	g.Expect(errors.As(ferr, &want)).To(BeTrue(),
 		"composite EvaluateFlat swallowed an unknown-field child and packed a key: %v", ferr)
 
 	pk := tuple.GetPacker()
 	pk.Reset()
-	g.Expect(expr.(DirectPacker).PackDirect(pk, record, msg)).To(BeFalse(),
+	g.Expect(expr.(directPacker).PackDirect(pk, record, msg)).To(BeFalse(),
 		"composite PackDirect packed a key containing an unknown field")
 	tuple.PutPacker(pk)
 }
@@ -679,7 +679,7 @@ func TestKeyExpressionFastPath_FieldCacheAcrossMessageTypes(t *testing.T) {
 
 	// Both Order and TypedRecord have a "price" field.
 	expr := Field("price")
-	se := expr.(ScalarEvaluator)
+	se := expr.(scalarEvaluator)
 
 	orderMsg := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 	orderRec := &FDBStoredRecord[proto.Message]{Record: orderMsg}
@@ -707,7 +707,7 @@ func TestKeyExpressionFastPath_FieldCacheConcurrent(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	expr := Field("price")
-	se := expr.(ScalarEvaluator)
+	se := expr.(scalarEvaluator)
 
 	orderMsg := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 	orderRec := &FDBStoredRecord[proto.Message]{Record: orderMsg}
@@ -763,7 +763,7 @@ func TestKeyExpressionFastPath_PackDirectWithSubspacePrefix(t *testing.T) {
 
 	pk := tuple.GetPacker()
 	pk.Reset()
-	g.Expect(expr.(DirectPacker).PackDirect(pk, record, msg)).To(BeTrue())
+	g.Expect(expr.(directPacker).PackDirect(pk, record, msg)).To(BeTrue())
 	var buf []byte
 	got := pk.AppendInto(&buf, ss.Bytes())
 	tuple.PutPacker(pk)
@@ -779,7 +779,7 @@ func TestKeyExpressionFastPath_PackerResetLeavesNoResidue(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	expr := Field("order_id")
-	dp := expr.(DirectPacker)
+	dp := expr.(directPacker)
 	pk := tuple.GetPacker()
 	defer tuple.PutPacker(pk)
 

@@ -140,7 +140,7 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnly(newRecord *FDBStoredRec
 		return false, nil // entries filtered one by one: the standard path
 	}
 
-	// Try zero-alloc path: evaluate grouping key fields directly via ScalarEvaluator,
+	// Try zero-alloc path: evaluate grouping key fields directly via scalarEvaluator,
 	// bypassing CompositeKeyExpression.EvaluateFlat's make([]any, 0, N). It
 	// reads one group per record, so a whole key that can fan out (no entry,
 	// or several, each counted as Java does) takes the paths below.
@@ -151,7 +151,7 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnly(newRecord *FDBStoredRec
 	}
 
 	// Standard path: use EvaluateFlat (allocates []any for composite expressions).
-	fe, ok := m.index.RootExpression.(FlatEvaluator)
+	fe, ok := m.index.RootExpression.(flatEvaluator)
 	if !ok {
 		return false, nil
 	}
@@ -201,7 +201,7 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnly(newRecord *FDBStoredRec
 }
 
 // updateInsertOnlyGrouped handles the insert-only fast path for GroupingKeyExpression
-// roots. Evaluates grouping key fields directly via ScalarEvaluator, bypassing
+// roots. Evaluates grouping key fields directly via scalarEvaluator, bypassing
 // CompositeKeyExpression.EvaluateFlat's make([]any) allocation.
 // Returns (true, nil) on success, (false, nil) to fall through.
 func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
@@ -222,7 +222,7 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 		return false, nil // SUM/other with gc=0: fall through
 	}
 
-	// Single-field grouping (gc=1): try ScalarEvaluator on first child.
+	// Single-field grouping (gc=1): try scalarEvaluator on first child.
 	if gc == 1 {
 		comp, ok := gke.wholeKey.(*CompositeKeyExpression)
 		if !ok {
@@ -231,9 +231,9 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 		if len(comp.expressions) == 0 {
 			return false, nil
 		}
-		// Try Int64Evaluator for zero-alloc group key packing.
+		// Try int64Evaluator for zero-alloc group key packing.
 		var fdbKey fdb.Key
-		if ie, ok := comp.expressions[0].(Int64Evaluator); ok {
+		if ie, ok := comp.expressions[0].(int64Evaluator); ok {
 			groupInt64, valid, err := ie.EvaluateInt64(newRecord, newRecord.Record)
 			if err != nil {
 				return false, nil
@@ -242,7 +242,7 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 				return false, nil
 			}
 			fdbKey = fdb.Key(tuple.Pack1WithPrefix(m.indexSubspace.Bytes(), groupInt64))
-		} else if se, ok := comp.expressions[0].(ScalarEvaluator); ok {
+		} else if se, ok := comp.expressions[0].(scalarEvaluator); ok {
 			groupVal, err := se.EvaluateScalar(newRecord, newRecord.Record)
 			if err != nil {
 				return false, nil
@@ -255,13 +255,13 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 		// For SUM: extract the sum value and apply inline to avoid int64→any boxing.
 		if _, isSumMut := m.mutation.(*sumMutation); isSumMut && len(comp.expressions) > 1 {
 			var sumInt64 int64
-			if ie, ok := comp.expressions[1].(Int64Evaluator); ok {
+			if ie, ok := comp.expressions[1].(int64Evaluator); ok {
 				val, valid, err := ie.EvaluateInt64(newRecord, newRecord.Record)
 				if err != nil || !valid {
 					return false, nil
 				}
 				sumInt64 = val
-			} else if se2, ok := comp.expressions[1].(ScalarEvaluator); ok {
+			} else if se2, ok := comp.expressions[1].(scalarEvaluator); ok {
 				val, err := se2.EvaluateScalar(newRecord, newRecord.Record)
 				if err != nil || val == nil {
 					return false, nil
@@ -287,7 +287,7 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 		return m.applyInsertMutation(fdbKey, nil, gc, newRecord, gke)
 	}
 
-	// Multi-field grouping (gc > 1): try DirectPacker on the grouping fields.
+	// Multi-field grouping (gc > 1): try directPacker on the grouping fields.
 	comp, ok := gke.wholeKey.(*CompositeKeyExpression)
 	if !ok || len(comp.expressions) < gc {
 		return false, nil
@@ -297,7 +297,7 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 	pk.Reset()
 	allDirect := true
 	for i := 0; i < gc; i++ {
-		if dp, ok2 := comp.expressions[i].(DirectPacker); ok2 {
+		if dp, ok2 := comp.expressions[i].(directPacker); ok2 {
 			if !dp.PackDirect(pk, newRecord, newRecord.Record) {
 				allDirect = false
 				break
@@ -317,7 +317,7 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 	var sumSource any
 	if _, isSumMut := m.mutation.(*sumMutation); isSumMut && len(comp.expressions) > gc {
 		sumExpr := comp.expressions[gc]
-		if ie, ok2 := sumExpr.(Int64Evaluator); ok2 {
+		if ie, ok2 := sumExpr.(int64Evaluator); ok2 {
 			val, valid, err := ie.EvaluateInt64(newRecord, newRecord.Record)
 			if err != nil || !valid {
 				return false, nil
@@ -331,7 +331,7 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 			m.clearIfZero(fdbKey)
 			return true, nil
 		}
-		if se, ok2 := sumExpr.(ScalarEvaluator); ok2 {
+		if se, ok2 := sumExpr.(scalarEvaluator); ok2 {
 			val, err := se.EvaluateScalar(newRecord, newRecord.Record)
 			if err != nil {
 				return false, nil

@@ -322,7 +322,7 @@ var _ = Describe("IndexingHeartbeat", func() {
 				if err != nil {
 					return nil, err
 				}
-				CleanupAllHeartbeats(rtx.Transaction(), store.subspace, idx)
+				cleanupAllHeartbeats(rtx.Transaction(), store.subspace, idx)
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())

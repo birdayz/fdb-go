@@ -52,9 +52,9 @@ func GetInSession[T any](rc *FDBRecordContext, key ContextSessionKey[T]) T {
 	return v
 }
 
-// PutInSession is Java's putInSession(ContextSessionKey, value): it replaces
+// putInSession is Java's putInSession(ContextSessionKey, value): it replaces
 // any value under key.
-func PutInSession[T any](rc *FDBRecordContext, key ContextSessionKey[T], value T) {
+func putInSession[T any](rc *FDBRecordContext, key ContextSessionKey[T], value T) {
 	rc.sessionMu.Lock()
 	defer rc.sessionMu.Unlock()
 	if rc.session == nil {

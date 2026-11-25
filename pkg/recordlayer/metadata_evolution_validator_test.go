@@ -109,14 +109,14 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			new := NewIndex("text", Field("price"))
 			old.Type, new.Type = IndexTypeText, IndexTypeText
 			new.Options = map[string]string{IndexOptionTextOmitPositions: "true", "applicationTag": "new"}
-			Expect(ValidateChangedIndexOptions(old, new, nil)).To(Succeed())
+			Expect(validateChangedIndexOptions(old, new, nil)).To(Succeed())
 			changed := map[string]bool{IndexOptionTextOmitPositions: true, IndexOptionAllowedForQuery: true}
-			Expect(ValidateChangedIndexOptions(old, new, changed)).To(Succeed())
+			Expect(validateChangedIndexOptions(old, new, changed)).To(Succeed())
 			Expect(changed).To(Equal(map[string]bool{IndexOptionAllowedForQuery: true}))
-			Expect(ValidateChangedIndexOptions(old, new, map[string]bool{"applicationTag": true})).To(HaveOccurred())
+			Expect(validateChangedIndexOptions(old, new, map[string]bool{"applicationTag": true})).To(HaveOccurred())
 			// Supplied names need not be actual differences: the base validator
 			// rejects unknown names even if both values are absent.
-			Expect(ValidateChangedIndexOptions(old, new, map[string]bool{"absent": true})).To(HaveOccurred())
+			Expect(validateChangedIndexOptions(old, new, map[string]bool{"absent": true})).To(HaveOccurred())
 		})
 
 		It("compares resolved tokenizer names including the implicit default", func() {
@@ -127,13 +127,13 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			} {
 				old, new := textIndexWithOptions(pair[0]), textIndexWithOptions(pair[1])
 				changed := map[string]bool{IndexOptionTextTokenizerName: true}
-				Expect(ValidateChangedIndexOptions(old, new, changed)).To(Succeed())
+				Expect(validateChangedIndexOptions(old, new, changed)).To(Succeed())
 				Expect(changed).To(BeEmpty())
 			}
 			old, new := textIndexWithOptions(nil), textIndexWithOptions(map[string]string{IndexOptionTextTokenizerName: "unregistered_ignored_options_test"})
-			Expect(ValidateChangedIndexOptions(old, new, map[string]bool{IndexOptionTextTokenizerName: true})).To(MatchError(ContainSubstring("unrecognized text tokenizer")))
-			Expect(ValidateChangedIndexOptions(new, old, map[string]bool{IndexOptionTextTokenizerName: true})).To(MatchError(ContainSubstring("unrecognized text tokenizer")))
-			Expect(ValidateChangedIndexOptions(old, new, nil)).To(Succeed())
+			Expect(validateChangedIndexOptions(old, new, map[string]bool{IndexOptionTextTokenizerName: true})).To(MatchError(ContainSubstring("unrecognized text tokenizer")))
+			Expect(validateChangedIndexOptions(new, old, map[string]bool{IndexOptionTextTokenizerName: true})).To(MatchError(ContainSubstring("unrecognized text tokenizer")))
+			Expect(validateChangedIndexOptions(old, new, nil)).To(Succeed())
 		})
 
 		It("does not weaken unrelated structural checks", func() {
@@ -2847,7 +2847,7 @@ func TestChangedIndexOptionsNamedInNameOrder(t *testing.T) {
 	for range 32 {
 		changed := map[string]bool{"zeta": true, "alpha": true, "mid": true}
 		var evolErr *MetaDataEvolutionError
-		if err := ValidateChangedIndexOptions(oldIdx, newIdx, changed); !errors.As(err, &evolErr) ||
+		if err := validateChangedIndexOptions(oldIdx, newIdx, changed); !errors.As(err, &evolErr) ||
 			!strings.HasPrefix(evolErr.Message, `index option changed (index="v", option="alpha"`) {
 			t.Fatalf("%v, want alpha named", err)
 		}

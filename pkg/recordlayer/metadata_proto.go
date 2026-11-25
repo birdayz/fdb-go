@@ -166,7 +166,7 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 			rtProto.SinceVersion = proto.Int32(int32(rt.SinceVersion))
 		}
 		if rt.explicitRecordTypeKey != nil {
-			v, err := ValueToProto(rt.explicitRecordTypeKey)
+			v, err := valueToProto(rt.explicitRecordTypeKey)
 			if err != nil {
 				return nil, fmt.Errorf("record type %s explicit key: %w", name, err)
 			}
@@ -386,7 +386,7 @@ func RecordMetaDataFromProto(md *gen.MetaData, opts ...MetaDataProtoOption) (*Re
 			// The proto carries an int32 for a key written as one, so without
 			// this a round-tripped metadata would compare unequal to the
 			// metadata it came from while encoding to identical bytes.
-			key, keyErr := ValueFromProto(rtProto.ExplicitKey)
+			key, keyErr := valueFromProto(rtProto.ExplicitKey)
 			if keyErr != nil {
 				return nil, keyErr
 			}
@@ -845,7 +845,7 @@ func formerIndexFromProto(p *gen.FormerIndex) (*FormerIndex, error) {
 // producer (RFC-202 S5): a SimpleComparison's operand is stored in exactly
 // this encoding (IndexComparison.java:253).
 func LiteralToProtoValue(v any) (*gen.Value, error) {
-	return ValueToProto(v)
+	return valueToProto(v)
 }
 
 // UnsupportedValueTypeError is the RecordCoreException Java's
@@ -863,9 +863,9 @@ func (e *UnsupportedValueTypeError) Error() string {
 
 func (*UnsupportedValueTypeError) JavaRecordCoreException() {}
 
-// ValueToProto serializes a Go value to a Value proto.
+// valueToProto serializes a Go value to a Value proto.
 // Matches Java's LiteralKeyExpression.toProtoValue().
-func ValueToProto(v any) (*gen.Value, error) {
+func valueToProto(v any) (*gen.Value, error) {
 	if v == nil {
 		return &gen.Value{}, nil
 	}
@@ -909,11 +909,11 @@ func protoDeserializationError(err error) error {
 	return err
 }
 
-// ValueFromProto deserializes a Value proto to a Go value, as Java's
+// valueFromProto deserializes a Value proto to a Go value, as Java's
 // LiteralKeyExpression.fromProtoValue does (protovalue.FromProto): the one
 // field set, nil when none is, and a RecordCoreError "More than one value
 // encoded in value" when several are.
-func ValueFromProto(p *gen.Value) (any, error) {
+func valueFromProto(p *gen.Value) (any, error) {
 	v, err := protovalue.FromProto(p)
 	if err != nil {
 		return nil, &RecordCoreError{Message: err.Error()}

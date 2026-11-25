@@ -214,7 +214,7 @@ func (s *TextScan) scan(store *FDBRecordStore, prefix tuple.Tuple, suffix *Tuple
 		return nil, err
 	}
 	multi := intersectionMultiSeeking(children.cursors, children.seekers, keyFunc, props.IsReverse(), children.resume)
-	return skipLimit(firstOfMatches(FilterErrCursor(multi, predicate))), nil
+	return skipLimit(firstOfMatches(filterErrCursor(multi, predicate))), nil
 }
 
 // firstOfMatches is the .map(indexEntries -> indexEntries.get(0)) of
@@ -796,7 +796,7 @@ func (p *TextQueryPlan) Execute(store *FDBRecordStore, continuation []byte, prop
 	if p.StrictFilter {
 		comparison := p.TextPlan.TextScan.Comparison
 		index := p.TextPlan.TextScan.Index
-		cursor = FilterErrCursor(cursor, func(r *FDBIndexedRecord) (bool, error) {
+		cursor = filterErrCursor(cursor, func(r *FDBIndexedRecord) (bool, error) {
 			return recordSatisfiesText(index, comparison, r)
 		})
 	}
@@ -847,9 +847,9 @@ type errFilterCursor[T any] struct {
 	lastNoNext *RecordCursorResult[T]
 }
 
-// FilterErrCursor is Java's RecordCursor.filter with a predicate whose
+// filterErrCursor is Java's RecordCursor.filter with a predicate whose
 // failure ends the cursor with that error.
-func FilterErrCursor[T any](inner RecordCursor[T], predicate func(T) (bool, error)) RecordCursor[T] {
+func filterErrCursor[T any](inner RecordCursor[T], predicate func(T) (bool, error)) RecordCursor[T] {
 	return &errFilterCursor[T]{inner: inner, predicate: predicate}
 }
 

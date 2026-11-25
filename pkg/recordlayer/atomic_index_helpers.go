@@ -42,7 +42,7 @@ func evaluateGroupingKeys(store IndexStoreContext, index *Index, record *FDBStor
 	// Fast path: use EvaluateFlat to avoid [][]any alloc. It evaluates no
 	// entry list, so it runs only when every entry is maintained.
 	// Falls through on error (e.g. fan-out repeated fields).
-	if fe, ok := index.RootExpression.(FlatEvaluator); ok && maintained == IndexValuesAll {
+	if fe, ok := index.RootExpression.(flatEvaluator); ok && maintained == IndexValuesAll {
 		values, err := fe.EvaluateFlat(record, record.Record)
 		if err == nil {
 			// Convert []any to tuple.Tuple (same underlying type)

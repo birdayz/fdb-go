@@ -946,7 +946,7 @@ func (store *FDBRecordStore) clearReadableIndexBuildData(index *Index) {
 	// Clear all heartbeats — matching Java's IndexingHeartbeat.clearAllHeartbeats().
 	// Without this, stale heartbeats from crashed mutual builders accumulate
 	// and cause transient blocking on re-builds.
-	CleanupAllHeartbeats(store.context.Transaction(), store.subspace, index)
+	cleanupAllHeartbeats(store.context.Transaction(), store.subspace, index)
 }
 
 // eraseAllIndexingDataButTheLockAndRangeSet clears Java's build bookkeeping,

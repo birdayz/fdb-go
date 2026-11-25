@@ -15,10 +15,10 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
-// BunchedSerializer serializes keys and values for BunchedMap storage.
+// bunchedSerializer serializes keys and values for BunchedMap storage.
 // Keys must serialize in a way that preserves sort order (unsigned lexicographic).
 // Matches Java's com.apple.foundationdb.map.BunchedSerializer interface.
-type BunchedSerializer[K any, V any] interface {
+type bunchedSerializer[K any, V any] interface {
 	SerializeKey(key K) []byte
 	SerializeEntry(key K, value V) ([]byte, error)
 	SerializeEntries(entries []BunchedEntry[K, V]) ([]byte, error)
@@ -525,8 +525,8 @@ func (s *TextIndexBunchedSerializer) deserializeBunch(key tuple.Tuple, data []by
 	return entries, nil
 }
 
-// Compile-time check that TextIndexBunchedSerializer implements BunchedSerializer.
-var _ BunchedSerializer[tuple.Tuple, []int] = (*TextIndexBunchedSerializer)(nil)
+// Compile-time check that TextIndexBunchedSerializer implements bunchedSerializer.
+var _ bunchedSerializer[tuple.Tuple, []int] = (*TextIndexBunchedSerializer)(nil)
 
 // BunchedSerializationError is returned when bunched map serialization/deserialization fails.
 type BunchedSerializationError struct {

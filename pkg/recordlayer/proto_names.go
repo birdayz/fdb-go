@@ -48,9 +48,9 @@ func ToProtoBufCompliantName(name string) (string, error) {
 	return escaped, convertInvalidNameError(err)
 }
 
-// CheckValidProtoBufCompliantName validates that name is a legal protobuf
+// checkValidProtoBufCompliantName validates that name is a legal protobuf
 // identifier. See protoname.CheckValidProtoBufCompliantName.
-func CheckValidProtoBufCompliantName(name string) error {
+func checkValidProtoBufCompliantName(name string) error {
 	return convertInvalidNameError(protoname.CheckValidProtoBufCompliantName(name))
 }
 

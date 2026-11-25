@@ -65,7 +65,7 @@ var _ = Describe("a vector index in a binary that does not link vectorindex", fu
 		It("refuses to validate a changed "+tc.name+" option", func() {
 			oldIdx, newIdx := tc.index(), tc.index()
 			newIdx.Options = map[string]string{IndexOptionVectorMetric: "COSINE_METRIC"}
-			err := ValidateChangedIndexOptions(oldIdx, newIdx, computeChangedOptions(oldIdx.Options, newIdx.Options))
+			err := validateChangedIndexOptions(oldIdx, newIdx, computeChangedOptions(oldIdx.Options, newIdx.Options))
 			expectNotLinked(err, newIdx.Name, newIdx.Type)
 		})
 	}

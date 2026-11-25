@@ -50,7 +50,7 @@ func (b *RecordMetaDataBuilder) processRecordTypeOptions(rt *RecordType) {
 			rt.SinceVersion = int(opts.GetSinceVersion())
 		}
 		if opts.RecordTypeKey != nil {
-			key, err := ValueFromProto(opts.GetRecordTypeKey())
+			key, err := valueFromProto(opts.GetRecordTypeKey())
 			if err != nil {
 				b.recordBuildError(err)
 			} else {

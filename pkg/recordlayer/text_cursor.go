@@ -11,17 +11,17 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
-// textCursor wraps a BunchedMapMultiIterator to implement RecordCursor[*IndexEntry].
+// textCursor wraps a bunchedMapMultiIterator to implement RecordCursor[*IndexEntry].
 // Matches Java's TextCursor, which uses CursorLimitManager to enforce record scan,
 // time, and byte scan limits.
 //
-// ByteScanLimiter is tracked via a KVCallback on the BunchedMapMultiIterator.
+// ByteScanLimiter is tracked via a kvCallback on the bunchedMapMultiIterator.
 // The callback fires per raw FDB key-value read (before deserialization) and
 // accumulates key+value bytes into bytesScanned. This matches Java's approach
 // of passing a Consumer<KeyValue> to scanMulti() that calls
 // byteScanLimiter.registerScannedBytes(key.length + value.length).
 type textCursor struct {
-	underlying  *BunchedMapMultiIterator
+	underlying  *bunchedMapMultiIterator
 	index       *Index
 	scanProps   ScanProperties
 	closed      bool
@@ -36,10 +36,10 @@ type textCursor struct {
 	timer *StoreTimer
 }
 
-// newTextCursorWithByteTracking creates a textCursor and a KVCallback that
+// newTextCursorWithByteTracking creates a textCursor and a kvCallback that
 // accumulates raw FDB bytes into the cursor's scanState.
-// The callback must be passed to NewBunchedMapMultiIteratorWithCallback.
-func newTextCursorWithByteTracking(index *Index, scanProps ScanProperties, timer *StoreTimer) (*textCursor, KVCallback) {
+// The callback must be passed to newBunchedMapMultiIteratorWithCallback.
+func newTextCursorWithByteTracking(index *Index, scanProps ScanProperties, timer *StoreTimer) (*textCursor, kvCallback) {
 	c := &textCursor{
 		index:     index,
 		scanProps: scanProps,
@@ -60,7 +60,7 @@ func newTextCursorWithByteTracking(index *Index, scanProps ScanProperties, timer
 }
 
 // setUnderlying sets the iterator after construction.
-func (c *textCursor) setUnderlying(it *BunchedMapMultiIterator) {
+func (c *textCursor) setUnderlying(it *bunchedMapMultiIterator) {
 	c.underlying = it
 }
 
