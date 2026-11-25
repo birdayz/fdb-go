@@ -265,14 +265,15 @@ var (
 		"fdb.dev/pkg/relational/sqltest/types":               true,
 		"fdb.dev/pkg/testcontainers/foundationdb":            true,
 	}
-	// r6Allow freezes the 5 existing fdbClientRoots production files that
-	// import go.opentelemetry.io/otel/trace.
+	// r6Allow freezes the existing fdbClientRoots production files that
+	// import go.opentelemetry.io/otel/trace (split from transaction.go into tx_lifecycle.go + tx_metrics.go).
 	r6Allow = map[string]map[string]bool{
-		"internal/fdbgo/client/database.go":    {"go.opentelemetry.io/otel/trace": true},
-		"internal/fdbgo/client/options.go":     {"go.opentelemetry.io/otel/trace": true},
-		"internal/fdbgo/client/span.go":        {"go.opentelemetry.io/otel/trace": true},
-		"internal/fdbgo/client/transaction.go": {"go.opentelemetry.io/otel/trace": true},
-		"pkg/fdbgo/fdb/database.go":            {"go.opentelemetry.io/otel/trace": true},
+		"internal/fdbgo/client/database.go":     {"go.opentelemetry.io/otel/trace": true},
+		"internal/fdbgo/client/options.go":      {"go.opentelemetry.io/otel/trace": true},
+		"internal/fdbgo/client/span.go":         {"go.opentelemetry.io/otel/trace": true},
+		"internal/fdbgo/client/tx_lifecycle.go": {"go.opentelemetry.io/otel/trace": true},
+		"internal/fdbgo/client/tx_metrics.go":   {"go.opentelemetry.io/otel/trace": true},
+		"pkg/fdbgo/fdb/database.go":             {"go.opentelemetry.io/otel/trace": true},
 	}
 	// l0Allow freezes the single existing upward dependency from an L0 leaf.
 	l0Allow = map[string]map[string]bool{
