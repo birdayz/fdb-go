@@ -29,6 +29,7 @@ var driverTestFiles = []string{
 	"dsn_tags_test.go",
 	"dsn_transaction_timeout_fdb_test.go",
 	"embedded_fdb_errors_test.go",
+	"engine_test.go",
 	"execution_stats_fdb_test.go",
 	"execution_stats_retry_test.go",
 	"main_test.go",

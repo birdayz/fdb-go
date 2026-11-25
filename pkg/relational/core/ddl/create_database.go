@@ -24,16 +24,33 @@ func isSystemDatabasePath(p string) bool {
 type CreateDatabaseConstantAction struct {
 	dbPath  string
 	catalog api.StoreCatalog
+	ks      *keyspace.RelationalKeyspace // optional; nil uses global domains
 }
 
 func NewCreateDatabaseConstantAction(dbPath string, catalog api.StoreCatalog) *CreateDatabaseConstantAction {
 	return &CreateDatabaseConstantAction{dbPath: dbPath, catalog: catalog}
 }
 
+// NewCreateDatabaseConstantActionWithKeyspace constructs a CreateDatabase action
+// that validates dbPath against ks's domain registry.
+func NewCreateDatabaseConstantActionWithKeyspace(
+	dbPath string,
+	catalog api.StoreCatalog,
+	ks *keyspace.RelationalKeyspace,
+) *CreateDatabaseConstantAction {
+	return &CreateDatabaseConstantAction{dbPath: dbPath, catalog: catalog, ks: ks}
+}
+
 func (a *CreateDatabaseConstantAction) Execute(txn api.Transaction) error {
 	// Java's first statement: the path must name a database of a registered
 	// domain (RelationalKeyspaceProvider.toDatabasePath).
-	if _, err := keyspace.ToDatabasePath(a.dbPath); err != nil {
+	var err error
+	if a.ks != nil {
+		_, err = a.ks.ToDatabasePath(a.dbPath)
+	} else {
+		_, err = keyspace.ToDatabasePath(a.dbPath)
+	}
+	if err != nil {
 		return err
 	}
 	// The system catalog lives under /__SYS (Java: RecordLayerStoreCatalog's

@@ -47,6 +47,9 @@ func (f *RecordLayerMetadataOperationsFactory) DropSchemaTemplate(templateID str
 }
 
 func (f *RecordLayerMetadataOperationsFactory) CreateDatabase(dbPath string, _ api.Options) apiddl.ConstantAction {
+	if f.ks != nil {
+		return NewCreateDatabaseConstantActionWithKeyspace(dbPath, f.catalog, f.ks)
+	}
 	return NewCreateDatabaseConstantAction(dbPath, f.catalog)
 }
 

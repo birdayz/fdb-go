@@ -7,11 +7,14 @@ go_library(
     srcs = [
         "driver.go",
         "dsn.go",
+        "engine.go",
     ],
     importpath = "fdb.dev/pkg/relational/sqldriver",
     visibility = ["//visibility:public"],
     deps = [
         "//internal/unicode15",
+        "//pkg/fdbgo/client",
+        "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/internal/fdbclient",
         "//pkg/recordlayer",
@@ -42,6 +45,7 @@ go_test(
         "dsn_tags_test.go",
         "dsn_transaction_timeout_fdb_test.go",
         "embedded_fdb_errors_test.go",
+        "engine_test.go",
         "execution_stats_fdb_test.go",
         "execution_stats_retry_test.go",
         "main_test.go",
@@ -163,6 +167,23 @@ go_test(
         "//pkg/relational/core/embedded",
         "//pkg/relational/core/keyspace",
         "//pkg/relational/internal/connknob",
+        "//pkg/simfdb",
+    ],
+)
+
+# NewEngine, EngineConfig, ConnConfig, ResourceLimits, and hooks over SimFDB:
+# no Docker, so it runs in the fast lane (just test).
+go_test(
+    name = "engine_test",
+    srcs = ["engine_test.go"],
+    embed = [":sqldriver"],
+    deps = [
+        "//internal/dstwire",
+        "//pkg/dst",
+        "//pkg/fdbgo/fdb",
+        "//pkg/recordlayer",
+        "//pkg/relational/api",
+        "//pkg/relational/core/embedded",
         "//pkg/simfdb",
     ],
 )

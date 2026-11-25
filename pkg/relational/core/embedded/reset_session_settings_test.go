@@ -72,3 +72,36 @@ func TestResetSession_RestoresEveryPerBorrowSetting(t *testing.T) {
 		t.Error("ResetSession dropped the option set SetOptions installed")
 	}
 }
+
+func TestResetSession_PreservesEngineDefaultHooksAndLimits(t *testing.T) {
+	t.Parallel()
+	c := New("/FRL/DB", nil, nil, nil, nil)
+	c.sess = &session.Session{Schema: "S", DefaultSchema: "S"}
+
+	basePlan := nopPlanLogger{}
+	baseStats := nopStatsLogger{}
+	c.SetDefaultFailOnScanLimitReached(true)
+	c.SetDefaultStatementTimeout(5 * time.Second)
+	c.SetDefaultMaxResultBytes(4096)
+	c.SetDefaultPlanLogger(basePlan)
+	c.SetDefaultExecutionStatsLogger(baseStats)
+	c.SetDefaultSlowQueryThresholdMicros(12345)
+
+	// Per-borrow overrides last only until ResetSession.
+	c.SetFailOnScanLimitReached(false)
+	c.SetStatementTimeout(time.Second)
+	c.SetMaxResultBytes(128)
+	c.SetPlanLogger(nil)
+	c.SetExecutionStatsLogger(nil)
+	c.SetSlowQueryThresholdMicros(999)
+
+	if err := c.ResetSession(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !c.failOnScanLimitReached || c.statementTimeout != 5*time.Second || c.maxResultBytes != 4096 ||
+		c.planLogger != basePlan || c.execStatsLogger != baseStats || c.slowQueryThresholdMicros != 12345 {
+		t.Fatalf("ResetSession failed to restore engine defaults: failOnScan=%v timeout=%v maxBytes=%d plan=%v stats=%v slow=%d",
+			c.failOnScanLimitReached, c.statementTimeout, c.maxResultBytes,
+			c.planLogger, c.execStatsLogger, c.slowQueryThresholdMicros)
+	}
+}

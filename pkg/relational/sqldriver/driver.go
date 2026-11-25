@@ -60,6 +60,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/internal/fdbclient"
@@ -280,7 +281,39 @@ type Connector struct {
 	// OFFLINE_STORED_QUERIES_* counts). Atomic because StoredQueryWarmUp is a
 	// public accessor a caller may poll while another goroutine's Connect is
 	// still initializing; nil until initialize stores it.
-	warmUp atomic.Pointer[embedded.StoredQueryWarmUpCounts]
+	warmUp atomic.Pointer[WarmUpCounts]
+
+	// Engine-scoped defaults (nil for legacy Driver/NewConnector paths).
+	engine                   *Engine
+	failOnScanLimitReached   bool
+	statementTimeout         time.Duration
+	maxResultBytes           int64
+	planHook                 PlanHook
+	execStatsHook            ExecStatsHook
+	hasSlowQueryThreshold    bool
+	slowQueryThresholdMicros int64
+}
+
+// WarmUpCounts are the offline stored-query warm-up counts and duration
+// collected at engine or connector start-up (Java's OFFLINE_STORED_QUERIES_*).
+type WarmUpCounts struct {
+	TemplatesProcessed     int
+	QueriesProcessed       int
+	QueriesFailed          int
+	TempFunctionsProcessed int
+	TempFunctionsFailed    int
+	Duration               time.Duration
+}
+
+func warmUpCountsFromEmbedded(w embedded.StoredQueryWarmUpCounts) WarmUpCounts {
+	return WarmUpCounts{
+		TemplatesProcessed:     w.TemplatesProcessed,
+		QueriesProcessed:       w.QueriesProcessed,
+		QueriesFailed:          w.QueriesFailed,
+		TempFunctionsProcessed: w.TempFunctionsProcessed,
+		TempFunctionsFailed:    w.TempFunctionsFailed,
+		Duration:               w.Duration,
+	}
 }
 
 // initFlight runs an initialization until it succeeds once. An attempt runs
@@ -343,11 +376,11 @@ func (f *initFlight) attempt(ctx context.Context, a *initAttempt, init func(cont
 // StoredQueryWarmUp returns what the connector's start planned into its plan
 // cache: Java's OFFLINE_STORED_QUERIES_* counts. Zero before the first
 // connection.
-func (c *Connector) StoredQueryWarmUp() embedded.StoredQueryWarmUpCounts {
+func (c *Connector) StoredQueryWarmUp() WarmUpCounts {
 	if w := c.warmUp.Load(); w != nil {
 		return *w
 	}
-	return embedded.StoredQueryWarmUpCounts{}
+	return WarmUpCounts{}
 }
 
 // Connect opens a connection. Honors ctx.Done() for cancellation, also while
@@ -361,7 +394,11 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 			"remote (gRPC) mode is not yet implemented")
 	}
-	if err := c.init.do(ctx, c.initialize); err != nil {
+	if c.engine != nil {
+		if c.engine.closed.Load() {
+			return nil, api.NewError(api.ErrCodeConnectionDoesNotExist, "engine is closed")
+		}
+	} else if err := c.init.do(ctx, c.initialize); err != nil {
 		return nil, err
 	}
 	conn := embedded.New(c.dsn.Path, c.fdbDB, c.cat, c.factory, c.ks)
@@ -372,6 +409,20 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	conn.SetPlanCache(c.planCache)
 	if c.dsn.Schema != "" {
 		conn.SetDefaultSchema(c.dsn.Schema)
+	}
+	if c.engine != nil {
+		conn.SetDefaultFailOnScanLimitReached(c.failOnScanLimitReached)
+		conn.SetDefaultStatementTimeout(c.statementTimeout)
+		conn.SetDefaultMaxResultBytes(c.maxResultBytes)
+		if c.planHook != nil {
+			conn.SetDefaultPlanLogger(planHookAdapter{fn: c.planHook})
+		}
+		if c.execStatsHook != nil {
+			conn.SetDefaultExecutionStatsLogger(execStatsHookAdapter{fn: c.execStatsHook})
+		}
+		if c.hasSlowQueryThreshold {
+			conn.SetDefaultSlowQueryThresholdMicros(c.slowQueryThresholdMicros)
+		}
 	}
 	return conn, nil
 }
@@ -446,8 +497,8 @@ func (c *Connector) initialize(ctx context.Context) error {
 	if c.readOnly {
 		catalogReader = embedded.ReadOnlyRunner(c.fdbDB)
 	}
-	warmUp := embedded.WarmStoredQueries(ctx, c.planCache,
-		embedded.StoredQueryTemplates(ctx, catalogReader, c.cat))
+	warmUp := warmUpCountsFromEmbedded(embedded.WarmStoredQueries(ctx, c.planCache,
+		embedded.StoredQueryTemplates(ctx, catalogReader, c.cat)))
 	c.warmUp.Store(&warmUp)
 	return nil
 }

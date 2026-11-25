@@ -162,6 +162,15 @@ type EmbeddedConnection struct {
 	// readOnly makes the connection read-only for its lifetime (SetReadOnly,
 	// read_only.go). It outlives ResetSession and nothing clears it.
 	readOnly bool
+
+	// Base values installed by the Engine/Connector that ResetSession restores,
+	// matching baseOptions for the Go-local settings and hooks.
+	baseFailOnScanLimitReached   bool
+	baseStatementTimeout         time.Duration
+	baseMaxResultBytes           int64
+	basePlanLogger               PlanGenerationLogger
+	baseExecStatsLogger          ExecutionStatsLogger
+	baseSlowQueryThresholdMicros int64
 }
 
 // Options returns the connection's api.Options, or api.NoOptions() when
@@ -283,6 +292,54 @@ func (c *EmbeddedConnection) SetExecutionStatsLogger(l ExecutionStatsLogger) {
 // until ResetSession.
 func (c *EmbeddedConnection) SetSlowQueryThresholdMicros(micros int64) {
 	c.slowQueryThresholdMicros = micros
+}
+
+// SetDefaultFailOnScanLimitReached sets FailOnScanLimitReached for this
+// connection and makes ResetSession restore it across pool checkouts.
+func (c *EmbeddedConnection) SetDefaultFailOnScanLimitReached(v bool) {
+	c.failOnScanLimitReached = v
+	c.baseFailOnScanLimitReached = v
+}
+
+// SetDefaultStatementTimeout sets StatementTimeout for this connection and
+// makes ResetSession restore it across pool checkouts.
+func (c *EmbeddedConnection) SetDefaultStatementTimeout(d time.Duration) {
+	if d < 0 {
+		d = 0
+	}
+	c.statementTimeout = d
+	c.baseStatementTimeout = d
+}
+
+// SetDefaultMaxResultBytes sets MaxResultBytes for this connection and makes
+// ResetSession restore it across pool checkouts.
+func (c *EmbeddedConnection) SetDefaultMaxResultBytes(n int64) {
+	if n < 0 {
+		n = 0
+	}
+	c.maxResultBytes = n
+	c.baseMaxResultBytes = n
+}
+
+// SetDefaultPlanLogger installs a PlanGenerationLogger that survives
+// ResetSession across pool checkouts.
+func (c *EmbeddedConnection) SetDefaultPlanLogger(l PlanGenerationLogger) {
+	c.planLogger = l
+	c.basePlanLogger = l
+}
+
+// SetDefaultExecutionStatsLogger installs an ExecutionStatsLogger that survives
+// ResetSession across pool checkouts.
+func (c *EmbeddedConnection) SetDefaultExecutionStatsLogger(l ExecutionStatsLogger) {
+	c.execStatsLogger = l
+	c.baseExecStatsLogger = l
+}
+
+// SetDefaultSlowQueryThresholdMicros sets the slow-query threshold in
+// microseconds and makes ResetSession restore it across pool checkouts.
+func (c *EmbeddedConnection) SetDefaultSlowQueryThresholdMicros(micros int64) {
+	c.slowQueryThresholdMicros = micros
+	c.baseSlowQueryThresholdMicros = micros
 }
 
 // embeddedTx is the driver.Tx returned by BeginTx. It holds the open FDB
@@ -867,7 +924,11 @@ func (c *EmbeddedConnection) loadSchemaWith(txn api.Transaction, dbPath, schemaN
 	// Past the catalog checks Java's connect resolves the database's keyspace
 	// path (RecordLayerStorageCluster.loadDatabase → toDatabasePath): a
 	// database outside the registered domains is INVALID_PATH.
-	if _, err := keyspace.ToDatabasePath(dbPath); err != nil {
+	if c.sess != nil && c.sess.Keyspace != nil {
+		if _, err := c.sess.Keyspace.ToDatabasePath(dbPath); err != nil {
+			return nil, err
+		}
+	} else if _, err := keyspace.ToDatabasePath(dbPath); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -1017,9 +1078,11 @@ func New(
 ) *EmbeddedConnection {
 	sess := session.New(fdbDB, cat, ks, factory)
 	sess.DBPath = dbPath
+	slowThresh := defaultSlowQueryThresholdMicros()
 	return &EmbeddedConnection{
-		sess:                     sess,
-		slowQueryThresholdMicros: defaultSlowQueryThresholdMicros(),
+		sess:                         sess,
+		slowQueryThresholdMicros:     slowThresh,
+		baseSlowQueryThresholdMicros: slowThresh,
 	}
 }
 
@@ -1358,15 +1421,15 @@ func (c *EmbeddedConnection) ResetSession(_ context.Context) (err error) {
 	if c.SharedPlanCache() == nil {
 		c.invalidatePlanCache()
 	}
-	// A SetOption made through Conn.Raw lasts for that borrow only, and so do
-	// the Go-local settings below, which no DSN sets.
+	// A SetOption or setter call made through Conn.Raw lasts for that borrow
+	// only; ResetSession restores the connector/engine defaults.
 	c.options = c.baseOptions
-	c.failOnScanLimitReached = false
-	c.statementTimeout = 0
-	c.maxResultBytes = 0
-	c.planLogger = nil
-	c.execStatsLogger = nil
-	c.slowQueryThresholdMicros = defaultSlowQueryThresholdMicros()
+	c.failOnScanLimitReached = c.baseFailOnScanLimitReached
+	c.statementTimeout = c.baseStatementTimeout
+	c.maxResultBytes = c.baseMaxResultBytes
+	c.planLogger = c.basePlanLogger
+	c.execStatsLogger = c.baseExecStatsLogger
+	c.slowQueryThresholdMicros = c.baseSlowQueryThresholdMicros
 	return nil
 }
 
