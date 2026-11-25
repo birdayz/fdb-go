@@ -1,0 +1,10 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+package(default_visibility = ["//:__subpackages__"])
+
+go_library(
+    name = "connknob",
+    srcs = ["connknob.go"],
+    importpath = "fdb.dev/internal/relational/connknob",
+    visibility = ["//:__subpackages__"],
+)

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // TestAsSelectIndex_StarOverArrayRejectsAtTheSemanticBoundary pins that a star

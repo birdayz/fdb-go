@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"fdb.dev/internal/recordlayer/protoname"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/query/expr"
 	"fdb.dev/pkg/relational/core/query/logical"
 	"fdb.dev/pkg/relational/core/query/semantic"

@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/relational/core/functions"
+	"fdb.dev/internal/relational/functions"
 
 	"github.com/spf13/cobra"
 

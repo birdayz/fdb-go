@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/metadata"
+	"fdb.dev/internal/relational/metadata"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/relational/core/parser"
 	"fdb.dev/pkg/relational/core/query/logical"
 )

@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"fdb.dev/internal/recordlayer/indexfetch"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	"fdb.dev/pkg/relational/api"
 )
 
 const indexFetchMethodDDL = "CREATE TABLE T (id BIGINT, a BIGINT, b BIGINT, c STRING, PRIMARY KEY (id))" +

@@ -22,7 +22,7 @@ import (
 	"io"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 func TestExecuteStateIsStatementScopedInTx(t *testing.T) {

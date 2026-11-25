@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // The planner-level pins for three facts about a FROM item that each engine

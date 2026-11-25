@@ -18,10 +18,10 @@ import (
 	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/relational/catalog"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/catalog"
 )
 
 // An absent child of a key expression, read as Java reads it (RFC-257 WS-J;

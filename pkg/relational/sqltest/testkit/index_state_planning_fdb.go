@@ -9,13 +9,13 @@ import (
 	"strings"
 	"testing"
 
+	relkeyspace "fdb.dev/internal/relational/keyspace"
+	"fdb.dev/internal/relational/metadata"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
-	relkeyspace "fdb.dev/pkg/relational/core/keyspace"
-	"fdb.dev/pkg/relational/core/metadata"
 )
 
 const indexStatePlanningDDL = "CREATE TABLE T (" +

@@ -8,7 +8,7 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // TestFDB_FieldValuedComputedScalar pins a bug where a PARENTHESIZED plain

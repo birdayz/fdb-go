@@ -42,9 +42,9 @@ go_test(
     deps = [
         "//internal/dst",
         "//internal/dstwire",
+        "//internal/relational/keyspace",
         "//pkg/recordlayer",
         "//pkg/relational/conformance/factorycorpus",
-        "//pkg/relational/core/keyspace",
         "//pkg/simfdb",
     ],
 )

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/relational/conformance/factorycorpus"
 	"fdb.dev/pkg/relational/conformance/javacorpus"
 	"fdb.dev/pkg/relational/conformance/yamsql"

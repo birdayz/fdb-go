@@ -10,10 +10,10 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
+	"fdb.dev/internal/relational/connknob"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/relational/internal/connknob"
 )
 
 // setStatementReadMaxAge sets how long after the statement's first read its

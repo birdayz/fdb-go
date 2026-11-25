@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // enumNamesOf is the stored records file's enum types, in file order, each

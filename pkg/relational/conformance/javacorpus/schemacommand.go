@@ -26,13 +26,13 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 
+	"fdb.dev/internal/relational/ddl"
+	"fdb.dev/internal/relational/metadata"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/javayamsql"
-	"fdb.dev/pkg/relational/core/ddl"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/relational/core/metadata"
 )
 
 // The yaml-tests command pair `load schema template` and `set schema state`:

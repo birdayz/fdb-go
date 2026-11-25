@@ -16,9 +16,9 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"fdb.dev/internal/relational/catalog"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/catalog"
 )
 
 var _ = Describe("SchemaTemplateCatalog cross-language round-trip (A2)", func() {

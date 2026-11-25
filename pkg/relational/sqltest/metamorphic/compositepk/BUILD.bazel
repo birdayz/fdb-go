@@ -15,7 +15,7 @@ go_test(
         "test-full",
     ],
     deps = [
-        "//pkg/relational/api",
+        "//internal/relational/relapi",
         "//pkg/relational/core/embedded",
         "//pkg/relational/sqltest/testkit",
     ],

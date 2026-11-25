@@ -28,8 +28,8 @@ import (
 	"golang.org/x/sys/unix"
 
 	"fdb.dev/cmd/fdb/internal/config"
+	"fdb.dev/internal/relational/functions"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/relational/core/functions"
 
 	"fdb.dev/pkg/relational/sqldriver"
 )

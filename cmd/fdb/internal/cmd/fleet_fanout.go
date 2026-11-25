@@ -6,13 +6,13 @@ import (
 	"sort"
 	"strings"
 
-	"fdb.dev/pkg/relational/core/functions"
+	"fdb.dev/internal/relational/functions"
 
 	"github.com/spf13/cobra"
 
+	"fdb.dev/internal/relational/catalog"
+	"fdb.dev/internal/relational/fleet"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/core/catalog"
-	"fdb.dev/pkg/relational/core/fleet"
 )
 
 // Fleet fan-out: the multi-tenant half of the index/migration write surface.

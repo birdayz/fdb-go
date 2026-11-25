@@ -26,10 +26,10 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/catalog"
-	"fdb.dev/pkg/relational/core/ddl"
-	"fdb.dev/pkg/relational/core/fleet"
+	"fdb.dev/internal/relational/catalog"
+	"fdb.dev/internal/relational/ddl"
+	"fdb.dev/internal/relational/fleet"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // fleetRowsPerSchema is above zero on purpose: a relational template carries no

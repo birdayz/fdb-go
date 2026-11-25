@@ -5,11 +5,11 @@ import (
 	"errors"
 	"sync"
 
+	"fdb.dev/internal/relational/keyspace"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/keyspace"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"

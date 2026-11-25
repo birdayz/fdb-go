@@ -10,11 +10,11 @@ import (
 	"testing"
 
 	"fdb.dev/internal/dstwire"
+	"fdb.dev/internal/relational/keyspace"
+	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/rowstruct"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/keyspace"
-	"fdb.dev/pkg/relational/core/rowstruct"
 )
 
 // readOnlyIDs returns the ids of t, read on a writable connection of g.

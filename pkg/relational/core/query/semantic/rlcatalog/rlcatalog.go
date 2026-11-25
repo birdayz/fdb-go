@@ -304,7 +304,7 @@ func isNullable(f protoreflect.FieldDescriptor) bool {
 
 // uuidProtoMessageName is the fully-qualified tuple_fields.UUID message that
 // fdb-relational stores UUID column values in (canonical copy in
-// pkg/relational/core/functions.UUIDProtoMessageName; duplicated here to avoid
+// internal/relational/functions.UUIDProtoMessageName; duplicated here to avoid
 // an import cycle through the functions package). Java treats UUID as a
 // first-class primitive (DataType.Primitives.UUID), so the column must resolve
 // to a UUID cascades type — not the generic "RECORD"/Unknown a bare MessageKind

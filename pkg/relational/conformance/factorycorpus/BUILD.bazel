@@ -48,8 +48,8 @@ go_library(
         "//pkg/relational/conformance:__subpackages__",
     ],
     deps = [
+        "//internal/relational/relapi",
         "//pkg/recordlayer",
-        "//pkg/relational/api",
         "//pkg/relational/conformance/javacorpus",
         "//pkg/relational/conformance/javayamsql",
         "//pkg/relational/conformance/yamsql",
@@ -104,10 +104,10 @@ go_test(
         "resources:memory:6500",
     ],
     deps = [
-        "//pkg/relational/api",
+        "//internal/relational/keyspace",
+        "//internal/relational/relapi",
         "//pkg/relational/conformance/javacorpus",
         "//pkg/relational/conformance/javayamsql",
         "//pkg/relational/conformance/yamsql",
-        "//pkg/relational/core/keyspace",
     ],
 )

@@ -41,10 +41,10 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
+	"fdb.dev/internal/relational/ddl"
+	"fdb.dev/internal/relational/metadata"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/ddl"
-	"fdb.dev/pkg/relational/core/metadata"
 )
 
 // evolTemplate builds template `name` at `version` over one table T(PK,C,V),

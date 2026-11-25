@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // TestOptContinuation_RejectsLoudly pins the RFC-181 C2 decision: Go SQL

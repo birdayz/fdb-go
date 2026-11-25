@@ -19,14 +19,14 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/internal/recordlayer/query/executor"
+	"fdb.dev/internal/relational/metadata"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/relational/core/metadata"
 )
 
 // A secondary VALUE index on a FLOAT/DOUBLE column is ordered by its physical

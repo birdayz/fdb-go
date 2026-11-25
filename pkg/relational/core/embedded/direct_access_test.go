@@ -12,8 +12,8 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/rowstruct"
+	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/rowstruct"
 )
 
 // directAccessSchema is Java's UniqueIndexTests T4 with the #4243 UUID

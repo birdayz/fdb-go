@@ -16,9 +16,9 @@ import (
 
 	"github.com/chzyer/readline"
 
+	"fdb.dev/internal/relational/catalog"
+	relapi "fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
-	relapi "fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/catalog"
 )
 
 // tableInfo is the minimal shape rendered by \d — table name + column

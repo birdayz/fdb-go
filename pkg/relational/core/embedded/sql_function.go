@@ -9,9 +9,9 @@ import (
 	"sort"
 	"strings"
 
+	"fdb.dev/internal/relational/functions"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/functions"
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query/expr"

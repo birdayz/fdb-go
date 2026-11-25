@@ -12,9 +12,9 @@ import (
 	"errors"
 	"testing"
 
+	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/session"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/session"
 )
 
 var srSchemaKey = session.SchemaCacheKey(srDBPath, srSchema)

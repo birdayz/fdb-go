@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"

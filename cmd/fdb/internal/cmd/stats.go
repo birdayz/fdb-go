@@ -12,9 +12,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"fdb.dev/internal/relational/functions"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/relational/core/functions"
 	"fdb.dev/pkg/relational/sqldriver"
 )
 

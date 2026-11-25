@@ -29,17 +29,17 @@ import (
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 
-	"fdb.dev/pkg/relational/core/catalog"
-	"fdb.dev/pkg/relational/core/keyspace"
-	"fdb.dev/pkg/relational/core/metadata"
+	"fdb.dev/internal/relational/catalog"
+	"fdb.dev/internal/relational/keyspace"
+	"fdb.dev/internal/relational/metadata"
+	"fdb.dev/internal/relational/session"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query"
-	"fdb.dev/pkg/relational/core/session"
 
+	"fdb.dev/internal/relational/exceptionutil"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/exceptionutil"
 )
 
 // EmbeddedConnection is an in-process SQL connection backed by FDB.

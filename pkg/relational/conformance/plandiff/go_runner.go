@@ -38,7 +38,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/relational/core/embedded"
 
 	// Register the fdbsql driver for blank-import side-effects.

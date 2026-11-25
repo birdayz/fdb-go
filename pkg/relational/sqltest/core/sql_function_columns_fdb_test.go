@@ -9,7 +9,7 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // A table function call and a recursive CTE read their rows through a

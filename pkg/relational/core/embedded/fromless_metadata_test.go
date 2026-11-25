@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // A FROM-less SELECT's result metadata takes each expression's own type and

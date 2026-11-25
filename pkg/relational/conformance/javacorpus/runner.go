@@ -13,8 +13,8 @@ import (
 	"fmt"
 	"strings"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/javayamsql"
 	"fdb.dev/pkg/relational/conformance/yamsql"
 	"fdb.dev/pkg/relational/sqldriver"

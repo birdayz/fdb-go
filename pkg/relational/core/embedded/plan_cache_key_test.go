@@ -3,7 +3,7 @@ package embedded
 import (
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // planCacheHitsSame reports whether two (scope, sql) pairs land on the same

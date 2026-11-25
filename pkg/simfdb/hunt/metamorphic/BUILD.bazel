@@ -13,8 +13,8 @@ go_library(
     deps = [
         "//internal/dst",
         "//internal/dstwire",
+        "//internal/relational/relapi",
         "//pkg/recordlayer",
-        "//pkg/relational/api",
         "//pkg/relational/sqldriver",
         "//pkg/simfdb",
     ],
@@ -28,5 +28,5 @@ go_test(
     ],
     data = glob(["testdata/**"]),
     embed = [":metamorphic"],
-    deps = ["//pkg/relational/core/keyspace"],
+    deps = ["//internal/relational/keyspace"],
 )

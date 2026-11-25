@@ -1,6 +1,6 @@
 ---
 lens: java-compat
-applies: ["pkg/recordlayer/**", "internal/recordlayer/**", "pkg/relational/**", "proto/**"]
+applies: ["pkg/recordlayer/**", "internal/recordlayer/**", "pkg/relational/**", "internal/relational/**", "proto/**"]
 references:
   - "Java Record Layer / Relational 4.14.2.0 in fdb-record-layer/ (gitignored checkout; the reference implementation; clone if missing: git clone --depth 1 --branch 4.14.2.0 https://github.com/FoundationDB/fdb-record-layer fdb-record-layer)"
   - "DIVERGENCES.md and docs/compatibility.md: declared compatibility boundaries"

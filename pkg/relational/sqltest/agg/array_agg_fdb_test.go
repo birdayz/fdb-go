@@ -9,7 +9,7 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // ARRAY_AGG as in Java 4.14.2.0's ArrayAggValue.

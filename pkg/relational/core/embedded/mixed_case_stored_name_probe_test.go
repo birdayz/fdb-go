@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/metadata"
+	"fdb.dev/internal/relational/metadata"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // What a record type whose STORED name is not upper-case does to access paths,

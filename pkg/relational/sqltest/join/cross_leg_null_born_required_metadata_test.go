@@ -12,7 +12,7 @@ package sqltest
 // LABEL_OPTIONAL to every scalar and struct and LABEL_REPEATED to a flat array,
 // and has no LABEL_REQUIRED branch at all, mirroring Java's
 // Type.Record.defineProtoType. That emitter property is not left as prose here:
-// TestDDLEmitterNeverEmitsRequired (pkg/relational/core/metadata) pins it and
+// TestDDLEmitterNeverEmitsRequired (internal/relational/metadata) pins it and
 // names this test as one of the three things that go live if it ever changes.
 // MEASURED over the full factorycorpus at the
 // commit that added this test: 216,848 projection slots derived, ZERO reaching
@@ -47,8 +47,8 @@ import (
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/types/descriptorpb"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 

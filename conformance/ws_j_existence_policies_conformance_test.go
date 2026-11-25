@@ -14,12 +14,12 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"fdb.dev/internal/relational/catalog"
+	"fdb.dev/internal/relational/keyspace"
+	"fdb.dev/internal/relational/metadata"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/catalog"
-	"fdb.dev/pkg/relational/core/keyspace"
-	"fdb.dev/pkg/relational/core/metadata"
 )
 
 // Distinct names isolate the engines in the shared catalog while pinning

@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 
+	"fdb.dev/internal/relational/catalog"
+	relkeyspace "fdb.dev/internal/relational/keyspace"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/core/catalog"
-	relkeyspace "fdb.dev/pkg/relational/core/keyspace"
 )
 
 // catalogSource loads metadata resolved from the

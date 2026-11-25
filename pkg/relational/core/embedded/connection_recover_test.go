@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // TestRecoveredPanicError pins the database/sql boundary-recover contract (P0.2):

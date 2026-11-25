@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strconv"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/internal/unicode15"
-	"fdb.dev/pkg/relational/api"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )
 

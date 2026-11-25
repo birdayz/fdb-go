@@ -80,6 +80,8 @@ var (
 		"fdb.dev/pkg/relational/core",
 		"fdb.dev/internal/relational/api",
 		"fdb.dev/internal/relational/core",
+		"fdb.dev/internal/relational/relapi",
+		"fdb.dev/internal/relational",
 		"fdb.dev/relational/api",
 		"fdb.dev/relational/core",
 	}
@@ -130,6 +132,8 @@ var (
 		"fdb.dev/pkg/relational/sqldriver",
 		"fdb.dev/internal/relational/api",
 		"fdb.dev/internal/relational/core",
+		"fdb.dev/internal/relational/relapi",
+		"fdb.dev/internal/relational",
 		"fdb.dev/internal/relational/sqldriver",
 		"fdb.dev/relational/api",
 		"fdb.dev/relational/core",
@@ -142,6 +146,7 @@ var (
 		"fdb.dev/internal/recordlayer/keystoretest",
 		"fdb.dev/recordlayer/chaos",
 		"fdb.dev/recordlayer/keystoretest",
+		"fdb.dev/internal/relational/simgate",
 	}
 	r4ForbiddenRoots = []string{
 		"fdb.dev/pkg/testcontainers",
@@ -241,6 +246,8 @@ var (
 		"fdb.dev/internal/fdbgo/transport":                   true,
 		"fdb.dev/internal/recordlayer/query/executor":        true,
 		"fdb.dev/internal/recordlayer/rtree":                 true,
+		"fdb.dev/internal/relational/catalog":                true,
+		"fdb.dev/internal/relational/ddl":                    true,
 		"fdb.dev/pkg/fdbgo/fdb":                              true,
 		"fdb.dev/pkg/fdbgo/fdb/subspace":                     true,
 		"fdb.dev/pkg/fdbgo/fdb/tuple":                        true,
@@ -248,8 +255,6 @@ var (
 		"fdb.dev/pkg/recordlayer/keyspace":                   true,
 		"fdb.dev/pkg/recordlayer/query/plan/cascades/values": true,
 		"fdb.dev/pkg/recordlayer/vectorindex":                true,
-		"fdb.dev/pkg/relational/core/catalog":                true,
-		"fdb.dev/pkg/relational/core/ddl":                    true,
 		"fdb.dev/pkg/relational/core/query/expr":             true,
 		"fdb.dev/pkg/relational/sqltest/agg":                 true,
 		"fdb.dev/pkg/relational/sqltest/core":                true,
@@ -292,7 +297,7 @@ func run(pass *analysis.Pass) (any, error) {
 	inR4 := withinAny(pkgPath, coreRuntimeRoots) && !withinAny(pkgPath, coreRuntimeExemptions)
 	inL0 := withinAny(pkgPath, r2AllowedLeaves)
 	inL3 := inR1 && !inL0 && !inR2 && !withinAny(pkgPath, executorRoots)
-	inL6 := withinAny(pkgPath, relationalCoreAPIRoots)
+	inL6 := withinAny(pkgPath, relationalCoreAPIRoots) && !withinAny(pkgPath, sqlDriverRoots)
 
 	for _, file := range pass.Files {
 		filename := filepath.ToSlash(pass.Fset.Position(file.Package).Filename)

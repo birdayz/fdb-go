@@ -12,6 +12,7 @@ go_library(
     importpath = "fdb.dev/pkg/relational/core/query/ddl",
     visibility = ["//visibility:public"],
     deps = [
+        "//internal/relational/relapi",
         "//internal/unicode15",
         "//pkg/recordlayer",
         "//pkg/recordlayer/metadatapb",
@@ -19,7 +20,6 @@ go_library(
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
-        "//pkg/relational/api",
         "//pkg/relational/core/query",
         "//pkg/relational/core/query/logical",
         "@org_golang_google_protobuf//reflect/protoreflect",
@@ -35,9 +35,9 @@ go_test(
     ],
     embed = [":ddl"],
     deps = [
+        "//internal/relational/relapi",
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/plan/cascades/values",
-        "//pkg/relational/api",
         "//pkg/relational/core/query/logical",
         "@org_golang_google_protobuf//reflect/protoreflect",
     ],

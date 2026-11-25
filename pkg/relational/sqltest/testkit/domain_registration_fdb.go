@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
+	"fdb.dev/internal/relational/keyspace"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/core/keyspace"
 )
 
 // RelationalStoreSubspace is the record-store subspace of a schema the driver

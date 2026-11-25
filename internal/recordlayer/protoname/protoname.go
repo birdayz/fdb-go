@@ -9,7 +9,7 @@
 // escaped name may safely be shown as the SQL identifier it came from.
 //
 // It is a LEAF package on purpose. The escaping is needed by the DDL-time
-// emitter (pkg/relational/core/metadata), by pkg/recordlayer itself, and by
+// emitter (internal/relational/metadata), by pkg/recordlayer itself, and by
 // the plan-time emitter that synthesises a descriptor for a COMPUTED record
 // (pkg/recordlayer/query/plan/cascades/values) — and that last one cannot
 // import pkg/recordlayer, which already imports it. One escaping, one

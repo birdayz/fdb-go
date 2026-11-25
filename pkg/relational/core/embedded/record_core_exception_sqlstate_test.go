@@ -8,11 +8,11 @@ import (
 
 	"fdb.dev/pkg/recordlayer/vectorindex"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/relational/api"
 )
 
 // Every Go error type porting a Java RecordCoreException subclass reaches SQL

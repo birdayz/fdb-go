@@ -23,7 +23,7 @@ package sqltest
 // (NoNulls → Nullable) is vacuous, and first-match cannot produce an
 // observable wrong answer on this axis. That emitter property is PINNED, not
 // merely asserted here: TestDDLEmitterNeverEmitsRequired
-// (pkg/relational/core/metadata) fails if any column shape starts emitting
+// (internal/relational/metadata) fails if any column shape starts emitting
 // REQUIRED, and names this test as one of the things it re-arms. Both slots below report nullable,
 // which is also Java's (#4274) answer for the null-supplying slot. If either
 // assertion goes red because a column reports NoNulls again, some shape

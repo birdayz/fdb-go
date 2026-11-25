@@ -22,14 +22,14 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/internal/relational/catalog"
+	"fdb.dev/internal/relational/fleet"
+	"fdb.dev/internal/relational/keyspace"
+	"fdb.dev/internal/relational/metadata"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/catalog"
-	"fdb.dev/pkg/relational/core/fleet"
-	"fdb.dev/pkg/relational/core/keyspace"
-	"fdb.dev/pkg/relational/core/metadata"
 )
 
 type FleetHarness struct {

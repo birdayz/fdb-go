@@ -1,7 +1,7 @@
 package query
 
 import (
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 

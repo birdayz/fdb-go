@@ -11,8 +11,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
 )
 
 // RFC-202 S3 goldens: the aggregate arm of the AS-SELECT index generator,

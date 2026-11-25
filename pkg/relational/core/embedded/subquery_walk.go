@@ -1,8 +1,8 @@
 package embedded
 
 import (
+	"fdb.dev/internal/relational/functions"
 	"fdb.dev/internal/unicode15"
-	"fdb.dev/pkg/relational/core/functions"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"github.com/antlr4-go/antlr/v4"
 )

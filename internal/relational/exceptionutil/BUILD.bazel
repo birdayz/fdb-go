@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+package(default_visibility = ["//:__subpackages__"])
+
+go_library(
+    name = "exceptionutil",
+    srcs = ["exceptionutil.go"],
+    importpath = "fdb.dev/internal/relational/exceptionutil",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/fdbwire",
+        "//internal/relational/relapi",
+        "//pkg/fdbgo/fdb",
+    ],
+)

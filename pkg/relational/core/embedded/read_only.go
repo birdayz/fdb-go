@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 
+	"fdb.dev/internal/relational/keyspace"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/keyspace"
 )
 
 // SetReadOnly makes the connection read-only for the rest of its life; nothing

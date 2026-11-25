@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/javacorpus"
 )
 

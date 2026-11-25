@@ -22,11 +22,11 @@ import (
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/relational/api"
 	querycore "fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/logical"
 )

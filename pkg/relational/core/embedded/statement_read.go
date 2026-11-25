@@ -5,10 +5,10 @@ import (
 	"database/sql/driver"
 	"time"
 
+	"fdb.dev/internal/relational/connknob"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/internal/connknob"
 )
 
 // statementReadMaxAge bounds how long after its first read an auto-commit

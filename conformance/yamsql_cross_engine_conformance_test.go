@@ -39,7 +39,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/relational/conformance/plandiff"
 	"fdb.dev/pkg/relational/conformance/yamsql"
 )
@@ -3510,7 +3510,7 @@ func stringComparisonOpsScenario() *yamsql.Scenario {
 // castChainScenario probes nested CAST conversions: int → string → int,
 // DOUBLE round-trip preservation, and DOUBLE→BIGINT rounding (Java's
 // `Math.round` semantics — `floor(x + 0.5)` — already implemented in
-// `pkg/relational/core/functions/cast.go`'s `CastValue.DOUBLE_TO_LONG`
+// `internal/relational/functions/cast.go`'s `CastValue.DOUBLE_TO_LONG`
 // path; both engines round 1.9 → 2). Net-new.
 func castChainScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{

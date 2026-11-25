@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"fdb.dev/internal/recordlayer/vectorcodec"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/parser"
 	"github.com/google/uuid"
 )

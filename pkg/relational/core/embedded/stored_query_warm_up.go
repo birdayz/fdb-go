@@ -11,14 +11,14 @@ import (
 	"log/slog"
 	"time"
 
+	"fdb.dev/internal/relational/catalog"
+	"fdb.dev/internal/relational/keyspace"
+	"fdb.dev/internal/relational/metadata"
+	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/session"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/catalog"
-	"fdb.dev/pkg/relational/core/keyspace"
-	"fdb.dev/pkg/relational/core/metadata"
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
-	"fdb.dev/pkg/relational/core/session"
 )
 
 // StoredQueryWarmUpCounts are Java's OFFLINE_STORED_QUERIES_* counts and the

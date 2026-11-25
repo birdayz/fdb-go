@@ -63,13 +63,13 @@ import (
 	"time"
 
 	"fdb.dev/internal/fdbclient"
+	"fdb.dev/internal/relational/catalog"
+	"fdb.dev/internal/relational/ddl"
+	"fdb.dev/internal/relational/keyspace"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/catalog"
-	"fdb.dev/pkg/relational/core/ddl"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/relational/core/keyspace"
 )
 
 // DriverName is the database/sql driver name.

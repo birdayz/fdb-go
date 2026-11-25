@@ -26,8 +26,8 @@ import (
 
 	"fdb.dev/internal/fdbgo/transport"
 	"fdb.dev/internal/fdbwire"
+	"fdb.dev/internal/relational/relapi"
 	gofdb "fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/plandiff"
 )
 

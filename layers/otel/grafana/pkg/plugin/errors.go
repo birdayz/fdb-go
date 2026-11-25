@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"fdb.dev/internal/fdbwire"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/relational/api"
 )
 
 // Health-check and request steps a failure is reported against.

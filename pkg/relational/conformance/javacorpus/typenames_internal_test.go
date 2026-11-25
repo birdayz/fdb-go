@@ -3,7 +3,7 @@ package javacorpus
 import (
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // TestResultMetadataTypeNameVocabulary pins the type-NAME vocabulary a

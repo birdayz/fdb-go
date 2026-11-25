@@ -14,10 +14,10 @@ import (
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 
+	"fdb.dev/internal/relational/metadata"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/relational/core/metadata"
 )
 
 // The index-definition fixes of RFC-257 WS-J measured end to end through the

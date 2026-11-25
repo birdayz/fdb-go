@@ -12,10 +12,10 @@ import (
 	configv1 "fdb.dev/cmd/fdb/gen/fdb/config/v1"
 	"fdb.dev/cmd/fdb/internal/config"
 	"fdb.dev/cmd/fdb/internal/meta"
+	"fdb.dev/internal/relational/functions"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/core/functions"
 )
 
 // storeAddressFlags is the shared flag set for every store-touching

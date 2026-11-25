@@ -15,9 +15,9 @@ import (
 
 	"fdb.dev/internal/dst"
 	"fdb.dev/internal/recordlayer/query/executor"
+	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/session"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/session"
 )
 
 // TestRFC106a_DefaultSafety is the default-safety gate: a

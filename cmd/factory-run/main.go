@@ -38,7 +38,7 @@ import (
 	"strings"
 	"time"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/relational/conformance/factory"
 	"fdb.dev/pkg/relational/conformance/factorycorpus"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"

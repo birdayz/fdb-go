@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/internal/relational/metadata"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/metadata"
 )
 
 // customCandidacyIndexType is a custom maintainer's type (the OTel posting

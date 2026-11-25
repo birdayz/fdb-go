@@ -7,8 +7,8 @@ import (
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/relational/api"
 )
 
 // The index generator's field-path trie against the root key expressions the

@@ -15,11 +15,11 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"fdb.dev/internal/relational/catalog"
+	"fdb.dev/internal/relational/keyspace"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/catalog"
-	"fdb.dev/pkg/relational/core/keyspace"
 )
 
 // The connection's schema option (RFC-257 follow-up, TODO.md "The Go driver

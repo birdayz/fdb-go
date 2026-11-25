@@ -10,9 +10,9 @@ import (
 	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/session"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/session"
 	"google.golang.org/protobuf/proto"
 )
 

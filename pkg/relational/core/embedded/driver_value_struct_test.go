@@ -4,8 +4,8 @@ import (
 	"testing"
 
 	"fdb.dev/internal/recordlayer/query/executor"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/relational/api"
 )
 
 type driverOrdinalFixture struct {

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode/utf16"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // DuplicateArgumentNamesError is visitNamedOrUnnamedFunctionArgs' refusal of a

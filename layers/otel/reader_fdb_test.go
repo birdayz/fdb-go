@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/internal/relational/keyspace"
 	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/layers/otel/otelsql/otelv1pb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -22,7 +23,6 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/relational/core/keyspace"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"

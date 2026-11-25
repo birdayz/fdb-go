@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // TestDecimalAndNumericAreNotColumnTypes pins the absence of an exact-decimal

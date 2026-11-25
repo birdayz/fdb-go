@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"fdb.dev/internal/recordlayer/indexfetch"
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // TestPlannerOptions_IndexFetchMethod pins OptionsUtils.getIndexFetchMethod's

@@ -20,6 +20,8 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/internal/recordlayer/query/executor"
+	"fdb.dev/internal/relational/metadata"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -27,9 +29,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/relational/core/metadata"
 )
 
 func TestFDB_DynamicNaNCompositeIndexKeyFilter(t *testing.T) {

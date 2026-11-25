@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // A DDL refusal whose message is its typed cause's text renders that text once.

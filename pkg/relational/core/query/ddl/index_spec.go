@@ -11,11 +11,11 @@ import (
 	"fmt"
 	"strings"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/relational/api"
 )
 
 // indexSpec is Java's IndexSpec (IndexSpec.java): what the graph of an

@@ -10,8 +10,8 @@ go_library(
     importpath = "fdb.dev/pkg/relational/core/parser",
     visibility = ["//visibility:public"],
     deps = [
+        "//internal/relational/relapi",
         "//internal/unicode15",
-        "//pkg/relational/api",
         "//pkg/relational/core/parser/gen",
         "@com_github_antlr4_go_antlr_v4//:antlr",
     ],
@@ -32,7 +32,7 @@ go_test(
     ],
     embed = [":parser"],
     deps = [
-        "//pkg/relational/api",
+        "//internal/relational/relapi",
         "//pkg/relational/core/parser/gen",
         "@com_github_antlr4_go_antlr_v4//:antlr",
         "@in_gopkg_yaml_v3//:yaml_v3",

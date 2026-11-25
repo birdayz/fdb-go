@@ -20,7 +20,7 @@ go_library(
         "//pkg/relational/conformance:__subpackages__",
     ],
     deps = [
-        "//pkg/relational/api",
+        "//internal/relational/relapi",
         "//pkg/relational/core/embedded",
         "//pkg/relational/core/query",
         "//pkg/relational/sqldriver",
@@ -63,8 +63,8 @@ go_test(
         "resources:memory:400",
     ],
     deps = [
-        "//pkg/relational/api",
-        "//pkg/relational/core/keyspace",
+        "//internal/relational/keyspace",
+        "//internal/relational/relapi",
         "//pkg/testcontainers/foundationdb",
     ],
 )

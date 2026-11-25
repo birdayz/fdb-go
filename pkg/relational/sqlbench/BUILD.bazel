@@ -12,10 +12,10 @@ go_test(
         "domain_fdb_test.go",
     ],
     deps = [
+        "//internal/relational/keyspace",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",
-        "//pkg/relational/core/keyspace",
         "//pkg/relational/sqldriver",
         "//pkg/testutil/benchcluster",
     ],

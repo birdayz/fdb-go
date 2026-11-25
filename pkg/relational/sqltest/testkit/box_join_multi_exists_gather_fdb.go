@@ -13,9 +13,9 @@ package testkit
 import (
 	"testing"
 
+	"fdb.dev/internal/relational/metadata"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/metadata"
 )
 
 // ExistsGatherSchemaMetadata builds the A/B/EE/EEV schema shared by the row cert (FDB

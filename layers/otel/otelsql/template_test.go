@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/internal/relational/keyspace"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/relational/core/keyspace"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 )

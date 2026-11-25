@@ -11,11 +11,11 @@ go_test(
     ],
     deps = [
         "//internal/fdbclient",
+        "//internal/relational/keyspace",
+        "//internal/relational/relapi",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",
-        "//pkg/relational/api",
         "//pkg/relational/core/embedded",
-        "//pkg/relational/core/keyspace",
         "//pkg/relational/sqldriver",
         "//pkg/testutil/benchcluster",
     ],

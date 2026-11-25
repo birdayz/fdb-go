@@ -3,9 +3,9 @@ package embedded
 import (
 	"strconv"
 
+	"fdb.dev/internal/relational/functions"
 	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/relational/core/functions"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query/expr"
 	"google.golang.org/protobuf/proto"

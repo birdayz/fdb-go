@@ -7,7 +7,7 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // TestFDB_GroupByOverJoin pins that GROUP BY over a join with a group key from a

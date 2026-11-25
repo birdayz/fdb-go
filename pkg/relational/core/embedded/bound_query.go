@@ -3,10 +3,10 @@ package embedded
 import (
 	"maps"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/relational/api"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query/logical"
 	"fdb.dev/pkg/relational/core/query/semantic"

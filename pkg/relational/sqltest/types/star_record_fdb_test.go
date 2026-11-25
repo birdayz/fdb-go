@@ -10,7 +10,7 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // `(*)` and `(T.*)` pack the star expansion into one record column, named as

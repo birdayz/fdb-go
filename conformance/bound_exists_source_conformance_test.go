@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/relational/conformance/plandiff"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"

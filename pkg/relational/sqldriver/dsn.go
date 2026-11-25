@@ -14,9 +14,9 @@ import (
 	"sort"
 	"strings"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
 )
 
 // Scheme is the DSN scheme accepted by this driver. It matches Java's

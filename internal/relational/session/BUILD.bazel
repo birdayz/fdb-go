@@ -1,0 +1,30 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+package(default_visibility = ["//:__subpackages__"])
+
+go_library(
+    name = "session",
+    srcs = ["session.go"],
+    importpath = "fdb.dev/internal/relational/session",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/relational/catalog",
+        "//internal/relational/keyspace",
+        "//internal/relational/relapi",
+        "//pkg/recordlayer",
+    ],
+)
+
+go_test(
+    name = "session_test",
+    srcs = [
+        "domain_registration_test.go",
+        "session_test.go",
+    ],
+    embed = [":session"],
+    deps = [
+        "//internal/dst",
+        "//internal/relational/keyspace",
+        "//internal/relational/relapi",
+    ],
+)

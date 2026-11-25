@@ -11,8 +11,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
 )
 
 // RFC-202 S4 goldens: the __ROW_VERSION pseudo-field through the AS-SELECT

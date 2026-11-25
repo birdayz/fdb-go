@@ -5,9 +5,9 @@
 package embedded
 
 import (
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query"

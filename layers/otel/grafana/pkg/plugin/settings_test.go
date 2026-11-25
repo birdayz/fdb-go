@@ -9,8 +9,8 @@ import (
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 
+	"fdb.dev/internal/relational/keyspace"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/core/keyspace"
 )
 
 func TestParseSettingsDefaults(t *testing.T) {

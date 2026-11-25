@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/simgate"
 	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/internal/simgate"
 )
 
 // waitClosed waits for the connection to be closed by a goroutine of its own.

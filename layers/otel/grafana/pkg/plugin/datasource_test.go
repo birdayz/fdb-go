@@ -15,9 +15,9 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/layers/otel"
 	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/relational/api"
 )
 
 func sqlModel(tenant, rawSQL string, format int) map[string]any {

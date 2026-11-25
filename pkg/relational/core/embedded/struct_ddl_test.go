@@ -6,7 +6,7 @@ import (
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // RFC-204 Phase 1 — CREATE TYPE AS STRUCT: registration, forward

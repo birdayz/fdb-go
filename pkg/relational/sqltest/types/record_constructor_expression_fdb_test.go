@@ -11,7 +11,7 @@ import (
 
 	"github.com/onsi/gomega"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // TestFDB_RecordConstructorInExpressionPosition pins the record constructor as

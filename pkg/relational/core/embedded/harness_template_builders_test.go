@@ -3,8 +3,8 @@ package embedded
 import (
 	"maps"
 
+	"fdb.dev/internal/relational/relapi"
 	recordlayer "fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query/logical"
 	"fdb.dev/pkg/relational/core/query/semantic"

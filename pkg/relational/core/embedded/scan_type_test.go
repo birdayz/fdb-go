@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/relational/core/resultset"
+	"fdb.dev/internal/relational/resultset"
 )
 
 // The driver's scan type per SQL type: a DATE or TIMESTAMP result is its

@@ -14,7 +14,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // RFC-257 WS-J: an UPDATE's SET column is resolved ONCE, against the target's

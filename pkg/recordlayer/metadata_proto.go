@@ -966,7 +966,7 @@ func collectDependencies(fd protoreflect.FileDescriptor) []protoreflect.FileDesc
 // IT TAKES NO DEPENDENCY SET, and that is deliberate rather than an oversight
 // mirroring the unexported form's variadic tail -- the question is worth
 // answering here because the sole caller
-// (pkg/relational/core/metadata's buildFileDescriptor) holds two
+// (internal/relational/metadata's buildFileDescriptor) holds two
 // protoreflect.FileDescriptors two lines before calling this and visibly does
 // not pass them.
 //

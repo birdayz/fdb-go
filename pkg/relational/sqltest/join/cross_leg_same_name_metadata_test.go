@@ -26,10 +26,10 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/internal/relational/metadata"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/relational/core/metadata"
 )
 
 // buildCrossLegSameNameMetadata builds two tables that each declare a column

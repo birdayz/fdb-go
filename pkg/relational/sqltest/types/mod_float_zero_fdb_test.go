@@ -12,7 +12,7 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // Each repetition needs distinct catalog objects in the suite's shared FDB.

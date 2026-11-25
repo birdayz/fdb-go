@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
 )
 
 // ParseDecimal is Java's ParseHelpers.parseDecimal over a decimal token's text:

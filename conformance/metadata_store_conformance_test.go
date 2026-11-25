@@ -286,7 +286,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 	//   - SchemaTemplateCatalog wire format (the relational/SQL catalog).
 	//     Blocked on Go sqldriver keyspace divergence — Go writes to
 	//     `__SYS/__SYS/CATALOG` while Java reads from `(NULL, NULL,
-	//     int64(0))`. See `pkg/relational/core/catalog/fdb_store_catalog.go:62-67`.
+	//     int64(0))`. See `internal/relational/catalog/fdb_store_catalog.go:62-67`.
 	Describe("Cross-language functional round-trip (A2)", func() {
 		It("Java loads Go-written metadata and scans Go-written records", func() {
 			// Direction: Go saves both metadata and Order records; Java

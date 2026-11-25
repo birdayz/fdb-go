@@ -27,11 +27,11 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 
+	"fdb.dev/internal/relational/catalog"
 	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/relational/core/catalog"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 

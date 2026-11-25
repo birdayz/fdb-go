@@ -1,0 +1,561 @@
+package metadata
+
+import (
+	"testing"
+
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
+	"google.golang.org/protobuf/types/descriptorpb"
+
+	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
+
+	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/pkg/recordlayer"
+)
+
+func TestIsFieldNullable_ProtoCardinality(t *testing.T) {
+	t.Parallel()
+
+	// Demo proto uses proto2 with optional fields — all should be
+	// nullable.
+	orderMD := demopb.File_record_layer_demo_proto.Messages().ByName("Order")
+	for i := 0; i < orderMD.Fields().Len(); i++ {
+		fd := orderMD.Fields().Get(i)
+		got := isFieldNullable(fd)
+		want := fd.Cardinality() != protoreflect.Required
+		if got != want {
+			t.Errorf("Order.%s: isFieldNullable = %v, want %v (cardinality=%v)",
+				fd.Name(), got, want, fd.Cardinality())
+		}
+	}
+
+	// Synthesize a proto2 REQUIRED field and verify we report
+	// nullable=false.
+	required := descriptorpb.FieldDescriptorProto_LABEL_REQUIRED
+	strType := descriptorpb.FieldDescriptorProto_TYPE_STRING
+	fd := stringField("req", 1, strType, required)
+	md := buildMessageDesc(t, "Msg", []*descriptorpb.FieldDescriptorProto{fd})
+	if isFieldNullable(md.Fields().Get(0)) {
+		t.Error("proto2 REQUIRED field reported nullable=true, want false")
+	}
+	// End-to-end: the nullability flag must also propagate through
+	// protoFieldToDataType. Guards against a future refactor quietly
+	// dropping the nullable argument somewhere in the call chain.
+	dt, err := protoFieldToDataType(md.Fields().Get(0))
+	if err != nil {
+		t.Fatalf("protoFieldToDataType(REQUIRED): %v", err)
+	}
+	if dt.IsNullable() {
+		t.Error("protoFieldToDataType(REQUIRED) produced nullable=true, want false")
+	}
+}
+
+func TestIsUUIDDescriptor(t *testing.T) {
+	t.Parallel()
+
+	uuidMD := (&gen.UUID{}).ProtoReflect().Descriptor()
+	if string(uuidMD.FullName()) != uuidFullName {
+		t.Fatalf("gen.UUID FullName = %q, want %q (proto regen?)",
+			uuidMD.FullName(), uuidFullName)
+	}
+	if !isUUIDDescriptor(uuidMD) {
+		t.Error("isUUIDDescriptor(gen.UUID) = false, want true")
+	}
+
+	// Non-UUID message must fail the check.
+	orderMD := demopb.File_record_layer_demo_proto.Messages().ByName("Order")
+	if orderMD == nil {
+		t.Fatal("Order descriptor missing from demo proto")
+	}
+	if isUUIDDescriptor(orderMD) {
+		t.Error("isUUIDDescriptor(Order) = true, want false")
+	}
+}
+
+func TestUnwrapWrappedArray_MatchesJavaPattern(t *testing.T) {
+	t.Parallel()
+
+	// Build a synthetic descriptor matching Java's nullable-array
+	// wrapper shape: message Wrapper { repeated int32 values = 1; }
+	wrapper := buildMessageDesc(t, "Wrapper", []*descriptorpb.FieldDescriptorProto{
+		stringField("values", 1, descriptorpb.FieldDescriptorProto_TYPE_INT32,
+			descriptorpb.FieldDescriptorProto_LABEL_REPEATED),
+	})
+
+	dt, ok := unwrapWrappedArray(wrapper, map[string]bool{})
+	if !ok {
+		t.Fatal("unwrapWrappedArray returned ok=false on canonical wrapped-array shape")
+	}
+	arr, ok := dt.(*api.ArrayType)
+	if !ok {
+		t.Fatalf("result %T, want *ArrayType", dt)
+	}
+	if _, ok := arr.ElementType().(*api.IntegerType); !ok {
+		t.Errorf("element type %T, want *IntegerType", arr.ElementType())
+	}
+}
+
+func TestUnwrapWrappedArray_RejectsNonMatching(t *testing.T) {
+	t.Parallel()
+
+	// Wrong field name (not "values").
+	wrongName := buildMessageDesc(t, "NotWrapper", []*descriptorpb.FieldDescriptorProto{
+		stringField("items", 1, descriptorpb.FieldDescriptorProto_TYPE_INT32,
+			descriptorpb.FieldDescriptorProto_LABEL_REPEATED),
+	})
+	if _, ok := unwrapWrappedArray(wrongName, map[string]bool{}); ok {
+		t.Error("unwrapWrappedArray accepted wrong field name")
+	}
+
+	// Non-repeated field.
+	singular := buildMessageDesc(t, "Single", []*descriptorpb.FieldDescriptorProto{
+		stringField("values", 1, descriptorpb.FieldDescriptorProto_TYPE_INT32,
+			descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL),
+	})
+	if _, ok := unwrapWrappedArray(singular, map[string]bool{}); ok {
+		t.Error("unwrapWrappedArray accepted non-repeated field")
+	}
+
+	// Two fields — not a single-field wrapper.
+	twoFields := buildMessageDesc(t, "Two", []*descriptorpb.FieldDescriptorProto{
+		stringField("values", 1, descriptorpb.FieldDescriptorProto_TYPE_INT32,
+			descriptorpb.FieldDescriptorProto_LABEL_REPEATED),
+		stringField("extra", 2, descriptorpb.FieldDescriptorProto_TYPE_STRING,
+			descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL),
+	})
+	if _, ok := unwrapWrappedArray(twoFields, map[string]bool{}); ok {
+		t.Error("unwrapWrappedArray accepted two-field message")
+	}
+
+	// Regular non-wrapper messages must still be rejected.
+	orderMD := demopb.File_record_layer_demo_proto.Messages().ByName("Order")
+	if _, ok := unwrapWrappedArray(orderMD, map[string]bool{}); ok {
+		t.Error("unwrapWrappedArray accepted Order (multi-field real table)")
+	}
+
+	// Map field shaped like "map<string,int32> values = 1;" — a
+	// repeated synthetic message field named "values" that would
+	// otherwise match the wrapper shape. Must be rejected so maps
+	// still route to the UnresolvedType("map") path.
+	mapMD := buildMapValuesMessage(t)
+	if _, ok := unwrapWrappedArray(mapMD, map[string]bool{}); ok {
+		t.Error("unwrapWrappedArray accepted a map<...> values field")
+	}
+}
+
+// buildMapValuesMessage constructs
+//
+//	message Wrapper { map<string, int32> values = 1; }
+//
+// protoreflect models this as a repeated synthetic nested message
+// named values whose own shape has key / value fields.
+func buildMapValuesMessage(t *testing.T) protoreflect.MessageDescriptor {
+	t.Helper()
+	fileName := "test_wrapper_map.proto"
+	pkg := "test.wrapper"
+	syntax := "proto2"
+	// Synthetic entry message for the map.
+	entryName := "ValuesEntry"
+	entryMapEntry := true
+	keyName, valName := "key", "value"
+	keyNum, valNum := int32(1), int32(2)
+	strType := descriptorpb.FieldDescriptorProto_TYPE_STRING
+	i32Type := descriptorpb.FieldDescriptorProto_TYPE_INT32
+	optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+	msgType := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+
+	entry := &descriptorpb.DescriptorProto{
+		Name: &entryName,
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{Name: &keyName, Number: &keyNum, Type: &strType, Label: &optional},
+			{Name: &valName, Number: &valNum, Type: &i32Type, Label: &optional},
+		},
+		Options: &descriptorpb.MessageOptions{MapEntry: &entryMapEntry},
+	}
+	wrapperName := "Wrapper"
+	valuesName := "values"
+	valuesNum := int32(1)
+	valuesTypeName := ".test.wrapper.Wrapper.ValuesEntry"
+	wrapper := &descriptorpb.DescriptorProto{
+		Name:       &wrapperName,
+		NestedType: []*descriptorpb.DescriptorProto{entry},
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{
+				Name:     &valuesName,
+				Number:   &valuesNum,
+				Type:     &msgType,
+				TypeName: &valuesTypeName,
+				Label:    &repeated,
+			},
+		},
+	}
+	file := &descriptorpb.FileDescriptorProto{
+		Name:        &fileName,
+		Package:     &pkg,
+		Syntax:      &syntax,
+		MessageType: []*descriptorpb.DescriptorProto{wrapper},
+	}
+	fd, err := protodesc.NewFile(file, nil)
+	if err != nil {
+		t.Fatalf("protodesc.NewFile: %v", err)
+	}
+	return fd.Messages().Get(0)
+}
+
+// stringField builds a FieldDescriptorProto for use with buildMessageDesc.
+func stringField(name string, num int32, typ descriptorpb.FieldDescriptorProto_Type, label descriptorpb.FieldDescriptorProto_Label) *descriptorpb.FieldDescriptorProto {
+	n, t, l := name, typ, label
+	number := num
+	return &descriptorpb.FieldDescriptorProto{
+		Name:   &n,
+		Number: &number,
+		Type:   &t,
+		Label:  &l,
+	}
+}
+
+// buildMessageDesc assembles a standalone protoreflect.MessageDescriptor
+// from its field list. Used only by tests in this file.
+func buildMessageDesc(t *testing.T, name string, fields []*descriptorpb.FieldDescriptorProto) protoreflect.MessageDescriptor {
+	t.Helper()
+	syntax := "proto2"
+	fileName := "test_wrapper_" + name + ".proto"
+	pkg := "test.wrapper"
+	file := &descriptorpb.FileDescriptorProto{
+		Name:    &fileName,
+		Package: &pkg,
+		Syntax:  &syntax,
+		MessageType: []*descriptorpb.DescriptorProto{
+			{Name: &name, Field: fields},
+		},
+	}
+	fd, err := protodesc.NewFile(file, nil)
+	if err != nil {
+		t.Fatalf("protodesc.NewFile: %v", err)
+	}
+	return fd.Messages().Get(0)
+}
+
+func TestMessageTypeFromDescriptor_RecursiveMessageTerminates(t *testing.T) {
+	t.Parallel()
+
+	// Build `message Tree { repeated Tree children = 1; }` — without the
+	// visited-set cycle check, messageTypeFromDescriptor would recurse
+	// into children's element type forever and blow the goroutine stack.
+	fileName := "test_recursive.proto"
+	pkg := "test.recursive"
+	syntax := "proto2"
+	treeName := "Tree"
+	childrenName := "children"
+	childrenNum := int32(1)
+	msgType := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+	repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+	treeTypeName := ".test.recursive.Tree"
+
+	tree := &descriptorpb.DescriptorProto{
+		Name: &treeName,
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{
+				Name:     &childrenName,
+				Number:   &childrenNum,
+				Type:     &msgType,
+				TypeName: &treeTypeName,
+				Label:    &repeated,
+			},
+		},
+	}
+	file := &descriptorpb.FileDescriptorProto{
+		Name:        &fileName,
+		Package:     &pkg,
+		Syntax:      &syntax,
+		MessageType: []*descriptorpb.DescriptorProto{tree},
+	}
+	fd, err := protodesc.NewFile(file, nil)
+	if err != nil {
+		t.Fatalf("protodesc.NewFile: %v", err)
+	}
+
+	treeMD := fd.Messages().Get(0)
+	st, err := messageTypeFromDescriptor(treeMD, true)
+	if err != nil {
+		t.Fatalf("messageTypeFromDescriptor(Tree): %v", err)
+	}
+	if st.NumFields() != 1 {
+		t.Fatalf("Tree struct field count = %d, want 1", st.NumFields())
+	}
+	// The children field is repeated → ArrayType(inner); the inner
+	// should be the Unresolved placeholder because entering Tree a
+	// second time hits the cycle guard.
+	childDT := st.Fields()[0].Type()
+	arr, ok := childDT.(*api.ArrayType)
+	if !ok {
+		t.Fatalf("children type %T, want *ArrayType", childDT)
+	}
+	if _, ok := arr.ElementType().(*api.UnresolvedType); !ok {
+		t.Errorf("children element type %T, want *UnresolvedType (cycle placeholder)", arr.ElementType())
+	}
+}
+
+func TestMessageTypeFromDescriptor_RecursiveWrappedArrayTerminates(t *testing.T) {
+	t.Parallel()
+
+	// Build `message M { repeated M values = 1; }` — the self-referential
+	// NULLABLE-ARRAY WRAPPER shape. The field is named exactly "values"
+	// (wrappedArrayFieldName), so it is BOTH a wrapper (unwrapWrappedArray
+	// matches) AND a cycle. The old walk consulted unwrapWrappedArray BEFORE
+	// the visited guard, and unwrap restarted the element walk with a fresh
+	// visited set → infinite recursion → stack overflow (the intermittent
+	// FuzzMessageTypeFromDescriptor nightly crash). The distinct field name
+	// is why the `children` test above did not catch it.
+	fileName := "test_recursive_wrapped.proto"
+	pkg := "test.recwrap"
+	syntax := "proto2"
+	mName := "M"
+	valuesName := "values"
+	valuesNum := int32(1)
+	msgType := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+	repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+	mTypeName := ".test.recwrap.M"
+
+	m := &descriptorpb.DescriptorProto{
+		Name: &mName,
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{
+				Name:     &valuesName,
+				Number:   &valuesNum,
+				Type:     &msgType,
+				TypeName: &mTypeName,
+				Label:    &repeated,
+			},
+		},
+	}
+	file := &descriptorpb.FileDescriptorProto{
+		Name:        &fileName,
+		Package:     &pkg,
+		Syntax:      &syntax,
+		MessageType: []*descriptorpb.DescriptorProto{m},
+	}
+	fd, err := protodesc.NewFile(file, nil)
+	if err != nil {
+		t.Fatalf("protodesc.NewFile: %v", err)
+	}
+
+	// Must TERMINATE (no stack overflow) and produce a well-typed fixed point.
+	mMD := fd.Messages().Get(0)
+	st, err := messageTypeFromDescriptor(mMD, true)
+	if err != nil {
+		t.Fatalf("messageTypeFromDescriptor(M): %v", err)
+	}
+	if st.NumFields() != 1 {
+		t.Fatalf("M struct field count = %d, want 1", st.NumFields())
+	}
+	// values is repeated → ArrayType; its element is the Unresolved cycle
+	// placeholder because re-entering M hits the guard (now checked before
+	// unwrap).
+	arr, ok := st.Fields()[0].Type().(*api.ArrayType)
+	if !ok {
+		t.Fatalf("values type %T, want *ArrayType", st.Fields()[0].Type())
+	}
+	if _, ok := arr.ElementType().(*api.UnresolvedType); !ok {
+		t.Errorf("values element type %T, want *UnresolvedType (cycle placeholder)", arr.ElementType())
+	}
+}
+
+func TestMessageTypeFromDescriptor_UUIDFallbackStructShape(t *testing.T) {
+	t.Parallel()
+
+	// If anyone ever routes a UUID descriptor through
+	// messageTypeFromDescriptor directly (bypassing the UUID
+	// short-circuit), the result is a 2-field struct — this pins the
+	// expected shape so callers know what the non-short-circuit path
+	// produces.
+	uuidMD := (&gen.UUID{}).ProtoReflect().Descriptor()
+	st, err := messageTypeFromDescriptor(uuidMD, true)
+	if err != nil {
+		t.Fatalf("messageTypeFromDescriptor(UUID): %v", err)
+	}
+	if st.NumFields() != 2 {
+		t.Errorf("UUID struct field count = %d, want 2", st.NumFields())
+	}
+}
+
+// FuzzMessageTypeFromDescriptor feeds arbitrary FileDescriptorProto bytes
+// through protodesc.NewFile + messageTypeFromDescriptor. The walk recurses
+// through nested-message field types; without the visited-set guard,
+// a fuzzer-crafted self-referential shape would stack-overflow.
+// This fuzz pins that guard along with the proto-unmarshal + descriptor
+// resolution paths.
+func FuzzMessageTypeFromDescriptor(f *testing.F) {
+	// Seed 1: a minimal valid proto2 file with one empty message.
+	syntax := "proto2"
+	msgName := "M"
+	seed1 := &descriptorpb.FileDescriptorProto{
+		Name:    proto.String("seed1.proto"),
+		Package: proto.String("test"),
+		Syntax:  &syntax,
+		MessageType: []*descriptorpb.DescriptorProto{
+			{Name: &msgName},
+		},
+	}
+	if b, err := proto.Marshal(seed1); err == nil {
+		f.Add(b)
+	}
+	// Seed 2: self-referential message (the exact class of bug the
+	// visited-set guards against).
+	childrenName := "children"
+	childrenNum := int32(1)
+	repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+	msgType := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+	treeTypeName := ".test.M"
+	seed2 := &descriptorpb.FileDescriptorProto{
+		Name:    proto.String("seed2.proto"),
+		Package: proto.String("test"),
+		Syntax:  &syntax,
+		MessageType: []*descriptorpb.DescriptorProto{
+			{
+				Name: &msgName,
+				Field: []*descriptorpb.FieldDescriptorProto{
+					{
+						Name:     &childrenName,
+						Number:   &childrenNum,
+						Type:     &msgType,
+						TypeName: &treeTypeName,
+						Label:    &repeated,
+					},
+				},
+			},
+		},
+	}
+	if b, err := proto.Marshal(seed2); err == nil {
+		f.Add(b)
+	}
+	// Seed 3: self-referential NULLABLE-ARRAY WRAPPER — the field is named
+	// exactly "values" (wrappedArrayFieldName), so it is both a wrapper shape
+	// and a cycle. This is the shape that stack-overflowed the nightly
+	// (unwrapWrappedArray ran before the visited guard and reset the walk);
+	// seed 2's "children" name did not reach the unwrap path.
+	valuesName := "values"
+	valuesNum := int32(1)
+	seed3 := &descriptorpb.FileDescriptorProto{
+		Name:    proto.String("seed3.proto"),
+		Package: proto.String("test"),
+		Syntax:  &syntax,
+		MessageType: []*descriptorpb.DescriptorProto{
+			{
+				Name: &msgName,
+				Field: []*descriptorpb.FieldDescriptorProto{
+					{
+						Name:     &valuesName,
+						Number:   &valuesNum,
+						Type:     &msgType,
+						TypeName: &treeTypeName,
+						Label:    &repeated,
+					},
+				},
+			},
+		},
+	}
+	if b, err := proto.Marshal(seed3); err == nil {
+		f.Add(b)
+	}
+	// Pathological bytes.
+	f.Add([]byte{})
+	f.Add([]byte{0x00})
+	f.Add([]byte{0xff, 0xff, 0xff, 0xff})
+
+	f.Fuzz(func(t *testing.T, blob []byte) {
+		fdp := &descriptorpb.FileDescriptorProto{}
+		if err := proto.Unmarshal(blob, fdp); err != nil {
+			return
+		}
+		fd, err := protodesc.NewFile(fdp, nil)
+		if err != nil {
+			return
+		}
+		for i := 0; i < fd.Messages().Len(); i++ {
+			md := fd.Messages().Get(i)
+			// Must not panic / stack-overflow. A non-nil error is fine;
+			// a (nil, nil) pair is the forbidden state.
+			st, err := messageTypeFromDescriptor(md, true)
+			if err != nil {
+				continue
+			}
+			if st == nil {
+				t.Fatalf("messageTypeFromDescriptor returned (nil, nil) for %s", md.FullName())
+			}
+		}
+	})
+}
+
+// A field carrying vector options is a VECTOR of their precision and
+// dimensions, as Java's Type.fromProtoType reads it, whether the template was
+// built from DDL or loaded from its stored bytes (the catalog's route); unset
+// options read their proto defaults (16, 768). Go read every such column as
+// BYTES, so a change of a vector's dimensions passed the relational validator.
+func TestVectorColumnIsAVectorOfItsOptions(t *testing.T) {
+	t.Parallel()
+	b := NewSchemaTemplateBuilder().SetName("vec")
+	b.AddTable("T", []ColumnSpec{
+		NewColumnSpec("ID", api.NewLongType(false), 1),
+		NewColumnSpec("V", api.NewVectorType(32, 3, true), 2),
+		NewColumnSpec("B", api.NewBytesType(true), 3),
+	}, []string{"ID"})
+	built, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := built.Underlying().ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	loadedMD, err := recordlayer.RecordMetaDataFromProto(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := NewRecordLayerSchemaTemplateWithVersion("vec", loadedMD, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, tmpl := range map[string]*RecordLayerSchemaTemplate{"built": built, "loaded": loaded} {
+		tbl, err := tmpl.FindTable("T")
+		if err != nil || tbl == nil {
+			t.Fatalf("%s: table T: %v", name, err)
+		}
+		types := map[string]api.DataType{}
+		for _, c := range tbl.Columns() {
+			types[c.MetadataName()] = c.DataType()
+		}
+		if !types["V"].Equal(api.NewVectorType(32, 3, true)) {
+			t.Errorf("%s: V is %v, want vector(p=32, d=3)", name, types["V"])
+		}
+		if !types["B"].Equal(api.NewBytesType(true)) {
+			t.Errorf("%s: B is %v, want bytes", name, types["B"])
+		}
+	}
+
+	// Unset options read their defaults.
+	fdp := &descriptorpb.FileDescriptorProto{
+		Name: proto.String("vec_defaults.proto"), Syntax: proto.String("proto2"),
+		MessageType: []*descriptorpb.DescriptorProto{{Name: proto.String("R"), Field: []*descriptorpb.FieldDescriptorProto{{
+			Name: proto.String("v"), Number: proto.Int32(1), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+			Type: descriptorpb.FieldDescriptorProto_TYPE_BYTES.Enum(), Options: func() *descriptorpb.FieldOptions {
+				o := &descriptorpb.FieldOptions{}
+				proto.SetExtension(o, metadatapb.E_Field, &metadatapb.FieldOptions{VectorOptions: &metadatapb.FieldOptions_VectorOptions{}})
+				return o
+			}(),
+		}}}},
+	}
+	fd, err := protodesc.NewFile(fdp, protoregistry.GlobalFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := protoFieldToDataType(fd.Messages().ByName("R").Fields().ByName("v"))
+	if err != nil || !got.Equal(api.NewVectorType(16, 768, true)) {
+		t.Errorf("unset options: %v %v, want vector(p=16, d=768)", got, err)
+	}
+}

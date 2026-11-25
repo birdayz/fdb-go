@@ -9,15 +9,15 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"fdb.dev/pkg/relational/core/functions"
+	"fdb.dev/internal/relational/functions"
 
 	"buf.build/go/protoyaml"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
 
+	"fdb.dev/internal/relational/catalog"
+	relapi "fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
-	relapi "fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/catalog"
 )
 
 // newMetaCatalogCmd is the `meta catalog` noun — a read-only view of

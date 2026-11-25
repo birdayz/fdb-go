@@ -1,0 +1,46 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+package(default_visibility = ["//:__subpackages__"])
+
+go_library(
+    name = "fleet",
+    srcs = [
+        "build.go",
+        "fleet.go",
+        "migrate.go",
+        "statistics.go",
+    ],
+    importpath = "fdb.dev/internal/relational/fleet",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/relational/catalog",
+        "//internal/relational/ddl",
+        "//internal/relational/exceptionutil",
+        "//internal/relational/keyspace",
+        "//internal/relational/relapi",
+        "//internal/unicode15",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/recordlayer",
+    ],
+)
+
+go_test(
+    name = "fleet_test",
+    srcs = [
+        "build_test.go",
+        "domain_registration_test.go",
+        "guard_test.go",
+        "statistics_refusal_test.go",
+        "synthetic_error_identity_test.go",
+    ],
+    embed = [":fleet"],
+    deps = [
+        "//gen/demopb",
+        "//internal/relational/catalog",
+        "//internal/relational/keyspace",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/recordlayer",
+        "//pkg/recordlayer/metadatapb",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

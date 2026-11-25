@@ -18,7 +18,7 @@ import (
 	"io"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // TestExhaustedDistinctStatementLeavesNoScratchState is the STATEMENT-LEVEL

@@ -15,7 +15,7 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {

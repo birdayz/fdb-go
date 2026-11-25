@@ -9,10 +9,10 @@ import (
 
 	"github.com/antlr4-go/antlr/v4"
 
+	"fdb.dev/internal/relational/functions"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/javayamsql"
-	"fdb.dev/pkg/relational/core/functions"
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )

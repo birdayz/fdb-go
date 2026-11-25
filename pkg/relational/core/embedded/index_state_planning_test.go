@@ -4,10 +4,10 @@ import (
 	"errors"
 	"testing"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	"fdb.dev/pkg/relational/api"
 )
 
 // depsMetaData is a real RecordMetaData, not a stand-in: the dependency check

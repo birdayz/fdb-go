@@ -24,9 +24,9 @@ import (
 
 	"fdb.dev/internal/dst"
 	"fdb.dev/internal/dstwire"
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/sqldriver"
 	"fdb.dev/pkg/simfdb"
 	"fdb.dev/pkg/simfdb/hunt"

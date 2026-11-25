@@ -11,7 +11,7 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/internal/relational/relapi"
 )
 
 // Schema-template table-valued SQL functions, as Java's CompiledSqlFunction

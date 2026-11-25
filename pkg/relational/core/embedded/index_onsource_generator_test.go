@@ -11,8 +11,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/api"
 )
 
 // RFC-202 S6: the ON-source form is a FRONT END over the same generator the
