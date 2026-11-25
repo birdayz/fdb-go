@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/executor"
+	"fdb.dev/internal/recordlayer/query/executor"
 	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 

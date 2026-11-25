@@ -9,7 +9,7 @@ You are working on the Cascades-based query planner, optimizer, and SQL executio
 
 ## Review
 
-The `cascades` lens (`.bruh/review/cascades.md`) applies to `pkg/recordlayer/query/**` and `pkg/relational/core/**` and checks Cascades and Java alignment: rules and plans follow Java (Go-only inventions are suspect), rules fire in the right phase, properties are derived from the expression tree rather than imperative flags, alias namespaces are not confused, and planner changes pin the plan shape. The core maintainability and tests lenses check code quality: dead code, incomplete conversions, papered-over regressions, downgraded assertions. Change review rules in `.bruh/review/`, not here.
+The `cascades` lens (`.bruh/review/cascades.md`) applies to `pkg/recordlayer/query/**`, `internal/recordlayer/query/**`, and `pkg/relational/core/**` and checks Cascades and Java alignment: rules and plans follow Java (Go-only inventions are suspect), rules fire in the right phase, properties are derived from the expression tree rather than imperative flags, alias namespaces are not confused, and planner changes pin the plan shape. The core maintainability and tests lenses check code quality: dead code, incomplete conversions, papered-over regressions, downgraded assertions. Change review rules in `.bruh/review/`, not here.
 
 ## Workflow
 

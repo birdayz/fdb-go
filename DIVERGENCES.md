@@ -526,7 +526,7 @@ itself would then fail at its first comparison, even with itself, which is why
 `TestProtoType_RecordEqualsHasNoIdentityShortCircuit`. The executor's edge
 binder compares a cursor's row type with a distinct flowed type object, so an
 identity check would not help it; it memoises equal pairs instead
-(`pkg/recordlayer/query/executor/record_type_equal_memo.go`).
+(`internal/recordlayer/query/executor/record_type_equal_memo.go`).
 
 ## Planning-Layer: Java-aligned core with documented Go extensions
 
@@ -1910,7 +1910,7 @@ intersection non-max `consume()` advance). What remains is classified below.
   SQL IN list into one leg per value, so N can run into the hundreds or
   thousands, and the O(N)-per-row rescan dominates at that scale. Go replaces
   the scan with a `container/heap` binary min-heap
-  (`pkg/recordlayer/query/executor/executor_new_plans.go`,
+  (`internal/recordlayer/query/executor/executor_new_plans.go`,
   `mergeSortCursor`/`mergeSortHeap`), giving O(log N) selection after an
   unavoidable O(N) initial build, while reproducing Java's tie-break exactly
   (the heap orders by comparison key, then by original leg index — the same
@@ -4443,7 +4443,7 @@ bytes. Every name Go reports is Java's. `protoscope.JavaFullName` and `JavaName`
 (`pkg/relational/core/metadata/proto_types.go:224`,
 `pkg/recordlayer/query/plan/cascades/values/proto_field_type.go:264`), the evolution validator's
 messages (`pkg/recordlayer/metadata_evolution_validator.go:1380`) and the executor's enum errors
-(`pkg/recordlayer/query/executor/executor.go:6090`) use them.
+(`internal/recordlayer/query/executor/executor.go:6090`) use them.
 
 Wire: none. Pinned by `TestScopeBuildsWhatJavaAccepts`
 (`pkg/recordlayer/protoscope/protoscope_test.go:57`), and by

@@ -4,7 +4,7 @@ package sqltest
 // ordered by the indexed column.
 //
 // BenchmarkFDB_InUnionMergeSort_* is the companion to
-// pkg/recordlayer/query/executor.BenchmarkMergeSortCursor_HeapVsLinear: the
+// internal/recordlayer/query/executor.BenchmarkMergeSortCursor_HeapVsLinear: the
 // InUnion merge driven through the full driver stack. A sorted InJoin
 // satisfies the same order and the planner prefers it, so ImplementInJoinRule
 // is disabled to keep the merge under measurement.

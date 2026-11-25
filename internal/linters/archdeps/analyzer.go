@@ -232,6 +232,7 @@ var (
 	r5Allow = map[string]bool{
 		"fdb.dev/cmd/bench-report":                           true,
 		"fdb.dev/conformance":                                true,
+		"fdb.dev/internal/recordlayer/query/executor":        true,
 		"fdb.dev/pkg/async/rtree":                            true,
 		"fdb.dev/pkg/fdbgo/client":                           true,
 		"fdb.dev/pkg/fdbgo/fdb":                              true,
@@ -240,7 +241,6 @@ var (
 		"fdb.dev/pkg/fdbgo/transport":                        true,
 		"fdb.dev/pkg/recordlayer":                            true,
 		"fdb.dev/pkg/recordlayer/keyspace":                   true,
-		"fdb.dev/pkg/recordlayer/query/executor":             true,
 		"fdb.dev/pkg/recordlayer/query/plan/cascades/values": true,
 		"fdb.dev/pkg/recordlayer/vectorindex":                true,
 		"fdb.dev/pkg/relational/core/catalog":                true,

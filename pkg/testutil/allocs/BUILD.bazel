@@ -10,7 +10,10 @@ go_library(
     testonly = True,
     srcs = ["isolated.go"],
     importpath = "fdb.dev/pkg/testutil/allocs",
-    visibility = ["//pkg/recordlayer:__subpackages__"],
+    visibility = [
+        "//internal/recordlayer:__subpackages__",
+        "//pkg/recordlayer:__subpackages__",
+    ],
 )
 
 go_test(

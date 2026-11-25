@@ -49,7 +49,7 @@ func newTextCursorWithByteTracking(index *Index, scanProps ScanProperties, timer
 	// Called synchronously from within textCursor.OnNext's own call into the
 	// underlying iterator — never from a separate goroutine (see
 	// ScanLimiterState's Concurrency doc: the whole leaf-cursor call chain is
-	// single-threaded, pinned by pkg/recordlayer/query/executor's
+	// single-threaded, pinned by internal/recordlayer/query/executor's
 	// package_invariant_test.go).
 	callback := func(keyLen, valueLen int) {
 		c.scanState.AddBytesScanned(int64(keyLen + valueLen))

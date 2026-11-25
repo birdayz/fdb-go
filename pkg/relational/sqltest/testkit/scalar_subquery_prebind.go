@@ -5,8 +5,8 @@ package testkit
 import (
 	"context"
 
+	"fdb.dev/internal/recordlayer/query/executor"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/executor"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/embedded"
 )

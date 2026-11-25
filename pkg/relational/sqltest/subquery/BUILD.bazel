@@ -122,11 +122,11 @@ go_test(
         "test-full",
     ],
     deps = [
+        "//internal/recordlayer/query/executor",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
-        "//pkg/recordlayer/query/executor",
         "//pkg/recordlayer/query/plan/cascades/properties",
         "//pkg/relational/api",
         "//pkg/relational/core/embedded",
