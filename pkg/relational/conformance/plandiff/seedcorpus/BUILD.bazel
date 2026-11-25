@@ -9,7 +9,9 @@ go_library(
         "corpus.go",
         "corpus_rfc082_divergences.go",
         "corpus_rfc082_knownred.go",
+        "loader.go",
     ],
+    embedsrcs = ["testdata/sample_roundtrip.json"],
     importpath = "fdb.dev/pkg/relational/conformance/plandiff/seedcorpus",
     visibility = [
         "//conformance:__subpackages__",
@@ -22,7 +24,11 @@ go_test(
     name = "seedcorpus_test",
     # Drives every SeedRunCorpus entry through FDB; same budget as plandiff_test.
     timeout = "long",
-    srcs = ["corpus_test.go"],
+    srcs = [
+        "corpus_test.go",
+        "loader_test.go",
+    ],
+    data = glob(["testdata/**"]),
     embed = [":seedcorpus"],
     tags = [
         "resources:cpu:2",
