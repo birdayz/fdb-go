@@ -22,7 +22,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // FDBRecordStoreStateCache caches store state (header + index states) across
@@ -316,9 +316,9 @@ func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCh
 	}
 
 	var exists bool
-	var header *gen.DataStoreInfo
+	var header *metadatapb.DataStoreInfo
 	if storeInfoValue != nil {
-		header = &gen.DataStoreInfo{}
+		header = &metadatapb.DataStoreInfo{}
 		if err := UnmarshalVTAsJava(header, storeInfoValue); err != nil {
 			return nil, &RecordCoreStorageError{Message: "Error reading version", Cause: err}
 		}
@@ -387,7 +387,7 @@ func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCh
 }
 
 // checkStoreHeaderExistence validates the existence check against the header.
-func checkStoreHeaderExistence(header *gen.DataStoreInfo, check StoreExistenceCheck) error {
+func checkStoreHeaderExistence(header *metadatapb.DataStoreInfo, check StoreExistenceCheck) error {
 	switch check {
 	case ExistenceCheckErrorIfExists:
 		if header != nil {

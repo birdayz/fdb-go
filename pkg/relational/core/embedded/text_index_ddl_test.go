@@ -7,8 +7,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 func TestTextIndexScalarColumns(t *testing.T) {
@@ -19,14 +19,14 @@ func TestTextIndexScalarColumns(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name string
-		key  *gen.KeyExpression
+		key  *metadatapb.KeyExpression
 		want []string
 	}{
 		{"nil", nil, nil},
-		{"empty", &gen.KeyExpression{}, nil},
-		{"empty field", &gen.KeyExpression{Field: &gen.Field{}}, nil},
+		{"empty", &metadatapb.KeyExpression{}, nil},
+		{"empty field", &metadatapb.KeyExpression{Field: &metadatapb.Field{}}, nil},
 		{"scalar", recordlayer.Field("BODY").ToKeyExpression(), []string{"BODY"}},
-		{"implicit null standin", &gen.KeyExpression{Field: &gen.Field{FieldName: proto.String("BODY"), FanType: gen.Field_SCALAR.Enum()}}, []string{"BODY"}},
+		{"implicit null standin", &metadatapb.KeyExpression{Field: &metadatapb.Field{FieldName: proto.String("BODY"), FanType: metadatapb.Field_SCALAR.Enum()}}, []string{"BODY"}},
 		{"unique null standin", recordlayer.FieldWithNullStandin("BODY", recordlayer.FanTypeNone, recordlayer.NullStandinNullUnique).ToKeyExpression(), []string{"BODY"}},
 		{"not null standin", recordlayer.FieldWithNullStandin("BODY", recordlayer.FanTypeNone, recordlayer.NullStandinNotNull).ToKeyExpression(), nil},
 		{"not null text", recordlayer.GroupBy(recordlayer.FieldWithNullStandin("BODY", recordlayer.FanTypeNone, recordlayer.NullStandinNotNull), recordlayer.Field("TENANT")).ToKeyExpression(), nil},
@@ -34,10 +34,10 @@ func TestTextIndexScalarColumns(t *testing.T) {
 		{"dot is one field", recordlayer.Field(dot).ToKeyExpression(), []string{"P.BODY"}},
 		{"then", recordlayer.Concat(recordlayer.Field("TENANT"), recordlayer.Field("BODY")).ToKeyExpression(), []string{"TENANT", "BODY"}},
 		{"grouped", recordlayer.GroupBy(recordlayer.Field("BODY"), recordlayer.Field("TENANT")).ToKeyExpression(), []string{"TENANT", "BODY"}},
-		{"empty then", &gen.KeyExpression{Then: &gen.Then{}}, nil},
-		{"nil then child", &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{nil}}}, nil},
-		{"nil grouping", &gen.KeyExpression{Grouping: &gen.Grouping{}}, nil},
-		{"fanout", &gen.KeyExpression{Field: &gen.Field{FieldName: proto.String("BODY"), FanType: gen.Field_FAN_OUT.Enum()}}, nil},
+		{"empty then", &metadatapb.KeyExpression{Then: &metadatapb.Then{}}, nil},
+		{"nil then child", &metadatapb.KeyExpression{Then: &metadatapb.Then{Child: []*metadatapb.KeyExpression{nil}}}, nil},
+		{"nil grouping", &metadatapb.KeyExpression{Grouping: &metadatapb.Grouping{}}, nil},
+		{"fanout", &metadatapb.KeyExpression{Field: &metadatapb.Field{FieldName: proto.String("BODY"), FanType: metadatapb.Field_FAN_OUT.Enum()}}, nil},
 		{"concatenate", recordlayer.FieldConcatenate("BODY").ToKeyExpression(), nil},
 		{"nesting", recordlayer.Nest("P", recordlayer.Field("BODY")).ToKeyExpression(), nil},
 		{"function", recordlayer.FunctionExpr("subtract", recordlayer.Field("TENANT")).ToKeyExpression(), nil},

@@ -3,7 +3,7 @@ package embedded
 import (
 	"strconv"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/relational/core/functions"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
@@ -16,7 +16,7 @@ import (
 // becomes the index's RowNumberWindowPredicate. The direction is always ASC,
 // as Java stores it. It also returns the view's text without the clause,
 // which is what compiles as a query.
-func slidingWindowQualify(q antlrgen.IQueryContext, definition string) (*gen.Predicate, string, bool) {
+func slidingWindowQualify(q antlrgen.IQueryContext, definition string) (*metadatapb.Predicate, string, bool) {
 	if q == nil || q.Ctes() != nil {
 		return nil, "", false
 	}
@@ -57,13 +57,13 @@ func slidingWindowQualify(q antlrgen.IQueryContext, definition string) (*gen.Pre
 		return nil, "", false
 	}
 	spec := win.OverClause().WindowSpec()
-	rw := &gen.RowNumberWindowPredicate{Size: proto.Int32(int32(size)), Direction: gen.RowNumberWindowPredicate_ASC.Enum()}
+	rw := &metadatapb.RowNumberWindowPredicate{Size: proto.Int32(int32(size)), Direction: metadatapb.RowNumberWindowPredicate_ASC.Enum()}
 	if pc := spec.PartitionClause(); pc != nil {
 		for _, f := range pc.AllFullId() {
 			if len(f.AllUid()) != 1 {
 				return nil, "", false
 			}
-			rw.PartitionFields = append(rw.PartitionFields, &gen.FieldPath{Field: []string{functions.FullIdToName(f)}})
+			rw.PartitionFields = append(rw.PartitionFields, &metadatapb.FieldPath{Field: []string{functions.FullIdToName(f)}})
 		}
 	}
 	ob, ok := spec.OrderByClause().(*antlrgen.OrderByClauseContext)
@@ -82,7 +82,7 @@ func slidingWindowQualify(q antlrgen.IQueryContext, definition string) (*gen.Pre
 	rw.OrderingField = []string{functions.FullIdToName(ref.FullColumnName().FullId())}
 	runes := []rune(definition) // token offsets count code points
 	text := string(runes[:qc.GetStart().GetStart()]) + string(runes[qc.GetStop().GetStop()+1:])
-	return &gen.Predicate{RowNumberWindowPredicate: rw}, text, true
+	return &metadatapb.Predicate{RowNumberWindowPredicate: rw}, text, true
 }
 
 func integerConstant(a antlrgen.IExpressionAtomContext) (int64, bool) {

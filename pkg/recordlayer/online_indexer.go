@@ -21,10 +21,10 @@ import (
 
 	"fdb.dev/pkg/recordlayer/internal/tuplefast"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 )
@@ -200,27 +200,27 @@ func (p *IndexingPolicy) ShouldAllowUnblock(stampBlockID string) bool {
 // ShouldAllowTypeConversionContinue returns true if switching from savedStamp's method
 // to newStamp's method is permitted by the policy.
 // Matches Java's IndexingPolicy.shouldAllowTypeConversionContinue().
-func (p *IndexingPolicy) ShouldAllowTypeConversionContinue(newStamp, savedStamp *gen.IndexBuildIndexingStamp) bool {
+func (p *IndexingPolicy) ShouldAllowTypeConversionContinue(newStamp, savedStamp *metadatapb.IndexBuildIndexingStamp) bool {
 	if p == nil || len(p.AllowedTakeovers) == 0 {
 		return false
 	}
 	newMethod := newStamp.GetMethod()
 	oldMethod := savedStamp.GetMethod()
 
-	if newMethod == gen.IndexBuildIndexingStamp_BY_RECORDS {
-		if oldMethod == gen.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS {
+	if newMethod == metadatapb.IndexBuildIndexingStamp_BY_RECORDS {
+		if oldMethod == metadatapb.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS {
 			return p.AllowedTakeovers[TakeoverMultiTargetToSingle]
 		}
-		if oldMethod == gen.IndexBuildIndexingStamp_MUTUAL_BY_RECORDS {
+		if oldMethod == metadatapb.IndexBuildIndexingStamp_MUTUAL_BY_RECORDS {
 			return p.AllowedTakeovers[TakeoverMutualToSingle]
 		}
 	}
 
-	if newMethod == gen.IndexBuildIndexingStamp_MUTUAL_BY_RECORDS {
+	if newMethod == metadatapb.IndexBuildIndexingStamp_MUTUAL_BY_RECORDS {
 		if !p.AllowedTakeovers[TakeoverByRecordsToMutual] {
 			return false
 		}
-		if oldMethod == gen.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS {
+		if oldMethod == metadatapb.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS {
 			// Allow if same set of targets or single target.
 			if len(newStamp.GetTargetIndex()) == 1 {
 				return true
@@ -241,7 +241,7 @@ func (p *IndexingPolicy) ShouldAllowTypeConversionContinue(newStamp, savedStamp 
 			}
 			return true
 		}
-		if oldMethod == gen.IndexBuildIndexingStamp_BY_RECORDS {
+		if oldMethod == metadatapb.IndexBuildIndexingStamp_BY_RECORDS {
 			return len(newStamp.GetTargetIndex()) == 1
 		}
 	}
@@ -257,7 +257,7 @@ func (p *IndexingPolicy) ShouldAllowTypeConversionContinue(newStamp, savedStamp 
 // in the past, so under a sim env every expiry it wrote reads back as ALREADY EXPIRED. The
 // branch a simulation exercises is then the opposite of the branch it wrote, which is worse than
 // no coverage: the run looks like it tested the blocked path and tested the unblocked one.
-func isTypeStampBlocked(stamp *gen.IndexBuildIndexingStamp, now time.Time) bool {
+func isTypeStampBlocked(stamp *metadatapb.IndexBuildIndexingStamp, now time.Time) bool {
 	if !stamp.GetBlock() {
 		return false
 	}
@@ -270,7 +270,7 @@ func isTypeStampBlocked(stamp *gen.IndexBuildIndexingStamp, now time.Time) bool 
 
 // areSimilarStamps returns true if two stamps differ only in block-related fields.
 // Matches Java's IndexingBase.areSimilar().
-func areSimilarStamps(a, b *gen.IndexBuildIndexingStamp) bool {
+func areSimilarStamps(a, b *metadatapb.IndexBuildIndexingStamp) bool {
 	if proto.Equal(a, b) {
 		return true
 	}
@@ -279,8 +279,8 @@ func areSimilarStamps(a, b *gen.IndexBuildIndexingStamp) bool {
 
 // blocklessStampOf returns a copy of the stamp with all block fields cleared.
 // Matches Java's IndexingBase.blocklessStampOf().
-func blocklessStampOf(stamp *gen.IndexBuildIndexingStamp) *gen.IndexBuildIndexingStamp {
-	clone := proto.Clone(stamp).(*gen.IndexBuildIndexingStamp)
+func blocklessStampOf(stamp *metadatapb.IndexBuildIndexingStamp) *metadatapb.IndexBuildIndexingStamp {
+	clone := proto.Clone(stamp).(*metadatapb.IndexBuildIndexingStamp)
 	clone.Block = nil
 	clone.BlockID = nil
 	clone.BlockExpireEpochMilliSeconds = nil
@@ -1320,12 +1320,12 @@ func (oi *OnlineIndexer) indexingCatcher(ctx context.Context, err error, attempt
 				return indexingCatchFail, nil, err
 			}
 			switch partly.Saved.GetMethod() {
-			case gen.IndexBuildIndexingStamp_BY_RECORDS, gen.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS:
+			case metadatapb.IndexBuildIndexingStamp_BY_RECORDS, metadatapb.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS:
 				// Java allows the fallback from a multi-target build to a single
 				// target, but not to a subset.
 				oi.fallBackToRecordsScan()
 				return indexingCatchRetry, nil, nil
-			case gen.IndexBuildIndexingStamp_BY_INDEX:
+			case metadatapb.IndexBuildIndexingStamp_BY_INDEX:
 				source, serr := oi.savedSourceIndex(partly.Saved)
 				if serr != nil {
 					return indexingCatchFail, nil, serr
@@ -1382,7 +1382,7 @@ func (oi *OnlineIndexer) fallBackToRecordsScan() {
 // savedSourceIndex resolves the source index a BY_INDEX stamp names, as Java
 // resolves the policy's source index subspace key: Index.decodeSubspaceKey, then
 // RecordMetaData.getIndexFromSubspaceKey.
-func (oi *OnlineIndexer) savedSourceIndex(stamp *gen.IndexBuildIndexingStamp) (*Index, error) {
+func (oi *OnlineIndexer) savedSourceIndex(stamp *metadatapb.IndexBuildIndexingStamp) (*Index, error) {
 	key, err := tuple.Unpack(stamp.GetSourceIndexSubspaceKey())
 	if err != nil || len(key) != 1 {
 		return nil, &RecordCoreError{Message: "subspace key must encode a single item tuple"}
@@ -1783,7 +1783,7 @@ func (oi *OnlineIndexer) markWriteOnly(ctx context.Context) (indexingSessionStar
 // setIndexingTypeOrThrow implements Java's IndexingBase.setIndexingTypeOrThrow().
 // It validates whether the new stamp can be written, considering the saved stamp,
 // block state, policy, and build method conversion rules.
-func (oi *OnlineIndexer) setIndexingTypeOrThrow(store *FDBRecordStore, continuedBuild bool, newStamp *gen.IndexBuildIndexingStamp) error {
+func (oi *OnlineIndexer) setIndexingTypeOrThrow(store *FDBRecordStore, continuedBuild bool, newStamp *metadatapb.IndexBuildIndexingStamp) error {
 	for _, idx := range oi.targetIndexes {
 		if err := oi.setIndexingTypeOrThrowForIndex(store, continuedBuild, idx, newStamp); err != nil {
 			return err
@@ -1794,7 +1794,7 @@ func (oi *OnlineIndexer) setIndexingTypeOrThrow(store *FDBRecordStore, continued
 
 // setIndexingTypeOrThrowForIndex is the per-index stamp resolution logic.
 // Matches Java's IndexingBase.setIndexingTypeOrThrow(store, continuedBuild, index, newStamp).
-func (oi *OnlineIndexer) setIndexingTypeOrThrowForIndex(store *FDBRecordStore, continuedBuild bool, index *Index, newStamp *gen.IndexBuildIndexingStamp) error {
+func (oi *OnlineIndexer) setIndexingTypeOrThrowForIndex(store *FDBRecordStore, continuedBuild bool, index *Index, newStamp *metadatapb.IndexBuildIndexingStamp) error {
 	policy := oi.policy
 	state, err := store.readIndexState(index.Name)
 	if err != nil {
@@ -1818,14 +1818,14 @@ func (oi *OnlineIndexer) setIndexingTypeOrThrowForIndex(store *FDBRecordStore, c
 
 	// Step 3: No saved stamp.
 	if savedStamp == nil {
-		if continuedBuild && newStamp.GetMethod() != gen.IndexBuildIndexingStamp_BY_RECORDS {
+		if continuedBuild && newStamp.GetMethod() != metadatapb.IndexBuildIndexingStamp_BY_RECORDS {
 			// Backward compatibility: maybe continuing an old BY_RECORDS session that
 			// didn't write stamps. Check if any records have been scanned.
 			// Matches Java's throwAsByRecordsUnlessNoRecordWasScanned().
 			if !isWriteOnlyButNoRecordScanned(store, store.context, index) {
 				// Records were scanned under old BY_RECORDS — reject non-BY_RECORDS takeover.
-				fakeSavedStamp := &gen.IndexBuildIndexingStamp{
-					Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+				fakeSavedStamp := &metadatapb.IndexBuildIndexingStamp{
+					Method: metadatapb.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
 				}
 				return oi.newPartlyBuiltError(fakeSavedStamp, newStamp, index,
 					"this index was partly built by records (no stamp)")
@@ -1889,7 +1889,7 @@ func isWriteOnlyButNoRecordScanned(store *FDBRecordStore, rtx *FDBRecordContext,
 }
 
 // newPartlyBuiltError creates a PartlyBuiltError with stamp descriptions.
-func (oi *OnlineIndexer) newPartlyBuiltError(savedStamp, expectedStamp *gen.IndexBuildIndexingStamp, index *Index, msg string) *PartlyBuiltError {
+func (oi *OnlineIndexer) newPartlyBuiltError(savedStamp, expectedStamp *metadatapb.IndexBuildIndexingStamp, index *Index, msg string) *PartlyBuiltError {
 	return &PartlyBuiltError{
 		IndexName:     index.Name,
 		SavedStamp:    stampToString(savedStamp),
@@ -1903,7 +1903,7 @@ func (oi *OnlineIndexer) newPartlyBuiltError(savedStamp, expectedStamp *gen.Inde
 }
 
 // stampToString returns a human-readable representation of a stamp.
-func stampToString(stamp *gen.IndexBuildIndexingStamp) string {
+func stampToString(stamp *metadatapb.IndexBuildIndexingStamp) string {
 	if stamp == nil {
 		return "<nil>"
 	}
@@ -2191,18 +2191,18 @@ func (oi *OnlineIndexer) indexScannedRecord(store *FDBRecordStore, rec *FDBStore
 //
 // Matches Java's IndexingByRecords/IndexingByIndex/IndexingMultiTargetByRecords
 // compileSingleTargetLegacyIndexingTypeStamp()/compileTargetIndexesLegacyIndexingTypeStamp().
-func (oi *OnlineIndexer) buildIndexingStamp() *gen.IndexBuildIndexingStamp {
+func (oi *OnlineIndexer) buildIndexingStamp() *metadatapb.IndexBuildIndexingStamp {
 	if oi.buildsByIndex() {
-		return &gen.IndexBuildIndexingStamp{
-			Method:                         gen.IndexBuildIndexingStamp_BY_INDEX.Enum(),
+		return &metadatapb.IndexBuildIndexingStamp{
+			Method:                         metadatapb.IndexBuildIndexingStamp_BY_INDEX.Enum(),
 			SourceIndexSubspaceKey:         tuple.Tuple{oi.sourceIndex.SubspaceTupleKey()}.Pack(),
 			SourceIndexLastModifiedVersion: proto.Int32(int32(oi.sourceIndex.LastModifiedVersion)),
 		}
 	}
 
 	if len(oi.targetIndexes) == 1 && !oi.buildsMutually() {
-		return &gen.IndexBuildIndexingStamp{
-			Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+		return &metadatapb.IndexBuildIndexingStamp{
+			Method: metadatapb.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
 		}
 	}
 
@@ -2213,12 +2213,12 @@ func (oi *OnlineIndexer) buildIndexingStamp() *gen.IndexBuildIndexingStamp {
 		names[i] = idx.Name
 	}
 
-	method := gen.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS
+	method := metadatapb.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS
 	if oi.buildsMutually() {
-		method = gen.IndexBuildIndexingStamp_MUTUAL_BY_RECORDS
+		method = metadatapb.IndexBuildIndexingStamp_MUTUAL_BY_RECORDS
 	}
 
-	return &gen.IndexBuildIndexingStamp{
+	return &metadatapb.IndexBuildIndexingStamp{
 		Method:      method.Enum(),
 		TargetIndex: names,
 	}
@@ -2648,8 +2648,8 @@ func (oi *OnlineIndexer) MarkReadableIfBuilt(ctx context.Context) (bool, error) 
 // QueryIndexingStamps returns the indexing stamps for all target indexes.
 // Returns a map of index name → stamp. Nil stamps are returned as a NONE method stamp.
 // Matches Java's IndexingBase.performIndexingStampOperation(QUERY, ...).
-func (oi *OnlineIndexer) QueryIndexingStamps(ctx context.Context) (map[string]*gen.IndexBuildIndexingStamp, error) {
-	stamps := make(map[string]*gen.IndexBuildIndexingStamp, len(oi.targetIndexes))
+func (oi *OnlineIndexer) QueryIndexingStamps(ctx context.Context) (map[string]*metadatapb.IndexBuildIndexingStamp, error) {
+	stamps := make(map[string]*metadatapb.IndexBuildIndexingStamp, len(oi.targetIndexes))
 	_, err := oi.run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		store, err := oi.openStore(rtx)
 		if err != nil {
@@ -2661,8 +2661,8 @@ func (oi *OnlineIndexer) QueryIndexingStamps(ctx context.Context) (map[string]*g
 				return nil, err
 			}
 			if stamp == nil {
-				stamp = &gen.IndexBuildIndexingStamp{
-					Method: gen.IndexBuildIndexingStamp_NONE.Enum(),
+				stamp = &metadatapb.IndexBuildIndexingStamp{
+					Method: metadatapb.IndexBuildIndexingStamp_NONE.Enum(),
 				}
 			}
 			stamps[idx.Name] = stamp

@@ -12,7 +12,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/vectorindex"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -80,14 +80,14 @@ func mapRecordsFile() *descriptorpb.FileDescriptorProto {
 // mapMetaData is serialized meta-data over mapRecordsFile with one value index
 // on MapRec whose root is root, written without Go's Build so a root Go
 // refuses reaches both loaders.
-func mapMetaData(root recordlayer.KeyExpression) *gen.MetaData {
-	return &gen.MetaData{
+func mapMetaData(root recordlayer.KeyExpression) *metadatapb.MetaData {
+	return &metadatapb.MetaData{
 		Records: mapRecordsFile(),
-		RecordTypes: []*gen.RecordType{{
+		RecordTypes: []*metadatapb.RecordType{{
 			Name:       proto.String("MapRec"),
 			PrimaryKey: recordlayer.Field("id").ToKeyExpression(),
 		}},
-		Indexes: []*gen.Index{{
+		Indexes: []*metadatapb.Index{{
 			Name:                proto.String("idx"),
 			RecordType:          []string{"MapRec"},
 			RootExpression:      root.ToKeyExpression(),
@@ -100,7 +100,7 @@ func mapMetaData(root recordlayer.KeyExpression) *gen.MetaData {
 
 // demoMetaDataWithRoot is the demo records with one value index on Order whose
 // root is root, written without Go's Build.
-func demoMetaDataWithRoot(root recordlayer.KeyExpression) *gen.MetaData {
+func demoMetaDataWithRoot(root recordlayer.KeyExpression) *metadatapb.MetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
@@ -133,32 +133,32 @@ var _ = Describe("Key validation at build, as Java builds", func() {
 	)
 	for _, c := range []struct {
 		name string
-		md   func() *gen.MetaData
+		md   func() *metadatapb.MetaData
 		// class is Java's, empty when Java builds; text is Java's message.
 		class, text string
 	}{
-		{"a nesting into a scalar field", func() *gen.MetaData {
+		{"a nesting into a scalar field", func() *metadatapb.MetaData {
 			return demoMetaDataWithRoot(recordlayer.Nest("price", recordlayer.Field("type")))
 		}, unsupported, "This field is not of message type. (com.apple.foundationdb.record.Order.price)"},
-		{"a map field read as a scalar", func() *gen.MetaData {
+		{"a map field read as a scalar", func() *metadatapb.MetaData {
 			return mapMetaData(recordlayer.Field("m"))
 		}, keyInvalid, "m is repeated with FanType.None"},
-		{"a map field fanned out as a leaf", func() *gen.MetaData {
+		{"a map field fanned out as a leaf", func() *metadatapb.MetaData {
 			return mapMetaData(recordlayer.FanOut("m"))
 		}, queryInvalid, "m is a nested message, but accessed as a scalar"},
-		{"a map field nested with FanType.None", func() *gen.MetaData {
+		{"a map field nested with FanType.None", func() *metadatapb.MetaData {
 			return mapMetaData(recordlayer.Nest("m", recordlayer.Field("value")))
 		}, keyInvalid, "m is repeated with FanType.None"},
-		{"a map field fanned out into a field its entry lacks", func() *gen.MetaData {
+		{"a map field fanned out into a field its entry lacks", func() *metadatapb.MetaData {
 			return mapMetaData(recordlayer.NestFanOut("m", recordlayer.Field("nope")))
 		}, keyInvalid, "Descriptor MEntry does not have field: nope"},
-		{"a map field fanned out into its entry's value", func() *gen.MetaData {
+		{"a map field fanned out into its entry's value", func() *metadatapb.MetaData {
 			return mapMetaData(recordlayer.NestFanOut("m", recordlayer.Field("value")))
 		}, "", ""},
-		{"a group nested into", func() *gen.MetaData {
+		{"a group nested into", func() *metadatapb.MetaData {
 			return mapMetaData(recordlayer.Nest("g", recordlayer.Field("x")))
 		}, "", ""},
-		{"a group read as a scalar", func() *gen.MetaData {
+		{"a group read as a scalar", func() *metadatapb.MetaData {
 			return mapMetaData(recordlayer.Field("g"))
 		}, queryInvalid, "g is a nested message, but accessed as a scalar"},
 	} {
@@ -168,7 +168,7 @@ var _ = Describe("Key validation at build, as Java builds", func() {
 			Expect(NewJavaInvoker().InvokeAs(context.Background(), "buildMetaDataAnyVerdict", map[string]any{
 				"protoBytes": bytesToInts(marshalMetaData(p)),
 			}, &java)).To(Succeed())
-			_, goErr := recordlayer.RecordMetaDataFromProto(proto.Clone(p).(*gen.MetaData))
+			_, goErr := recordlayer.RecordMetaDataFromProto(proto.Clone(p).(*metadatapb.MetaData))
 			fmt.Fprintf(GinkgoWriter, "KEY_VALIDATION %q java=%t %s %q go=%T %v\n", c.name, java.Valid, java.Class, java.Error, goErr, goErr)
 
 			if c.class == "" {
@@ -208,15 +208,15 @@ var _ = Describe("Map and group key expressions are maintained as Java maintains
 	for _, c := range []struct {
 		name      string
 		root      recordlayer.KeyExpression
-		predicate *gen.Predicate
+		predicate *metadatapb.Predicate
 	}{
 		{"a map's entries fanned out", recordlayer.NestFanOut("m", recordlayer.Concat(recordlayer.Field("key"), recordlayer.Field("value"))), nil},
 		{"a group nested into", recordlayer.Nest("g", recordlayer.Field("x")), nil},
 		// An index predicate's field path steps into a group as into a message.
-		{"a predicate over a group's field", recordlayer.Field("id"), &gen.Predicate{ValuePredicate: &gen.ValuePredicate{
+		{"a predicate over a group's field", recordlayer.Field("id"), &metadatapb.Predicate{ValuePredicate: &metadatapb.ValuePredicate{
 			Value: []string{"g", "x"},
-			Comparison: &gen.Comparison{SimpleComparison: &gen.SimpleComparison{
-				Type: gen.ComparisonType_EQUALS.Enum(), Operand: &gen.Value{LongValue: proto.Int64(7)},
+			Comparison: &metadatapb.Comparison{SimpleComparison: &metadatapb.SimpleComparison{
+				Type: metadatapb.ComparisonType_EQUALS.Enum(), Operand: &metadatapb.Value{LongValue: proto.Int64(7)},
 			}},
 		}}},
 	} {
@@ -248,14 +248,14 @@ var _ = Describe("A literal key column is maintained as Java maintains it", func
 // expectMaintainedAsJava saves the same records over mapRecordsFile through both
 // engines, one transaction each, under one value index whose root is root (its
 // predicate predicate), and requires the index key-value pairs to be equal.
-func expectMaintainedAsJava(label string, root recordlayer.KeyExpression, predicate *gen.Predicate) {
+func expectMaintainedAsJava(label string, root recordlayer.KeyExpression, predicate *metadatapb.Predicate) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	clusterFile, err := sharedContainer.ClusterFile(ctx)
 	Expect(err).NotTo(HaveOccurred())
 	mdProto := mapMetaData(root)
 	mdProto.Indexes[0].Predicate = predicate
-	md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(mdProto).(*gen.MetaData))
+	md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(mdProto).(*metadatapb.MetaData))
 	Expect(err).NotTo(HaveOccurred())
 	desc := md.GetRecordType("MapRec").Descriptor
 	record := func(id int64, entries map[string]int64, g *int64) []byte {
@@ -337,7 +337,7 @@ var _ = Describe("Map entries are maintained in the record's wire order, as Java
 		withIndex.Version = proto.Int32(2)
 		withIndex.Indexes[0].AddedVersion = proto.Int32(2)
 		withIndex.Indexes[0].LastModifiedVersion = proto.Int32(2)
-		without := proto.Clone(withIndex).(*gen.MetaData)
+		without := proto.Clone(withIndex).(*metadatapb.MetaData)
 		without.Indexes = nil
 		without.Version = proto.Int32(1)
 
@@ -370,7 +370,7 @@ var _ = Describe("Map entries are maintained in the record's wire order, as Java
 		for i, r := range records {
 			recordArgs[i] = BytesToIntArray(r)
 		}
-		save := func(ss subspace.Subspace, md *gen.MetaData) [][]string {
+		save := func(ss subspace.Subspace, md *metadatapb.MetaData) [][]string {
 			mdBytes, err := proto.Marshal(md)
 			Expect(err).NotTo(HaveOccurred())
 			var java struct {
@@ -389,7 +389,7 @@ var _ = Describe("Map entries are maintained in the record's wire order, as Java
 		// Six entries: the two of record 1 share one key.
 		Expect(javaKVs).To(HaveLen(6))
 
-		md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(withIndex).(*gen.MetaData))
+		md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(withIndex).(*metadatapb.MetaData))
 		Expect(err).NotTo(HaveOccurred())
 		db := recordlayer.NewFDBDatabase(sharedDB)
 		build := func(ss subspace.Subspace) [][]string {
@@ -587,7 +587,7 @@ var _ = Describe("Map entries are maintained in the record's wire order, as Java
 		Expect(save(rebuilt, without)).To(BeEmpty())
 		copyRecords(javaSS, rebuilt)
 		Expect(build(rebuilt)).To(Equal(maintained))
-		openJava := func(ss subspace.Subspace, md *gen.MetaData) [][]string {
+		openJava := func(ss subspace.Subspace, md *metadatapb.MetaData) [][]string {
 			mdBytes, err := proto.Marshal(md)
 			Expect(err).NotTo(HaveOccurred())
 			var java struct {
@@ -609,8 +609,8 @@ var _ = Describe("Map entries are maintained in the record's wire order, as Java
 		// loaders prefer _MapRec, the field named for the type): Go's re-save
 		// finds the stored map order under the field it decoded the record
 		// from, and writes the record under the preferred field.
-		twoFields := func(md *gen.MetaData) *gen.MetaData {
-			c := proto.Clone(md).(*gen.MetaData)
+		twoFields := func(md *metadatapb.MetaData) *metadatapb.MetaData {
+			c := proto.Clone(md).(*metadatapb.MetaData)
 			for _, m := range c.Records.MessageType {
 				if m.GetName() == "RecordTypeUnion" {
 					m.Field = append(m.Field, &descriptorpb.FieldDescriptorProto{
@@ -722,14 +722,14 @@ var _ = Describe("A record re-saved unchanged is written as Java's load-then-sav
 				},
 			},
 		}
-		mdProto := &gen.MetaData{
+		mdProto := &metadatapb.MetaData{
 			Records:     fdp,
-			RecordTypes: []*gen.RecordType{{Name: proto.String("P3"), PrimaryKey: recordlayer.Field("id").ToKeyExpression()}},
+			RecordTypes: []*metadatapb.RecordType{{Name: proto.String("P3"), PrimaryKey: recordlayer.Field("id").ToKeyExpression()}},
 			Version:     proto.Int32(1),
 		}
 		mdBytes, err := proto.Marshal(mdProto)
 		Expect(err).NotTo(HaveOccurred())
-		md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(mdProto).(*gen.MetaData))
+		md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(mdProto).(*metadatapb.MetaData))
 		Expect(err).NotTo(HaveOccurred())
 
 		// Wire builders: an int64 map entry (its value written even when zero),
@@ -968,7 +968,7 @@ var _ = Describe("A record re-saved unchanged is written as Java's load-then-sav
 // h.he and map m hold a closed enum (E: A=1, B=2; the map's F: F0=0, F2=2),
 // indexed by_e, by_r, by_he, by_m and count_by_e, and EnumReq, whose required
 // need is one. without is the same meta-data with no index, at version 1.
-func closedEnumMetaData() (withIndex, without *gen.MetaData) {
+func closedEnumMetaData() (withIndex, without *metadatapb.MetaData) {
 	optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
 	repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()
 	fld := func(name string, number int32, label *descriptorpb.FieldDescriptorProto_Label, typ descriptorpb.FieldDescriptorProto_Type, typeName string) *descriptorpb.FieldDescriptorProto {
@@ -1032,21 +1032,21 @@ func closedEnumMetaData() (withIndex, without *gen.MetaData) {
 			}},
 		},
 	}
-	index := func(name string, root recordlayer.KeyExpression) *gen.Index {
-		return &gen.Index{
+	index := func(name string, root recordlayer.KeyExpression) *metadatapb.Index {
+		return &metadatapb.Index{
 			Name: proto.String(name), RecordType: []string{"EnumRec"}, RootExpression: root.ToKeyExpression(),
 			SubspaceKey: tuple.Tuple{name}.Pack(), AddedVersion: proto.Int32(2), LastModifiedVersion: proto.Int32(2),
 		}
 	}
 	count := index("count_by_e", recordlayer.GroupAll(recordlayer.Field("e")))
 	count.Type = proto.String("count")
-	withIndex = &gen.MetaData{
+	withIndex = &metadatapb.MetaData{
 		Records: fdp,
-		RecordTypes: []*gen.RecordType{
+		RecordTypes: []*metadatapb.RecordType{
 			{Name: proto.String("EnumRec"), PrimaryKey: recordlayer.Field("id").ToKeyExpression()},
 			{Name: proto.String("EnumReq"), PrimaryKey: recordlayer.Field("id").ToKeyExpression()},
 		},
-		Indexes: []*gen.Index{
+		Indexes: []*metadatapb.Index{
 			index("by_e", recordlayer.Field("e")),
 			index("by_r", recordlayer.FanOut("r")),
 			index("by_he", recordlayer.Nest("h", recordlayer.Field("he"))),
@@ -1055,7 +1055,7 @@ func closedEnumMetaData() (withIndex, without *gen.MetaData) {
 		},
 		Version: proto.Int32(2),
 	}
-	without = proto.Clone(withIndex).(*gen.MetaData)
+	without = proto.Clone(withIndex).(*metadatapb.MetaData)
 	without.Indexes, without.Version = nil, proto.Int32(1)
 	return withIndex, without
 }
@@ -1106,7 +1106,7 @@ var _ = Describe("A closed enum's undeclared number is read as Java reads it", f
 			recordArgs[i] = BytesToIntArray(r)
 		}
 		db := recordlayer.NewFDBDatabase(sharedDB)
-		javaSave := func(ss subspace.Subspace, md *gen.MetaData) [][]string {
+		javaSave := func(ss subspace.Subspace, md *metadatapb.MetaData) [][]string {
 			mdBytes, err := proto.Marshal(md)
 			Expect(err).NotTo(HaveOccurred())
 			var java struct {
@@ -1150,7 +1150,7 @@ var _ = Describe("A closed enum's undeclared number is read as Java reads it", f
 			Expect(out).To(HaveLen(len(records)))
 			return out
 		}
-		md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(withIndex).(*gen.MetaData))
+		md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(withIndex).(*metadatapb.MetaData))
 		Expect(err).NotTo(HaveOccurred())
 
 		// Java's save of the raw bytes, and its indexes.
@@ -1226,7 +1226,7 @@ var _ = Describe("A closed enum's undeclared number is read as Java reads it", f
 		clusterFile, err := sharedContainer.ClusterFile(ctx)
 		Expect(err).NotTo(HaveOccurred())
 		withIndex, _ := closedEnumMetaData()
-		md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(withIndex).(*gen.MetaData))
+		md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(withIndex).(*metadatapb.MetaData))
 		Expect(err).NotTo(HaveOccurred())
 		rt := md.GetRecordType("EnumRec").Descriptor
 		fields := rt.Fields()
@@ -1343,7 +1343,7 @@ var _ = Describe("A closed enum's undeclared number is read as Java reads it", f
 		clusterFile, err := sharedContainer.ClusterFile(ctx)
 		Expect(err).NotTo(HaveOccurred())
 		withIndex, _ := closedEnumMetaData()
-		md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(withIndex).(*gen.MetaData))
+		md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(withIndex).(*metadatapb.MetaData))
 		Expect(err).NotTo(HaveOccurred())
 		mdBytes, err := proto.Marshal(withIndex)
 		Expect(err).NotTo(HaveOccurred())
@@ -1425,7 +1425,7 @@ type validatorIndex struct {
 // indexValidationMetaData is the demo records at version 5 with the given
 // indexes and former indexes, serialized without Go's Build so a shape Go
 // refuses reaches both loaders.
-func indexValidationMetaData(storeVersions bool, indexes []validatorIndex, formers []*gen.FormerIndex) *gen.MetaData {
+func indexValidationMetaData(storeVersions bool, indexes []validatorIndex, formers []*metadatapb.FormerIndex) *metadatapb.MetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
@@ -1448,7 +1448,7 @@ func indexValidationMetaData(storeVersions bool, indexes []validatorIndex, forme
 		if key == "" {
 			key = vi.name
 		}
-		idx := &gen.Index{
+		idx := &metadatapb.Index{
 			Name:                proto.String(vi.name),
 			RecordType:          []string{vi.recordType},
 			Type:                proto.String(vi.typ),
@@ -1458,7 +1458,7 @@ func indexValidationMetaData(storeVersions bool, indexes []validatorIndex, forme
 			LastModifiedVersion: proto.Int32(lastModified),
 		}
 		for k, v := range vi.options {
-			idx.Options = append(idx.Options, &gen.Index_Option{Key: proto.String(k), Value: proto.String(v)})
+			idx.Options = append(idx.Options, &metadatapb.Index_Option{Key: proto.String(k), Value: proto.String(v)})
 		}
 		p.Indexes = append(p.Indexes, idx)
 	}
@@ -1466,8 +1466,8 @@ func indexValidationMetaData(storeVersions bool, indexes []validatorIndex, forme
 	return p
 }
 
-func formerIndex(name, key string, added, removed int32) *gen.FormerIndex {
-	return &gen.FormerIndex{FormerName: proto.String(name), SubspaceKey: tuple.Tuple{key}.Pack(), AddedVersion: proto.Int32(added), RemovedVersion: proto.Int32(removed)}
+func formerIndex(name, key string, added, removed int32) *metadatapb.FormerIndex {
+	return &metadatapb.FormerIndex{FormerName: proto.String(name), SubspaceKey: tuple.Tuple{key}.Pack(), AddedVersion: proto.Int32(added), RemovedVersion: proto.Int32(removed)}
 }
 
 // Build's index validation, both loaders on the same bytes: each index type's
@@ -1496,7 +1496,7 @@ var _ = Describe("Index validation at build, as Java builds", func() {
 		name          string
 		storeVersions bool
 		indexes       []validatorIndex
-		formers       []*gen.FormerIndex
+		formers       []*metadatapb.FormerIndex
 		class, text   string
 	}{
 		// The validators.
@@ -1797,13 +1797,13 @@ var _ = Describe("Index validation at build, as Java builds", func() {
 		}, nil, keyInvalid, "grouping not possible in index type"},
 		{"an index before a former index", false, []validatorIndex{
 			{name: "a", recordType: "Order", typ: "value", root: recordlayer.Field("nope")},
-		}, []*gen.FormerIndex{formerIndex("f", "f", 3, 2)}, keyInvalid, "Descriptor Order does not have field: nope"},
+		}, []*metadatapb.FormerIndex{formerIndex("f", "f", 3, 2)}, keyInvalid, "Descriptor Order does not have field: nope"},
 		{
 			"former indexes before an index sharing a key with one", false,
 			[]validatorIndex{
 				{name: "a", recordType: "Order", typ: "value", root: recordlayer.Field("price"), key: "k"},
 			},
-			[]*gen.FormerIndex{formerIndex("f1", "k", 1, 2), formerIndex("f2", "j", 1, 2), formerIndex("f3", "j", 1, 2)},
+			[]*metadatapb.FormerIndex{formerIndex("f1", "k", 1, 2), formerIndex("f2", "j", 1, 2), formerIndex("f3", "j", 1, 2)},
 			metaData, "Same subspace key j used by two former indexes f3 and f2",
 		},
 	} {
@@ -1813,7 +1813,7 @@ var _ = Describe("Index validation at build, as Java builds", func() {
 			Expect(NewJavaInvoker().InvokeAs(context.Background(), "buildMetaDataAnyVerdict", map[string]any{
 				"protoBytes": bytesToInts(marshalMetaData(p)),
 			}, &java)).To(Succeed())
-			_, goErr := recordlayer.RecordMetaDataFromProto(proto.Clone(p).(*gen.MetaData))
+			_, goErr := recordlayer.RecordMetaDataFromProto(proto.Clone(p).(*metadatapb.MetaData))
 			fmt.Fprintf(GinkgoWriter, "INDEX_VALIDATION %q java=%t %s %q go=%T %v\n", c.name, java.Valid, java.Class, java.Error, goErr, goErr)
 			if c.class == "" {
 				Expect(java.Valid).To(BeTrue(), "Java: %s %s", java.Class, java.Error)
@@ -1856,8 +1856,8 @@ var _ = Describe("Index validation at build, as Java builds", func() {
 // same verdict from both loaders, a refusal being Java's MetaDataException
 // "incorrect index options", whose cause Go carries (Unwrap).
 var _ = Describe("A windowed VECTOR index's options parse as Java parses them", func() {
-	windowed := func(option, value string) *gen.MetaData {
-		return windowedEdited(func(ix *gen.Index) {
+	windowed := func(option, value string) *metadatapb.MetaData {
+		return windowedEdited(func(ix *metadatapb.Index) {
 			set := false
 			for _, o := range ix.Options {
 				if o.GetKey() == option {
@@ -1865,7 +1865,7 @@ var _ = Describe("A windowed VECTOR index's options parse as Java parses them", 
 				}
 			}
 			if !set {
-				ix.Options = append(ix.Options, &gen.Index_Option{Key: proto.String(option), Value: proto.String(value)})
+				ix.Options = append(ix.Options, &metadatapb.Index_Option{Key: proto.String(option), Value: proto.String(value)})
 			}
 		})
 	}
@@ -1903,14 +1903,14 @@ var _ = Describe("A windowed VECTOR index's options parse as Java parses them", 
 // 132-151) and its mandatory dimension count, for a plain index and a windowed
 // one: each row edits the windowed shape and requires the same verdict.
 var _ = Describe("A VECTOR index's structure is validated as Java validates it", func() {
-	root := func(k recordlayer.KeyExpression) func(*gen.Index) {
-		return func(ix *gen.Index) { ix.RootExpression = k.ToKeyExpression() }
+	root := func(k recordlayer.KeyExpression) func(*metadatapb.Index) {
+		return func(ix *metadatapb.Index) { ix.RootExpression = k.ToKeyExpression() }
 	}
 	for _, c := range []struct {
 		name string
-		edit func(*gen.Index)
+		edit func(*metadatapb.Index)
 	}{
-		{"no dimension count", func(ix *gen.Index) { dropOption(ix, recordlayer.IndexOptionVectorNumDimensions) }},
+		{"no dimension count", func(ix *metadatapb.Index) { dropOption(ix, recordlayer.IndexOptionVectorNumDimensions) }},
 		{"a grouping root", root(recordlayer.GroupBy(recordlayer.Field("price"), recordlayer.Field("vector_data")))},
 		{"a unique index", setOptions(map[string]string{recordlayer.IndexOptionUnique: "true"})},
 		{"a version column", root(recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.VersionKey(), recordlayer.Field("vector_data")), 1))},
@@ -1925,7 +1925,7 @@ var _ = Describe("A VECTOR index's structure is validated as Java validates it",
 	} {
 		for _, windowed := range []bool{false, true} {
 			It(fmt.Sprintf("%s (windowed %t)", c.name, windowed), func() {
-				expectWindowedVerdictAsJava(c.name, windowedEdited(func(ix *gen.Index) {
+				expectWindowedVerdictAsJava(c.name, windowedEdited(func(ix *metadatapb.Index) {
 					if !windowed {
 						ix.Predicate = nil
 					}
@@ -1942,7 +1942,7 @@ var _ = Describe("A VECTOR index's structure is validated as Java validates it",
 var _ = Describe("A plain VECTOR index's metric is read as Java reads it", func() {
 	for _, metric := range []string{"COSINE_METRIC", "DOT_PRODUCT_METRIC", "cosine", "inner_product", "euclidean", "COSINE_METRIC "} {
 		It(fmt.Sprintf("%s=%q", recordlayer.IndexOptionVectorMetric, metric), func() {
-			expectWindowedVerdictAsJava("plain "+metric, windowedEdited(func(ix *gen.Index) {
+			expectWindowedVerdictAsJava("plain "+metric, windowedEdited(func(ix *metadatapb.Index) {
 				ix.Predicate = nil
 				setOptions(map[string]string{recordlayer.IndexOptionVectorMetric: metric})(ix)
 			}))
@@ -1961,18 +1961,18 @@ var _ = Describe("A plain VECTOR index's metric is read as Java reads it", func(
 var _ = Describe("A windowed VECTOR index's options are read as Java reads them", func() {
 	for _, c := range []struct {
 		name string
-		edit func(*gen.Index)
+		edit func(*metadatapb.Index)
 	}{
 		{"hnswM=８ hnswMMax=+12 hnswMMax0=２４", setOptions(map[string]string{recordlayer.IndexOptionHNSWM: "８", recordlayer.IndexOptionHNSWMMax: "+12", recordlayer.IndexOptionHNSWMMax0: "２４"})},
 		{"hnswEfConstruction=１５０ hnswStatsThreshold=-3", setOptions(map[string]string{recordlayer.IndexOptionHNSWEfConstruction: "１５０", recordlayer.IndexOptionHNSWStatsThreshold: "-3"})},
 		{"probabilities 0.25d and ' 2.5e-1 '", setOptions(map[string]string{recordlayer.IndexOptionHNSWSampleVectorStatsProbability: "0.25d", recordlayer.IndexOptionHNSWMaintainStatsProbability: " 2.5e-1 "})},
 		{"probabilities 0x1p-2 and .125F", setOptions(map[string]string{recordlayer.IndexOptionHNSWSampleVectorStatsProbability: "0x1p-2", recordlayer.IndexOptionHNSWMaintainStatsProbability: ".125F"})},
 		{"m 150, mMax 150, mMax0 300, efRepair 150", setOptions(map[string]string{recordlayer.IndexOptionHNSWM: "150", recordlayer.IndexOptionHNSWMMax: "150", recordlayer.IndexOptionHNSWMMax0: "300", recordlayer.IndexOptionHNSWEfRepair: "150"})},
-		{"the metric under its alias vectorMetric", func(ix *gen.Index) {
+		{"the metric under its alias vectorMetric", func(ix *metadatapb.Index) {
 			dropOption(ix, recordlayer.IndexOptionVectorMetric)
 			setOptions(map[string]string{"vectorMetric": "COSINE_METRIC"})(ix)
 		}},
-		{"the dimension count under its alias vectorNumDimensions", func(ix *gen.Index) {
+		{"the dimension count under its alias vectorNumDimensions", func(ix *metadatapb.Index) {
 			dropOption(ix, recordlayer.IndexOptionVectorNumDimensions)
 			setOptions(map[string]string{"vectorNumDimensions": "5"})(ix)
 		}},
@@ -1991,7 +1991,7 @@ var _ = Describe("A windowed VECTOR index's options are read as Java reads them"
 			Expect(NewJavaInvoker().InvokeAs(context.Background(), "vectorIndexConfigJava", map[string]any{
 				"protoBytes": bytesToInts(marshalMetaData(p)), "indexName": "w",
 			}, &java)).To(Succeed())
-			md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(p).(*gen.MetaData))
+			md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(p).(*metadatapb.MetaData))
 			Expect(err).NotTo(HaveOccurred())
 			cfg, err := vectorindex.HNSWConfigOf(md.GetIndex("w"))
 			Expect(err).NotTo(HaveOccurred())
@@ -2032,7 +2032,7 @@ var _ = Describe("A windowed VECTOR index's options are read as Java reads them"
 var _ = Describe("A windowed VECTOR index's configuration is checked as Java's Config checks it", func() {
 	for _, c := range []struct {
 		name string
-		edit func(*gen.Index)
+		edit func(*metadatapb.Index)
 	}{
 		{"efConstruction 50", setOptions(map[string]string{recordlayer.IndexOptionHNSWEfConstruction: "50"})},
 		{"m 20 above the default mMax", setOptions(map[string]string{recordlayer.IndexOptionHNSWM: "20"})},
@@ -2046,7 +2046,7 @@ var _ = Describe("A windowed VECTOR index's configuration is checked as Java's C
 		{"maxNumConcurrentDeleteFromLayer 11", setOptions(map[string]string{recordlayer.IndexOptionHNSWMaxNumConcurrentDeleteFromLayer: "11"})},
 		{"the metric under both names", setOptions(map[string]string{"vectorMetric": "EUCLIDEAN_SQUARE_METRIC"})},
 		{"the dimension count under both names", setOptions(map[string]string{"vectorNumDimensions": "3"})},
-		{"no dimension count under either name", func(ix *gen.Index) { dropOption(ix, recordlayer.IndexOptionVectorNumDimensions) }},
+		{"no dimension count under either name", func(ix *metadatapb.Index) { dropOption(ix, recordlayer.IndexOptionVectorNumDimensions) }},
 	} {
 		It(c.name, func() {
 			expectWindowedVerdictAsJava(c.name, windowedEdited(c.edit))
@@ -2056,8 +2056,8 @@ var _ = Describe("A windowed VECTOR index's configuration is checked as Java's C
 
 // setOptions sets each option of an index proto, replacing its value when it is
 // set.
-func setOptions(opts map[string]string) func(*gen.Index) {
-	return func(ix *gen.Index) {
+func setOptions(opts map[string]string) func(*metadatapb.Index) {
+	return func(ix *metadatapb.Index) {
 		for k, v := range opts {
 			set := false
 			for _, o := range ix.Options {
@@ -2066,14 +2066,14 @@ func setOptions(opts map[string]string) func(*gen.Index) {
 				}
 			}
 			if !set {
-				ix.Options = append(ix.Options, &gen.Index_Option{Key: proto.String(k), Value: proto.String(v)})
+				ix.Options = append(ix.Options, &metadatapb.Index_Option{Key: proto.String(k), Value: proto.String(v)})
 			}
 		}
 	}
 }
 
 // dropOption removes an option from an index proto.
-func dropOption(ix *gen.Index, key string) {
+func dropOption(ix *metadatapb.Index, key string) {
 	kept := ix.Options[:0]
 	for _, o := range ix.Options {
 		if o.GetKey() != key {
@@ -2088,42 +2088,42 @@ func dropOption(ix *gen.Index, key string) {
 // validator's missing dimension count, and IndexPredicate's RecordCoreException
 // for a window under a disjunction.
 var _ = Describe("A windowed VECTOR index is validated as Java validates it", func() {
-	window := func() *gen.Predicate {
-		return &gen.Predicate{RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
-			OrderingField: []string{"price"}, Size: proto.Int32(3), Direction: gen.RowNumberWindowPredicate_ASC.Enum(),
+	window := func() *metadatapb.Predicate {
+		return &metadatapb.Predicate{RowNumberWindowPredicate: &metadatapb.RowNumberWindowPredicate{
+			OrderingField: []string{"price"}, Size: proto.Int32(3), Direction: metadatapb.RowNumberWindowPredicate_ASC.Enum(),
 		}}
 	}
 	for _, c := range []struct {
 		name string
-		edit func(*gen.Index)
+		edit func(*metadatapb.Index)
 	}{
-		{"a unique windowed index", func(ix *gen.Index) {
-			ix.Options = append(ix.Options, &gen.Index_Option{Key: proto.String("unique"), Value: proto.String("true")})
+		{"a unique windowed index", func(ix *metadatapb.Index) {
+			ix.Options = append(ix.Options, &metadatapb.Index_Option{Key: proto.String("unique"), Value: proto.String("true")})
 		}},
-		{"a window under a disjunction alone (not decorated, so not refused)", func(ix *gen.Index) {
-			ix.Predicate = &gen.Predicate{OrPredicate: &gen.OrPredicate{Children: []*gen.Predicate{
-				window(), {ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+		{"a window under a disjunction alone (not decorated, so not refused)", func(ix *metadatapb.Index) {
+			ix.Predicate = &metadatapb.Predicate{OrPredicate: &metadatapb.OrPredicate{Children: []*metadatapb.Predicate{
+				window(), {ConstantPredicate: &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_TRUE.Enum()}},
 			}}}
 		}},
 		// The decoration gate finds a window through AND only, so the placement
 		// check sees a window under an OR only beside a decorating one.
-		{"a window beside a window under a disjunction", func(ix *gen.Index) {
-			ix.Predicate = &gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
-				window(), {OrPredicate: &gen.OrPredicate{Children: []*gen.Predicate{
-					{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}}, window(),
+		{"a window beside a window under a disjunction", func(ix *metadatapb.Index) {
+			ix.Predicate = &metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{
+				window(), {OrPredicate: &metadatapb.OrPredicate{Children: []*metadatapb.Predicate{
+					{ConstantPredicate: &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_TRUE.Enum()}}, window(),
 				}}},
 			}}}
 		}},
-		{"a window under a conjunction", func(ix *gen.Index) {
-			ix.Predicate = &gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
-				window(), {ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+		{"a window under a conjunction", func(ix *metadatapb.Index) {
+			ix.Predicate = &metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{
+				window(), {ConstantPredicate: &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_TRUE.Enum()}},
 			}}}
 		}},
-		{"a windowed index over two record types", func(ix *gen.Index) {
+		{"a windowed index over two record types", func(ix *metadatapb.Index) {
 			ix.RecordType = []string{"Order", "Customer"}
 		}},
-		{"a windowed index without its dimension count", func(ix *gen.Index) {
-			var kept []*gen.Index_Option
+		{"a windowed index without its dimension count", func(ix *metadatapb.Index) {
+			var kept []*metadatapb.Index_Option
 			for _, o := range ix.Options {
 				if o.GetKey() != recordlayer.IndexOptionVectorNumDimensions {
 					kept = append(kept, o)
@@ -2139,15 +2139,15 @@ var _ = Describe("A windowed VECTOR index is validated as Java validates it", fu
 // windowedEdited is the demo meta-data with a windowed VECTOR index "w" on
 // Order that Java builds (the sliding-window conformance shape), its Index
 // message edited by edit.
-func windowedEdited(edit func(*gen.Index)) *gen.MetaData {
+func windowedEdited(edit func(*metadatapb.Index)) *metadatapb.MetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	idx := recordlayer.NewVectorIndex("w", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 3)
 	idx.SetOption(recordlayer.IndexOptionVectorMetric, "EUCLIDEAN_SQUARE_METRIC")
-	Expect(idx.SetPredicateProto(&gen.Predicate{RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
-		OrderingField: []string{"price"}, Size: proto.Int32(3), Direction: gen.RowNumberWindowPredicate_ASC.Enum(),
+	Expect(idx.SetPredicateProto(&metadatapb.Predicate{RowNumberWindowPredicate: &metadatapb.RowNumberWindowPredicate{
+		OrderingField: []string{"price"}, Size: proto.Int32(3), Direction: metadatapb.RowNumberWindowPredicate_ASC.Enum(),
 	}})).To(Succeed())
 	builder.AddIndex("Order", idx)
 	md, err := builder.Build()
@@ -2164,12 +2164,12 @@ func windowedEdited(edit func(*gen.Index)) *gen.MetaData {
 
 // expectWindowedVerdictAsJava loads p in both engines and requires the same
 // verdict, and for a refusal Java's class (as its Go error type) and whole text.
-func expectWindowedVerdictAsJava(label string, p *gen.MetaData) {
+func expectWindowedVerdictAsJava(label string, p *metadatapb.MetaData) {
 	var java javaAnyVerdict
 	Expect(NewJavaInvoker().InvokeAs(context.Background(), "buildMetaDataAnyVerdict", map[string]any{
 		"protoBytes": bytesToInts(marshalMetaData(p)),
 	}, &java)).To(Succeed())
-	_, goErr := recordlayer.RecordMetaDataFromProto(proto.Clone(p).(*gen.MetaData))
+	_, goErr := recordlayer.RecordMetaDataFromProto(proto.Clone(p).(*metadatapb.MetaData))
 	fmt.Fprintf(GinkgoWriter, "WINDOWED %s java=%t %s %q cause=%s %q go=%T %v cause=%v\n", label, java.Valid, java.Class, java.Error,
 		java.CauseClass, java.CauseError, goErr, goErr, errors.Unwrap(goErr))
 	Expect(goErr == nil).To(Equal(java.Valid), "Java: %t %s %q; Go: %v", java.Valid, java.Class, java.Error, goErr)

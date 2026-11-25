@@ -10,7 +10,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // validateRecordsFile builds a records file whose union "RecordTypeUnion" holds
@@ -28,7 +28,7 @@ func validateRecordsFile(t *testing.T, mutate func(*descriptorpb.FileDescriptorP
 		return f
 	}
 	unionOpts := &descriptorpb.MessageOptions{}
-	proto.SetExtension(unionOpts, gen.E_Record, &gen.RecordTypeOptions{Usage: gen.RecordTypeOptions_UNION.Enum()})
+	proto.SetExtension(unionOpts, metadatapb.E_Record, &metadatapb.RecordTypeOptions{Usage: metadatapb.RecordTypeOptions_UNION.Enum()})
 	fdp := &descriptorpb.FileDescriptorProto{
 		Name: proto.String("validate_records.proto"), Package: proto.String("vr"), Syntax: proto.String("proto2"),
 		Dependency: []string{"record_metadata_options.proto"},
@@ -83,9 +83,9 @@ func TestValidateRecordsMatchesJava(t *testing.T) {
 		m.Field = append(m.Field, f)
 		return f
 	}
-	usage := func(u gen.RecordTypeOptions_Usage) *descriptorpb.MessageOptions {
+	usage := func(u metadatapb.RecordTypeOptions_Usage) *descriptorpb.MessageOptions {
 		o := &descriptorpb.MessageOptions{}
-		proto.SetExtension(o, gen.E_Record, &gen.RecordTypeOptions{Usage: u.Enum()})
+		proto.SetExtension(o, metadatapb.E_Record, &metadatapb.RecordTypeOptions{Usage: u.Enum()})
 		return o
 	}
 	cases := []struct {
@@ -131,7 +131,7 @@ func TestValidateRecordsMatchesJava(t *testing.T) {
 		// fetchUnionDescriptor decides this before validateUnion runs: a message
 		// named RecordTypeUnion beside a usage=UNION one is a second union.
 		{"a second union candidate named RecordTypeUnion", func(f *descriptorpb.FileDescriptorProto) {
-			f.MessageType = append(f.MessageType, &descriptorpb.DescriptorProto{Name: proto.String("RecordTypeUnion"), Options: usage(gen.RecordTypeOptions_RECORD)})
+			f.MessageType = append(f.MessageType, &descriptorpb.DescriptorProto{Name: proto.String("RecordTypeUnion"), Options: usage(metadatapb.RecordTypeOptions_RECORD)})
 			addField(msg(f, "RecordTypeUnion"), "id", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64, "")
 			addField(msg(f, "Envelope"), "_R", 2, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".vr.RecordTypeUnion")
 		}, "Only one union descriptor is allowed"},
@@ -158,12 +158,12 @@ func TestValidateRecordsMatchesJava(t *testing.T) {
 			addField(msg(f, "Envelope"), "x", 2, descriptorpb.FieldDescriptorProto_TYPE_INT64, "")
 		}, "Field u in message vr.T has illegal unsigned type UINT32"},
 		{"nested usage as a union field", func(f *descriptorpb.FileDescriptorProto) {
-			f.MessageType = append(f.MessageType, &descriptorpb.DescriptorProto{Name: proto.String("N"), Options: usage(gen.RecordTypeOptions_NESTED)})
+			f.MessageType = append(f.MessageType, &descriptorpb.DescriptorProto{Name: proto.String("N"), Options: usage(metadatapb.RecordTypeOptions_NESTED)})
 			addField(msg(f, "N"), "id", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64, "")
 			addField(msg(f, "Envelope"), "_N", 2, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".vr.N")
 		}, "Union field _N has type N which is not a record"},
 		{"record usage missing from the union", func(f *descriptorpb.FileDescriptorProto) {
-			f.MessageType = append(f.MessageType, &descriptorpb.DescriptorProto{Name: proto.String("R"), Options: usage(gen.RecordTypeOptions_RECORD)})
+			f.MessageType = append(f.MessageType, &descriptorpb.DescriptorProto{Name: proto.String("R"), Options: usage(metadatapb.RecordTypeOptions_RECORD)})
 			addField(msg(f, "R"), "id", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64, "")
 		}, "Record message type R must be a union field."},
 		{"non-message union field", func(f *descriptorpb.FileDescriptorProto) {
@@ -203,9 +203,9 @@ func TestValidateRecordsMatchesJava(t *testing.T) {
 // fetchUnionDescriptor through SetRecords, the path that discovers the union.
 func TestFetchUnionDescriptorMatchesJava(t *testing.T) {
 	t.Parallel()
-	usage := func(u gen.RecordTypeOptions_Usage) *descriptorpb.MessageOptions {
+	usage := func(u metadatapb.RecordTypeOptions_Usage) *descriptorpb.MessageOptions {
 		o := &descriptorpb.MessageOptions{}
-		proto.SetExtension(o, gen.E_Record, &gen.RecordTypeOptions{Usage: u.Enum()})
+		proto.SetExtension(o, metadatapb.E_Record, &metadatapb.RecordTypeOptions{Usage: u.Enum()})
 		return o
 	}
 	msg := func(name string, opts *descriptorpb.MessageOptions, target string) *descriptorpb.DescriptorProto {
@@ -230,12 +230,12 @@ func TestFetchUnionDescriptorMatchesJava(t *testing.T) {
 		union    string // the union SetRecords must pick; "" = the error in want
 		want     string
 	}{
-		{"usage=UNION", []*descriptorpb.DescriptorProto{msg("T", nil, ""), msg("Env", usage(gen.RecordTypeOptions_UNION), ".fu.T")}, "Env", ""},
+		{"usage=UNION", []*descriptorpb.DescriptorProto{msg("T", nil, ""), msg("Env", usage(metadatapb.RecordTypeOptions_UNION), ".fu.T")}, "Env", ""},
 		{"named RecordTypeUnion", []*descriptorpb.DescriptorProto{msg("T", nil, ""), msg("RecordTypeUnion", nil, ".fu.T")}, "RecordTypeUnion", ""},
 		{"a message named UnionDescriptor without usage is no union", []*descriptorpb.DescriptorProto{msg("T", nil, ""), msg("UnionDescriptor", nil, ".fu.T")}, "", "Union descriptor is required"},
-		{"two usage=UNION", []*descriptorpb.DescriptorProto{msg("T", nil, ""), msg("A", usage(gen.RecordTypeOptions_UNION), ".fu.T"), msg("B", usage(gen.RecordTypeOptions_UNION), ".fu.T")}, "", "Only one union descriptor is allowed"},
-		{"usage=UNION and a RecordTypeUnion", []*descriptorpb.DescriptorProto{msg("T", nil, ""), msg("A", usage(gen.RecordTypeOptions_UNION), ".fu.T"), msg("RecordTypeUnion", nil, ".fu.T")}, "", "Only one union descriptor is allowed"},
-		{"NESTED RecordTypeUnion", []*descriptorpb.DescriptorProto{msg("T", nil, ""), msg("A", usage(gen.RecordTypeOptions_UNION), ".fu.T"), msg("RecordTypeUnion", usage(gen.RecordTypeOptions_NESTED), "")}, "", "Message type RecordTypeUnion cannot have NESTED usage"},
+		{"two usage=UNION", []*descriptorpb.DescriptorProto{msg("T", nil, ""), msg("A", usage(metadatapb.RecordTypeOptions_UNION), ".fu.T"), msg("B", usage(metadatapb.RecordTypeOptions_UNION), ".fu.T")}, "", "Only one union descriptor is allowed"},
+		{"usage=UNION and a RecordTypeUnion", []*descriptorpb.DescriptorProto{msg("T", nil, ""), msg("A", usage(metadatapb.RecordTypeOptions_UNION), ".fu.T"), msg("RecordTypeUnion", nil, ".fu.T")}, "", "Only one union descriptor is allowed"},
+		{"NESTED RecordTypeUnion", []*descriptorpb.DescriptorProto{msg("T", nil, ""), msg("A", usage(metadatapb.RecordTypeOptions_UNION), ".fu.T"), msg("RecordTypeUnion", usage(metadatapb.RecordTypeOptions_NESTED), "")}, "", "Message type RecordTypeUnion cannot have NESTED usage"},
 		{"none", []*descriptorpb.DescriptorProto{msg("T", nil, "")}, "", "Union descriptor is required"},
 	}
 	for i, tc := range cases {
@@ -330,9 +330,9 @@ func TestPreviouslyStoredMetaDataIsRefusedOnLoad(t *testing.T) {
 			t.Parallel()
 			fdp := protodesc.ToFileDescriptorProto(validateRecordsFile(t, nil).fileDescriptor)
 			tc.mutate(fdp)
-			stored := &gen.MetaData{
+			stored := &metadatapb.MetaData{
 				Records:     fdp,
-				RecordTypes: []*gen.RecordType{{Name: proto.String("T"), PrimaryKey: Field("id").ToKeyExpression()}},
+				RecordTypes: []*metadatapb.RecordType{{Name: proto.String("T"), PrimaryKey: Field("id").ToKeyExpression()}},
 				Version:     proto.Int32(1),
 			}
 			_, err := RecordMetaDataFromProto(stored)
@@ -363,7 +363,7 @@ func TestRecordsFileWithALegacyNamedUnionDescriptorLoadsAsTheTargetLoadsIt(t *te
 		}}}
 		if withUsage {
 			m.Options = &descriptorpb.MessageOptions{}
-			proto.SetExtension(m.Options, gen.E_Record, &gen.RecordTypeOptions{Usage: gen.RecordTypeOptions_UNION.Enum()})
+			proto.SetExtension(m.Options, metadatapb.E_Record, &metadatapb.RecordTypeOptions{Usage: metadatapb.RecordTypeOptions_UNION.Enum()})
 		}
 		return m
 	}
@@ -488,16 +488,16 @@ func TestRecordsFileWithALegacyNamedUnionDescriptorLoadsAsTheTargetLoadsIt(t *te
 				fdp.MessageType = fdp.MessageType[:1]
 			}
 			fdp.MessageType = append(fdp.MessageType, tc.messages...)
-			stored := &gen.MetaData{
+			stored := &metadatapb.MetaData{
 				Records:     fdp,
-				RecordTypes: []*gen.RecordType{{Name: proto.String("T"), PrimaryKey: Field("id").ToKeyExpression()}},
+				RecordTypes: []*metadatapb.RecordType{{Name: proto.String("T"), PrimaryKey: Field("id").ToKeyExpression()}},
 				Version:     proto.Int32(1),
 			}
 			for _, name := range tc.recordTypes {
-				stored.RecordTypes = append(stored.RecordTypes, &gen.RecordType{Name: proto.String(name), PrimaryKey: Field("id").ToKeyExpression()})
+				stored.RecordTypes = append(stored.RecordTypes, &metadatapb.RecordType{Name: proto.String(name), PrimaryKey: Field("id").ToKeyExpression()})
 			}
 			if tc.indexOn != "" {
-				stored.Indexes = []*gen.Index{{Name: proto.String("I"), RecordType: []string{tc.indexOn}, RootExpression: Field("id").ToKeyExpression()}}
+				stored.Indexes = []*metadatapb.Index{{Name: proto.String("I"), RecordType: []string{tc.indexOn}, RootExpression: Field("id").ToKeyExpression()}}
 			}
 			fd, err := protodesc.NewFile(fdp, protoregistry.GlobalFiles)
 			if err != nil {
@@ -602,9 +602,9 @@ func TestLegacyNamedUnionDescriptorGetsTheTargetsFaults(t *testing.T) {
 	b.AddIndex("T", NewIndex("T$nope", Field("nope")))
 	_, err = b.Build()
 	want("SetRecords with an index on no field", err, indexOnNoField)
-	stored := &gen.MetaData{
+	stored := &metadatapb.MetaData{
 		Records:     fdp,
-		RecordTypes: []*gen.RecordType{{Name: proto.String("T")}},
+		RecordTypes: []*metadatapb.RecordType{{Name: proto.String("T")}},
 		Version:     proto.Int32(1),
 	}
 	_, err = RecordMetaDataFromProto(stored)
@@ -613,7 +613,7 @@ func TestLegacyNamedUnionDescriptorGetsTheTargetsFaults(t *testing.T) {
 	_, err = RecordMetaDataFromProto(stored)
 	want("RecordMetaDataFromProto with a primary key on no field", err, primaryKeyNope)
 	stored.RecordTypes[0].PrimaryKey = Field("id").ToKeyExpression()
-	stored.Indexes = []*gen.Index{{Name: proto.String("T$nope"), RecordType: []string{"T"}, RootExpression: Field("nope").ToKeyExpression()}}
+	stored.Indexes = []*metadatapb.Index{{Name: proto.String("T$nope"), RecordType: []string{"T"}, RootExpression: Field("nope").ToKeyExpression()}}
 	_, err = RecordMetaDataFromProto(stored)
 	want("RecordMetaDataFromProto with an index on no field", err, indexOnNoField)
 	// Without the fault the same file loads, on both paths, as the target
@@ -646,14 +646,14 @@ func TestStoredMetaDataLoadsInJavasOrder(t *testing.T) {
 			}
 		}
 	}
-	unknownIndex := &gen.Index{
+	unknownIndex := &metadatapb.Index{
 		Name: proto.String("I"), RecordType: []string{"Nope"}, RootExpression: Field("id").ToKeyExpression(),
 		Type: proto.String("value"), AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1),
 	}
-	repeatedOption := []*gen.Index_Option{{Key: proto.String("a"), Value: proto.String("1")}, {Key: proto.String("a"), Value: proto.String("2")}}
-	unknownWithRepeatedOption := proto.Clone(unknownIndex).(*gen.Index)
+	repeatedOption := []*metadatapb.Index_Option{{Key: proto.String("a"), Value: proto.String("1")}, {Key: proto.String("a"), Value: proto.String("2")}}
+	unknownWithRepeatedOption := proto.Clone(unknownIndex).(*metadatapb.Index)
 	unknownWithRepeatedOption.Options = repeatedOption
-	nextWithRepeatedOption := &gen.Index{
+	nextWithRepeatedOption := &metadatapb.Index{
 		Name: proto.String("J"), RecordType: []string{"T"}, RootExpression: Field("id").ToKeyExpression(),
 		Type: proto.String("value"), AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1),
 		Options: repeatedOption,
@@ -661,13 +661,13 @@ func TestStoredMetaDataLoadsInJavasOrder(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		records     func(*descriptorpb.FileDescriptorProto)
-		indexes     []*gen.Index
+		indexes     []*metadatapb.Index
 		badCounter  bool
 		recordTypes []string
 		want        string
 	}{
-		{"an index on an unknown record type", nil, []*gen.Index{unknownIndex}, false, nil, "Unknown record type Nope"},
-		{"the same index beside a union fault", unionFault, []*gen.Index{unknownIndex}, false, nil, "Union field x is not a message"},
+		{"an index on an unknown record type", nil, []*metadatapb.Index{unknownIndex}, false, nil, "Unknown record type Nope"},
+		{"the same index beside a union fault", unionFault, []*metadatapb.Index{unknownIndex}, false, nil, "Union field x is not a message"},
 		{
 			"a subspace-key-counter fault beside a union fault", unionFault, nil, true, nil,
 			"subspaceKeyCounter is set but usesSubspaceKeyCounter is not set in the meta-data proto",
@@ -675,8 +675,8 @@ func TestStoredMetaDataLoadsInJavasOrder(t *testing.T) {
 		// Per index, the record types are resolved before the index is read
 		// (RecordMetaDataBuilder.java:187-219), so neither a repeated option on the
 		// same index nor one on a later index hides the unknown type.
-		{"an unknown record type on an index with a repeated option", nil, []*gen.Index{unknownWithRepeatedOption}, false, nil, "Unknown record type Nope"},
-		{"an unknown record type before a repeated option on the next index", nil, []*gen.Index{unknownIndex, nextWithRepeatedOption}, false, nil, "Unknown record type Nope"},
+		{"an unknown record type on an index with a repeated option", nil, []*metadatapb.Index{unknownWithRepeatedOption}, false, nil, "Unknown record type Nope"},
+		{"an unknown record type before a repeated option on the next index", nil, []*metadatapb.Index{unknownIndex, nextWithRepeatedOption}, false, nil, "Unknown record type Nope"},
 		// A RecordType entry naming no record type (:221, :986-990).
 		{"a record type entry naming no record type", nil, nil, false, []string{"Nope"}, "Unknown record type Nope"},
 	} {
@@ -686,14 +686,14 @@ func TestStoredMetaDataLoadsInJavasOrder(t *testing.T) {
 			if tc.records != nil {
 				tc.records(fdp)
 			}
-			stored := &gen.MetaData{
+			stored := &metadatapb.MetaData{
 				Records:     fdp,
-				RecordTypes: []*gen.RecordType{{Name: proto.String("T"), PrimaryKey: Field("id").ToKeyExpression()}},
+				RecordTypes: []*metadatapb.RecordType{{Name: proto.String("T"), PrimaryKey: Field("id").ToKeyExpression()}},
 				Version:     proto.Int32(1),
 			}
 			stored.Indexes = tc.indexes
 			for _, name := range tc.recordTypes {
-				stored.RecordTypes = append(stored.RecordTypes, &gen.RecordType{Name: proto.String(name), PrimaryKey: Field("id").ToKeyExpression()})
+				stored.RecordTypes = append(stored.RecordTypes, &metadatapb.RecordType{Name: proto.String(name), PrimaryKey: Field("id").ToKeyExpression()})
 			}
 			if tc.badCounter {
 				stored.SubspaceKeyCounter = proto.Int64(3)

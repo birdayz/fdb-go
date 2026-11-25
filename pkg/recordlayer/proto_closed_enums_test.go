@@ -15,6 +15,7 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 func varintField(num protowire.Number, v uint64) []byte {
@@ -119,11 +120,11 @@ func TestClosedEnumsAsJava(t *testing.T) {
 // expression's fan type 7 is a missing fan type.
 func TestStoredProtosReadAsJava(t *testing.T) {
 	t.Parallel()
-	var header gen.DataStoreInfo
+	var header metadatapb.DataStoreInfo
 	if err := UnmarshalVTAsJava(&header, varintField(9, 7)); err != nil {
 		t.Fatal(err)
 	}
-	if header.RecordCountState != nil || header.GetRecordCountState() != gen.DataStoreInfo_READABLE {
+	if header.RecordCountState != nil || header.GetRecordCountState() != metadatapb.DataStoreInfo_READABLE {
 		t.Errorf("record count state %v, want unset (READABLE)", header.GetRecordCountState())
 	}
 	if !bytes.Equal(header.ProtoReflect().GetUnknown(), varintField(9, 7)) {
@@ -131,11 +132,11 @@ func TestStoredProtosReadAsJava(t *testing.T) {
 	}
 
 	field := append(protowire.AppendString(protowire.AppendTag(nil, 1, protowire.BytesType), "f"), varintField(2, 7)...)
-	var f gen.Field
+	var f metadatapb.Field
 	if err := proto.Unmarshal(field, &f); err != nil {
 		t.Fatal(err)
 	}
-	_, err := KeyExpressionFromProto(&gen.KeyExpression{Field: &f})
+	_, err := KeyExpressionFromProto(&metadatapb.KeyExpression{Field: &f})
 	var de *KeyExpressionDeserializationError
 	if !errors.As(err, &de) || de.Message != "Serialized Field is missing fan type" {
 		t.Errorf("fan type 7 through protobuf-go's parse: %v", err)
@@ -466,7 +467,7 @@ func TestUnmarshalVTAsJavaKeepsJavasRecursionLimit(t *testing.T) {
 	if !vtBounded((&gen.UnionContinuation{}).ProtoReflect().Descriptor(), javaVTRule.limit) {
 		t.Error("UnionContinuation is not bounded")
 	}
-	for _, m := range []proto.Message{&gen.DataStoreInfo{}, &gen.KeyExpression{}} {
+	for _, m := range []proto.Message{&metadatapb.DataStoreInfo{}, &metadatapb.KeyExpression{}} {
 		if vtBounded(m.ProtoReflect().Descriptor(), javaVTRule.limit) {
 			t.Fatalf("%T nests through KeyExpression; it is not bounded", m)
 		}
@@ -479,13 +480,13 @@ func TestUnmarshalVTAsJavaKeepsJavasRecursionLimit(t *testing.T) {
 		}
 		return b
 	}
-	if err := UnmarshalVTAsJava(&gen.KeyExpression{}, nest(50)); err != nil {
+	if err := UnmarshalVTAsJava(&metadatapb.KeyExpression{}, nest(50)); err != nil {
 		t.Errorf("101 levels: %v", err)
 	}
-	if err := UnmarshalVTAsJava(&gen.KeyExpression{}, nest(51)); err == nil {
+	if err := UnmarshalVTAsJava(&metadatapb.KeyExpression{}, nest(51)); err == nil {
 		t.Error("103 levels were read; protobuf-java refuses them")
 	}
-	if err := (&gen.KeyExpression{}).UnmarshalVT(nest(51)); err != nil {
+	if err := (&metadatapb.KeyExpression{}).UnmarshalVT(nest(51)); err != nil {
 		t.Errorf("vtproto's own decoder refuses 103 levels now (%v); revisit vtBounded", err)
 	}
 }

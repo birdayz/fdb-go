@@ -21,6 +21,7 @@
 package gen
 
 import (
+	_ "fdb.dev/pkg/recordlayer/metadatapb"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -338,7 +339,6 @@ func file_catalog_data_proto_init() {
 	if File_catalog_data_proto != nil {
 		return
 	}
-	file_record_metadata_options_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

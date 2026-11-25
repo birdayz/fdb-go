@@ -11,6 +11,7 @@ import (
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/metadata"
 )
@@ -128,8 +129,8 @@ func TestLoadTemplate_RewrittenMetaDataIsAMiss(t *testing.T) {
 func TestLoadTemplate_ErrorsAreNotCached(t *testing.T) {
 	t.Parallel()
 	name := t.Name()
-	unknownType := demoMetaData(t, 3, func(p *gen.MetaData) {
-		p.Indexes = append(p.Indexes, &gen.Index{
+	unknownType := demoMetaData(t, 3, func(p *metadatapb.MetaData) {
+		p.Indexes = append(p.Indexes, &metadatapb.Index{
 			Name:           proto.String("Nope$x"),
 			RecordType:     []string{"Nope"},
 			RootExpression: recordlayer.Field("x").ToKeyExpression(),

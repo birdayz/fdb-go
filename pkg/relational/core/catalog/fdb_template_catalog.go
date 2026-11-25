@@ -13,6 +13,7 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/metadata"
 )
@@ -128,8 +129,8 @@ func loadTemplateRowIn(store *recordlayer.FDBRecordStore, templateName string, v
 }
 
 // templateRowProto is a catalog row's META_DATA unmarshalled, as stored.
-func templateRowProto(msg *gen.Templates) (*gen.MetaData, error) {
-	p := &gen.MetaData{}
+func templateRowProto(msg *gen.Templates) (*metadatapb.MetaData, error) {
+	p := &metadatapb.MetaData{}
 	if err := recordlayer.UnmarshalAsJava(msg.GetMETA_DATA(), p); err != nil {
 		return nil, api.WrapErrorf(err, api.ErrCodeInternalError, "template unmarshal")
 	}
@@ -137,7 +138,7 @@ func templateRowProto(msg *gen.Templates) (*gen.MetaData, error) {
 }
 
 // LoadTemplateProto returns the row's META_DATA unmarshalled, as stored.
-func (c *RecordLayerStoreSchemaTemplateCatalog) LoadTemplateProto(txn api.Transaction, templateName string, version int) (*gen.MetaData, error) {
+func (c *RecordLayerStoreSchemaTemplateCatalog) LoadTemplateProto(txn api.Transaction, templateName string, version int) (*metadatapb.MetaData, error) {
 	store, err := c.openStore(txn)
 	if err != nil {
 		return nil, err
@@ -193,7 +194,7 @@ func (c *RecordLayerStoreSchemaTemplateCatalog) CreateTemplate(txn api.Transacti
 	if err != nil {
 		return err
 	}
-	var stored *gen.MetaData
+	var stored *metadatapb.MetaData
 	if found {
 		row, err := loadTemplateRowIn(store, rl.MetadataName(), latest)
 		if err != nil {
@@ -423,7 +424,7 @@ func deserializeTemplate(msg *gen.Templates) (api.SchemaTemplate, error) {
 	// .java:207-208): a MetaDataException, the deserialization wrapper included,
 	// is SYNTAX_OR_ACCESS_VIOLATION; any other RecordCoreException, and a parse
 	// failure (InvalidProtocolBufferException), UNKNOWN.
-	p := &gen.MetaData{}
+	p := &metadatapb.MetaData{}
 	if err := recordlayer.UnmarshalAsJava(msg.GetMETA_DATA(), p); err != nil {
 		return nil, api.WrapErrorf(err, api.ErrCodeUnknown, "template unmarshal")
 	}

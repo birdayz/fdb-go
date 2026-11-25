@@ -6,11 +6,11 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -226,7 +226,7 @@ func (s *StoreHeaderConformanceStore) GetStoreHeaderRawGo(ctx context.Context) (
 		if headerBytes == nil {
 			return nil, fmt.Errorf("store header not found")
 		}
-		var header gen.DataStoreInfo
+		var header metadatapb.DataStoreInfo
 		if err := proto.Unmarshal(headerBytes, &header); err != nil {
 			return nil, fmt.Errorf("failed to parse store header: %w", err)
 		}

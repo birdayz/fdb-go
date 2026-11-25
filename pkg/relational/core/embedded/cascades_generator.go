@@ -28,12 +28,12 @@ import (
 
 	"github.com/antlr4-go/antlr/v4"
 
-	"fdb.dev/gen"
 	"fdb.dev/internal/recordlayer/query/executor"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -3466,7 +3466,7 @@ func (d *metadataIndexDef) IndexIsUnique() bool { return d.idx.IsUnique() }
 // every producer of a candidate goes through — this adapter is only one of
 // them, and normalizing here would leave the direct WithPredicateProto callers
 // classified differently.
-func (d *metadataIndexDef) IndexPredicateProto() *gen.Predicate {
+func (d *metadataIndexDef) IndexPredicateProto() *metadatapb.Predicate {
 	return d.idx.GetPredicateProto()
 }
 
@@ -3606,12 +3606,12 @@ func (d *metadataIndexDef) IndexCreatesDuplicates() bool { return d.idx.CreatesD
 // IndexRootKeyExpression exposes a caller-owned KeyExpression AST to the
 // Cascades adapter. The candidate clones it again on attachment, so neither
 // metadata nor a caller can mutate an already-built match candidate.
-func (d *metadataIndexDef) IndexRootKeyExpression() *gen.KeyExpression {
+func (d *metadataIndexDef) IndexRootKeyExpression() *metadatapb.KeyExpression {
 	root := d.idx.RootExpression.ToKeyExpression()
 	if root == nil {
 		return nil
 	}
-	return proto.Clone(root).(*gen.KeyExpression)
+	return proto.Clone(root).(*metadatapb.KeyExpression)
 }
 
 // IndexColumnFunctions returns the per-column function tags parallel to
@@ -3687,7 +3687,7 @@ func indexColumnFunctionTags(expr recordlayer.KeyExpression) []string {
 // indexTrimmableKeyColumnNames are the key columns that are top-level fields:
 // the only ones a primary-key field equals, as Index.TrimPrimaryKey compares
 // key expressions (a nested S.X, CARDINALITY(X) or a version is not field X).
-func indexTrimmableKeyColumnNames(expression *gen.KeyExpression) []string {
+func indexTrimmableKeyColumnNames(expression *metadatapb.KeyExpression) []string {
 	var names []string
 	for _, name := range indexKeyColumnFields(expression) {
 		if name != "" {
@@ -3699,7 +3699,7 @@ func indexTrimmableKeyColumnNames(expression *gen.KeyExpression) []string {
 
 // indexKeyColumnFields is one entry per key column: the top-level field it is,
 // or "" for any other column.
-func indexKeyColumnFields(expression *gen.KeyExpression) []string {
+func indexKeyColumnFields(expression *metadatapb.KeyExpression) []string {
 	switch {
 	case expression == nil:
 		return nil
@@ -3726,7 +3726,7 @@ func indexKeyColumnFields(expression *gen.KeyExpression) []string {
 	}
 }
 
-func indexKeyColumnNames(expression *gen.KeyExpression) ([]string, bool) {
+func indexKeyColumnNames(expression *metadatapb.KeyExpression) ([]string, bool) {
 	if expression == nil {
 		return nil, false
 	}
@@ -3752,10 +3752,10 @@ func indexKeyColumnNames(expression *gen.KeyExpression) ([]string, bool) {
 		// wrapped nullable array column X — the LOGICAL key column is X, not
 		// "values" (Java collapses the hop in
 		// KeyExpressionExpansionVisitor via NullableArrayTypeUtils.matchArrayWrapper).
-		if p := expression.Nesting.GetParent(); p != nil && p.GetFanType() == gen.Field_SCALAR {
+		if p := expression.Nesting.GetParent(); p != nil && p.GetFanType() == metadatapb.Field_SCALAR {
 			if cf := expression.Nesting.GetChild().GetField(); cf != nil &&
 				cf.GetFieldName() == values.WrappedArrayValuesFieldName &&
-				(cf.GetFanType() == gen.Field_FAN_OUT || cf.GetFanType() == gen.Field_CONCATENATE) {
+				(cf.GetFanType() == metadatapb.Field_FAN_OUT || cf.GetFanType() == metadatapb.Field_CONCATENATE) {
 				return []string{p.GetFieldName()}, true
 			}
 		}
@@ -3995,9 +3995,9 @@ func coveredPrimaryKeyColumns(rt *recordlayer.RecordType) ([]string, bool, bool)
 	if expression == nil {
 		return nil, false, false
 	}
-	var components []*gen.KeyExpression
-	var flattenThen func(*gen.KeyExpression) bool
-	flattenThen = func(current *gen.KeyExpression) bool {
+	var components []*metadatapb.KeyExpression
+	var flattenThen func(*metadatapb.KeyExpression) bool
+	flattenThen = func(current *metadatapb.KeyExpression) bool {
 		if current == nil {
 			return false
 		}
@@ -4027,7 +4027,7 @@ func coveredPrimaryKeyColumns(rt *recordlayer.RecordType) ([]string, bool, bool)
 	columns := make([]string, 0, len(components)-start)
 	for _, component := range components[start:] {
 		if component.Field == nil || component.Field.FieldName == nil ||
-			component.Field.GetFanType() != gen.Field_SCALAR {
+			component.Field.GetFanType() != metadatapb.Field_SCALAR {
 			return nil, false, false
 		}
 		columns = append(columns, recordlayer.ToUserIdentifier(component.Field.GetFieldName()))

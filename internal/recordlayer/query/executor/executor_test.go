@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -6756,7 +6757,7 @@ func TestBitmapAggregateContinuationValidation(t *testing.T) {
 // construction.
 func TestGoToProtoValue_NullArrayElementIsJavas(t *testing.T) {
 	t.Parallel()
-	fd := (&gen.Index{}).ProtoReflect().Descriptor().Fields().ByName("record_type")
+	fd := (&metadatapb.Index{}).ProtoReflect().Descriptor().Fields().ByName("record_type")
 	_, err := goToProtoValue(fd, []any{"a", nil})
 	var nullElem *values.NullArrayElementError
 	if !errors.As(err, &nullElem) {

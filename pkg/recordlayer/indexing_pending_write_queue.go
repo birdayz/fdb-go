@@ -8,17 +8,17 @@ import (
 	"errors"
 	"fmt"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // indexingPendingWriteQueue uses the Java IndexingSubspaces layout. Queue
 // capacity is a producer policy; replay and emptiness never trust the counter.
-func (store *FDBRecordStore) indexingPendingWriteQueue(index *Index, maximum int64) *PendingWritesQueue[*gen.PendingWritesQueueEntry] {
+func (store *FDBRecordStore) indexingPendingWriteQueue(index *Index, maximum int64) *PendingWritesQueue[*metadatapb.PendingWritesQueueEntry] {
 	build := store.subspace.Sub(IndexBuildSpaceKey, index.SubspaceTupleKey())
-	return NewPendingWritesQueue(build.Sub(int64(8)), build.Sub(int64(9)), maximum, &gen.PendingWritesQueueEntry{})
+	return NewPendingWritesQueue(build.Sub(int64(8)), build.Sub(int64(9)), maximum, &metadatapb.PendingWritesQueueEntry{})
 }
 
 // isIndexPendingQueueEmpty includes entries not yet flushed at commit. A size
@@ -40,7 +40,7 @@ func (store *FDBRecordStore) isIndexPendingQueueEmpty(index *Index) (bool, error
 // same transaction. The caller owns commit/retry and continuation publication.
 // Matches IndexingPendingWriteQueue.handleOneItem; builders call maintainers
 // directly, so applying an entry must not route through store writer dispatch.
-func (store *FDBRecordStore) replayPendingIndexWrite(index *Index, entry *PendingWritesQueueEntry[*gen.PendingWritesQueueEntry]) error {
+func (store *FDBRecordStore) replayPendingIndexWrite(index *Index, entry *PendingWritesQueueEntry[*metadatapb.PendingWritesQueueEntry]) error {
 	if entry == nil {
 		return nil
 	}
@@ -53,12 +53,12 @@ func (store *FDBRecordStore) replayPendingIndexWrite(index *Index, entry *Pendin
 		return err
 	}
 	switch payload.GetOperation() {
-	case gen.PendingWritesQueueEntry_UPDATE:
+	case metadatapb.PendingWritesQueueEntry_UPDATE:
 		if err := maintainer.UpdateFromQueue(payload.GetData()); err != nil {
 			return err
 		}
-	case gen.PendingWritesQueueEntry_DELETE_WHERE:
-		var deletion gen.DeleteWhere
+	case metadatapb.PendingWritesQueueEntry_DELETE_WHERE:
+		var deletion metadatapb.DeleteWhere
 		if err := UnmarshalPendingQueueAny(payload.GetData(), &deletion); err != nil {
 			return &RecordCoreError{Message: "failed to parse pending write queue DELETE_WHERE entry data", Cause: err}
 		}
@@ -100,7 +100,7 @@ func PendingWriteCommitCheckPrefix(ss subspace.Subspace) string {
 	return fmt.Sprintf("pendingIndexWrite:%x:", ss.Bytes())
 }
 
-func (store *FDBRecordStore) enqueuePendingIndexWrite(index *Index, entry *gen.PendingWritesQueueEntry) error {
+func (store *FDBRecordStore) enqueuePendingIndexWrite(index *Index, entry *metadatapb.PendingWritesQueueEntry) error {
 	// Store dispatch already holds stateMu; do not recursively acquire its read
 	// side, which deadlocks if a state transition is waiting for the write side.
 	if err := store.requireFormatVersion("pending index writes", formatVersionPendingWrites); err != nil {

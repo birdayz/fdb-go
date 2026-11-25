@@ -15,10 +15,10 @@ import (
 
 	"fdb.dev/pkg/recordlayer/internal/tuplefast"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // IndexState represents the state of a secondary index.
@@ -448,7 +448,7 @@ func (rc *FDBRecordContext) rangeMayChangeStoreStateLocked(begin, end []byte) bo
 		if err != nil || raw == nil {
 			continue
 		}
-		header := &gen.DataStoreInfo{}
+		header := &metadatapb.DataStoreInfo{}
 		if err := UnmarshalVTAsJava(header, raw); err == nil && header.GetFormatVersion() >= formatVersionMinimum {
 			return false
 		}
@@ -768,7 +768,7 @@ func (store *FDBRecordStore) indexBuildTypeSubspace(index *Index) subspace.Subsp
 
 // SaveIndexingTypeStamp persists the indexing method stamp for an index.
 // Matches Java's FDBRecordStore.saveIndexingTypeStamp().
-func (store *FDBRecordStore) SaveIndexingTypeStamp(index *Index, stamp *gen.IndexBuildIndexingStamp) error {
+func (store *FDBRecordStore) SaveIndexingTypeStamp(index *Index, stamp *metadatapb.IndexBuildIndexingStamp) error {
 	data, err := stamp.MarshalVT()
 	if err != nil {
 		return fmt.Errorf("marshal indexing type stamp: %w", err)
@@ -781,7 +781,7 @@ func (store *FDBRecordStore) SaveIndexingTypeStamp(index *Index, stamp *gen.Inde
 // LoadIndexingTypeStamp loads the indexing method stamp for an index.
 // Returns nil if no stamp exists.
 // Matches Java's FDBRecordStore.loadIndexingTypeStampAsync().
-func (store *FDBRecordStore) LoadIndexingTypeStamp(index *Index) (*gen.IndexBuildIndexingStamp, error) {
+func (store *FDBRecordStore) LoadIndexingTypeStamp(index *Index) (*metadatapb.IndexBuildIndexingStamp, error) {
 	stampKey := store.indexBuildTypeSubspace(index).Bytes()
 	data, err := store.context.Transaction().Get(fdb.Key(stampKey)).Get()
 	if err != nil {
@@ -790,7 +790,7 @@ func (store *FDBRecordStore) LoadIndexingTypeStamp(index *Index) (*gen.IndexBuil
 	if data == nil {
 		return nil, nil
 	}
-	stamp := &gen.IndexBuildIndexingStamp{}
+	stamp := &metadatapb.IndexBuildIndexingStamp{}
 	if err := UnmarshalVTAsJava(stamp, data); err != nil {
 		return nil, fmt.Errorf("unmarshal indexing type stamp: %w", err)
 	}

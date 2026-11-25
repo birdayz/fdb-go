@@ -8,7 +8,7 @@
 package cascades
 
 import (
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -34,7 +34,7 @@ func ExpandValueIndex(candidate MatchCandidate) *Traversal {
 		return nil
 	}
 	aliases := candidate.GetSargableAliases()
-	var root *gen.KeyExpression
+	var root *metadatapb.KeyExpression
 	if aggregate, ok := candidate.(*AggregateIndexMatchCandidate); ok {
 		paths := aggregate.GetGroupColumnPaths()
 		if len(paths) < len(aliases) {
@@ -109,17 +109,17 @@ func appendPath(prefix []string, segment string) []string {
 	return path
 }
 
-func keyExpressionContainsFanOut(expression *gen.KeyExpression) bool {
+func keyExpressionContainsFanOut(expression *metadatapb.KeyExpression) bool {
 	if expression == nil {
 		return false
 	}
 	if expression.Field != nil &&
-		expression.Field.GetFanType() == gen.Field_FAN_OUT {
+		expression.Field.GetFanType() == metadatapb.Field_FAN_OUT {
 		return true
 	}
 	if expression.Nesting != nil {
 		if parent := expression.Nesting.GetParent(); parent != nil &&
-			parent.GetFanType() == gen.Field_FAN_OUT {
+			parent.GetFanType() == metadatapb.Field_FAN_OUT {
 			return true
 		}
 		if keyExpressionContainsFanOut(expression.Nesting.GetChild()) {
@@ -169,7 +169,7 @@ func keyExpressionContainsFanOut(expression *gen.KeyExpression) bool {
 // Nesting, functions, concatenation, and fan-out all require semantic or
 // structural matching and therefore decline these shortcuts.
 func keyExpressionTopLevelScalarFieldNames(
-	expression *gen.KeyExpression,
+	expression *metadatapb.KeyExpression,
 ) ([]string, bool) {
 	if keyExpressionShapeCount(expression) != 1 {
 		return nil, false
@@ -178,7 +178,7 @@ func keyExpressionTopLevelScalarFieldNames(
 		field := expression.Field
 		if field.FieldName == nil ||
 			field.FanType == nil ||
-			field.GetFanType() != gen.Field_SCALAR {
+			field.GetFanType() != metadatapb.Field_SCALAR {
 			return nil, false
 		}
 		return []string{field.GetFieldName()}, true
@@ -229,7 +229,7 @@ func keyExpressionTopLevelScalarFieldNames(
 	return nil, false
 }
 
-func keyExpressionShapeCount(expression *gen.KeyExpression) int {
+func keyExpressionShapeCount(expression *metadatapb.KeyExpression) int {
 	if expression == nil {
 		return 0
 	}

@@ -12,6 +12,7 @@ import (
 	"fdb.dev/pkg/recordlayer/internal/tuplefast"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -660,34 +661,34 @@ func fuzzTupleElemEqual(a, b any) bool {
 // nested then) plus a random few bytes to get mutation started.
 func FuzzKeyExpressionFromProto(f *testing.F) {
 	// Seed with a few valid KeyExpressions serialised to bytes.
-	seeds := []*gen.KeyExpression{
-		{Empty: &gen.Empty{}},
-		{RecordTypeKey: &gen.RecordTypeKey{}},
-		{Field: &gen.Field{FieldName: proto.String("x"), FanType: gen.Field_SCALAR.Enum()}},
+	seeds := []*metadatapb.KeyExpression{
+		{Empty: &metadatapb.Empty{}},
+		{RecordTypeKey: &metadatapb.RecordTypeKey{}},
+		{Field: &metadatapb.Field{FieldName: proto.String("x"), FanType: metadatapb.Field_SCALAR.Enum()}},
 		{
-			Then: &gen.Then{Child: []*gen.KeyExpression{
-				{Field: &gen.Field{FieldName: proto.String("a"), FanType: gen.Field_SCALAR.Enum()}},
-				{Field: &gen.Field{FieldName: proto.String("b"), FanType: gen.Field_SCALAR.Enum()}},
+			Then: &metadatapb.Then{Child: []*metadatapb.KeyExpression{
+				{Field: &metadatapb.Field{FieldName: proto.String("a"), FanType: metadatapb.Field_SCALAR.Enum()}},
+				{Field: &metadatapb.Field{FieldName: proto.String("b"), FanType: metadatapb.Field_SCALAR.Enum()}},
 			}},
 		},
 		// Grouping — used by COUNT / SUM / MAX_EVER index types. The
 		// full-grouping form (all columns grouped, none grouped-out)
 		// is what `Ungrouped(Field("price"))` produces.
 		{
-			Grouping: &gen.Grouping{
-				WholeKey: &gen.KeyExpression{
-					Field: &gen.Field{FieldName: proto.String("price"), FanType: gen.Field_SCALAR.Enum()},
+			Grouping: &metadatapb.Grouping{
+				WholeKey: &metadatapb.KeyExpression{
+					Field: &metadatapb.Field{FieldName: proto.String("price"), FanType: metadatapb.Field_SCALAR.Enum()},
 				},
 				GroupedCount: proto.Int32(0),
 			},
 		},
 		// Grouping with a non-default grouped_count.
 		{
-			Grouping: &gen.Grouping{
-				WholeKey: &gen.KeyExpression{
-					Then: &gen.Then{Child: []*gen.KeyExpression{
-						{Field: &gen.Field{FieldName: proto.String("k"), FanType: gen.Field_SCALAR.Enum()}},
-						{Field: &gen.Field{FieldName: proto.String("v"), FanType: gen.Field_SCALAR.Enum()}},
+			Grouping: &metadatapb.Grouping{
+				WholeKey: &metadatapb.KeyExpression{
+					Then: &metadatapb.Then{Child: []*metadatapb.KeyExpression{
+						{Field: &metadatapb.Field{FieldName: proto.String("k"), FanType: metadatapb.Field_SCALAR.Enum()}},
+						{Field: &metadatapb.Field{FieldName: proto.String("v"), FanType: metadatapb.Field_SCALAR.Enum()}},
 					}},
 				},
 				GroupedCount: proto.Int32(1),
@@ -695,20 +696,20 @@ func FuzzKeyExpressionFromProto(f *testing.F) {
 		},
 		// Nesting — used by indexes on nested message fields.
 		{
-			Nesting: &gen.Nesting{
-				Parent: &gen.Field{FieldName: proto.String("flower"), FanType: gen.Field_SCALAR.Enum()},
-				Child: &gen.KeyExpression{
-					Field: &gen.Field{FieldName: proto.String("color"), FanType: gen.Field_SCALAR.Enum()},
+			Nesting: &metadatapb.Nesting{
+				Parent: &metadatapb.Field{FieldName: proto.String("flower"), FanType: metadatapb.Field_SCALAR.Enum()},
+				Child: &metadatapb.KeyExpression{
+					Field: &metadatapb.Field{FieldName: proto.String("color"), FanType: metadatapb.Field_SCALAR.Enum()},
 				},
 			},
 		},
 		// KeyWithValue — covering indexes (k=index key, v=stored value).
 		{
-			KeyWithValue: &gen.KeyWithValue{
-				InnerKey: &gen.KeyExpression{
-					Then: &gen.Then{Child: []*gen.KeyExpression{
-						{Field: &gen.Field{FieldName: proto.String("a"), FanType: gen.Field_SCALAR.Enum()}},
-						{Field: &gen.Field{FieldName: proto.String("b"), FanType: gen.Field_SCALAR.Enum()}},
+			KeyWithValue: &metadatapb.KeyWithValue{
+				InnerKey: &metadatapb.KeyExpression{
+					Then: &metadatapb.Then{Child: []*metadatapb.KeyExpression{
+						{Field: &metadatapb.Field{FieldName: proto.String("a"), FanType: metadatapb.Field_SCALAR.Enum()}},
+						{Field: &metadatapb.Field{FieldName: proto.String("b"), FanType: metadatapb.Field_SCALAR.Enum()}},
 					}},
 				},
 				SplitPoint: proto.Int32(1),
@@ -717,9 +718,9 @@ func FuzzKeyExpressionFromProto(f *testing.F) {
 		// Function — version function key expression (records timestamp /
 		// versionstamp into the index entry).
 		{
-			Function: &gen.Function{
+			Function: &metadatapb.Function{
 				Name:      proto.String("version"),
-				Arguments: &gen.KeyExpression{Empty: &gen.Empty{}},
+				Arguments: &metadatapb.KeyExpression{Empty: &metadatapb.Empty{}},
 			},
 		},
 	}
@@ -734,7 +735,7 @@ func FuzzKeyExpressionFromProto(f *testing.F) {
 	f.Add(bytes.Repeat([]byte{0xff}, 64))
 
 	f.Fuzz(func(t *testing.T, blob []byte) {
-		expr := &gen.KeyExpression{}
+		expr := &metadatapb.KeyExpression{}
 		if err := proto.Unmarshal(blob, expr); err != nil {
 			// Bad proto bytes: parser rejects upstream, no work for us.
 			return
@@ -763,7 +764,7 @@ func FuzzKeyExpressionFromProto(f *testing.F) {
 // known to confuse descriptor resolvers.
 func FuzzRecordMetaDataFromProto(f *testing.F) {
 	// Seed 1: a minimal real MetaData proto.
-	md := &gen.MetaData{
+	md := &metadatapb.MetaData{
 		Records: &descriptorpb.FileDescriptorProto{
 			Name:    proto.String("empty.proto"),
 			Syntax:  proto.String("proto2"),
@@ -774,7 +775,7 @@ func FuzzRecordMetaDataFromProto(f *testing.F) {
 		f.Add(b)
 	}
 	// Seed 2: a proto with a dependency that references itself.
-	self := &gen.MetaData{
+	self := &metadatapb.MetaData{
 		Records: &descriptorpb.FileDescriptorProto{
 			Name:       proto.String("root.proto"),
 			Syntax:     proto.String("proto2"),
@@ -794,7 +795,7 @@ func FuzzRecordMetaDataFromProto(f *testing.F) {
 		f.Add(b)
 	}
 	// Seed 3: A→B→A cycle.
-	ab := &gen.MetaData{
+	ab := &metadatapb.MetaData{
 		Records: &descriptorpb.FileDescriptorProto{
 			Name:       proto.String("a.proto"),
 			Syntax:     proto.String("proto2"),
@@ -839,7 +840,7 @@ func FuzzRecordMetaDataFromProto(f *testing.F) {
 	f.Add(bytes.Repeat([]byte{0xff}, 32))
 
 	f.Fuzz(func(t *testing.T, blob []byte) {
-		msg := &gen.MetaData{}
+		msg := &metadatapb.MetaData{}
 		if err := proto.Unmarshal(blob, msg); err != nil {
 			return
 		}

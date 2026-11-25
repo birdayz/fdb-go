@@ -14,7 +14,7 @@ import (
 	"fdb.dev/internal/unicode15/text/language"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // Collation function names matching Java's CollateFunctionKeyExpressionFactory.
@@ -143,7 +143,7 @@ func (store *FDBRecordStore) checkRecordWriteCollationLocked(countChanges bool, 
 	if store.goOnlyCollation {
 		return nil
 	}
-	if countChanges && (store.storeHeader == nil || store.storeHeader.GetRecordCountState() != gen.DataStoreInfo_DISABLED) {
+	if countChanges && (store.storeHeader == nil || store.storeHeader.GetRecordCountState() != metadatapb.DataStoreInfo_DISABLED) {
 		if err := store.checkRecordCountCollation(store.metaData.GetRecordCountKey()); err != nil {
 			return err
 		}

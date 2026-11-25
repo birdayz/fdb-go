@@ -14,7 +14,7 @@ import (
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/core/metadata"
@@ -52,7 +52,7 @@ func TestFDB_IndexDefinitionProductionPathStoresTargetShapes(t *testing.T) {
 	t.Cleanup(func() { _, _ = setup.ExecContext(context.Background(), "DROP SCHEMA TEMPLATE IF EXISTS "+name) })
 
 	h := testkit.NewEvolHarness(t)
-	var md *gen.MetaData
+	var md *metadatapb.MetaData
 	h.MustRun(t, "load the stored template", func(txn api.Transaction) error {
 		tmpl, err := h.Cat.SchemaTemplateCatalog().LoadSchemaTemplate(txn, name)
 		if err != nil {
@@ -61,7 +61,7 @@ func TestFDB_IndexDefinitionProductionPathStoresTargetShapes(t *testing.T) {
 		md, err = tmpl.(*metadata.RecordLayerSchemaTemplate).Underlying().ToProto()
 		return err
 	})
-	byName := map[string]*gen.Index{}
+	byName := map[string]*metadatapb.Index{}
 	for _, ix := range md.GetIndexes() {
 		byName[ix.GetName()] = ix
 	}
@@ -75,7 +75,7 @@ func TestFDB_IndexDefinitionProductionPathStoresTargetShapes(t *testing.T) {
 		if !ok {
 			t.Fatalf("index %s not stored; stored: %v", ixName, slices.Sorted(maps.Keys(byName)))
 		}
-		want := &gen.KeyExpression{}
+		want := &metadatapb.KeyExpression{}
 		if err := prototext.Unmarshal([]byte(text), want); err != nil {
 			t.Fatalf("%s: bad expected root: %v", ixName, err)
 		}

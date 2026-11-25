@@ -16,10 +16,10 @@ import (
 
 	"fdb.dev/pkg/recordlayer/internal/tuplefast"
 
-	"fdb.dev/gen"
 	"fdb.dev/internal/javahashmap"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/internal/protovalue"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/protoscope"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
@@ -67,11 +67,11 @@ import (
 // Fields 12-16 are not covered by unknown-field preservation either, for the
 // opposite reason: they are declared fields of a message this code parses, so
 // they are never unknown. Both halves of the message need explicit carrying.
-func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
+func (m *RecordMetaData) ToProto() (*metadatapb.MetaData, error) {
 	if m.usesLocalRecordsDescriptor {
 		return nil, &MetaDataError{Message: "cannot serialize meta-data with a local records descriptor to proto"}
 	}
-	md := &gen.MetaData{}
+	md := &metadatapb.MetaData{}
 
 	// 1. File descriptor. The retained source proto (when present) is
 	// emitted verbatim — Java's toProto() returns the original
@@ -156,7 +156,7 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 
 	for _, name := range rtNames {
 		rt := m.recordTypes[name]
-		rtProto := &gen.RecordType{
+		rtProto := &metadatapb.RecordType{
 			Name: proto.String(rt.Name),
 		}
 		if rt.PrimaryKey != nil {
@@ -218,19 +218,19 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 	// and sharing these would let a caller edit the metadata's own state through
 	// a proto it believes it owns.
 	for _, jt := range m.preserved.joinedRecordTypes {
-		md.JoinedRecordTypes = append(md.JoinedRecordTypes, proto.Clone(jt).(*gen.JoinedRecordType))
+		md.JoinedRecordTypes = append(md.JoinedRecordTypes, proto.Clone(jt).(*metadatapb.JoinedRecordType))
 	}
 	for _, ut := range m.preserved.unnestedRecordTypes {
-		md.UnnestedRecordTypes = append(md.UnnestedRecordTypes, proto.Clone(ut).(*gen.UnnestedRecordType))
+		md.UnnestedRecordTypes = append(md.UnnestedRecordTypes, proto.Clone(ut).(*metadatapb.UnnestedRecordType))
 	}
 	for _, fn := range m.preserved.userDefinedFunctions {
-		md.UserDefinedFunctions = append(md.UserDefinedFunctions, proto.Clone(fn).(*gen.PUserDefinedFunction))
+		md.UserDefinedFunctions = append(md.UserDefinedFunctions, proto.Clone(fn).(*metadatapb.PUserDefinedFunction))
 	}
 	for _, vw := range m.preserved.views {
-		md.Views = append(md.Views, proto.Clone(vw).(*gen.PView))
+		md.Views = append(md.Views, proto.Clone(vw).(*metadatapb.PView))
 	}
 	for _, query := range m.preserved.storedQueries {
-		md.StoredQueries = append(md.StoredQueries, proto.Clone(query).(*gen.PStoredQuery))
+		md.StoredQueries = append(md.StoredQueries, proto.Clone(query).(*metadatapb.PStoredQuery))
 	}
 
 	// 10. Whatever the generated type has no field for — the extension range
@@ -246,7 +246,7 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 // RecordMetaDataFromProto deserializes a MetaData proto back into a RecordMetaData.
 // Matches Java's RecordMetaDataBuilder.loadFromProto(), with opts the builder
 // settings Java applies first (WithLocalFileDescriptor).
-func RecordMetaDataFromProto(md *gen.MetaData, opts ...MetaDataProtoOption) (*RecordMetaData, error) {
+func RecordMetaDataFromProto(md *metadatapb.MetaData, opts ...MetaDataProtoOption) (*RecordMetaData, error) {
 	var options metaDataProtoOptions
 	for _, opt := range opts {
 		opt(&options)
@@ -260,7 +260,7 @@ func RecordMetaDataFromProto(md *gen.MetaData, opts ...MetaDataProtoOption) (*Re
 	// already (UnmarshalAsJava); a proto built in memory that holds such a
 	// number is read from a clone, so the caller's proto is not changed.
 	if x := generatedReach(md.ProtoReflect().Descriptor()); holdsUndeclared(md.ProtoReflect(), x) {
-		md = proto.Clone(md).(*gen.MetaData)
+		md = proto.Clone(md).(*metadatapb.MetaData)
 		closedEnumsAsJava(md.ProtoReflect(), x, true)
 	}
 
@@ -448,7 +448,7 @@ func RecordMetaDataFromProto(md *gen.MetaData, opts ...MetaDataProtoOption) (*Re
 // carries, and the flag is only adopted when the caller has not already enabled
 // it: Java's comment is "User might have set the counter already", and the
 // asymmetry means loading can raise the counter but never lower it.
-func (b *RecordMetaDataBuilder) loadSubspaceKeySettingsFromProto(md *gen.MetaData) error {
+func (b *RecordMetaDataBuilder) loadSubspaceKeySettingsFromProto(md *metadatapb.MetaData) error {
 	hasCounter := md.SubspaceKeyCounter != nil
 	usesCounter := md.GetUsesSubspaceKeyCounter()
 	if hasCounter && !usesCounter {
@@ -474,22 +474,22 @@ func (b *RecordMetaDataBuilder) loadSubspaceKeySettingsFromProto(md *gen.MetaDat
 // preservedMetaDataFieldsFromProto captures the proto fields this port does not
 // model, cloned so that later mutation of the caller's proto cannot reach into
 // the built metadata. See preservedMetaDataFields.
-func preservedMetaDataFieldsFromProto(md *gen.MetaData) preservedMetaDataFields {
+func preservedMetaDataFieldsFromProto(md *metadatapb.MetaData) preservedMetaDataFields {
 	var p preservedMetaDataFields
 	for _, jt := range md.JoinedRecordTypes {
-		p.joinedRecordTypes = append(p.joinedRecordTypes, proto.Clone(jt).(*gen.JoinedRecordType))
+		p.joinedRecordTypes = append(p.joinedRecordTypes, proto.Clone(jt).(*metadatapb.JoinedRecordType))
 	}
 	for _, ut := range md.UnnestedRecordTypes {
-		p.unnestedRecordTypes = append(p.unnestedRecordTypes, proto.Clone(ut).(*gen.UnnestedRecordType))
+		p.unnestedRecordTypes = append(p.unnestedRecordTypes, proto.Clone(ut).(*metadatapb.UnnestedRecordType))
 	}
 	for _, fn := range md.UserDefinedFunctions {
-		p.userDefinedFunctions = append(p.userDefinedFunctions, proto.Clone(fn).(*gen.PUserDefinedFunction))
+		p.userDefinedFunctions = append(p.userDefinedFunctions, proto.Clone(fn).(*metadatapb.PUserDefinedFunction))
 	}
 	for _, vw := range md.Views {
-		p.views = append(p.views, proto.Clone(vw).(*gen.PView))
+		p.views = append(p.views, proto.Clone(vw).(*metadatapb.PView))
 	}
 	for _, query := range md.StoredQueries {
-		p.storedQueries = append(p.storedQueries, proto.Clone(query).(*gen.PStoredQuery))
+		p.storedQueries = append(p.storedQueries, proto.Clone(query).(*metadatapb.PStoredQuery))
 	}
 	if u := md.ProtoReflect().GetUnknown(); len(u) > 0 {
 		p.unknown = append([]byte(nil), u...)
@@ -514,8 +514,8 @@ func (m *RecordMetaData) buildIndexRecordTypeMap() map[string][]string {
 
 // indexToProto serializes an Index to its protobuf representation.
 // SubspaceKey is stored as tuple-packed bytes matching Java's Tuple.from(key).pack().
-func indexToProto(idx *Index) (*gen.Index, error) {
-	p := &gen.Index{
+func indexToProto(idx *Index) (*metadatapb.Index, error) {
+	p := &metadatapb.Index{
 		Name: proto.String(idx.Name),
 		Type: proto.String(idx.Type),
 	}
@@ -542,7 +542,7 @@ func indexToProto(idx *Index) (*gen.Index, error) {
 
 	// Options, in stored order (Index.toProto, Index.java:661-663).
 	for _, k := range idx.OptionKeys() {
-		p.Options = append(p.Options, &gen.Index_Option{
+		p.Options = append(p.Options, &metadatapb.Index_Option{
 			Key:   proto.String(k),
 			Value: proto.String(idx.Options[k]),
 		})
@@ -552,7 +552,7 @@ func indexToProto(idx *Index) (*gen.Index, error) {
 	if idx.predicateProto != nil {
 		// The metadata proto is caller-owned output. Do not expose the Index's
 		// internal predicate authority through a mutable protobuf pointer.
-		p.Predicate = proto.Clone(idx.predicateProto).(*gen.Predicate)
+		p.Predicate = proto.Clone(idx.predicateProto).(*metadatapb.Predicate)
 	}
 
 	return p, nil
@@ -569,9 +569,9 @@ func indexToProto(idx *Index) (*gen.Index, error) {
 // Java reads it as VALUE. Failing closed HERE would be a divergence, not a
 // safety improvement — the fail-closed judgement belongs to the maintainer
 // dispatch, which sees the resulting type string.
-func legacyIndexTypeToType(t gen.Index_Type) string {
+func legacyIndexTypeToType(t metadatapb.Index_Type) string {
 	switch t {
-	case gen.Index_RANK, gen.Index_RANK_UNIQUE:
+	case metadatapb.Index_RANK, metadatapb.Index_RANK_UNIQUE:
 		return IndexTypeRank
 	default:
 		return IndexTypeValue
@@ -583,9 +583,9 @@ func legacyIndexTypeToType(t gen.Index_Type) string {
 // everything else carries EMPTY_OPTIONS. The uniqueness of a legacy index lives
 // in the enum and NOWHERE else, so a reader that ignores it turns a unique index
 // into an ordinary one and silently permits the duplicates Java rejects.
-func legacyIndexTypeIsUnique(t gen.Index_Type) bool {
+func legacyIndexTypeIsUnique(t metadatapb.Index_Type) bool {
 	switch t {
-	case gen.Index_UNIQUE, gen.Index_RANK_UNIQUE:
+	case metadatapb.Index_UNIQUE, metadatapb.Index_RANK_UNIQUE:
 		return true
 	default:
 		return false
@@ -639,7 +639,7 @@ func groupingFixupForOldMetaData(indexType string, expr KeyExpression) KeyExpres
 }
 
 // indexFromProto deserializes an Index from protobuf.
-func indexFromProto(p *gen.Index) (*Index, error) {
+func indexFromProto(p *metadatapb.Index) (*Index, error) {
 	idx := &Index{
 		Name: p.GetName(),
 		// An ABSENT type means VALUE, exactly as Java reads it:
@@ -716,7 +716,7 @@ func indexFromProto(p *gen.Index) (*Index, error) {
 	// index Java refuses, reporting a malformed key beside it first.
 	rootProto := p.RootExpression
 	if rootProto == nil {
-		rootProto = &gen.KeyExpression{}
+		rootProto = &metadatapb.KeyExpression{}
 	}
 	expr, err := KeyExpressionFromProto(rootProto)
 	if err != nil {
@@ -798,8 +798,8 @@ func indexFromProto(p *gen.Index) (*Index, error) {
 // versions when positive, and the name only when there is one. Go spells
 // Java's null name as "", so an empty name is not written; Java would read a
 // written empty name as a name.
-func formerIndexToProto(fi *FormerIndex) (*gen.FormerIndex, error) {
-	p := &gen.FormerIndex{SubspaceKey: tuple.Tuple{fi.SubspaceKey}.Pack()}
+func formerIndexToProto(fi *FormerIndex) (*metadatapb.FormerIndex, error) {
+	p := &metadatapb.FormerIndex{SubspaceKey: tuple.Tuple{fi.SubspaceKey}.Pack()}
 	if fi.FormerName != "" {
 		p.FormerName = proto.String(fi.FormerName)
 	}
@@ -819,7 +819,7 @@ func formerIndexToProto(fi *FormerIndex) (*gen.FormerIndex, error) {
 // not be null (RecordCoreArgumentException). Go read all four as a nil key, so
 // it loaded meta-data Java refuses and, on a store's upgrade, cleared the null
 // item's index subspace instead of the dropped index's.
-func formerIndexFromProto(p *gen.FormerIndex) (*FormerIndex, error) {
+func formerIndexFromProto(p *metadatapb.FormerIndex) (*FormerIndex, error) {
 	fi := &FormerIndex{
 		FormerName:     p.GetFormerName(),
 		RemovedVersion: int(p.GetRemovedVersion()),
@@ -844,7 +844,7 @@ func formerIndexFromProto(p *gen.FormerIndex) (*FormerIndex, error) {
 // (LiteralKeyExpression.java:176-197). Exported for the index-predicate
 // producer (RFC-202 S5): a SimpleComparison's operand is stored in exactly
 // this encoding (IndexComparison.java:253).
-func LiteralToProtoValue(v any) (*gen.Value, error) {
+func LiteralToProtoValue(v any) (*metadatapb.Value, error) {
 	return valueToProto(v)
 }
 
@@ -865,11 +865,11 @@ func (*UnsupportedValueTypeError) JavaRecordCoreException() {}
 
 // valueToProto serializes a Go value to a Value proto.
 // Matches Java's LiteralKeyExpression.toProtoValue().
-func valueToProto(v any) (*gen.Value, error) {
+func valueToProto(v any) (*metadatapb.Value, error) {
 	if v == nil {
-		return &gen.Value{}, nil
+		return &metadatapb.Value{}, nil
 	}
-	p := &gen.Value{}
+	p := &metadatapb.Value{}
 	switch val := v.(type) {
 	case int:
 		p.LongValue = proto.Int64(int64(val))
@@ -913,7 +913,7 @@ func protoDeserializationError(err error) error {
 // LiteralKeyExpression.fromProtoValue does (protovalue.FromProto): the one
 // field set, nil when none is, and a RecordCoreError "More than one value
 // encoded in value" when several are.
-func valueFromProto(p *gen.Value) (any, error) {
+func valueFromProto(p *metadatapb.Value) (any, error) {
 	v, err := protovalue.FromProto(p)
 	if err != nil {
 		return nil, &RecordCoreError{Message: err.Error()}

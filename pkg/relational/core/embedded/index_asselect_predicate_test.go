@@ -6,8 +6,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // RFC-202 S5 goldens: the sparse-index (WHERE) predicate arm of the AS-SELECT
@@ -40,35 +40,35 @@ func buildPredicateIndex(t *testing.T, indexDDL string) (*recordlayer.Index, err
 
 // Proto shorthands for the expected bytes — each shape written as the Java
 // PoJo serialization it was ported from (IndexPredicate.java, IndexComparison.java).
-func predVP(path []string, cmp *gen.Comparison) *gen.Predicate {
-	return &gen.Predicate{ValuePredicate: &gen.ValuePredicate{Value: path, Comparison: cmp}}
+func predVP(path []string, cmp *metadatapb.Comparison) *metadatapb.Predicate {
+	return &metadatapb.Predicate{ValuePredicate: &metadatapb.ValuePredicate{Value: path, Comparison: cmp}}
 }
 
-func predAnd(children ...*gen.Predicate) *gen.Predicate {
-	return &gen.Predicate{AndPredicate: &gen.AndPredicate{Children: children}}
+func predAnd(children ...*metadatapb.Predicate) *metadatapb.Predicate {
+	return &metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{Children: children}}
 }
 
-func predOr(children ...*gen.Predicate) *gen.Predicate {
-	return &gen.Predicate{OrPredicate: &gen.OrPredicate{Children: children}}
+func predOr(children ...*metadatapb.Predicate) *metadatapb.Predicate {
+	return &metadatapb.Predicate{OrPredicate: &metadatapb.OrPredicate{Children: children}}
 }
 
-func predConst(v gen.ConstantPredicate_ConstantValue) *gen.Predicate {
-	return &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{Value: v.Enum()}}
+func predConst(v metadatapb.ConstantPredicate_ConstantValue) *metadatapb.Predicate {
+	return &metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{Value: v.Enum()}}
 }
 
-func cmpSimple(t gen.ComparisonType, operand *gen.Value) *gen.Comparison {
-	return &gen.Comparison{SimpleComparison: &gen.SimpleComparison{Type: t.Enum(), Operand: operand}}
+func cmpSimple(t metadatapb.ComparisonType, operand *metadatapb.Value) *metadatapb.Comparison {
+	return &metadatapb.Comparison{SimpleComparison: &metadatapb.SimpleComparison{Type: t.Enum(), Operand: operand}}
 }
 
-func cmpNull(isNull bool) *gen.Comparison {
-	return &gen.Comparison{NullComparison: &gen.NullComparison{IsNull: &isNull}}
+func cmpNull(isNull bool) *metadatapb.Comparison {
+	return &metadatapb.Comparison{NullComparison: &metadatapb.NullComparison{IsNull: &isNull}}
 }
 
-func valInt(n int32) *gen.Value      { return &gen.Value{IntValue: &n} }
-func valLong(n int64) *gen.Value     { return &gen.Value{LongValue: &n} }
-func valStr(s string) *gen.Value     { return &gen.Value{StringValue: &s} }
-func valBool(b bool) *gen.Value      { return &gen.Value{BoolValue: &b} }
-func valDouble(n float64) *gen.Value { return &gen.Value{DoubleValue: &n} }
+func valInt(n int32) *metadatapb.Value      { return &metadatapb.Value{IntValue: &n} }
+func valLong(n int64) *metadatapb.Value     { return &metadatapb.Value{LongValue: &n} }
+func valStr(s string) *metadatapb.Value     { return &metadatapb.Value{StringValue: &s} }
+func valBool(b bool) *metadatapb.Value      { return &metadatapb.Value{BoolValue: &b} }
+func valDouble(n float64) *metadatapb.Value { return &metadatapb.Value{DoubleValue: &n} }
 
 func TestAsSelectSparseIndex_PredicateGoldens(t *testing.T) {
 	t.Parallel()
@@ -76,7 +76,7 @@ func TestAsSelectSparseIndex_PredicateGoldens(t *testing.T) {
 	cases := []struct {
 		name string
 		ddl  string
-		want *gen.Predicate
+		want *metadatapb.Predicate
 	}{
 		// Simple comparison over a BIGINT column: the stored comparand
 		// follows the COMPARISON's promoted type — the COLUMN's — so the
@@ -88,14 +88,14 @@ func TestAsSelectSparseIndex_PredicateGoldens(t *testing.T) {
 		{
 			"greater_than_bigint_col",
 			"CREATE INDEX pidx AS SELECT name, price FROM tp WHERE price > 20 ORDER BY price",
-			predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_GREATER_THAN, valLong(20))),
+			predVP([]string{"PRICE"}, cmpSimple(metadatapb.ComparisonType_GREATER_THAN, valLong(20))),
 		},
 		// The same literal against an INTEGER column stays int_value — the
 		// column IS the promoted type (measured, D11 i_sparse_int).
 		{
 			"greater_than_integer_col",
 			"CREATE INDEX pidx AS SELECT qty FROM tp WHERE qty > 20 ORDER BY qty",
-			predVP([]string{"QTY"}, cmpSimple(gen.ComparisonType_GREATER_THAN, valInt(20))),
+			predVP([]string{"QTY"}, cmpSimple(metadatapb.ComparisonType_GREATER_THAN, valInt(20))),
 		},
 		// A DOUBLE column promotes an integer literal to double_value —
 		// the corpus filtered-index twin's exact shape
@@ -104,28 +104,28 @@ func TestAsSelectSparseIndex_PredicateGoldens(t *testing.T) {
 		{
 			"greater_than_double_col",
 			"CREATE INDEX pidx AS SELECT weight FROM tp WHERE weight > 20 ORDER BY weight",
-			predVP([]string{"WEIGHT"}, cmpSimple(gen.ComparisonType_GREATER_THAN, valDouble(20))),
+			predVP([]string{"WEIGHT"}, cmpSimple(metadatapb.ComparisonType_GREATER_THAN, valDouble(20))),
 		},
 		// An out-of-int-range literal against a BIGINT column: literal and
 		// column are both LONG — long_value.
 		{
 			"greater_than_long",
 			"CREATE INDEX pidx AS SELECT price FROM tp WHERE price > 3000000000",
-			predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_GREATER_THAN, valLong(3000000000))),
+			predVP([]string{"PRICE"}, cmpSimple(metadatapb.ComparisonType_GREATER_THAN, valLong(3000000000))),
 		},
 		// String equality — corpus twin: index-ddl-values-only.yamsql
 		// IDX_MV_FILTERED_ELECTRONICS.
 		{
 			"string_equals",
 			"CREATE INDEX pidx AS SELECT name FROM tp WHERE name = 'bar'",
-			predVP([]string{"NAME"}, cmpSimple(gen.ComparisonType_EQUALS, valStr("bar"))),
+			predVP([]string{"NAME"}, cmpSimple(metadatapb.ComparisonType_EQUALS, valStr("bar"))),
 		},
 		// Boolean equality — corpus twin: sparse-index-tests.yamsql i3's
 		// first disjunct.
 		{
 			"bool_equals",
 			"CREATE INDEX pidx AS SELECT flag FROM tp WHERE flag = true",
-			predVP([]string{"FLAG"}, cmpSimple(gen.ComparisonType_EQUALS, valBool(true))),
+			predVP([]string{"FLAG"}, cmpSimple(metadatapb.ComparisonType_EQUALS, valBool(true))),
 		},
 		// NOT_EQUALS is serializable (IndexComparison ComparisonType) even
 		// though it cannot bound a scan prefix — the single-comparison DNF
@@ -133,7 +133,7 @@ func TestAsSelectSparseIndex_PredicateGoldens(t *testing.T) {
 		{
 			"not_equals",
 			"CREATE INDEX pidx AS SELECT price FROM tp WHERE price <> 5",
-			predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_NOT_EQUALS, valLong(5))),
+			predVP([]string{"PRICE"}, cmpSimple(metadatapb.ComparisonType_NOT_EQUALS, valLong(5))),
 		},
 		// Unary null checks → NullComparison (IndexComparison.java:324-327)
 		// — corpus twin: recursive-cte.yamsql CHILDIDXNONULLS.
@@ -154,8 +154,8 @@ func TestAsSelectSparseIndex_PredicateGoldens(t *testing.T) {
 			"conjunction",
 			"CREATE INDEX pidx AS SELECT name, price, stock FROM tp WHERE price > 15 AND stock > 60 ORDER BY name",
 			predAnd(
-				predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_GREATER_THAN, valLong(15))),
-				predVP([]string{"STOCK"}, cmpSimple(gen.ComparisonType_GREATER_THAN, valLong(60))),
+				predVP([]string{"PRICE"}, cmpSimple(metadatapb.ComparisonType_GREATER_THAN, valLong(15))),
+				predVP([]string{"STOCK"}, cmpSimple(metadatapb.ComparisonType_GREATER_THAN, valLong(60))),
 			),
 		},
 		// Disjunction over one key — corpus twin: filter-index.yamsql i1,
@@ -165,8 +165,8 @@ func TestAsSelectSparseIndex_PredicateGoldens(t *testing.T) {
 			"or_same_key",
 			"CREATE INDEX pidx AS SELECT name FROM tp WHERE name = 'bar' OR name = 'foo'",
 			predOr(
-				predVP([]string{"NAME"}, cmpSimple(gen.ComparisonType_EQUALS, valStr("bar"))),
-				predVP([]string{"NAME"}, cmpSimple(gen.ComparisonType_EQUALS, valStr("foo"))),
+				predVP([]string{"NAME"}, cmpSimple(metadatapb.ComparisonType_EQUALS, valStr("bar"))),
+				predVP([]string{"NAME"}, cmpSimple(metadatapb.ComparisonType_EQUALS, valStr("foo"))),
 			),
 		},
 		// Mixed disjunct kinds over one key — corpus twin:
@@ -176,7 +176,7 @@ func TestAsSelectSparseIndex_PredicateGoldens(t *testing.T) {
 			"or_eq_and_notnull",
 			"CREATE INDEX pidx AS SELECT flag FROM tp WHERE flag = true OR flag IS NOT NULL",
 			predOr(
-				predVP([]string{"FLAG"}, cmpSimple(gen.ComparisonType_EQUALS, valBool(true))),
+				predVP([]string{"FLAG"}, cmpSimple(metadatapb.ComparisonType_EQUALS, valBool(true))),
 				predVP([]string{"FLAG"}, cmpNull(false)),
 			),
 		},
@@ -194,12 +194,12 @@ func TestAsSelectSparseIndex_PredicateGoldens(t *testing.T) {
 			// DNF distributes in that order.
 			predOr(
 				predAnd(
-					predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_EQUALS, valLong(2))),
-					predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_EQUALS, valLong(1))),
+					predVP([]string{"PRICE"}, cmpSimple(metadatapb.ComparisonType_EQUALS, valLong(2))),
+					predVP([]string{"PRICE"}, cmpSimple(metadatapb.ComparisonType_EQUALS, valLong(1))),
 				),
 				predAnd(
-					predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_EQUALS, valLong(3))),
-					predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_EQUALS, valLong(1))),
+					predVP([]string{"PRICE"}, cmpSimple(metadatapb.ComparisonType_EQUALS, valLong(3))),
+					predVP([]string{"PRICE"}, cmpSimple(metadatapb.ComparisonType_EQUALS, valLong(1))),
 				),
 			),
 		},
@@ -212,10 +212,10 @@ func TestAsSelectSparseIndex_PredicateGoldens(t *testing.T) {
 			"CREATE INDEX pidx AS SELECT price FROM tp WHERE price = 1 AND (stock = 2 OR stock = 3)",
 			predAnd(
 				predOr(
-					predVP([]string{"STOCK"}, cmpSimple(gen.ComparisonType_EQUALS, valLong(2))),
-					predVP([]string{"STOCK"}, cmpSimple(gen.ComparisonType_EQUALS, valLong(3))),
+					predVP([]string{"STOCK"}, cmpSimple(metadatapb.ComparisonType_EQUALS, valLong(2))),
+					predVP([]string{"STOCK"}, cmpSimple(metadatapb.ComparisonType_EQUALS, valLong(3))),
 				),
-				predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_EQUALS, valLong(1))),
+				predVP([]string{"PRICE"}, cmpSimple(metadatapb.ComparisonType_EQUALS, valLong(1))),
 			),
 		},
 		// Single-key DNF whose second group carries a NOT_EQUALS: the range
@@ -231,10 +231,10 @@ func TestAsSelectSparseIndex_PredicateGoldens(t *testing.T) {
 			"CREATE INDEX pidx AS SELECT price FROM tp WHERE price = 1 AND (price = 2 OR price <> 3)",
 			predAnd(
 				predOr(
-					predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_EQUALS, valLong(2))),
-					predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_NOT_EQUALS, valLong(3))),
+					predVP([]string{"PRICE"}, cmpSimple(metadatapb.ComparisonType_EQUALS, valLong(2))),
+					predVP([]string{"PRICE"}, cmpSimple(metadatapb.ComparisonType_NOT_EQUALS, valLong(3))),
 				),
-				predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_EQUALS, valLong(1))),
+				predVP([]string{"PRICE"}, cmpSimple(metadatapb.ComparisonType_EQUALS, valLong(1))),
 			),
 		},
 		// Boolean constants as the whole WHERE — corpus twin:
@@ -245,17 +245,17 @@ func TestAsSelectSparseIndex_PredicateGoldens(t *testing.T) {
 		{
 			"where_true",
 			"CREATE INDEX pidx AS SELECT price FROM tp WHERE TRUE",
-			predConst(gen.ConstantPredicate_TRUE),
+			predConst(metadatapb.ConstantPredicate_TRUE),
 		},
 		{
 			"where_false",
 			"CREATE INDEX pidx AS SELECT price FROM tp WHERE FALSE",
-			predConst(gen.ConstantPredicate_FALSE),
+			predConst(metadatapb.ConstantPredicate_FALSE),
 		},
 		{
 			"where_null",
 			"CREATE INDEX pidx AS SELECT price FROM tp WHERE NULL",
-			predConst(gen.ConstantPredicate_NULL),
+			predConst(metadatapb.ConstantPredicate_NULL),
 		},
 		// A sparse AGGREGATE index: the predicate is attached before the
 		// value/aggregate split (MaterializedViewIndexGenerator.java:169-174),
@@ -263,7 +263,7 @@ func TestAsSelectSparseIndex_PredicateGoldens(t *testing.T) {
 		{
 			"aggregate_sparse",
 			"CREATE INDEX pidx AS SELECT stock, SUM(price) FROM tp WHERE price > 0 GROUP BY stock",
-			predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_GREATER_THAN, valLong(0))),
+			predVP([]string{"PRICE"}, cmpSimple(metadatapb.ComparisonType_GREATER_THAN, valLong(0))),
 		},
 	}
 

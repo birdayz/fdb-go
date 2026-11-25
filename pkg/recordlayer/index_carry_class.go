@@ -17,7 +17,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // IndexCarryClass is how a rebuilt index definition relates to the stored index
@@ -74,7 +74,7 @@ func (c IndexCarryClass) String() string {
 //     assigns them.
 //
 // Unknown fields and extensions are not compared: neither engine reads them.
-func ClassifyIndexCarry(stored, rebuilt *gen.Index) (IndexCarryClass, string, error) {
+func ClassifyIndexCarry(stored, rebuilt *metadatapb.Index) (IndexCarryClass, string, error) {
 	storedIdx, err := indexFromProto(stored)
 	if err != nil {
 		return IndexChanged, "", fmt.Errorf("stored index %s: %w", stored.GetName(), err)

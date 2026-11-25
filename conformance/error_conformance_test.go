@@ -11,7 +11,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -286,7 +286,7 @@ var _ = Describe("Error Conformance", func() {
 				if err != nil {
 					return nil, err
 				}
-				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "conformance test lock")
+				return nil, store.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "conformance test lock")
 			})
 			Expect(err).NotTo(HaveOccurred())
 

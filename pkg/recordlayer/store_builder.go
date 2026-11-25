@@ -24,7 +24,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // RebuildIndex rebuilds an index within the current transaction.
@@ -189,7 +189,7 @@ func (store *FDBRecordStore) indexedRecordTypesRange(index *Index) (low, high tu
 // validateFormatVersion checks that the stored format version is supported.
 // Rejects versions below formatVersionMinimum (1) and above formatVersionMaxSupported.
 // Matches Java's FormatVersion.validateFormatVersion().
-func (store *FDBRecordStore) validateFormatVersion(storeHeader *gen.DataStoreInfo) error {
+func (store *FDBRecordStore) validateFormatVersion(storeHeader *metadatapb.DataStoreInfo) error {
 	storedVersion := storeHeader.GetFormatVersion()
 	if storedVersion < formatVersionMinimum || storedVersion > formatVersionMaxSupported {
 		return &UnsupportedFormatVersionError{Version: storedVersion, MaxVersion: int32(formatVersionMaxSupported)}
@@ -226,7 +226,7 @@ func (store *FDBRecordStore) effectiveFormatVersion() int32 {
 //
 // storeHeader is the same pointer as store.storeHeader, so mutating it immediately
 // updates what useOldVersionFormat() derives.
-func (store *FDBRecordStore) maybeUpgradeFormatVersion(storeHeader *gen.DataStoreInfo) (bool, error) {
+func (store *FDBRecordStore) maybeUpgradeFormatVersion(storeHeader *metadatapb.DataStoreInfo) (bool, error) {
 	oldFormat := storeHeader.GetFormatVersion()
 	// The target is the version this store was OPENED at, which is the newest the
 	// binary knows only when the caller did not pin one. Java takes the same value
@@ -313,7 +313,7 @@ func (store *FDBRecordStore) convertRecordVersionsToInline() error {
 // since the old version are rebuilt or marked according to the IndexRebuildPolicy.
 // Matches Java's FDBRecordStore.checkPossiblyRebuild() / checkRebuild() /
 // getStatesForRebuildIndexes().
-func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo) error {
+func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *metadatapb.DataStoreInfo) error {
 	oldMetaDataVersion := int(storeHeader.GetMetaDataversion())
 	newMetaDataVersion := store.metaData.Version()
 
@@ -532,7 +532,7 @@ func (store *FDBRecordStore) areAllRecordTypesSince(index *Index, oldMetaDataVer
 //   - Current metadata has no count key but the store header still has one
 //
 // Matches Java's FDBRecordStore.checkPossiblyRebuildRecordCounts().
-func (store *FDBRecordStore) checkPossiblyRebuildRecordCounts(storeHeader *gen.DataStoreInfo, oldFormatVersion int32) (bool, error) {
+func (store *FDBRecordStore) checkPossiblyRebuildRecordCounts(storeHeader *metadatapb.DataStoreInfo, oldFormatVersion int32) (bool, error) {
 	currentKey := store.metaData.GetRecordCountKey()
 
 	// The header's format version, already reconciled by maybeUpgradeFormatVersion
@@ -959,7 +959,7 @@ func (store *FDBRecordStore) recordCountStateIsReadable() bool {
 	if store.storeHeader == nil {
 		return false
 	}
-	return store.storeHeader.GetRecordCountState() == gen.DataStoreInfo_READABLE
+	return store.storeHeader.GetRecordCountState() == metadatapb.DataStoreInfo_READABLE
 }
 
 // createStoreHeaderAtFormat creates a DataStoreInfo header for a new record
@@ -971,12 +971,12 @@ func (store *FDBRecordStore) recordCountStateIsReadable() bool {
 // created by an instance opening at an older format must be BORN at that
 // format, not created new and immediately upgraded past it -- Java threads the
 // builder's formatVersion into store creation the same way.
-func createStoreHeaderAtFormat(metaDataVersion int32, metaData *RecordMetaData, env *Env, formatVersionIn int32) *gen.DataStoreInfo {
+func createStoreHeaderAtFormat(metaDataVersion int32, metaData *RecordMetaData, env *Env, formatVersionIn int32) *metadatapb.DataStoreInfo {
 	formatVersion := formatVersionIn
 	userVersion := int32(0) // Default user version
 	lastUpdateTime := uint64(env.Now().UnixMilli())
 
-	header := &gen.DataStoreInfo{
+	header := &metadatapb.DataStoreInfo{
 		FormatVersion:   &formatVersion,
 		MetaDataversion: &metaDataVersion,
 		UserVersion:     &userVersion,
@@ -995,7 +995,7 @@ func createStoreHeaderAtFormat(metaDataVersion int32, metaData *RecordMetaData, 
 			header.RecordCountKey = metaData.GetRecordCountKey().ToKeyExpression()
 		}
 		if formatVersion >= formatVersionRecordCountState {
-			readable := gen.DataStoreInfo_READABLE
+			readable := metadatapb.DataStoreInfo_READABLE
 			header.RecordCountState = &readable
 		}
 	}
@@ -1004,7 +1004,7 @@ func createStoreHeaderAtFormat(metaDataVersion int32, metaData *RecordMetaData, 
 }
 
 // checkStoreExists checks if a store exists and returns its state
-func (store *FDBRecordStore) checkStoreExists() (bool, *gen.DataStoreInfo, error) {
+func (store *FDBRecordStore) checkStoreExists() (bool, *metadatapb.DataStoreInfo, error) {
 	// Check if the first key in the subspace exists
 	begin, end := store.subspace.FDBRangeKeys()
 	storeRange := fdb.KeyRange{Begin: begin, End: end}
@@ -1031,7 +1031,7 @@ func (store *FDBRecordStore) checkStoreExists() (bool, *gen.DataStoreInfo, error
 	}
 
 	// Parse the store header
-	storeInfo := &gen.DataStoreInfo{}
+	storeInfo := &metadatapb.DataStoreInfo{}
 	if err := UnmarshalVTAsJava(storeInfo, firstKV.Value); err != nil {
 		return false, nil, &RecordCoreStorageError{Message: "Error reading version", Cause: err}
 	}
@@ -1046,7 +1046,7 @@ func (store *FDBRecordStore) checkStoreExists() (bool, *gen.DataStoreInfo, error
 // header write goes through here, so the stamp is taken here rather than by each
 // mutator.
 // Caller must hold stateMu (write lock) or be in a builder path (pre-concurrent access).
-func (store *FDBRecordStore) writeStoreHeader(storeInfo *gen.DataStoreInfo) error {
+func (store *FDBRecordStore) writeStoreHeader(storeInfo *metadatapb.DataStoreInfo) error {
 	lastUpdateTime := uint64(store.context.Env().Now().UnixMilli()) //nolint:gosec
 	storeInfo.LastUpdateTime = &lastUpdateTime
 	oldCacheable := store.storeHeader != nil && store.storeHeader.GetCacheable()

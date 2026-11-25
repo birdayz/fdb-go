@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/relational/api"
@@ -1063,7 +1064,7 @@ func BenchmarkConvertToProtoValue_Double(b *testing.B) {
 // path let it through.
 func TestConvertToProtoValue_NullArrayElementIs0A000(t *testing.T) {
 	t.Parallel()
-	fd := (&gen.Index{}).ProtoReflect().Descriptor().Fields().ByName("record_type")
+	fd := (&metadatapb.Index{}).ProtoReflect().Descriptor().Fields().ByName("record_type")
 	_, err := ConvertToProtoValue(fd, []any{"a", nil})
 	var apiErr *api.Error
 	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedOperation {

@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 
-	"fdb.dev/gen"
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	. "github.com/onsi/ginkgo/v2"
 
@@ -88,7 +88,7 @@ var _ = Describe("Vector index pending queue", func() {
 			}
 			data, err := maintainer.SerializePendingWriteQueue(record(1), record(2))
 			Expect(err).NotTo(HaveOccurred())
-			var decoded gen.OldAndNewIndexEntries
+			var decoded metadatapb.OldAndNewIndexEntries
 			Expect(data.UnmarshalTo(&decoded)).To(Succeed())
 			Expect(decoded.GetOldEntries()).To(HaveLen(1))
 			Expect(decoded.GetNewEntries()).To(HaveLen(1))
@@ -118,7 +118,7 @@ var _ = Describe("Vector index pending queue", func() {
 			original := makeRecord(10, 20)
 			data, err := maintainer.SerializePendingWriteQueue(nil, original)
 			Expect(err).NotTo(HaveOccurred())
-			var decoded gen.OldAndNewIndexEntries
+			var decoded metadatapb.OldAndNewIndexEntries
 			Expect(data.UnmarshalTo(&decoded)).To(Succeed())
 			Expect(decoded.GetNewEntries()).To(HaveLen(1))
 			Expect(decoded.GetNewEntries()[0].GetPrimaryKey()).To(Equal(tuple.Tuple{int64(1)}.Pack()))
@@ -191,7 +191,7 @@ var _ = Describe("Vector index pending queue", func() {
 				record := &recordlayer.FDBStoredRecord[proto.Message]{Record: withVector(&demopb.Order{OrderId: proto.Int64(11), Quantity: proto.Int32(7), Price: proto.Int32(42)}, "price"), PrimaryKey: primaryKey, RecordType: md.GetRecordType("Order")}
 				data, err := maintainer.SerializePendingWriteQueue(nil, record)
 				Expect(err).NotTo(HaveOccurred())
-				var entries gen.OldAndNewIndexEntries
+				var entries metadatapb.OldAndNewIndexEntries
 				Expect(data.UnmarshalTo(&entries)).To(Succeed())
 				Expect(entries.NewEntries).To(HaveLen(1))
 				entry := entries.NewEntries[0]
@@ -217,7 +217,7 @@ var _ = Describe("Vector index pending queue", func() {
 	}
 
 	It("replays sliding keys and captured delegates without the source record", func() {
-		index := newWindowedVectorIndex("queued_window", 2, gen.RowNumberWindowPredicate_ASC)
+		index := newWindowedVectorIndex("queued_window", 2, metadatapb.RowNumberWindowPredicate_ASC)
 		builder := baseBuilder()
 		builder.AddIndex("Order", index)
 		md, err := builder.Build()
@@ -241,7 +241,7 @@ var _ = Describe("Vector index pending queue", func() {
 			Expect(count).To(Equal(int64(1)))
 			Expect(maintainer.UpdateFromQueue(removed)).To(Succeed())
 			Expect(searchPKs(store, index, nil)).To(BeEmpty())
-			for _, payload := range []*gen.SlidingWindowQueueEntry{
+			for _, payload := range []*metadatapb.SlidingWindowQueueEntry{
 				{OldEntryKey: tuple.Tuple{int64(10), int64(1)}.Pack()},
 				{NewEntryKey: tuple.Tuple{int64(10), int64(1)}.Pack()},
 			} {
@@ -271,7 +271,7 @@ var _ = Describe("Nested vector pending queue Any compatibility", func() {
 				sliding := boundary == "sliding" || boundary == "delegate-insert" || boundary == "delegate-delete"
 				vectorFields := []string{"price"}
 				if sliding {
-					index = newWindowedVectorIndex("nested_any", 2, gen.RowNumberWindowPredicate_ASC)
+					index = newWindowedVectorIndex("nested_any", 2, metadatapb.RowNumberWindowPredicate_ASC)
 					vectorFields = []string{"coord_x", "coord_y"}
 				}
 				deleting := boundary == "delegate-delete"
@@ -304,7 +304,7 @@ var _ = Describe("Nested vector pending queue Any compatibility", func() {
 					}
 					Expect(err).NotTo(HaveOccurred())
 					if boundary == "delegate-insert" || boundary == "delegate-delete" {
-						var entry gen.SlidingWindowQueueEntry
+						var entry metadatapb.SlidingWindowQueueEntry
 						Expect(data.UnmarshalTo(&entry)).To(Succeed())
 						delegated := entry.DelegatedInsert
 						if deleting {

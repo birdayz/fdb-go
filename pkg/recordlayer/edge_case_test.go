@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -1042,7 +1042,7 @@ var _ = Describe("Edge case hardening", func() {
 				Expect(err).NotTo(HaveOccurred())
 				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
-				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "migration in progress")
+				return nil, store.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "migration in progress")
 			})
 			Expect(err).NotTo(HaveOccurred())
 

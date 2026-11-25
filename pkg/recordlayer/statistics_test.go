@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/dst"
@@ -1407,9 +1407,9 @@ var _ = Describe("CollectStatistics", func() {
 		// the only difference from a passing run is the synthetic type.
 		p, err := metaData.ToProto()
 		Expect(err).NotTo(HaveOccurred())
-		p.JoinedRecordTypes = append(p.JoinedRecordTypes, &gen.JoinedRecordType{
+		p.JoinedRecordTypes = append(p.JoinedRecordTypes, &metadatapb.JoinedRecordType{
 			Name: proto.String("OrderWithCustomer"),
-			JoinConstituents: []*gen.JoinedRecordType_JoinConstituent{
+			JoinConstituents: []*metadatapb.JoinedRecordType_JoinConstituent{
 				{Name: proto.String("o"), RecordType: proto.String("Order")},
 				{Name: proto.String("c"), RecordType: proto.String("Customer")},
 			},

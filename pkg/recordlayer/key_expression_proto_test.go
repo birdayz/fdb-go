@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"google.golang.org/protobuf/proto"
@@ -17,10 +17,10 @@ func TestFieldKeyExpressionRoundtrip(t *testing.T) {
 	tests := []struct {
 		name    string
 		expr    KeyExpression
-		fanType gen.Field_FanType
+		fanType metadatapb.Field_FanType
 	}{
-		{"scalar", Field("order_id"), gen.Field_SCALAR},
-		{"fan_out", FanOut("tags"), gen.Field_FAN_OUT},
+		{"scalar", Field("order_id"), metadatapb.Field_SCALAR},
+		{"fan_out", FanOut("tags"), metadatapb.Field_FAN_OUT},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -163,7 +163,7 @@ func TestKeyExpressionFromProtoErrors(t *testing.T) {
 
 	t.Run("empty_proto", func(t *testing.T) {
 		t.Parallel()
-		_, err := KeyExpressionFromProto(&gen.KeyExpression{})
+		_, err := KeyExpressionFromProto(&metadatapb.KeyExpression{})
 		if err == nil {
 			t.Fatal("expected error for empty proto")
 		}
@@ -171,11 +171,11 @@ func TestKeyExpressionFromProtoErrors(t *testing.T) {
 
 	t.Run("then_too_few_children", func(t *testing.T) {
 		t.Parallel()
-		ft := gen.Field_SCALAR
-		_, err := KeyExpressionFromProto(&gen.KeyExpression{
-			Then: &gen.Then{
-				Child: []*gen.KeyExpression{
-					{Field: &gen.Field{FieldName: proto.String("x"), FanType: &ft}},
+		ft := metadatapb.Field_SCALAR
+		_, err := KeyExpressionFromProto(&metadatapb.KeyExpression{
+			Then: &metadatapb.Then{
+				Child: []*metadatapb.KeyExpression{
+					{Field: &metadatapb.Field{FieldName: proto.String("x"), FanType: &ft}},
 				},
 			},
 		})
@@ -186,9 +186,9 @@ func TestKeyExpressionFromProtoErrors(t *testing.T) {
 
 	t.Run("nesting_no_parent", func(t *testing.T) {
 		t.Parallel()
-		_, err := KeyExpressionFromProto(&gen.KeyExpression{
-			Nesting: &gen.Nesting{
-				Child: &gen.KeyExpression{Empty: &gen.Empty{}},
+		_, err := KeyExpressionFromProto(&metadatapb.KeyExpression{
+			Nesting: &metadatapb.Nesting{
+				Child: &metadatapb.KeyExpression{Empty: &metadatapb.Empty{}},
 			},
 		})
 		if err == nil {
@@ -204,17 +204,17 @@ func TestKeyExpressionFromProtoErrors(t *testing.T) {
 		t.Parallel()
 		two := Concat(Field("a"), Field("b")).ToKeyExpression()
 		for _, n := range []int32{-1, 3, -2147483648} {
-			_, err := KeyExpressionFromProto(&gen.KeyExpression{Grouping: &gen.Grouping{WholeKey: two, GroupedCount: proto.Int32(n)}})
+			_, err := KeyExpressionFromProto(&metadatapb.KeyExpression{Grouping: &metadatapb.Grouping{WholeKey: two, GroupedCount: proto.Int32(n)}})
 			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("grouping grouped_count %d out of range [0, 2]", n)) {
 				t.Errorf("grouped_count %d: %v", n, err)
 			}
-			_, err = KeyExpressionFromProto(&gen.KeyExpression{KeyWithValue: &gen.KeyWithValue{InnerKey: two, SplitPoint: proto.Int32(n)}})
+			_, err = KeyExpressionFromProto(&metadatapb.KeyExpression{KeyWithValue: &metadatapb.KeyWithValue{InnerKey: two, SplitPoint: proto.Int32(n)}})
 			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("key_with_value split_point %d out of range [0, 2]", n)) {
 				t.Errorf("split_point %d: %v", n, err)
 			}
 		}
 		for _, n := range []int32{0, 2} {
-			if _, err := KeyExpressionFromProto(&gen.KeyExpression{Grouping: &gen.Grouping{WholeKey: two, GroupedCount: proto.Int32(n)}}); err != nil {
+			if _, err := KeyExpressionFromProto(&metadatapb.KeyExpression{Grouping: &metadatapb.Grouping{WholeKey: two, GroupedCount: proto.Int32(n)}}); err != nil {
 				t.Errorf("grouped_count %d refused: %v", n, err)
 			}
 		}
@@ -225,10 +225,10 @@ func TestKeyExpressionFromProtoErrors(t *testing.T) {
 		// Crafted proto with Split.split_size = 0 must error, not panic
 		// (would otherwise hit Split()'s invariant panic).
 		zero := int32(0)
-		_, err := KeyExpressionFromProto(&gen.KeyExpression{
-			Split: &gen.Split{
+		_, err := KeyExpressionFromProto(&metadatapb.KeyExpression{
+			Split: &metadatapb.Split{
 				SplitSize: &zero,
-				Joined:    &gen.KeyExpression{Empty: &gen.Empty{}},
+				Joined:    &metadatapb.KeyExpression{Empty: &metadatapb.Empty{}},
 			},
 		})
 		if err == nil {
@@ -240,11 +240,11 @@ func TestKeyExpressionFromProtoErrors(t *testing.T) {
 		t.Parallel()
 		// Crafted proto with KeyWithValue.split_point < 0 must error
 		// (would otherwise propagate to downstream slicing).
-		ft := gen.Field_SCALAR
+		ft := metadatapb.Field_SCALAR
 		neg := int32(-1)
-		_, err := KeyExpressionFromProto(&gen.KeyExpression{
-			KeyWithValue: &gen.KeyWithValue{
-				InnerKey:   &gen.KeyExpression{Field: &gen.Field{FieldName: proto.String("x"), FanType: &ft}},
+		_, err := KeyExpressionFromProto(&metadatapb.KeyExpression{
+			KeyWithValue: &metadatapb.KeyWithValue{
+				InnerKey:   &metadatapb.KeyExpression{Field: &metadatapb.Field{FieldName: proto.String("x"), FanType: &ft}},
 				SplitPoint: &neg,
 			},
 		})
@@ -257,11 +257,11 @@ func TestKeyExpressionFromProtoErrors(t *testing.T) {
 		t.Parallel()
 		// Crafted proto with KeyWithValue.split_point > inner.ColumnSize()
 		// must error. Inner is a single field → columnSize = 1; splitPoint=5 is out.
-		ft := gen.Field_SCALAR
+		ft := metadatapb.Field_SCALAR
 		big := int32(5)
-		_, err := KeyExpressionFromProto(&gen.KeyExpression{
-			KeyWithValue: &gen.KeyWithValue{
-				InnerKey:   &gen.KeyExpression{Field: &gen.Field{FieldName: proto.String("x"), FanType: &ft}},
+		_, err := KeyExpressionFromProto(&metadatapb.KeyExpression{
+			KeyWithValue: &metadatapb.KeyWithValue{
+				InnerKey:   &metadatapb.KeyExpression{Field: &metadatapb.Field{FieldName: proto.String("x"), FanType: &ft}},
 				SplitPoint: &big,
 			},
 		})
@@ -275,14 +275,14 @@ func TestKeyExpressionFromProtoErrors(t *testing.T) {
 		// Build a Nesting chain deeper than maxKeyExpressionDepth. Each
 		// layer wraps the inner KeyExpression in another Nesting; the
 		// depth guard must trip before the goroutine stack blows.
-		ft := gen.Field_SCALAR
-		var current *gen.KeyExpression = &gen.KeyExpression{
-			Field: &gen.Field{FieldName: proto.String("leaf"), FanType: &ft},
+		ft := metadatapb.Field_SCALAR
+		var current *metadatapb.KeyExpression = &metadatapb.KeyExpression{
+			Field: &metadatapb.Field{FieldName: proto.String("leaf"), FanType: &ft},
 		}
 		for i := 0; i < maxKeyExpressionDepth+10; i++ {
-			current = &gen.KeyExpression{
-				Nesting: &gen.Nesting{
-					Parent: &gen.Field{FieldName: proto.String("p"), FanType: &ft},
+			current = &metadatapb.KeyExpression{
+				Nesting: &metadatapb.Nesting{
+					Parent: &metadatapb.Field{FieldName: proto.String("p"), FanType: &ft},
 					Child:  current,
 				},
 			}
@@ -309,7 +309,7 @@ func TestKeyExpressionProtoWireRoundtrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var restored gen.KeyExpression
+	var restored metadatapb.KeyExpression
 	if err := proto.Unmarshal(data, &restored); err != nil {
 		t.Fatal(err)
 	}
@@ -432,14 +432,14 @@ func TestKeyExpressionDeserializationErrorsAreJavas(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
 		name string
-		expr *gen.KeyExpression
+		expr *metadatapb.KeyExpression
 		want string
 	}{
-		{"no root", &gen.KeyExpression{}, "Exactly one root must be specified for an index"},
-		{"two roots", &gen.KeyExpression{Field: &gen.Field{FieldName: proto.String("a"), FanType: gen.Field_SCALAR.Enum()}, Empty: &gen.Empty{}}, "Exactly one root must be specified for an index"},
-		{"a nesting without its parent", &gen.KeyExpression{Nesting: &gen.Nesting{Child: &gen.KeyExpression{Empty: &gen.Empty{}}}}, "Serialized Nesting is missing parent"},
-		{"a then of one child", &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{{Empty: &gen.Empty{}}}}}, "Then must have at least 2 children"},
-		{"a nested then without a root", &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{{Empty: &gen.Empty{}}, {}}}}, "Exactly one root must be specified for an index"},
+		{"no root", &metadatapb.KeyExpression{}, "Exactly one root must be specified for an index"},
+		{"two roots", &metadatapb.KeyExpression{Field: &metadatapb.Field{FieldName: proto.String("a"), FanType: metadatapb.Field_SCALAR.Enum()}, Empty: &metadatapb.Empty{}}, "Exactly one root must be specified for an index"},
+		{"a nesting without its parent", &metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{Child: &metadatapb.KeyExpression{Empty: &metadatapb.Empty{}}}}, "Serialized Nesting is missing parent"},
+		{"a then of one child", &metadatapb.KeyExpression{Then: &metadatapb.Then{Child: []*metadatapb.KeyExpression{{Empty: &metadatapb.Empty{}}}}}, "Then must have at least 2 children"},
+		{"a nested then without a root", &metadatapb.KeyExpression{Then: &metadatapb.Then{Child: []*metadatapb.KeyExpression{{Empty: &metadatapb.Empty{}}, {}}}}, "Exactly one root must be specified for an index"},
 	} {
 		_, err := KeyExpressionFromProto(c.expr)
 		var de *KeyExpressionDeserializationError
@@ -451,15 +451,15 @@ func TestKeyExpressionDeserializationErrorsAreJavas(t *testing.T) {
 	// A Then whose only child is a Then of two: Java decodes and flattens the
 	// children before it counts them (ThenKeyExpression.java:77-86), so it
 	// loads as the two fields, and so does a nested Then of three.
-	field := func(name string) *gen.KeyExpression {
-		return &gen.KeyExpression{Field: &gen.Field{FieldName: proto.String(name), FanType: gen.Field_SCALAR.Enum(), NullInterpretation: gen.Field_NOT_UNIQUE.Enum()}}
+	field := func(name string) *metadatapb.KeyExpression {
+		return &metadatapb.KeyExpression{Field: &metadatapb.Field{FieldName: proto.String(name), FanType: metadatapb.Field_SCALAR.Enum(), NullInterpretation: metadatapb.Field_NOT_UNIQUE.Enum()}}
 	}
-	then := func(children ...*gen.KeyExpression) *gen.KeyExpression {
-		return &gen.KeyExpression{Then: &gen.Then{Child: children}}
+	then := func(children ...*metadatapb.KeyExpression) *metadatapb.KeyExpression {
+		return &metadatapb.KeyExpression{Then: &metadatapb.Then{Child: children}}
 	}
 	for _, c := range []struct {
 		name string
-		expr *gen.KeyExpression
+		expr *metadatapb.KeyExpression
 		want KeyExpression
 	}{
 		{"a Then of one Then", then(then(field("a"), field("b"))), Concat(Field("a"), Field("b"))},

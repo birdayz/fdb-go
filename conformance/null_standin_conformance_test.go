@@ -18,11 +18,11 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/rowstruct"
 )
@@ -108,26 +108,26 @@ func dumpSpaceKVs(ctx context.Context, db *recordlayer.FDBDatabase, ss subspace.
 	return kvs, nil
 }
 
-func nsField(name string, fan gen.Field_FanType, ni gen.Field_NullInterpretation) *gen.Field {
-	return &gen.Field{FieldName: proto.String(name), FanType: fan.Enum(), NullInterpretation: ni.Enum()}
+func nsField(name string, fan metadatapb.Field_FanType, ni metadatapb.Field_NullInterpretation) *metadatapb.Field {
+	return &metadatapb.Field{FieldName: proto.String(name), FanType: fan.Enum(), NullInterpretation: ni.Enum()}
 }
 
-func nsScalar(name string, ni gen.Field_NullInterpretation) *gen.KeyExpression {
-	return &gen.KeyExpression{Field: nsField(name, gen.Field_SCALAR, ni)}
+func nsScalar(name string, ni metadatapb.Field_NullInterpretation) *metadatapb.KeyExpression {
+	return &metadatapb.KeyExpression{Field: nsField(name, metadatapb.Field_SCALAR, ni)}
 }
 
-func nsNest(parent gen.Field_NullInterpretation, child *gen.KeyExpression) *gen.KeyExpression {
-	return &gen.KeyExpression{Nesting: &gen.Nesting{Parent: nsField("sub", gen.Field_SCALAR, parent), Child: child}}
+func nsNest(parent metadatapb.Field_NullInterpretation, child *metadatapb.KeyExpression) *metadatapb.KeyExpression {
+	return &metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{Parent: nsField("sub", metadatapb.Field_SCALAR, parent), Child: child}}
 }
 
-func nsThen(children ...*gen.KeyExpression) *gen.KeyExpression {
-	return &gen.KeyExpression{Then: &gen.Then{Child: children}}
+func nsThen(children ...*metadatapb.KeyExpression) *metadatapb.KeyExpression {
+	return &metadatapb.KeyExpression{Then: &metadatapb.Then{Child: children}}
 }
 
 const (
-	nsNull       = gen.Field_NOT_UNIQUE
-	nsNullUnique = gen.Field_UNIQUE
-	nsNotNull    = gen.Field_NOT_NULL
+	nsNull       = metadatapb.Field_NOT_UNIQUE
+	nsNullUnique = metadatapb.Field_UNIQUE
+	nsNotNull    = metadatapb.Field_NOT_NULL
 )
 
 type nsRec struct {
@@ -147,7 +147,7 @@ type nsCase struct {
 	syntax    string
 	indexType string
 	unique    bool
-	root      *gen.KeyExpression
+	root      *metadatapb.KeyExpression
 	records   []nsRec
 	// javaVerdicts is the measured Java outcome of each save.
 	javaVerdicts []string
@@ -156,8 +156,8 @@ type nsCase struct {
 	filter string
 }
 
-func nsMetaData(c nsCase) *gen.MetaData {
-	idx := &gen.Index{
+func nsMetaData(c nsCase) *metadatapb.MetaData {
+	idx := &metadatapb.Index{
 		Name:           proto.String("ns_idx"),
 		RecordType:     []string{"Rec"},
 		RootExpression: c.root,
@@ -165,12 +165,12 @@ func nsMetaData(c nsCase) *gen.MetaData {
 		SubspaceKey:    tuple.Tuple{"ns_idx"}.Pack(),
 	}
 	if c.unique {
-		idx.Options = []*gen.Index_Option{{Key: proto.String("unique"), Value: proto.String("true")}}
+		idx.Options = []*metadatapb.Index_Option{{Key: proto.String("unique"), Value: proto.String("true")}}
 	}
-	return &gen.MetaData{
+	return &metadatapb.MetaData{
 		Records:     nsRecords(c.syntax),
-		RecordTypes: []*gen.RecordType{{Name: proto.String("Rec"), PrimaryKey: nsScalar("id", nsNull)}},
-		Indexes:     []*gen.Index{idx},
+		RecordTypes: []*metadatapb.RecordType{{Name: proto.String("Rec"), PrimaryKey: nsScalar("id", nsNull)}},
+		Indexes:     []*metadatapb.Index{idx},
 		Version:     proto.Int32(1),
 	}
 }
@@ -213,17 +213,17 @@ func nsRecordBytes(desc protoreflect.MessageDescriptor, r nsRec) []byte {
 
 // nsFanOutComposite is Nest(sub, Then(x, tags FanOut)): a composite with a
 // FanOut child under a singular parent.
-func nsFanOutComposite() *gen.KeyExpression {
-	return nsNest(nsNull, nsThen(nsScalar("x", nsNull), &gen.KeyExpression{Field: nsField("tags", gen.Field_FAN_OUT, nsNull)}))
+func nsFanOutComposite() *metadatapb.KeyExpression {
+	return nsNest(nsNull, nsThen(nsScalar("x", nsNull), &metadatapb.KeyExpression{Field: nsField("tags", metadatapb.Field_FAN_OUT, nsNull)}))
 }
 
 // nsPsX is Nest(ps FanOut, x): one entry per ps element.
-func nsPsX() *gen.KeyExpression {
-	return &gen.KeyExpression{Nesting: &gen.Nesting{Parent: nsField("ps", gen.Field_FAN_OUT, nsNull), Child: nsScalar("x", nsNull)}}
+func nsPsX() *metadatapb.KeyExpression {
+	return &metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{Parent: nsField("ps", metadatapb.Field_FAN_OUT, nsNull), Child: nsScalar("x", nsNull)}}
 }
 
-func nsGrouping(wholeKey *gen.KeyExpression, groupedCount int32) *gen.KeyExpression {
-	return &gen.KeyExpression{Grouping: &gen.Grouping{WholeKey: wholeKey, GroupedCount: proto.Int32(groupedCount)}}
+func nsGrouping(wholeKey *metadatapb.KeyExpression, groupedCount int32) *metadatapb.KeyExpression {
+	return &metadatapb.KeyExpression{Grouping: &metadatapb.Grouping{WholeKey: wholeKey, GroupedCount: proto.Int32(groupedCount)}}
 }
 
 var _ = Describe("RFC-257 NullStandin: absent fields, unique indexes and COUNT_NOT_NULL", func() {
@@ -270,8 +270,8 @@ var _ = Describe("RFC-257 NullStandin: absent fields, unique indexes and COUNT_N
 		{
 			name: "Concatenate under an absent parent: NOT_NULL is the empty list, NULL is null", syntax: "proto2", indexType: "value",
 			root: nsThen(
-				nsNest(nsNull, &gen.KeyExpression{Field: nsField("tags", gen.Field_CONCATENATE, nsNotNull)}),
-				nsNest(nsNull, &gen.KeyExpression{Field: nsField("tags", gen.Field_CONCATENATE, nsNull)}),
+				nsNest(nsNull, &metadatapb.KeyExpression{Field: nsField("tags", metadatapb.Field_CONCATENATE, nsNotNull)}),
+				nsNest(nsNull, &metadatapb.KeyExpression{Field: nsField("tags", metadatapb.Field_CONCATENATE, nsNull)}),
 			),
 			records:      []nsRec{{id: 1}, {id: 2, sub: true}},
 			javaVerdicts: []string{"ok", "ok"},
@@ -284,7 +284,7 @@ var _ = Describe("RFC-257 NullStandin: absent fields, unique indexes and COUNT_N
 		},
 		{
 			name: "a function's plain null collides", syntax: "proto2", indexType: "value", unique: true,
-			root: &gen.KeyExpression{Function: &gen.Function{
+			root: &metadatapb.KeyExpression{Function: &metadatapb.Function{
 				Name: proto.String("add"), Arguments: nsThen(nsScalar("a", nsNull), nsScalar("b", nsNull)),
 			}},
 			records:      []nsRec{{id: 1, b: i64(1)}, {id: 2, b: i64(1)}},
@@ -298,7 +298,7 @@ var _ = Describe("RFC-257 NullStandin: absent fields, unique indexes and COUNT_N
 		},
 		{
 			name: "COUNT_NOT_NULL counts a NULL_UNIQUE null", syntax: "proto2", indexType: "count_not_null",
-			root: &gen.KeyExpression{Grouping: &gen.Grouping{
+			root: &metadatapb.KeyExpression{Grouping: &metadatapb.Grouping{
 				WholeKey: nsThen(nsScalar("c", nsNull), nsScalar("b", nsNullUnique)), GroupedCount: proto.Int32(1),
 			}},
 			records:      []nsRec{{id: 1, c: str("x")}, {id: 2, c: str("x"), b: i64(1)}},
@@ -306,7 +306,7 @@ var _ = Describe("RFC-257 NullStandin: absent fields, unique indexes and COUNT_N
 		},
 		{
 			name: "COUNT_NOT_NULL skips a NULL null", syntax: "proto2", indexType: "count_not_null",
-			root: &gen.KeyExpression{Grouping: &gen.Grouping{
+			root: &metadatapb.KeyExpression{Grouping: &metadatapb.Grouping{
 				WholeKey: nsThen(nsScalar("c", nsNull), nsScalar("b", nsNull)), GroupedCount: proto.Int32(1),
 			}},
 			records:      []nsRec{{id: 1, c: str("x")}, {id: 2, c: str("x"), b: i64(1)}},
@@ -340,7 +340,7 @@ var _ = Describe("RFC-257 NullStandin: absent fields, unique indexes and COUNT_N
 		},
 		{
 			name: "NO_NULLS: a COUNT's whole key is filtered, a null grouping column included", syntax: "proto2", indexType: "count", filter: "NO_NULLS",
-			root: &gen.KeyExpression{Grouping: &gen.Grouping{
+			root: &metadatapb.KeyExpression{Grouping: &metadatapb.Grouping{
 				WholeKey: nsScalar("c", nsNull), GroupedCount: proto.Int32(0),
 			}},
 			records:      []nsRec{{id: 1}, {id: 2, c: str("x")}, {id: 3, c: str("x")}, {id: 2}},
@@ -348,7 +348,7 @@ var _ = Describe("RFC-257 NullStandin: absent fields, unique indexes and COUNT_N
 		},
 		{
 			name: "NORMAL: a COUNT counts a null grouping column", syntax: "proto2", indexType: "count",
-			root: &gen.KeyExpression{Grouping: &gen.Grouping{
+			root: &metadatapb.KeyExpression{Grouping: &metadatapb.Grouping{
 				WholeKey: nsScalar("c", nsNull), GroupedCount: proto.Int32(0),
 			}},
 			records:      []nsRec{{id: 1}, {id: 2, c: str("x")}},
@@ -356,7 +356,7 @@ var _ = Describe("RFC-257 NullStandin: absent fields, unique indexes and COUNT_N
 		},
 		{
 			name: "NO_NULLS: a SUM entry with a null grouping column is not maintained", syntax: "proto2", indexType: "sum", filter: "NO_NULLS",
-			root: &gen.KeyExpression{Grouping: &gen.Grouping{
+			root: &metadatapb.KeyExpression{Grouping: &metadatapb.Grouping{
 				WholeKey: nsThen(nsScalar("c", nsNull), nsScalar("b", nsNull)), GroupedCount: proto.Int32(1),
 			}},
 			records:      []nsRec{{id: 1, b: i64(4)}, {id: 2, c: str("x"), b: i64(5)}, {id: 3, c: str("x"), b: i64(6)}},
@@ -370,7 +370,7 @@ var _ = Describe("RFC-257 NullStandin: absent fields, unique indexes and COUNT_N
 		},
 		{
 			name: "NO_NULLS: a RANK entry with a null grouping column is not maintained", syntax: "proto2", indexType: "rank", filter: "NO_NULLS",
-			root: &gen.KeyExpression{Grouping: &gen.Grouping{
+			root: &metadatapb.KeyExpression{Grouping: &metadatapb.Grouping{
 				WholeKey: nsThen(nsScalar("c", nsNull), nsScalar("b", nsNull)), GroupedCount: proto.Int32(1),
 			}},
 			records:      []nsRec{{id: 1, b: i64(4)}, {id: 2, c: str("x"), b: i64(5)}, {id: 3, c: str("x")}},
@@ -417,7 +417,7 @@ var _ = Describe("RFC-257 NullStandin: absent fields, unique indexes and COUNT_N
 		},
 		{
 			name: "NOT_NULL Concatenate in a composite under an absent parent: the empty list", syntax: "proto2", indexType: "value",
-			root:         nsNest(nsNull, nsThen(nsScalar("x", nsNull), &gen.KeyExpression{Field: nsField("tags", gen.Field_CONCATENATE, nsNotNull)})),
+			root:         nsNest(nsNull, nsThen(nsScalar("x", nsNull), &metadatapb.KeyExpression{Field: nsField("tags", metadatapb.Field_CONCATENATE, nsNotNull)})),
 			records:      []nsRec{{id: 1}, {id: 2, sub: true}, {id: 3, subX: i64(7), subTags: []string{"t0"}}},
 			javaVerdicts: []string{"ok", "ok", "ok"},
 		},
@@ -522,7 +522,7 @@ var _ = Describe("RFC-257 NullStandin: absent fields, unique indexes and COUNT_N
 			mdProto := nsMetaData(c)
 			mdBytes, err := proto.Marshal(mdProto)
 			Expect(err).NotTo(HaveOccurred())
-			md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(mdProto).(*gen.MetaData))
+			md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(mdProto).(*metadatapb.MetaData))
 			Expect(err).NotTo(HaveOccurred())
 			desc := md.GetRecordType("Rec").Descriptor
 			records := make([][]byte, len(c.records))

@@ -15,8 +15,8 @@ import (
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/core/catalog"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -73,7 +73,7 @@ var _ = Describe("WSHMacroCatalogConformance", func() {
 		goFns := goProto.GetUserDefinedFunctions()
 		Expect(javaFns).To(HaveLen(5))
 		Expect(goFns).To(HaveLen(len(javaFns)))
-		byName := func(fns []*gen.PUserDefinedFunction) map[string]string {
+		byName := func(fns []*metadatapb.PUserDefinedFunction) map[string]string {
 			out := map[string]string{}
 			for _, f := range fns {
 				b, err := proto.MarshalOptions{Deterministic: true}.Marshal(f)
@@ -94,7 +94,7 @@ var _ = Describe("WSHMacroCatalogConformance", func() {
 			if goBytes[name] != jb {
 				defDiffs = append(defDiffs, name)
 				for side, b := range map[string]string{"java": jb, "go": goBytes[name]} {
-					var f gen.PUserDefinedFunction
+					var f metadatapb.PUserDefinedFunction
 					Expect(proto.Unmarshal([]byte(b), &f)).To(Succeed())
 					fmt.Fprintf(GinkgoWriter, "WSH-MACRO-DIFF %s %s\n%s\n", name, side, prototext.Format(&f))
 				}

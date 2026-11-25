@@ -2,7 +2,7 @@
 // protoc-gen-go-vtproto version: v0.6.1-0.20250313105119-ba97887b0a25
 // source: index_build.proto
 
-package gen
+package metadatapb
 
 import (
 	fmt "fmt"

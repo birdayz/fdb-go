@@ -28,6 +28,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/catalog"
 	"fdb.dev/pkg/relational/core/ddl"
@@ -451,8 +452,8 @@ func TestStatementRead_NoPageStatementCommitsItsTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	header := func(what string) *gen.DataStoreInfo {
-		info := &gen.DataStoreInfo{}
+	header := func(what string) *metadatapb.DataStoreInfo {
+		info := &metadatapb.DataStoreInfo{}
 		if err := proto.Unmarshal(h.srKeyValue(t, fdb.Key(ss.Pack(tuple.Tuple{recordlayer.StoreInfoKey}))), info); err != nil {
 			t.Fatalf("%s: store header: %v", what, err)
 		}

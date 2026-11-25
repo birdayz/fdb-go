@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 func TestIntegration_RecordPutDelete_GuardedRoundTrip(t *testing.T) {
@@ -228,7 +228,7 @@ contexts:
 	if err != nil {
 		t.Fatalf("read back metadata: %v", err)
 	}
-	stored, _ := result.(*gen.MetaData)
+	stored, _ := result.(*metadatapb.MetaData)
 	if stored.GetVersion() != int32(v2.Version()) {
 		t.Errorf("stored version = %d; want %d", stored.GetVersion(), v2.Version())
 	}

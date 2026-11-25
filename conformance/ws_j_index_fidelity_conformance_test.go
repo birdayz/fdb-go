@@ -31,6 +31,7 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -441,7 +442,7 @@ func (t wsjTemplate) id() string {
 // wsjIndexDims lists every stored Index field on which go and java disagree.
 // A root/predicate difference is "root~" when it vanishes under
 // clearProto2Defaults (presence-only) and "root" when it does not.
-func wsjIndexDims(g, j *gen.Index) []string {
+func wsjIndexDims(g, j *metadatapb.Index) []string {
 	var dims []string
 	gt, jt := append([]string(nil), g.GetRecordType()...), append([]string(nil), j.GetRecordType()...)
 	sort.Strings(gt)
@@ -488,7 +489,7 @@ func wsjIndexDims(g, j *gen.Index) []string {
 	return dims
 }
 
-func wsjOptionKeyOrder(i *gen.Index) []string {
+func wsjOptionKeyOrder(i *metadatapb.Index) []string {
 	var out []string
 	for _, o := range i.GetOptions() {
 		out = append(out, o.GetKey())
@@ -502,9 +503,9 @@ var wsjComparedIndexFields = map[protoreflect.Name]bool{
 	"last_modified_version": true, "name": true,
 }
 
-func wsjOtherIndexFields(g, j *gen.Index) []string {
-	strip := func(i *gen.Index) *gen.Index {
-		c := proto.Clone(i).(*gen.Index)
+func wsjOtherIndexFields(g, j *metadatapb.Index) []string {
+	strip := func(i *metadatapb.Index) *metadatapb.Index {
+		c := proto.Clone(i).(*metadatapb.Index)
 		m := c.ProtoReflect()
 		fields := m.Descriptor().Fields()
 		for k := 0; k < fields.Len(); k++ {
@@ -577,8 +578,8 @@ func wsjRenameAliases(m protoreflect.Message, seen map[string]string) {
 
 // wsjCanonicalAliases numbers each macro's parameter aliases, which are random
 // (CorrelationIdentifier.uniqueId), in order of appearance.
-func wsjCanonicalAliases(md *gen.MetaData) *gen.MetaData {
-	c := proto.Clone(md).(*gen.MetaData)
+func wsjCanonicalAliases(md *metadatapb.MetaData) *metadatapb.MetaData {
+	c := proto.Clone(md).(*metadatapb.MetaData)
 	for _, f := range c.GetUserDefinedFunctions() {
 		if m := f.GetUserDefinedMacroFunction(); m != nil {
 			wsjRenameAliases(m.ProtoReflect(), map[string]string{})
@@ -587,7 +588,7 @@ func wsjCanonicalAliases(md *gen.MetaData) *gen.MetaData {
 	return c
 }
 
-func wsjCanonical(md *gen.MetaData) *gen.MetaData {
+func wsjCanonical(md *metadatapb.MetaData) *metadatapb.MetaData {
 	c := wsjCanonicalAliases(md)
 	fdp := c.GetRecords()
 	if fdp == nil {
@@ -669,7 +670,7 @@ func wsjCanonical(md *gen.MetaData) *gen.MetaData {
 
 // wsjMetaDataFieldDiff names the top-level MetaData fields that differ,
 // marking a field "~" when the difference vanishes under clearProto2Defaults.
-func wsjMetaDataFieldDiff(g, j *gen.MetaData) []string {
+func wsjMetaDataFieldDiff(g, j *metadatapb.MetaData) []string {
 	var out []string
 	gm, jm := g.ProtoReflect(), j.ProtoReflect()
 	fields := gm.Descriptor().Fields()
@@ -678,7 +679,7 @@ func wsjMetaDataFieldDiff(g, j *gen.MetaData) []string {
 		if gm.Has(fd) == jm.Has(fd) && gm.Get(fd).Equal(jm.Get(fd)) {
 			continue
 		}
-		gc, jc := proto.Clone(g).(*gen.MetaData), proto.Clone(j).(*gen.MetaData)
+		gc, jc := proto.Clone(g).(*metadatapb.MetaData), proto.Clone(j).(*metadatapb.MetaData)
 		gr, jr := gc.ProtoReflect(), jc.ProtoReflect()
 		for q := 0; q < fields.Len(); q++ {
 			if q != k {
@@ -704,16 +705,16 @@ func wsjMetaDataFieldDiff(g, j *gen.MetaData) []string {
 // wsjStructureDetail renders the order of stored record types, descriptor
 // messages and indexes on both sides, plus every per-name difference in a
 // record type or descriptor message, compactly enough for one log line.
-func wsjStructureDetail(g, j *gen.MetaData) string {
+func wsjStructureDetail(g, j *metadatapb.MetaData) string {
 	var b strings.Builder
-	msgNames := func(md *gen.MetaData) []string {
+	msgNames := func(md *metadatapb.MetaData) []string {
 		var out []string
 		for _, m := range md.GetRecords().GetMessageType() {
 			out = append(out, m.GetName())
 		}
 		return out
 	}
-	idxNames := func(md *gen.MetaData) []string {
+	idxNames := func(md *metadatapb.MetaData) []string {
 		var out []string
 		for _, i := range md.GetIndexes() {
 			out = append(out, i.GetName())
@@ -726,7 +727,7 @@ func wsjStructureDetail(g, j *gen.MetaData) string {
 	if gn, jn := idxNames(g), idxNames(j); strings.Join(gn, ",") != strings.Join(jn, ",") {
 		fmt.Fprintf(&b, "indexes-order(go=%v java=%v) ", gn, jn)
 	}
-	jidx := map[string]*gen.Index{}
+	jidx := map[string]*metadatapb.Index{}
 	for _, i := range j.GetIndexes() {
 		jidx[i.GetName()] = i
 	}
@@ -742,7 +743,7 @@ func wsjStructureDetail(g, j *gen.MetaData) string {
 			fmt.Fprintf(&b, "predicate %s(go={%v} java={%v}) ", gi.GetName(), gi.GetPredicate(), ji.GetPredicate())
 		}
 	}
-	jrt := map[string]*gen.RecordType{}
+	jrt := map[string]*metadatapb.RecordType{}
 	for _, rt := range j.GetRecordTypes() {
 		jrt[rt.GetName()] = rt
 	}
@@ -789,14 +790,14 @@ func wsjStructureDetail(g, j *gen.MetaData) string {
 // plans ("c" + a UUID with underscores, measured to move between two builds of
 // in-predicate, user-defined-macro-function-tests and valid-identifiers), each
 // replaced by a same-length placeholder numbered in order of first appearance.
-func wsjJavaDigest(md *gen.MetaData, templateName string) string {
+func wsjJavaDigest(md *metadatapb.MetaData, templateName string) string {
 	sum := sha256.Sum256(wsjDigestProjection(md, templateName, false))
 	return fmt.Sprintf("%x", sum[:6])
 }
 
 // The historical projection differs ONLY in record_types order. It is a
 // separate clone for migration evidence, never the shared metadata comparator.
-func wsjDigestProjection(md *gen.MetaData, templateName string, historical bool) []byte {
+func wsjDigestProjection(md *metadatapb.MetaData, templateName string, historical bool) []byte {
 	c := wsjCanonical(md)
 	if historical {
 		sort.SliceStable(c.RecordTypes, func(i, j int) bool {
@@ -833,7 +834,7 @@ type wsjMetadataWitness struct {
 }
 
 func wsjCaptureMetadata(raw []byte, templateName string) wsjMetadataWitness {
-	md := &gen.MetaData{}
+	md := &metadatapb.MetaData{}
 	Expect(proto.Unmarshal(raw, md)).To(Succeed())
 	w := wsjMetadataWitness{Raw: append([]byte(nil), raw...)}
 	rawSum := sha256.Sum256(raw)
@@ -884,17 +885,17 @@ type wsjRunWitness struct {
 }
 
 // A synthetic wire-contract control, not a measured Java catalog fixture.
-func wsjDigestControlMetadata() *gen.MetaData {
+func wsjDigestControlMetadata() *metadatapb.MetaData {
 	field := func(name string, number int32) *descriptorpb.FieldDescriptorProto {
 		return &descriptorpb.FieldDescriptorProto{
 			Name: proto.String(name), Number: proto.Int32(number),
 			Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum(),
 		}
 	}
-	key := func(name string) *gen.KeyExpression {
-		return &gen.KeyExpression{Field: &gen.Field{FieldName: proto.String(name), FanType: gen.Field_SCALAR.Enum()}}
+	key := func(name string) *metadatapb.KeyExpression {
+		return &metadatapb.KeyExpression{Field: &metadatapb.Field{FieldName: proto.String(name), FanType: metadatapb.Field_SCALAR.Enum()}}
 	}
-	md := &gen.MetaData{
+	md := &metadatapb.MetaData{
 		Records: &descriptorpb.FileDescriptorProto{Name: proto.String("fixed.proto"), MessageType: []*descriptorpb.DescriptorProto{
 			{Name: proto.String("T2"), Field: []*descriptorpb.FieldDescriptorProto{field("id", 1)}},
 			{Name: proto.String("T1"), Field: []*descriptorpb.FieldDescriptorProto{field("id", 1)}},
@@ -903,15 +904,15 @@ func wsjDigestControlMetadata() *gen.MetaData {
 				{Name: proto.String("_T1"), Number: proto.Int32(2), Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".T1")},
 			}},
 		}},
-		RecordTypes: []*gen.RecordType{
-			{Name: proto.String("T2"), PrimaryKey: key("id"), ExplicitKey: &gen.Value{LongValue: proto.Int64(0)}, SinceVersion: proto.Int32(1)},
-			{Name: proto.String("T1"), PrimaryKey: key("id"), ExplicitKey: &gen.Value{LongValue: proto.Int64(1)}, SinceVersion: proto.Int32(1)},
+		RecordTypes: []*metadatapb.RecordType{
+			{Name: proto.String("T2"), PrimaryKey: key("id"), ExplicitKey: &metadatapb.Value{LongValue: proto.Int64(0)}, SinceVersion: proto.Int32(1)},
+			{Name: proto.String("T1"), PrimaryKey: key("id"), ExplicitKey: &metadatapb.Value{LongValue: proto.Int64(1)}, SinceVersion: proto.Int32(1)},
 		},
-		Indexes: []*gen.Index{{
+		Indexes: []*metadatapb.Index{{
 			Name: proto.String("IX"), Type: proto.String("value"), RecordType: []string{"T2"},
 			RootExpression: key("id"), SubspaceKey: []byte{1, 2}, AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(2),
-			Options:   []*gen.Index_Option{{Key: proto.String("unique"), Value: proto.String("true")}, {Key: proto.String("allowedForQuery"), Value: proto.String("true")}},
-			Predicate: &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+			Options:   []*metadatapb.Index_Option{{Key: proto.String("unique"), Value: proto.String("true")}, {Key: proto.String("allowedForQuery"), Value: proto.String("true")}},
+			Predicate: &metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_TRUE.Enum()}},
 		}},
 		Version: proto.Int32(3),
 	}
@@ -924,19 +925,19 @@ func wsjDigestControlMetadata() *gen.MetaData {
 var _ = Describe("WS-J metadata digest projection controls", func() {
 	It("detects raw record-type permutation while reproducing only the historical sorted projection", func() {
 		md := wsjDigestControlMetadata()
-		original := proto.Clone(md).(*gen.MetaData)
-		permuted := proto.Clone(md).(*gen.MetaData)
+		original := proto.Clone(md).(*metadatapb.MetaData)
+		permuted := proto.Clone(md).(*metadatapb.MetaData)
 		permuted.RecordTypes[0], permuted.RecordTypes[1] = permuted.RecordTypes[1], permuted.RecordTypes[0]
 		Expect(proto.Equal(md, permuted)).To(BeFalse(), "the permutation must actually apply")
 		Expect(proto.Equal(wsjCanonical(md), wsjCanonical(permuted))).To(BeFalse())
 		Expect(wsjJavaDigest(md, "unused")).NotTo(Equal(wsjJavaDigest(permuted, "unused")))
 		Expect(wsjDigestProjection(md, "unused", false)).NotTo(Equal(wsjDigestProjection(permuted, "unused", false)))
 		Expect(wsjDigestProjection(md, "unused", true)).To(Equal(wsjDigestProjection(permuted, "unused", true)))
-		projected := &gen.MetaData{}
+		projected := &metadatapb.MetaData{}
 		Expect(proto.Unmarshal(wsjDigestProjection(md, "unused", true), projected)).To(Succeed())
 		Expect(projected.RecordTypes[0].GetName()).To(Equal("T1"))
 		Expect(projected.RecordTypes[1].GetName()).To(Equal("T2"))
-		expected := proto.Clone(original).(*gen.MetaData)
+		expected := proto.Clone(original).(*metadatapb.MetaData)
 		expected.RecordTypes[0], expected.RecordTypes[1] = expected.RecordTypes[1], expected.RecordTypes[0]
 		Expect(proto.Equal(projected, expected)).To(BeTrue(), "legacy changes no payload except the repeated record_types order")
 		Expect(proto.Equal(md, original)).To(BeTrue(), "neither projection mutates its source")
@@ -956,33 +957,33 @@ var _ = Describe("WS-J metadata digest projection controls", func() {
 		md := wsjDigestControlMetadata()
 		mutations := []struct {
 			name  string
-			apply func(*gen.MetaData)
+			apply func(*metadatapb.MetaData)
 		}{
-			{"T2 explicit key", func(m *gen.MetaData) { m.RecordTypes[0].ExplicitKey.LongValue = proto.Int64(7) }},
-			{"T1 explicit key", func(m *gen.MetaData) { m.RecordTypes[1].ExplicitKey.LongValue = proto.Int64(7) }},
-			{"primary key", func(m *gen.MetaData) { m.RecordTypes[0].PrimaryKey.Field.FieldName = proto.String("other") }},
-			{"record type version", func(m *gen.MetaData) { m.RecordTypes[1].SinceVersion = proto.Int32(4) }},
-			{"union number", func(m *gen.MetaData) { m.Records.MessageType[2].Field[0].Number = proto.Int32(9) }},
-			{"union order", func(m *gen.MetaData) { f := m.Records.MessageType[2].Field; f[0], f[1] = f[1], f[0] }},
-			{"named descriptor order", func(m *gen.MetaData) { f := m.Records.MessageType; f[0], f[1] = f[1], f[0] }},
-			{"field number", func(m *gen.MetaData) { m.Records.MessageType[0].Field[0].Number = proto.Int32(8) }},
-			{"semantic name", func(m *gen.MetaData) { m.Records.MessageType[0].Name = proto.String("RENAMED") }},
-			{"index root", func(m *gen.MetaData) { m.Indexes[0].RootExpression.Field.FieldName = proto.String("other") }},
-			{"index option value", func(m *gen.MetaData) { m.Indexes[0].Options[0].Value = proto.String("false") }},
-			{"index option order", func(m *gen.MetaData) { o := m.Indexes[0].Options; o[0], o[1] = o[1], o[0] }},
-			{"index predicate", func(m *gen.MetaData) {
-				m.Indexes[0].Predicate.ConstantPredicate.Value = gen.ConstantPredicate_FALSE.Enum()
+			{"T2 explicit key", func(m *metadatapb.MetaData) { m.RecordTypes[0].ExplicitKey.LongValue = proto.Int64(7) }},
+			{"T1 explicit key", func(m *metadatapb.MetaData) { m.RecordTypes[1].ExplicitKey.LongValue = proto.Int64(7) }},
+			{"primary key", func(m *metadatapb.MetaData) { m.RecordTypes[0].PrimaryKey.Field.FieldName = proto.String("other") }},
+			{"record type version", func(m *metadatapb.MetaData) { m.RecordTypes[1].SinceVersion = proto.Int32(4) }},
+			{"union number", func(m *metadatapb.MetaData) { m.Records.MessageType[2].Field[0].Number = proto.Int32(9) }},
+			{"union order", func(m *metadatapb.MetaData) { f := m.Records.MessageType[2].Field; f[0], f[1] = f[1], f[0] }},
+			{"named descriptor order", func(m *metadatapb.MetaData) { f := m.Records.MessageType; f[0], f[1] = f[1], f[0] }},
+			{"field number", func(m *metadatapb.MetaData) { m.Records.MessageType[0].Field[0].Number = proto.Int32(8) }},
+			{"semantic name", func(m *metadatapb.MetaData) { m.Records.MessageType[0].Name = proto.String("RENAMED") }},
+			{"index root", func(m *metadatapb.MetaData) { m.Indexes[0].RootExpression.Field.FieldName = proto.String("other") }},
+			{"index option value", func(m *metadatapb.MetaData) { m.Indexes[0].Options[0].Value = proto.String("false") }},
+			{"index option order", func(m *metadatapb.MetaData) { o := m.Indexes[0].Options; o[0], o[1] = o[1], o[0] }},
+			{"index predicate", func(m *metadatapb.MetaData) {
+				m.Indexes[0].Predicate.ConstantPredicate.Value = metadatapb.ConstantPredicate_FALSE.Enum()
 			}},
-			{"index subspace", func(m *gen.MetaData) { m.Indexes[0].SubspaceKey[0] = 8 }},
-			{"index version", func(m *gen.MetaData) { m.Indexes[0].LastModifiedVersion = proto.Int32(5) }},
-			{"metadata version", func(m *gen.MetaData) { m.Version = proto.Int32(8) }},
-			{"metadata unknown", func(m *gen.MetaData) { m.ProtoReflect().SetUnknown([]byte{0xf8, 0x07, 0x04}) }},
-			{"record type unknown", func(m *gen.MetaData) { m.RecordTypes[0].ProtoReflect().SetUnknown(nil) }},
-			{"index unknown", func(m *gen.MetaData) { m.Indexes[0].ProtoReflect().SetUnknown(nil) }},
+			{"index subspace", func(m *metadatapb.MetaData) { m.Indexes[0].SubspaceKey[0] = 8 }},
+			{"index version", func(m *metadatapb.MetaData) { m.Indexes[0].LastModifiedVersion = proto.Int32(5) }},
+			{"metadata version", func(m *metadatapb.MetaData) { m.Version = proto.Int32(8) }},
+			{"metadata unknown", func(m *metadatapb.MetaData) { m.ProtoReflect().SetUnknown([]byte{0xf8, 0x07, 0x04}) }},
+			{"record type unknown", func(m *metadatapb.MetaData) { m.RecordTypes[0].ProtoReflect().SetUnknown(nil) }},
+			{"index unknown", func(m *metadatapb.MetaData) { m.Indexes[0].ProtoReflect().SetUnknown(nil) }},
 		}
 		Expect(mutations).To(HaveLen(19))
 		for _, mutation := range mutations {
-			changed := proto.Clone(md).(*gen.MetaData)
+			changed := proto.Clone(md).(*metadatapb.MetaData)
 			mutation.apply(changed)
 			Expect(proto.Equal(changed, md)).To(BeFalse(), "%s must actually change the input", mutation.name)
 			for _, historical := range []bool{false, true} {
@@ -990,9 +991,9 @@ var _ = Describe("WS-J metadata digest projection controls", func() {
 				after := wsjDigestProjection(changed, "unused", historical)
 				Expect(after).NotTo(Equal(before), "%s historical=%t", mutation.name, historical)
 				Expect(sha256.Sum256(after)).NotTo(Equal(sha256.Sum256(before)), "%s historical=%t", mutation.name, historical)
-				decoded := &gen.MetaData{}
+				decoded := &metadatapb.MetaData{}
 				Expect(proto.Unmarshal(after, decoded)).To(Succeed())
-				expected := proto.Clone(changed).(*gen.MetaData)
+				expected := proto.Clone(changed).(*metadatapb.MetaData)
 				if historical {
 					expected.RecordTypes[0], expected.RecordTypes[1] = expected.RecordTypes[1], expected.RecordTypes[0]
 				}
@@ -1002,7 +1003,7 @@ var _ = Describe("WS-J metadata digest projection controls", func() {
 	})
 
 	It("normalizes only declared template, anonymous-type and macro-alias randomness without erasing alias identity", func() {
-		build := func(template, anonA, anonB, alias string, reverse bool) *gen.MetaData {
+		build := func(template, anonA, anonB, alias string, reverse bool) *metadatapb.MetaData {
 			md := wsjDigestControlMetadata()
 			md.Records.Name = proto.String(template + ".proto")
 			owner := md.Records.MessageType[0]
@@ -1014,15 +1015,15 @@ var _ = Describe("WS-J metadata digest projection controls", func() {
 				anonymous[0], anonymous[1] = anonymous[1], anonymous[0]
 			}
 			md.Records.MessageType = append(anonymous, md.Records.MessageType...)
-			value := func() *gen.PValue {
-				return &gen.PValue{SpecificValue: &gen.PValue_QuantifiedObjectValue{QuantifiedObjectValue: &gen.PQuantifiedObjectValue{Alias: proto.String(alias)}}}
+			value := func() *metadatapb.PValue {
+				return &metadatapb.PValue{SpecificValue: &metadatapb.PValue_QuantifiedObjectValue{QuantifiedObjectValue: &metadatapb.PQuantifiedObjectValue{Alias: proto.String(alias)}}}
 			}
-			md.UserDefinedFunctions = []*gen.PUserDefinedFunction{{SpecificFunction: &gen.PUserDefinedFunction_UserDefinedMacroFunction{
-				UserDefinedMacroFunction: &gen.PUserDefinedMacroFunction{FunctionName: proto.String("F"), Arguments: []*gen.PValue{value()}, Body: value()},
+			md.UserDefinedFunctions = []*metadatapb.PUserDefinedFunction{{SpecificFunction: &metadatapb.PUserDefinedFunction_UserDefinedMacroFunction{
+				UserDefinedMacroFunction: &metadatapb.PUserDefinedMacroFunction{FunctionName: proto.String("F"), Arguments: []*metadatapb.PValue{value()}, Body: value()},
 			}}}
 			// Exercise the serialized cUUID alias projection independently of the
 			// typed macro-parameter renaming above, including repeated identity.
-			md.Views = []*gen.PView{{Name: proto.String("V"), Definition: proto.String("SELECT " + alias + ".id FROM T2 AS " + alias)}}
+			md.Views = []*metadatapb.PView{{Name: proto.String("V"), Definition: proto.String("SELECT " + alias + ".id FROM T2 AS " + alias)}}
 			return md
 		}
 		const nameA, nameB = "WSJ001_12345678", "WSJ001_87654321"
@@ -1035,14 +1036,14 @@ var _ = Describe("WS-J metadata digest projection controls", func() {
 		}
 		Expect(wsjJavaDigest(first, nameA)).To(Equal(wsjJavaDigest(second, nameB)))
 		Expect(proto.Equal(first, original)).To(BeTrue())
-		badAlias := proto.Clone(first).(*gen.MetaData)
+		badAlias := proto.Clone(first).(*metadatapb.MetaData)
 		badAlias.UserDefinedFunctions[0].GetUserDefinedMacroFunction().Body.GetQuantifiedObjectValue().Alias = proto.String("different-parameter")
-		badViewAlias := proto.Clone(first).(*gen.MetaData)
+		badViewAlias := proto.Clone(first).(*metadatapb.MetaData)
 		badViewAlias.Views[0].Definition = proto.String(strings.Replace(first.Views[0].GetDefinition(),
 			"c12345678_1234_1234_1234_123456789abc.id", "c00000000_0000_0000_0000_000000000000.id", 1))
-		semanticName := proto.Clone(first).(*gen.MetaData)
+		semanticName := proto.Clone(first).(*metadatapb.MetaData)
 		semanticName.UserDefinedFunctions[0].GetUserDefinedMacroFunction().FunctionName = proto.String("G")
-		for _, changed := range []*gen.MetaData{badAlias, badViewAlias, semanticName} {
+		for _, changed := range []*metadatapb.MetaData{badAlias, badViewAlias, semanticName} {
 			Expect(proto.Equal(first, changed)).To(BeFalse())
 			for _, historical := range []bool{false, true} {
 				Expect(wsjDigestProjection(changed, nameA, historical)).NotTo(Equal(wsjDigestProjection(first, nameA, historical)))
@@ -1636,7 +1637,7 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 			scrub := func(msg string) string {
 				return wsjQuantifierAliasRE.ReplaceAllString(strings.ReplaceAll(msg, templateName, "<T>"), "<alias>")
 			}
-			buildJava := func(build int) (*gen.MetaData, error) {
+			buildJava := func(build int) (*metadatapb.MetaData, error) {
 				b := wsjBuildWitness{Build: build}
 				defer func() { w.JavaBuilds = append(w.JavaBuilds, b) }()
 				var created struct {
@@ -1662,7 +1663,7 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 				raw := loadStoredJavaTemplateBytes(ctx, db, templateName)
 				payload := wsjCaptureMetadata(raw, templateName)
 				b.Metadata = &payload
-				md := &gen.MetaData{}
+				md := &metadatapb.MetaData{}
 				Expect(proto.Unmarshal(raw, md)).To(Succeed())
 				b.Outcome = fmt.Sprintf("OK %d %s", len(md.GetIndexes()), payload.Digest)
 				var dropped struct {
@@ -1714,7 +1715,7 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 				// parameter aliases aside (random in both engines).
 				first, firstErr := goTmpl.Underlying().ToProto()
 				Expect(firstErr).NotTo(HaveOccurred())
-				captureGo := func(build int, md *gen.MetaData) {
+				captureGo := func(build int, md *metadatapb.MetaData) {
 					raw, marshalErr := proto.MarshalOptions{Deterministic: true}.Marshal(md)
 					Expect(marshalErr).NotTo(HaveOccurred())
 					payload := wsjCaptureMetadata(raw, templateName)
@@ -1770,7 +1771,7 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 			}
 			goMD, protoErr := goTmpl.Underlying().ToProto()
 			Expect(protoErr).NotTo(HaveOccurred())
-			recordTypeNames := func(md *gen.MetaData) []string {
+			recordTypeNames := func(md *metadatapb.MetaData) []string {
 				names := make([]string, len(md.GetRecordTypes()))
 				for i, recordType := range md.GetRecordTypes() {
 					names[i] = recordType.GetName()
@@ -1780,11 +1781,11 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 			Expect(recordTypeNames(goMD)).To(Equal(recordTypeNames(javaMD)),
 				"%s: unnormalized record_types order", id)
 
-			javaIdx := map[string]*gen.Index{}
+			javaIdx := map[string]*metadatapb.Index{}
 			for _, i := range javaMD.GetIndexes() {
 				javaIdx[i.GetName()] = i
 			}
-			goIdx := map[string]*gen.Index{}
+			goIdx := map[string]*metadatapb.Index{}
 			for _, i := range goMD.GetIndexes() {
 				goIdx[i.GetName()] = i
 			}
@@ -2825,7 +2826,7 @@ var _ = Describe("WS-J long arithmetic key functions over non-integer operands",
 // carry the same number as long_value, in place, and returns how many it rewrote.
 func wsjWidenIntLiterals(m protoreflect.Message) int {
 	n := 0
-	if v, ok := m.Interface().(*gen.Value); ok && v.IntValue != nil {
+	if v, ok := m.Interface().(*metadatapb.Value); ok && v.IntValue != nil {
 		wide := int64(v.GetIntValue())
 		v.IntValue, v.LongValue = nil, &wide
 		n++
@@ -3301,13 +3302,13 @@ func wsjGoDuplicateOptionOutcome(options [][]string) string {
 	md, err := built.ToProto()
 	Expect(err).NotTo(HaveOccurred())
 	md.Version = proto.Int32(1)
-	idx := &gen.Index{
+	idx := &metadatapb.Index{
 		Name: proto.String("WSJ_DUP"), RecordType: []string{"Order"},
 		RootExpression: recordlayer.Field("order_id").ToKeyExpression(),
 		Type:           proto.String("value"), AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1),
 	}
 	for _, kv := range options {
-		idx.Options = append(idx.Options, &gen.Index_Option{Key: proto.String(kv[0]), Value: proto.String(kv[1])})
+		idx.Options = append(idx.Options, &metadatapb.Index_Option{Key: proto.String(kv[0]), Value: proto.String(kv[1])})
 	}
 	md.Indexes = append(md.Indexes, idx)
 	_, err = recordlayer.RecordMetaDataFromProto(md)
@@ -3374,43 +3375,43 @@ var _ = Describe("WS-J stored index protos read as Java reads them", func() {
 	It("reads each stored shape to the same root, versions and type", func() {
 		java := NewJavaInvoker()
 		f := recordlayer.Field
-		kx := func(e recordlayer.KeyExpression) *gen.KeyExpression { return e.ToKeyExpression() }
+		kx := func(e recordlayer.KeyExpression) *metadatapb.KeyExpression { return e.ToKeyExpression() }
 		cases := []struct {
 			name string
-			idx  *gen.Index
+			idx  *metadatapb.Index
 			// buildRefusal, when set, is the KeyExpression.InvalidExpressionException
 			// both engines' meta-data validators then refuse the read index with:
 			// the read is compared on Java's side, and Go's build here.
 			buildRefusal string
 		}{
-			{"value expression over a field root, no added version", &gen.Index{
+			{"value expression over a field root, no added version", &metadatapb.Index{
 				RootExpression: kx(f("price")), ValueExpression: kx(f("quantity")),
 				Type: proto.String("value"), LastModifiedVersion: proto.Int32(3),
 			}, ""},
-			{"value expression over a concatenated root", &gen.Index{
+			{"value expression over a concatenated root", &metadatapb.Index{
 				RootExpression: kx(recordlayer.Concat(f("price"), f("order_id"))), ValueExpression: kx(recordlayer.Concat(f("quantity"), f("price"))),
 				Type: proto.String("value"), AddedVersion: proto.Int32(2), LastModifiedVersion: proto.Int32(3),
 			}, ""},
-			{"a value expression of no columns", &gen.Index{
+			{"a value expression of no columns", &metadatapb.Index{
 				RootExpression: kx(f("price")), ValueExpression: kx(recordlayer.EmptyKey()),
 				Type: proto.String("value"), AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1),
 			}, ""},
-			{"index_type UNIQUE with a value expression", &gen.Index{
+			{"index_type UNIQUE with a value expression", &metadatapb.Index{
 				RootExpression: kx(f("order_id")), ValueExpression: kx(f("price")),
-				IndexType: gen.Index_UNIQUE.Enum(), LastModifiedVersion: proto.Int32(2),
+				IndexType: metadatapb.Index_UNIQUE.Enum(), LastModifiedVersion: proto.Int32(2),
 			}, ""},
 			// Java's Index(proto) wraps it with every column grouped
 			// (Index.java:206-213), which its COUNT validator then refuses.
-			{"a COUNT root that is not a grouping", &gen.Index{
+			{"a COUNT root that is not a grouping", &metadatapb.Index{
 				RootExpression: kx(f("price")), Type: proto.String("count"),
 				AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1),
 			}, "index type does not support non-group fields; use COUNT_NOT_NULL"},
 			// index_type beside a stored option list: Java takes the type and
 			// options from index_type and ignores the list (Index.java:198-204),
 			// the branch the carry rule's comparison relies on.
-			{"index_type UNIQUE beside an option list", &gen.Index{
-				RootExpression: kx(f("order_id")), IndexType: gen.Index_UNIQUE.Enum(),
-				Options: []*gen.Index_Option{
+			{"index_type UNIQUE beside an option list", &metadatapb.Index{
+				RootExpression: kx(f("order_id")), IndexType: metadatapb.Index_UNIQUE.Enum(),
+				Options: []*metadatapb.Index_Option{
 					{Key: proto.String("unique"), Value: proto.String("false")},
 					{Key: proto.String("x"), Value: proto.String("1")},
 				},
@@ -3436,7 +3437,7 @@ var _ = Describe("WS-J stored index protos read as Java reads them", func() {
 			}
 			Expect(java.InvokeAs(context.Background(), "wsjIndexFromProtoJava", map[string]any{"indexProto": ints}, &out)).To(Succeed())
 			Expect(out.Outcome).To(Equal("OK"), c.name)
-			javaRoot := &gen.KeyExpression{}
+			javaRoot := &metadatapb.KeyExpression{}
 			rootBytes := make([]byte, len(out.Root))
 			for i, b := range out.Root {
 				rootBytes[i] = byte(b)
@@ -3518,13 +3519,13 @@ var _ = Describe("WS-J stored index protos read as Java reads them", func() {
 			// root is refused (KeyExpression.java:404-405); Go skipped it.
 			{"an absent root beside an empty key", "ERROR com.apple.foundationdb.record.metadata.expressions.KeyExpression$DeserializationException Exactly one root must be specified for an index", "root", "Exactly one root must be specified for an index", []byte{}},
 		} {
-			idx := &gen.Index{
+			idx := &metadatapb.Index{
 				Name: proto.String("WSJ_IDX"), RecordType: []string{"Order"},
 				RootExpression: recordlayer.Field("price").ToKeyExpression(), Type: proto.String("value"),
 				AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1), SubspaceKey: c.key,
 			}
 			if c.goClass == "duplicate" {
-				idx.Options = []*gen.Index_Option{{Key: proto.String("a"), Value: proto.String("1")}, {Key: proto.String("a"), Value: proto.String("2")}}
+				idx.Options = []*metadatapb.Index_Option{{Key: proto.String("a"), Value: proto.String("1")}, {Key: proto.String("a"), Value: proto.String("2")}}
 			}
 			if c.goClass == "root" {
 				idx.RootExpression = nil
@@ -3555,7 +3556,7 @@ var _ = Describe("WS-J stored index protos read as Java reads them", func() {
 			// the presence of an empty key is what Go's unmarshaller keeps.
 			stored, err := proto.Marshal(md)
 			Expect(err).NotTo(HaveOccurred())
-			var decoded gen.MetaData
+			var decoded metadatapb.MetaData
 			Expect(proto.Unmarshal(stored, &decoded)).To(Succeed())
 			_, goErr := recordlayer.RecordMetaDataFromProto(&decoded)
 			fmt.Fprintf(GinkgoWriter, "WSJIXK %s java=%s go=%v\n", c.name, out.Outcome, goErr)
@@ -4130,11 +4131,11 @@ var _ = Describe("WS-J an unset field with a declared default reads as the targe
 // before F2 stored) is carried as CHANGED to the int_value root Go's DDL builds,
 // and the target plans the bitmap reads over v2.
 var _ = Describe("WS-J a new version carried from the target's template", func() {
-	carriedFromJava := func(ctx context.Context, java *JavaInvoker, clusterFile, name string) (*gen.MetaData, *catalog.RecordLayerStoreCatalog, *recordlayer.FDBDatabase) {
+	carriedFromJava := func(ctx context.Context, java *JavaInvoker, clusterFile, name string) (*metadatapb.MetaData, *catalog.RecordLayerStoreCatalog, *recordlayer.FDBDatabase) {
 		cat, err := catalog.OpenRecordLayerStoreCatalog()
 		Expect(err).NotTo(HaveOccurred())
 		db := recordlayer.NewFDBDatabase(sharedDB)
-		var v1 *gen.MetaData
+		var v1 *metadatapb.MetaData
 		_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			var lerr error
 			v1, lerr = cat.SchemaTemplateCatalog().LoadTemplateProto(catalog.NewFDBTransaction(rtx), name, 1)
@@ -4143,8 +4144,8 @@ var _ = Describe("WS-J a new version carried from the target's template", func()
 		Expect(err).NotTo(HaveOccurred())
 		return v1, cat, db
 	}
-	byName := func(p *gen.MetaData) (map[string]*gen.RecordType, map[string]*gen.Index, map[string]int32) {
-		types, indexes, unions := map[string]*gen.RecordType{}, map[string]*gen.Index{}, map[string]int32{}
+	byName := func(p *metadatapb.MetaData) (map[string]*metadatapb.RecordType, map[string]*metadatapb.Index, map[string]int32) {
+		types, indexes, unions := map[string]*metadatapb.RecordType{}, map[string]*metadatapb.Index{}, map[string]int32{}
 		for _, rt := range p.GetRecordTypes() {
 			types[rt.GetName()] = rt
 		}
@@ -4204,7 +4205,7 @@ var _ = Describe("WS-J a new version carried from the target's template", func()
 			return nil, cat.SchemaTemplateCatalog().CreateTemplate(catalog.NewFDBTransaction(rtx), v2)
 		})
 		Expect(err).NotTo(HaveOccurred())
-		var stored *gen.MetaData
+		var stored *metadatapb.MetaData
 		_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			var lerr error
 			stored, lerr = cat.SchemaTemplateCatalog().LoadTemplateProto(catalog.NewFDBTransaction(rtx), name, 2)
@@ -4280,7 +4281,7 @@ var _ = Describe("WS-J a new version carried from the target's template", func()
 			return nil, cat.SchemaTemplateCatalog().CreateTemplate(catalog.NewFDBTransaction(rtx), v2)
 		})
 		Expect(err).NotTo(HaveOccurred())
-		var stored *gen.MetaData
+		var stored *metadatapb.MetaData
 		_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			var lerr error
 			stored, lerr = cat.SchemaTemplateCatalog().LoadTemplateProto(catalog.NewFDBTransaction(rtx), name, 2)

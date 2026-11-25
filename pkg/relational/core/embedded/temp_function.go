@@ -10,8 +10,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
@@ -41,7 +41,7 @@ func (c *EmbeddedConnection) execCreateTempFunction(ctx context.Context, ct *ant
 			}
 		}
 	}
-	var stored *gen.PUserDefinedFunction
+	var stored *metadatapb.PUserDefinedFunction
 	if body, isMacro := tf.RoutineBody().(*antlrgen.UserDefinedMacroFunctionStatementBodyContext); isMacro {
 		macro, err := buildMacroFunction(spec, body, md, nil)
 		if err != nil {
@@ -63,8 +63,8 @@ func (c *EmbeddedConnection) execCreateTempFunction(ctx context.Context, ct *ant
 			return 0, err
 		}
 		definition := ctxText(ct)
-		stored = &gen.PUserDefinedFunction{SpecificFunction: &gen.PUserDefinedFunction_SqlFunction{
-			SqlFunction: &gen.PRawSqlFunction{Name: &name, Definition: &definition},
+		stored = &metadatapb.PUserDefinedFunction{SpecificFunction: &metadatapb.PUserDefinedFunction_SqlFunction{
+			SqlFunction: &metadatapb.PRawSqlFunction{Name: &name, Definition: &definition},
 		}}
 	}
 	if tx := c.activeTx; tx != nil {
@@ -94,7 +94,7 @@ func (c *EmbeddedConnection) execDropTempFunction(ctx context.Context, dt *antlr
 	return 0, nil
 }
 
-func (tx *embeddedTx) setTempFunction(name string, f *gen.PUserDefinedFunction) {
+func (tx *embeddedTx) setTempFunction(name string, f *metadatapb.PUserDefinedFunction) {
 	tx.dropTempFunction(name)
 	tx.tempFunctions = append(tx.tempFunctions, f)
 	tx.tempMD = nil

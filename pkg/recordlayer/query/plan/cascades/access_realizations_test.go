@@ -3,7 +3,7 @@ package cascades
 import (
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -27,7 +27,7 @@ func accessRealizationFixture(t *testing.T, duplicates, residual bool) (*SingleM
 		false, []string{"ID"}, &duplicates).WithKeyComponentTypes([]values.Type{values.NotNullLong}).
 		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong})
 	if duplicates {
-		candidate.WithRootKeyExpression(keyExpressionField("A", gen.Field_FAN_OUT))
+		candidate.WithRootKeyExpression(keyExpressionField("A", metadatapb.Field_FAN_OUT))
 	}
 	ctx := testPlanContextForMatching{candidates: []MatchCandidate{candidate}}
 	leaf := expressions.ExploratoryOfAtStage(mustMatchScan(t, []string{"T"}, row), expressions.StagePlanned)

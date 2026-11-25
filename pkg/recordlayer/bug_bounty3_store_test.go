@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"context"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -650,7 +650,7 @@ var _ = Describe("BugBounty3Store", func() {
 
 			// Lock the store
 			err = store.SetStoreLockState(
-				gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE,
+				metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE,
 				"maintenance")
 			Expect(err).NotTo(HaveOccurred())
 

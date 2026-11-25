@@ -11,8 +11,8 @@ import (
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // DescriptorSetSource builds metadata from a compiled records schema's standard
@@ -112,7 +112,7 @@ func declaresRecordUnion(file *descriptorpb.FileDescriptorProto) bool {
 			return true
 		}
 		options := message.GetOptions()
-		if record, ok := proto.GetExtension(options, gen.E_Record).(*gen.RecordTypeOptions); ok && record.GetUsage() == gen.RecordTypeOptions_UNION {
+		if record, ok := proto.GetExtension(options, metadatapb.E_Record).(*metadatapb.RecordTypeOptions); ok && record.GetUsage() == metadatapb.RecordTypeOptions_UNION {
 			return true
 		}
 	}

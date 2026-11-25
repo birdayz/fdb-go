@@ -8,7 +8,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // Port of Java's NullableArrayUtils.wrapArray (fdb-relational-core
@@ -25,14 +25,14 @@ import (
 // Go applies that gate at the single funnel every index passes through
 // (builder.go's registerIndex), so the entry point here is the ungated body.
 
-func wrapArrayInternal(ke *gen.KeyExpression, parent protoreflect.MessageDescriptor) *gen.KeyExpression {
+func wrapArrayInternal(ke *metadatapb.KeyExpression, parent protoreflect.MessageDescriptor) *metadatapb.KeyExpression {
 	switch {
 	case ke.GetThen() != nil:
-		then := &gen.Then{}
+		then := &metadatapb.Then{}
 		for _, child := range ke.GetThen().GetChild() {
 			then.Child = append(then.Child, wrapArrayInternal(child, parent))
 		}
-		return &gen.KeyExpression{Then: then}
+		return &metadatapb.KeyExpression{Then: then}
 
 	case ke.GetNesting() != nil:
 		par := ke.GetNesting().GetParent()
@@ -46,11 +46,11 @@ func wrapArrayInternal(ke *gen.KeyExpression, parent protoreflect.MessageDescrip
 			elemDesc := parent.Fields().ByName(protoreflect.Name(parentFieldName)).
 				Message().Fields().ByName(protoreflect.Name(wrappedArrayFieldName)).Message()
 			wrappedChild := wrapArrayInternal(child, elemDesc)
-			newChild := &gen.KeyExpression{Nesting: &gen.Nesting{
+			newChild := &metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{
 				Parent: wrappedParent.GetChild().GetField(),
 				Child:  wrappedChild,
 			}}
-			return &gen.KeyExpression{Nesting: &gen.Nesting{
+			return &metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{
 				Parent: wrappedParent.GetParent(),
 				Child:  newChild,
 			}}
@@ -59,43 +59,43 @@ func wrapArrayInternal(ke *gen.KeyExpression, parent protoreflect.MessageDescrip
 		if fd := parent.Fields().ByName(protoreflect.Name(parentFieldName)); fd != nil && fd.Kind() == protoreflect.MessageKind {
 			childDesc = fd.Message()
 		}
-		return &gen.KeyExpression{Nesting: &gen.Nesting{
+		return &metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{
 			Parent: par,
 			Child:  wrapArrayInternal(child, childDesc),
 		}}
 
 	case ke.GetField() != nil:
 		if isWrappedArrayFieldRef(ke.GetField().GetFieldName(), parent) {
-			return &gen.KeyExpression{Nesting: splitFieldIntoNestedWithValues(ke.GetField())}
+			return &metadatapb.KeyExpression{Nesting: splitFieldIntoNestedWithValues(ke.GetField())}
 		}
 		return ke
 
 	case ke.GetGrouping() != nil:
 		g := proto2Clone(ke).GetGrouping()
 		g.WholeKey = wrapArrayInternal(g.GetWholeKey(), parent)
-		return &gen.KeyExpression{Grouping: g}
+		return &metadatapb.KeyExpression{Grouping: g}
 
 	case ke.GetSplit() != nil:
 		s := proto2Clone(ke).GetSplit()
 		s.Joined = wrapArrayInternal(s.GetJoined(), parent)
-		return &gen.KeyExpression{Split: s}
+		return &metadatapb.KeyExpression{Split: s}
 
 	case ke.GetFunction() != nil:
 		f := proto2Clone(ke).GetFunction()
 		f.Arguments = wrapArrayInternal(f.GetArguments(), parent)
-		return &gen.KeyExpression{Function: f}
+		return &metadatapb.KeyExpression{Function: f}
 
 	case ke.GetKeyWithValue() != nil:
 		k := proto2Clone(ke).GetKeyWithValue()
 		k.InnerKey = wrapArrayInternal(k.GetInnerKey(), parent)
-		return &gen.KeyExpression{KeyWithValue: k}
+		return &metadatapb.KeyExpression{KeyWithValue: k}
 
 	case ke.GetList() != nil:
-		l := &gen.List{}
+		l := &metadatapb.List{}
 		for _, item := range ke.GetList().GetChild() {
 			l.Child = append(l.Child, wrapArrayInternal(item, parent))
 		}
-		return &gen.KeyExpression{List: l}
+		return &metadatapb.KeyExpression{List: l}
 
 	default:
 		// Empty / Version / RecordTypeKey / Value / Dimensions — no field
@@ -127,15 +127,15 @@ func isWrappedArrayFieldRef(fieldName string, parent protoreflect.MessageDescrip
 // splitFieldIntoNestedWithValues mirrors Java: field(name, fanType) becomes
 // nesting(parent=field(name, SCALAR), child=field("values", fanType)), the
 // null interpretation copied onto both halves.
-func splitFieldIntoNestedWithValues(original *gen.Field) *gen.Nesting {
+func splitFieldIntoNestedWithValues(original *metadatapb.Field) *metadatapb.Nesting {
 	ni := original.GetNullInterpretation()
-	return &gen.Nesting{
-		Parent: &gen.Field{
+	return &metadatapb.Nesting{
+		Parent: &metadatapb.Field{
 			FieldName:          original.FieldName,
-			FanType:            gen.Field_SCALAR.Enum(),
+			FanType:            metadatapb.Field_SCALAR.Enum(),
 			NullInterpretation: ni.Enum(),
 		},
-		Child: &gen.KeyExpression{Field: &gen.Field{
+		Child: &metadatapb.KeyExpression{Field: &metadatapb.Field{
 			FieldName:          proto.String(wrappedArrayFieldName),
 			FanType:            original.GetFanType().Enum(),
 			NullInterpretation: ni.Enum(),
@@ -145,6 +145,6 @@ func splitFieldIntoNestedWithValues(original *gen.Field) *gen.Nesting {
 
 // proto2Clone preserves sibling fields (grouping count, split size,
 // function name) in the arms that replace one child expression.
-func proto2Clone(ke *gen.KeyExpression) *gen.KeyExpression {
-	return proto.Clone(ke).(*gen.KeyExpression)
+func proto2Clone(ke *metadatapb.KeyExpression) *metadatapb.KeyExpression {
+	return proto.Clone(ke).(*metadatapb.KeyExpression)
 }

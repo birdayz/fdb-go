@@ -6,7 +6,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 )
@@ -71,7 +71,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 		// every top-level message as a record type instead.
 		It("is refused as Java refuses it", func() {
 			// record_metadata.proto (MetaData, Index, RecordType, ...) has no union.
-			b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_metadata_proto)
+			b := NewRecordMetaDataBuilder().SetRecords(metadatapb.File_record_metadata_proto)
 			Expect(b.GetRecordTypes()).To(BeEmpty())
 			_, err := b.Build()
 			var md *MetaDataError

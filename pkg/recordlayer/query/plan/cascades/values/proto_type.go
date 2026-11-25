@@ -69,6 +69,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/protoscope"
 )
@@ -605,7 +606,7 @@ func (p *TypeProtoRepository) addProtoFieldLocked(
 		v := t.(*VectorType)
 		f.Type = descriptorpb.FieldDescriptorProto_TYPE_BYTES.Enum()
 		f.Options = &descriptorpb.FieldOptions{}
-		proto.SetExtension(f.Options, gen.E_Field, &gen.FieldOptions{VectorOptions: &gen.FieldOptions_VectorOptions{Precision: proto.Int32(int32(v.Precision)), Dimensions: proto.Int32(int32(v.Dimensions))}})
+		proto.SetExtension(f.Options, metadatapb.E_Field, &metadatapb.FieldOptions{VectorOptions: &metadatapb.FieldOptions_VectorOptions{Precision: proto.Int32(int32(v.Precision)), Dimensions: proto.Int32(int32(v.Dimensions))}})
 	case TypeCodeRecord:
 		if typeName == "" {
 			return &ProtoTypeError{TypeName: t.String(), Reason: "record type was not defined"}

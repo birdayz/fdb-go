@@ -26,8 +26,8 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/javayamsql"
 	"fdb.dev/pkg/relational/core/ddl"
@@ -235,7 +235,7 @@ func loadRecordMetaDataFromJSON(files *protoregistry.Files, path string) (*recor
 	if err != nil {
 		return nil, err
 	}
-	md := &gen.MetaData{}
+	md := &metadatapb.MetaData{}
 	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(raw, md); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}

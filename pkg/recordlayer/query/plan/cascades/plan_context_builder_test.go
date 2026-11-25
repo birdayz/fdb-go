@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -148,10 +148,10 @@ func (d pkTestIndexDef) IndexPrimaryKeyColumns() []string { return d.pk }
 
 type rootTestIndexDef struct {
 	testIndexDef
-	root *gen.KeyExpression
+	root *metadatapb.KeyExpression
 }
 
-func (d rootTestIndexDef) IndexRootKeyExpression() *gen.KeyExpression {
+func (d rootTestIndexDef) IndexRootKeyExpression() *metadatapb.KeyExpression {
 	return d.root
 }
 
@@ -160,34 +160,34 @@ func (d rootTestIndexDef) IndexRootKeyExpression() *gen.KeyExpression {
 func TestNewPlanContextFromIndexDefs_ScalarNestingIsACandidate(t *testing.T) {
 	t.Parallel()
 
-	scalar := gen.Field_SCALAR
-	fanOut := gen.Field_FAN_OUT
-	nested := func(parentFanType gen.Field_FanType) *gen.KeyExpression {
-		return &gen.KeyExpression{Nesting: &gen.Nesting{
-			Parent: &gen.Field{
+	scalar := metadatapb.Field_SCALAR
+	fanOut := metadatapb.Field_FAN_OUT
+	nested := func(parentFanType metadatapb.Field_FanType) *metadatapb.KeyExpression {
+		return &metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{
+			Parent: &metadatapb.Field{
 				FieldName: proto.String("ADDR"),
 				FanType:   &parentFanType,
 			},
-			Child: &gen.KeyExpression{Field: &gen.Field{
+			Child: &metadatapb.KeyExpression{Field: &metadatapb.Field{
 				FieldName: proto.String("CITY"),
 				FanType:   &scalar,
 			}},
 		}}
 	}
-	nestedChildFanOut := &gen.KeyExpression{Nesting: &gen.Nesting{
-		Parent: &gen.Field{
+	nestedChildFanOut := &metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{
+		Parent: &metadatapb.Field{
 			FieldName: proto.String("ADDR"),
 			FanType:   &scalar,
 		},
-		Child: &gen.KeyExpression{Field: &gen.Field{
+		Child: &metadatapb.KeyExpression{Field: &metadatapb.Field{
 			FieldName: proto.String("CITY"),
 			FanType:   &fanOut,
 		}},
 	}}
-	mixedScalarNestingAndFanOut := &gen.KeyExpression{
-		Then: &gen.Then{Child: []*gen.KeyExpression{
+	mixedScalarNestingAndFanOut := &metadatapb.KeyExpression{
+		Then: &metadatapb.Then{Child: []*metadatapb.KeyExpression{
 			nested(scalar),
-			{Field: &gen.Field{
+			{Field: &metadatapb.Field{
 				FieldName: proto.String("TAGS"),
 				FanType:   &fanOut,
 			}},

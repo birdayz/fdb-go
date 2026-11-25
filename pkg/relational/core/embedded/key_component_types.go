@@ -5,9 +5,9 @@
 package embedded
 
 import (
-	"fdb.dev/gen"
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -52,7 +52,7 @@ func physicalKeyComponentTypes(
 }
 
 func keyExpressionTypes(
-	expression *gen.KeyExpression,
+	expression *metadatapb.KeyExpression,
 	descriptor protoreflect.MessageDescriptor,
 	recordTypeKeyType values.Type,
 ) []values.Type {
@@ -69,7 +69,7 @@ func keyExpressionTypes(
 			return unknownPhysicalTypes(1)
 		}
 		fieldDescriptor := descriptor.Fields().ByName(protoreflect.Name(field.GetFieldName()))
-		if fieldDescriptor == nil || field.GetFanType() == gen.Field_CONCATENATE {
+		if fieldDescriptor == nil || field.GetFanType() == metadatapb.Field_CONCATENATE {
 			// A missing field and a concatenating repeated field both make the
 			// scalar carrier underivable at this topology node. Fail closed for
 			// range binding. FAN_OUT still contributes its scalar element type.

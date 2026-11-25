@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
@@ -486,8 +486,8 @@ func TestPersistedProtosHaveNoMapFields(t *testing.T) {
 
 	// The metadata proto must be linked into this test binary for the sweep to
 	// mean anything; touching it also guards against the registry coming up empty.
-	if want := (*gen.MetaData)(nil).ProtoReflect().Descriptor().FullName(); !strings.HasPrefix(string(want), ourPackage) {
-		t.Fatalf("gen.MetaData full name %q no longer starts with %q — the package filter needs updating", want, ourPackage)
+	if want := (*metadatapb.MetaData)(nil).ProtoReflect().Descriptor().FullName(); !strings.HasPrefix(string(want), ourPackage) {
+		t.Fatalf("metadatapb.MetaData full name %q no longer starts with %q — the package filter needs updating", want, ourPackage)
 	}
 	if files == 0 || checked < 50 {
 		t.Fatalf("descriptor sweep reached %d files / %d messages — the registry filter stopped matching, so this sentinel is not actually checking anything", files, checked)

@@ -9,8 +9,8 @@ package recordlayer
 import (
 	"fmt"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
@@ -54,7 +54,7 @@ func (m *standardIndexMaintainerWithQueue) SerializePendingWriteQueue(oldRecord,
 	if !ok {
 		return nil, &UnsupportedOperationError{Message: m.index.Name + " does not support the pending write queue"}
 	}
-	records := &gen.OldAndNewRecords{}
+	records := &metadatapb.OldAndNewRecords{}
 	if oldRecord != nil {
 		b, err := store.serializePendingRecord(oldRecord)
 		if err != nil {
@@ -79,7 +79,7 @@ func (m *standardIndexMaintainerWithQueue) UpdateFromQueue(data *anypb.Any) erro
 	if !ok {
 		return &UnsupportedOperationError{Message: m.index.Name + " does not support the pending write queue"}
 	}
-	records := &gen.OldAndNewRecords{}
+	records := &metadatapb.OldAndNewRecords{}
 	if err := UnmarshalPendingQueueAny(data, records); err != nil {
 		return &RecordCoreError{Message: "failed to parse pending write queue entry data", Cause: err}
 	}

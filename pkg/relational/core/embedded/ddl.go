@@ -17,9 +17,9 @@ import (
 	"strconv"
 	"strings"
 
-	"fdb.dev/gen"
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/catalog"
@@ -410,8 +410,8 @@ func registerFunction(fd antlrgen.ISqlInvokedFunctionContext, b *metadata.Builde
 		}
 	}
 	name, definition := fn.name, "CREATE "+ctxText(fd)
-	return b.AddFunction(name, &gen.PUserDefinedFunction{SpecificFunction: &gen.PUserDefinedFunction_SqlFunction{
-		SqlFunction: &gen.PRawSqlFunction{Name: &name, Definition: &definition},
+	return b.AddFunction(name, &metadatapb.PUserDefinedFunction{SpecificFunction: &metadatapb.PUserDefinedFunction_SqlFunction{
+		SqlFunction: &metadatapb.PRawSqlFunction{Name: &name, Definition: &definition},
 	}})
 }
 
@@ -619,7 +619,7 @@ func parseVectorIndexDefinition(def *antlrgen.VectorIndexDefinitionContext, b *m
 		return err
 	}
 
-	var predicate *gen.Predicate
+	var predicate *metadatapb.Predicate
 	if !b.HasTable(tableName) {
 		table, mapping, window, err := plainProjectionView(b, tableName)
 		if err != nil {
@@ -645,7 +645,7 @@ func parseVectorIndexDefinition(def *antlrgen.VectorIndexDefinitionContext, b *m
 // plainProjectionView maps a view that plainly projects columns of one table
 // (no filter, no computation) to that table and its view-to-column names; a
 // vector index over it indexes the same records. Any other view is refused.
-func plainProjectionView(b *metadata.Builder, name string) (string, map[string]string, *gen.Predicate, error) {
+func plainProjectionView(b *metadata.Builder, name string) (string, map[string]string, *metadatapb.Predicate, error) {
 	tmpl, err := b.Build()
 	if err != nil {
 		return "", nil, nil, err

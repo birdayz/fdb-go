@@ -13,7 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -32,7 +32,7 @@ type javaVerdict struct {
 // default, the index name), then appends the former indexes, and returns its
 // proto. The keys are written into the proto packed, as Java writes them, so a
 // key Go's builder would refuse can still be put in front of both engines.
-func subspaceKeyTestProto(version int, keys []any, formers []*gen.FormerIndex, configure func(i int, idx *recordlayer.Index)) *gen.MetaData {
+func subspaceKeyTestProto(version int, keys []any, formers []*metadatapb.FormerIndex, configure func(i int, idx *recordlayer.Index)) *metadatapb.MetaData {
 	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
@@ -66,7 +66,7 @@ func subspaceKeyTestProto(version int, keys []any, formers []*gen.FormerIndex, c
 
 // withIndexI0 edits the proto of index i0, the edits a Go builder cannot make
 // (a type or a root chosen after the build, a record-type list).
-func withIndexI0(p *gen.MetaData, edit func(*gen.Index)) *gen.MetaData {
+func withIndexI0(p *metadatapb.MetaData, edit func(*metadatapb.Index)) *metadatapb.MetaData {
 	for _, idx := range p.GetIndexes() {
 		if idx.GetName() == "i0" {
 			edit(idx)
@@ -75,15 +75,15 @@ func withIndexI0(p *gen.MetaData, edit func(*gen.Index)) *gen.MetaData {
 	return p
 }
 
-func formerIndexProto(key any, added, removed int32, name string) *gen.FormerIndex {
-	f := &gen.FormerIndex{SubspaceKey: tuple.Tuple{key}.Pack(), AddedVersion: proto.Int32(added), RemovedVersion: proto.Int32(removed)}
+func formerIndexProto(key any, added, removed int32, name string) *metadatapb.FormerIndex {
+	f := &metadatapb.FormerIndex{SubspaceKey: tuple.Tuple{key}.Pack(), AddedVersion: proto.Int32(added), RemovedVersion: proto.Int32(removed)}
 	if name != "" {
 		f.FormerName = proto.String(name)
 	}
 	return f
 }
 
-func marshalMetaData(p *gen.MetaData) []byte {
+func marshalMetaData(p *metadatapb.MetaData) []byte {
 	data, err := proto.Marshal(p)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred())
 	return data
@@ -101,15 +101,15 @@ var _ = Describe("Subspace-key identity in meta-data validation", func() {
 	for _, c := range []struct {
 		name       string
 		keys       []any
-		formers    []*gen.FormerIndex
+		formers    []*metadatapb.FormerIndex
 		wantPrefix string // empty: valid
 	}{
 		{"a bytes key beside the string key of the same content", []any{"pb", []byte("pb")}, nil, ""},
 		{"two NaN keys with different payloads", []any{nanA, nanB}, nil, "Same subspace key NaN used by both "},
 		{"0.0 and -0.0", []any{0.0, math.Copysign(0, -1)}, nil, ""},
-		{"two former indexes with one key", []any{"k"}, []*gen.FormerIndex{formerIndexProto(int64(9), 1, 2, "gone"), formerIndexProto(int64(9), 1, 2, "")}, "Same subspace key 9 used by two former indexes "},
-		{"an index on a former index's key", []any{int64(9)}, []*gen.FormerIndex{formerIndexProto(int64(9), 1, 2, "gone")}, "Same subspace key 9 used by index i0 and former index gone"},
-		{"a former index on the bytes of an index's string key", []any{"k"}, []*gen.FormerIndex{formerIndexProto([]byte("k"), 1, 2, "gone")}, ""},
+		{"two former indexes with one key", []any{"k"}, []*metadatapb.FormerIndex{formerIndexProto(int64(9), 1, 2, "gone"), formerIndexProto(int64(9), 1, 2, "")}, "Same subspace key 9 used by two former indexes "},
+		{"an index on a former index's key", []any{int64(9)}, []*metadatapb.FormerIndex{formerIndexProto(int64(9), 1, 2, "gone")}, "Same subspace key 9 used by index i0 and former index gone"},
+		{"a former index on the bytes of an index's string key", []any{"k"}, []*metadatapb.FormerIndex{formerIndexProto([]byte("k"), 1, 2, "gone")}, ""},
 	} {
 		It("builds or refuses as Java does: "+c.name, func() {
 			p := subspaceKeyTestProto(5, c.keys, c.formers, nil)
@@ -137,11 +137,11 @@ var _ = Describe("Subspace-key identity in meta-data validation", func() {
 
 var _ = Describe("Subspace-key pairing in meta-data evolution", func() {
 	// One index, i0, whose key is its name.
-	old := func() *gen.MetaData { return subspaceKeyTestProto(3, []any{nil}, nil, nil) }
+	old := func() *metadatapb.MetaData { return subspaceKeyTestProto(3, []any{nil}, nil, nil) }
 	for _, c := range []struct {
 		name         string
-		old          func() *gen.MetaData
-		new          func() *gen.MetaData
+		old          func() *metadatapb.MetaData
+		new          func() *metadatapb.MetaData
 		allowMissing bool
 		allowOlder   bool
 		wantPrefix   string // empty: valid
@@ -149,14 +149,14 @@ var _ = Describe("Subspace-key pairing in meta-data evolution", func() {
 		{
 			name: "same name, another key",
 			old:  old,
-			new:  func() *gen.MetaData { return subspaceKeyTestProto(4, []any{"i0-moved"}, nil, nil) },
+			new:  func() *metadatapb.MetaData { return subspaceKeyTestProto(4, []any{"i0-moved"}, nil, nil) },
 			// The old key's entries would be left behind under a readable index.
 			wantPrefix: "index missing in new meta-data",
 		},
 		{
 			name: "same key, another name",
 			old:  old,
-			new: func() *gen.MetaData {
+			new: func() *metadatapb.MetaData {
 				p := subspaceKeyTestProto(4, []any{"i0"}, nil, nil)
 				p.Indexes[0].Name = proto.String("renamed")
 				return p
@@ -166,18 +166,18 @@ var _ = Describe("Subspace-key pairing in meta-data evolution", func() {
 		{
 			name: "the index moved to a new key, and its old key became a former index",
 			old:  old,
-			new: func() *gen.MetaData {
-				return subspaceKeyTestProto(6, []any{"i0-moved"}, []*gen.FormerIndex{formerIndexProto("i0", 1, 5, "i0")}, func(_ int, idx *recordlayer.Index) {
+			new: func() *metadatapb.MetaData {
+				return subspaceKeyTestProto(6, []any{"i0-moved"}, []*metadatapb.FormerIndex{formerIndexProto("i0", 1, 5, "i0")}, func(_ int, idx *recordlayer.Index) {
 					idx.AddedVersion, idx.LastModifiedVersion = 5, 5
 				})
 			},
 		},
 		{
 			name: "a former index's key reused by an index",
-			old: func() *gen.MetaData {
-				return subspaceKeyTestProto(6, nil, []*gen.FormerIndex{formerIndexProto("k", 1, 5, "k")}, nil)
+			old: func() *metadatapb.MetaData {
+				return subspaceKeyTestProto(6, nil, []*metadatapb.FormerIndex{formerIndexProto("k", 1, 5, "k")}, nil)
 			},
-			new: func() *gen.MetaData {
+			new: func() *metadatapb.MetaData {
 				return subspaceKeyTestProto(8, []any{"k"}, nil, func(_ int, idx *recordlayer.Index) {
 					idx.AddedVersion, idx.LastModifiedVersion = 7, 7
 				})
@@ -186,11 +186,11 @@ var _ = Describe("Subspace-key pairing in meta-data evolution", func() {
 		},
 		{
 			name: "a kept former index renamed, with missing names allowed",
-			old: func() *gen.MetaData {
-				return subspaceKeyTestProto(6, nil, []*gen.FormerIndex{formerIndexProto("k", 1, 5, "k")}, nil)
+			old: func() *metadatapb.MetaData {
+				return subspaceKeyTestProto(6, nil, []*metadatapb.FormerIndex{formerIndexProto("k", 1, 5, "k")}, nil)
 			},
-			new: func() *gen.MetaData {
-				return subspaceKeyTestProto(7, nil, []*gen.FormerIndex{formerIndexProto("k", 1, 5, "other")}, nil)
+			new: func() *metadatapb.MetaData {
+				return subspaceKeyTestProto(7, nil, []*metadatapb.FormerIndex{formerIndexProto("k", 1, 5, "other")}, nil)
 			},
 			allowMissing: true,
 			wantPrefix:   "name of former index differs from prior version",
@@ -198,8 +198,8 @@ var _ = Describe("Subspace-key pairing in meta-data evolution", func() {
 		{
 			name: "a replacing former index naming another index, with missing names allowed",
 			old:  old,
-			new: func() *gen.MetaData {
-				return subspaceKeyTestProto(6, nil, []*gen.FormerIndex{formerIndexProto("i0", 1, 5, "other")}, nil)
+			new: func() *metadatapb.MetaData {
+				return subspaceKeyTestProto(6, nil, []*metadatapb.FormerIndex{formerIndexProto("i0", 1, 5, "other")}, nil)
 			},
 			allowMissing: true,
 			wantPrefix:   "former index has different name than old index",
@@ -207,54 +207,54 @@ var _ = Describe("Subspace-key pairing in meta-data evolution", func() {
 		{
 			name: "an unnamed replacing former index, with missing names allowed",
 			old:  old,
-			new: func() *gen.MetaData {
-				return subspaceKeyTestProto(6, nil, []*gen.FormerIndex{formerIndexProto("i0", 1, 5, "")}, nil)
+			new: func() *metadatapb.MetaData {
+				return subspaceKeyTestProto(6, nil, []*metadatapb.FormerIndex{formerIndexProto("i0", 1, 5, "")}, nil)
 			},
 			allowMissing: true,
 		},
 		{
 			name: "a last-modified version that went back",
-			old: func() *gen.MetaData {
+			old: func() *metadatapb.MetaData {
 				return subspaceKeyTestProto(5, []any{nil}, nil, func(_ int, idx *recordlayer.Index) { idx.LastModifiedVersion = 5 })
 			},
-			new: func() *gen.MetaData {
+			new: func() *metadatapb.MetaData {
 				return subspaceKeyTestProto(7, []any{nil}, nil, func(_ int, idx *recordlayer.Index) { idx.LastModifiedVersion = 3 })
 			},
 			wantPrefix: "old index has last-modified version newer than new index",
 		},
 		{
 			name: "a replacing former index added after the index",
-			old: func() *gen.MetaData {
+			old: func() *metadatapb.MetaData {
 				return subspaceKeyTestProto(3, []any{nil}, nil, func(_ int, idx *recordlayer.Index) { idx.AddedVersion, idx.LastModifiedVersion = 2, 2 })
 			},
-			new: func() *gen.MetaData {
-				return subspaceKeyTestProto(6, nil, []*gen.FormerIndex{formerIndexProto("i0", 3, 4, "i0")}, nil)
+			new: func() *metadatapb.MetaData {
+				return subspaceKeyTestProto(6, nil, []*metadatapb.FormerIndex{formerIndexProto("i0", 3, 4, "i0")}, nil)
 			},
 			wantPrefix: "former index added after old index",
 		},
 		{
 			name: "a replacing former index added before the index",
-			old: func() *gen.MetaData {
+			old: func() *metadatapb.MetaData {
 				return subspaceKeyTestProto(5, []any{nil}, nil, func(_ int, idx *recordlayer.Index) { idx.AddedVersion, idx.LastModifiedVersion = 3, 3 })
 			},
-			new: func() *gen.MetaData {
-				return subspaceKeyTestProto(7, nil, []*gen.FormerIndex{formerIndexProto("i0", 1, 6, "i0")}, nil)
+			new: func() *metadatapb.MetaData {
+				return subspaceKeyTestProto(7, nil, []*metadatapb.FormerIndex{formerIndexProto("i0", 1, 6, "i0")}, nil)
 			},
 			wantPrefix: "former index reports added version older than replacing index",
 		},
 		{
 			name: "the index type changed",
 			old:  old,
-			new: func() *gen.MetaData {
-				return withIndexI0(subspaceKeyTestProto(4, []any{nil}, nil, nil), func(idx *gen.Index) { idx.Type = proto.String("rank") })
+			new: func() *metadatapb.MetaData {
+				return withIndexI0(subspaceKeyTestProto(4, []any{nil}, nil, nil), func(idx *metadatapb.Index) { idx.Type = proto.String("rank") })
 			},
 			wantPrefix: "index type changed",
 		},
 		{
 			name: "the root changed",
 			old:  old,
-			new: func() *gen.MetaData {
-				return withIndexI0(subspaceKeyTestProto(4, []any{nil}, nil, nil), func(idx *gen.Index) {
+			new: func() *metadatapb.MetaData {
+				return withIndexI0(subspaceKeyTestProto(4, []any{nil}, nil, nil), func(idx *metadatapb.Index) {
 					idx.RootExpression = recordlayer.Field("quantity").ToKeyExpression()
 				})
 			},
@@ -265,37 +265,37 @@ var _ = Describe("Subspace-key pairing in meta-data evolution", func() {
 			// (FieldKeyExpression.java:406-410); Go compared roots by proto.
 			name: "the root changed only in its null interpretation",
 			old:  old,
-			new: func() *gen.MetaData {
-				return withIndexI0(subspaceKeyTestProto(4, []any{nil}, nil, nil), func(idx *gen.Index) {
-					idx.RootExpression.Field.NullInterpretation = gen.Field_UNIQUE.Enum()
+			new: func() *metadatapb.MetaData {
+				return withIndexI0(subspaceKeyTestProto(4, []any{nil}, nil, nil), func(idx *metadatapb.Index) {
+					idx.RootExpression.Field.NullInterpretation = metadatapb.Field_UNIQUE.Enum()
 				})
 			},
 		},
 		{
 			name: "the index no longer covers a record type",
-			old: func() *gen.MetaData {
-				return withIndexI0(subspaceKeyTestProto(3, []any{nil}, nil, nil), func(idx *gen.Index) { idx.RecordType = []string{"Order", "Customer"} })
+			old: func() *metadatapb.MetaData {
+				return withIndexI0(subspaceKeyTestProto(3, []any{nil}, nil, nil), func(idx *metadatapb.Index) { idx.RecordType = []string{"Order", "Customer"} })
 			},
-			new: func() *gen.MetaData {
-				return withIndexI0(subspaceKeyTestProto(4, []any{nil}, nil, nil), func(idx *gen.Index) { idx.RecordType = []string{"Order"} })
+			new: func() *metadatapb.MetaData {
+				return withIndexI0(subspaceKeyTestProto(4, []any{nil}, nil, nil), func(idx *metadatapb.Index) { idx.RecordType = []string{"Order"} })
 			},
 			wantPrefix: "new index removes record type",
 		},
 		{
 			name: "the index covers a record type that is not newer",
 			old:  old,
-			new: func() *gen.MetaData {
-				return withIndexI0(subspaceKeyTestProto(4, []any{nil}, nil, nil), func(idx *gen.Index) { idx.RecordType = []string{"Order", "Customer"} })
+			new: func() *metadatapb.MetaData {
+				return withIndexI0(subspaceKeyTestProto(4, []any{nil}, nil, nil), func(idx *metadatapb.Index) { idx.RecordType = []string{"Order", "Customer"} })
 			},
 			wantPrefix: "new index adds record type that is not newer than old meta-data",
 		},
 		{
 			name: "a replacing former index added before the index, with older added versions allowed",
-			old: func() *gen.MetaData {
+			old: func() *metadatapb.MetaData {
 				return subspaceKeyTestProto(5, []any{nil}, nil, func(_ int, idx *recordlayer.Index) { idx.AddedVersion, idx.LastModifiedVersion = 3, 3 })
 			},
-			new: func() *gen.MetaData {
-				return subspaceKeyTestProto(7, nil, []*gen.FormerIndex{formerIndexProto("i0", 1, 6, "i0")}, nil)
+			new: func() *metadatapb.MetaData {
+				return subspaceKeyTestProto(7, nil, []*metadatapb.FormerIndex{formerIndexProto("i0", 1, 6, "i0")}, nil)
 			},
 			allowOlder: true,
 		},
@@ -340,8 +340,8 @@ var _ = Describe("Subspace-key pairing in meta-data evolution", func() {
 // shape runs through Java's validator and Go's, and the verdicts must agree,
 // a refusal with Java's whole message as the prefix of Go's.
 var _ = Describe("Field and record-type changes in meta-data evolution", func() {
-	demo := func(version int, edit func(order *descriptorpb.DescriptorProto, file *descriptorpb.FileDescriptorProto, p *gen.MetaData)) func() *gen.MetaData {
-		return func() *gen.MetaData {
+	demo := func(version int, edit func(order *descriptorpb.DescriptorProto, file *descriptorpb.FileDescriptorProto, p *metadatapb.MetaData)) func() *metadatapb.MetaData {
+		return func() *metadatapb.MetaData {
 			p := subspaceKeyTestProto(version, []any{nil}, nil, nil)
 			if edit != nil {
 				for _, m := range p.GetRecords().GetMessageType() {
@@ -365,19 +365,19 @@ var _ = Describe("Field and record-type changes in meta-data evolution", func() 
 	old := demo(3, nil)
 	for _, c := range []struct {
 		name       string
-		new        func() *gen.MetaData
+		new        func() *metadatapb.MetaData
 		wantPrefix string // empty: valid
 	}{
-		{"a field renamed", demo(4, func(m *descriptorpb.DescriptorProto, _ *descriptorpb.FileDescriptorProto, _ *gen.MetaData) {
+		{"a field renamed", demo(4, func(m *descriptorpb.DescriptorProto, _ *descriptorpb.FileDescriptorProto, _ *metadatapb.MetaData) {
 			field(m, "quantity").Name = proto.String("qty")
 		}), "field renamed"},
-		{"a field's type changed", demo(4, func(m *descriptorpb.DescriptorProto, _ *descriptorpb.FileDescriptorProto, _ *gen.MetaData) {
+		{"a field's type changed", demo(4, func(m *descriptorpb.DescriptorProto, _ *descriptorpb.FileDescriptorProto, _ *metadatapb.MetaData) {
 			field(m, "quantity").Type = descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum()
 		}), "field type changed"},
-		{"an int32 widened to int64", demo(4, func(m *descriptorpb.DescriptorProto, _ *descriptorpb.FileDescriptorProto, _ *gen.MetaData) {
+		{"an int32 widened to int64", demo(4, func(m *descriptorpb.DescriptorProto, _ *descriptorpb.FileDescriptorProto, _ *metadatapb.MetaData) {
 			field(m, "quantity").Type = descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum()
 		}), ""},
-		{"a field removed", demo(4, func(m *descriptorpb.DescriptorProto, _ *descriptorpb.FileDescriptorProto, _ *gen.MetaData) {
+		{"a field removed", demo(4, func(m *descriptorpb.DescriptorProto, _ *descriptorpb.FileDescriptorProto, _ *metadatapb.MetaData) {
 			kept := m.Field[:0]
 			for _, f := range m.Field {
 				if f.GetName() != "coord_y" {
@@ -386,7 +386,7 @@ var _ = Describe("Field and record-type changes in meta-data evolution", func() 
 			}
 			m.Field = kept
 		}), "field removed from message descriptor"},
-		{"a required field added", demo(4, func(m *descriptorpb.DescriptorProto, _ *descriptorpb.FileDescriptorProto, _ *gen.MetaData) {
+		{"a required field added", demo(4, func(m *descriptorpb.DescriptorProto, _ *descriptorpb.FileDescriptorProto, _ *metadatapb.MetaData) {
 			m.Field = append(m.Field, &descriptorpb.FieldDescriptorProto{
 				Name: proto.String("extra"), Number: proto.Int32(20),
 				Type: descriptorpb.FieldDescriptorProto_TYPE_INT32.Enum(), Label: descriptorpb.FieldDescriptorProto_LABEL_REQUIRED.Enum(),
@@ -395,13 +395,13 @@ var _ = Describe("Field and record-type changes in meta-data evolution", func() 
 		// Java checks a required field losing its label and a repeated one
 		// losing it, and presence; an optional field made required keeps its
 		// presence (MetaDataEvolutionValidator.java:306-315).
-		{"an optional field made required", demo(4, func(m *descriptorpb.DescriptorProto, _ *descriptorpb.FileDescriptorProto, _ *gen.MetaData) {
+		{"an optional field made required", demo(4, func(m *descriptorpb.DescriptorProto, _ *descriptorpb.FileDescriptorProto, _ *metadatapb.MetaData) {
 			field(m, "quantity").Label = descriptorpb.FieldDescriptorProto_LABEL_REQUIRED.Enum()
 		}), ""},
-		{"a repeated field made optional", demo(4, func(m *descriptorpb.DescriptorProto, _ *descriptorpb.FileDescriptorProto, _ *gen.MetaData) {
+		{"a repeated field made optional", demo(4, func(m *descriptorpb.DescriptorProto, _ *descriptorpb.FileDescriptorProto, _ *metadatapb.MetaData) {
 			field(m, "tags").Label = descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
 		}), "repeated field is no longer repeated"},
-		{"an enum value removed", demo(4, func(_ *descriptorpb.DescriptorProto, file *descriptorpb.FileDescriptorProto, _ *gen.MetaData) {
+		{"an enum value removed", demo(4, func(_ *descriptorpb.DescriptorProto, file *descriptorpb.FileDescriptorProto, _ *metadatapb.MetaData) {
 			for _, m := range file.GetMessageType() {
 				for _, e := range m.GetEnumType() {
 					kept := e.Value[:0]
@@ -423,7 +423,7 @@ var _ = Describe("Field and record-type changes in meta-data evolution", func() 
 				e.Value = kept
 			}
 		}), "enum removes value"},
-		{"a primary key changed", demo(4, func(_ *descriptorpb.DescriptorProto, _ *descriptorpb.FileDescriptorProto, p *gen.MetaData) {
+		{"a primary key changed", demo(4, func(_ *descriptorpb.DescriptorProto, _ *descriptorpb.FileDescriptorProto, p *metadatapb.MetaData) {
 			for _, rt := range p.GetRecordTypes() {
 				if rt.GetName() == "Order" {
 					rt.PrimaryKey = recordlayer.Field("quantity").ToKeyExpression()
@@ -483,7 +483,7 @@ var _ = Describe("Former-index subspace keys read as Java reads them", func() {
 		{"one string item", tuple.Tuple{"k"}.Pack(), "OK k", ""},
 	} {
 		It("reads the key as Java does: "+c.name, func() {
-			former := &gen.FormerIndex{SubspaceKey: c.key, AddedVersion: proto.Int32(1), RemovedVersion: proto.Int32(2), FormerName: proto.String("gone")}
+			former := &metadatapb.FormerIndex{SubspaceKey: c.key, AddedVersion: proto.Int32(1), RemovedVersion: proto.Int32(2), FormerName: proto.String("gone")}
 			var java struct {
 				Outcome string `json:"outcome"`
 			}
@@ -492,8 +492,8 @@ var _ = Describe("Former-index subspace keys read as Java reads them", func() {
 			Expect(NewJavaInvoker().InvokeAs(context.Background(), "formerIndexFromProtoVerdict",
 				map[string]any{"formerIndexProto": bytesToInts(encoded)}, &java)).To(Succeed())
 
-			var decoded gen.MetaData
-			Expect(proto.Unmarshal(marshalMetaData(subspaceKeyTestProto(3, nil, []*gen.FormerIndex{former}, nil)), &decoded)).To(Succeed())
+			var decoded metadatapb.MetaData
+			Expect(proto.Unmarshal(marshalMetaData(subspaceKeyTestProto(3, nil, []*metadatapb.FormerIndex{former}, nil)), &decoded)).To(Succeed())
 			md, goErr := recordlayer.RecordMetaDataFromProto(&decoded)
 			fmt.Fprintf(GinkgoWriter, "FORMER_INDEX_KEY %q java=%s go=%v\n", c.name, java.Outcome, goErr)
 

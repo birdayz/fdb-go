@@ -13,13 +13,13 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/gen"
 	"fdb.dev/internal/dstwire"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/core/keyspace"
@@ -310,7 +310,7 @@ func roStoreHeader(t *testing.T, ctx context.Context, rdb *recordlayer.FDBDataba
 		if len(raw) == 0 {
 			return nil, fmt.Errorf("no store header at %x", []byte(key))
 		}
-		hdr := &gen.DataStoreInfo{}
+		hdr := &metadatapb.DataStoreInfo{}
 		if err := hdr.UnmarshalVT(raw); err != nil {
 			return nil, err
 		}

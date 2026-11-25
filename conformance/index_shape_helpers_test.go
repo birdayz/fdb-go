@@ -16,8 +16,8 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/core/catalog"
 )
 
@@ -68,7 +68,7 @@ func clearProto2Defaults(m protoreflect.Message) {
 
 // normalizedIndexOptions renders an index's stored options as sorted
 // "key=value" strings for order-insensitive comparison.
-func normalizedIndexOptions(idx *gen.Index) []string {
+func normalizedIndexOptions(idx *metadatapb.Index) []string {
 	out := make([]string, 0, len(idx.GetOptions()))
 	for _, o := range idx.GetOptions() {
 		out = append(out, o.GetKey()+"="+o.GetValue())
@@ -91,7 +91,7 @@ func normalizedProto[M proto.Message](m M) M {
 // compare equal iff every dimension this test claims to compare is equal, so a
 // map keyed by name and valued by this string turns the per-index comparison
 // into a SET comparison that cannot be satisfied by a subset.
-func indexShapeKey(idx *gen.Index) string {
+func indexShapeKey(idx *metadatapb.Index) string {
 	root, err := proto.MarshalOptions{Deterministic: true}.Marshal(
 		normalizedProto(idx.GetRootExpression()))
 	Expect(err).NotTo(HaveOccurred())
@@ -109,7 +109,7 @@ func indexShapeKey(idx *gen.Index) string {
 // index and an unexpected extra one each fail. A surplus index is metadata a
 // Java app opening the stored template would have to maintain without ever
 // having declared it.
-func assertIndexSetEquality(shapeName string, expected []string, javaIdx, goIdx map[string]*gen.Index) {
+func assertIndexSetEquality(shapeName string, expected []string, javaIdx, goIdx map[string]*metadatapb.Index) {
 	expectedSet := make(map[string]struct{}, len(expected))
 	for _, n := range expected {
 		expectedSet[n] = struct{}{}
@@ -146,7 +146,7 @@ func assertIndexSetEquality(shapeName string, expected []string, javaIdx, goIdx 
 	}
 }
 
-func sortedKeys(m map[string]*gen.Index) []string {
+func sortedKeys(m map[string]*metadatapb.Index) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)
@@ -155,7 +155,7 @@ func sortedKeys(m map[string]*gen.Index) []string {
 	return out
 }
 
-func indexNames(indexes []*gen.Index) []string {
+func indexNames(indexes []*metadatapb.Index) []string {
 	out := make([]string, 0, len(indexes))
 	for _, idx := range indexes {
 		out = append(out, idx.GetName())
@@ -204,8 +204,8 @@ func loadStoredJavaTemplateBytes(ctx context.Context, db *recordlayer.FDBDatabas
 // reads. It consumes the stored bytes directly, never Java's object model
 // round-tripped through Go's, so a Go deserialization bug cannot mask a
 // divergence.
-func loadStoredJavaTemplateMetaData(ctx context.Context, db *recordlayer.FDBDatabase, templateName string) *gen.MetaData {
-	md := &gen.MetaData{}
+func loadStoredJavaTemplateMetaData(ctx context.Context, db *recordlayer.FDBDatabase, templateName string) *metadatapb.MetaData {
+	md := &metadatapb.MetaData{}
 	Expect(proto.Unmarshal(loadStoredJavaTemplateBytes(ctx, db, templateName), md)).To(Succeed(),
 		"unmarshal stored MetaData for %s", templateName)
 	return md

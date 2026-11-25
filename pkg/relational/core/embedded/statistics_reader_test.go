@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
@@ -637,7 +637,7 @@ func syntheticTestMetaData(t *testing.T) *recordlayer.RecordMetaData {
 		t.Fatalf("to proto: %v", err)
 	}
 	name := "JoinedAB"
-	p.JoinedRecordTypes = append(p.JoinedRecordTypes, &gen.JoinedRecordType{Name: &name})
+	p.JoinedRecordTypes = append(p.JoinedRecordTypes, &metadatapb.JoinedRecordType{Name: &name})
 	got, err := recordlayer.RecordMetaDataFromProto(p)
 	if err != nil {
 		t.Fatalf("from proto: %v", err)

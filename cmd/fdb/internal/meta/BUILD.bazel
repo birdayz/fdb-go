@@ -12,9 +12,9 @@ go_library(
     visibility = ["//cmd/fdb:__subpackages__"],
     deps = [
         "//cmd/fdb/gen/fdb/config/v1:config",
-        "//gen",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",
+        "//pkg/recordlayer/metadatapb",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protodesc",
         "@org_golang_google_protobuf//types/descriptorpb",
@@ -34,9 +34,9 @@ go_test(
     embed = [":meta"],
     deps = [
         "//cmd/fdb/gen/fdb/config/v1:config",
-        "//gen",
         "//gen/demopb",
         "//pkg/recordlayer",
+        "//pkg/recordlayer/metadatapb",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protoreflect",
         "@org_golang_google_protobuf//types/descriptorpb",

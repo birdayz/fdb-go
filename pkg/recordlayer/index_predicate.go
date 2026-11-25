@@ -11,8 +11,8 @@ import (
 	"fmt"
 	"strings"
 
-	gen "fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer/indexpredicate"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -20,7 +20,7 @@ import (
 // predicateFromProto converts a proto Predicate message into an IndexPredicate
 // function that can evaluate records at runtime. Matches Java's
 // IndexPredicate.shouldIndexThisRecord().
-func predicateFromProto(p *gen.Predicate) (IndexPredicate, error) {
+func predicateFromProto(p *metadatapb.Predicate) (IndexPredicate, error) {
 	if p == nil {
 		return nil, nil
 	}
@@ -79,7 +79,7 @@ func predicateFromProto(p *gen.Predicate) (IndexPredicate, error) {
 // predicate loadable. Go reaches the identical write-time error by the
 // identical route, so the two engines agree on both halves: what loads, and
 // what fails.
-func rowNumberWindowPredicateFromProto(p *gen.RowNumberWindowPredicate) (IndexPredicate, error) {
+func rowNumberWindowPredicateFromProto(p *metadatapb.RowNumberWindowPredicate) (IndexPredicate, error) {
 	if _, err := rowNumberWindowSpecFromProto(p); err != nil {
 		return nil, err
 	}
@@ -92,11 +92,11 @@ func rowNumberWindowPredicateFromProto(p *gen.RowNumberWindowPredicate) (IndexPr
 // backstop and the planner's sparseness gates must never answer differently
 // about the same stored bytes, and one function is the only way to guarantee
 // that.
-func predicateProtoIsTautology(p *gen.Predicate) bool {
+func predicateProtoIsTautology(p *metadatapb.Predicate) bool {
 	return indexpredicate.IsTautology(p)
 }
 
-func andPredicateFromProto(p *gen.AndPredicate) (IndexPredicate, error) {
+func andPredicateFromProto(p *metadatapb.AndPredicate) (IndexPredicate, error) {
 	children := make([]IndexPredicate, 0, len(p.Children))
 	for i, child := range p.Children {
 		fn, err := predicateFromProto(child)
@@ -115,7 +115,7 @@ func andPredicateFromProto(p *gen.AndPredicate) (IndexPredicate, error) {
 	}, nil
 }
 
-func orPredicateFromProto(p *gen.OrPredicate) (IndexPredicate, error) {
+func orPredicateFromProto(p *metadatapb.OrPredicate) (IndexPredicate, error) {
 	children := make([]IndexPredicate, 0, len(p.Children))
 	for i, child := range p.Children {
 		fn, err := predicateFromProto(child)
@@ -134,20 +134,20 @@ func orPredicateFromProto(p *gen.OrPredicate) (IndexPredicate, error) {
 	}, nil
 }
 
-func constantPredicateFromProto(p *gen.ConstantPredicate) (IndexPredicate, error) {
+func constantPredicateFromProto(p *metadatapb.ConstantPredicate) (IndexPredicate, error) {
 	switch p.GetValue() {
-	case gen.ConstantPredicate_TRUE:
+	case metadatapb.ConstantPredicate_TRUE:
 		return func(proto.Message) bool { return true }, nil
-	case gen.ConstantPredicate_FALSE:
+	case metadatapb.ConstantPredicate_FALSE:
 		return func(proto.Message) bool { return false }, nil
-	case gen.ConstantPredicate_NULL:
+	case metadatapb.ConstantPredicate_NULL:
 		return func(proto.Message) bool { return false }, nil
 	default:
 		return nil, fmt.Errorf("unknown constant predicate value: %v", p.GetValue())
 	}
 }
 
-func notPredicateFromProto(p *gen.NotPredicate) (IndexPredicate, error) {
+func notPredicateFromProto(p *metadatapb.NotPredicate) (IndexPredicate, error) {
 	child, err := predicateFromProto(p.Child)
 	if err != nil {
 		return nil, fmt.Errorf("not predicate child: %w", err)
@@ -157,7 +157,7 @@ func notPredicateFromProto(p *gen.NotPredicate) (IndexPredicate, error) {
 	}, nil
 }
 
-func valuePredicateFromProto(p *gen.ValuePredicate) (IndexPredicate, error) {
+func valuePredicateFromProto(p *metadatapb.ValuePredicate) (IndexPredicate, error) {
 	fieldPath := p.Value
 	if len(fieldPath) == 0 {
 		return nil, fmt.Errorf("value predicate has empty field path")
@@ -182,7 +182,7 @@ func valuePredicateFromProto(p *gen.ValuePredicate) (IndexPredicate, error) {
 // comparison holds.
 type comparisonFunc func(val any, has bool) bool
 
-func comparisonFromProto(cmp *gen.Comparison) (comparisonFunc, error) {
+func comparisonFromProto(cmp *metadatapb.Comparison) (comparisonFunc, error) {
 	switch {
 	case cmp.SimpleComparison != nil:
 		return simpleComparisonFromProto(cmp.SimpleComparison)
@@ -193,7 +193,7 @@ func comparisonFromProto(cmp *gen.Comparison) (comparisonFunc, error) {
 	}
 }
 
-func nullComparisonFromProto(nc *gen.NullComparison) (comparisonFunc, error) {
+func nullComparisonFromProto(nc *metadatapb.NullComparison) (comparisonFunc, error) {
 	isNull := nc.GetIsNull()
 	return func(_ any, has bool) bool {
 		if isNull {
@@ -203,7 +203,7 @@ func nullComparisonFromProto(nc *gen.NullComparison) (comparisonFunc, error) {
 	}, nil
 }
 
-func simpleComparisonFromProto(sc *gen.SimpleComparison) (comparisonFunc, error) {
+func simpleComparisonFromProto(sc *metadatapb.SimpleComparison) (comparisonFunc, error) {
 	cmpType := sc.GetType()
 	operand, err := extractValueOperand(sc.Operand)
 	if err != nil {
@@ -211,53 +211,53 @@ func simpleComparisonFromProto(sc *gen.SimpleComparison) (comparisonFunc, error)
 	}
 
 	switch cmpType {
-	case gen.ComparisonType_IS_NULL:
+	case metadatapb.ComparisonType_IS_NULL:
 		return func(_ any, has bool) bool { return !has }, nil
-	case gen.ComparisonType_NOT_NULL:
+	case metadatapb.ComparisonType_NOT_NULL:
 		return func(_ any, has bool) bool { return has }, nil
-	case gen.ComparisonType_EQUALS:
+	case metadatapb.ComparisonType_EQUALS:
 		return func(val any, has bool) bool {
 			if !has {
 				return false
 			}
 			return compareValues(val, operand) == 0
 		}, nil
-	case gen.ComparisonType_NOT_EQUALS:
+	case metadatapb.ComparisonType_NOT_EQUALS:
 		return func(val any, has bool) bool {
 			if !has {
 				return false
 			}
 			return compareValues(val, operand) != 0
 		}, nil
-	case gen.ComparisonType_LESS_THAN:
+	case metadatapb.ComparisonType_LESS_THAN:
 		return func(val any, has bool) bool {
 			if !has {
 				return false
 			}
 			return compareValues(val, operand) < 0
 		}, nil
-	case gen.ComparisonType_LESS_THAN_OR_EQUALS:
+	case metadatapb.ComparisonType_LESS_THAN_OR_EQUALS:
 		return func(val any, has bool) bool {
 			if !has {
 				return false
 			}
 			return compareValues(val, operand) <= 0
 		}, nil
-	case gen.ComparisonType_GREATER_THAN:
+	case metadatapb.ComparisonType_GREATER_THAN:
 		return func(val any, has bool) bool {
 			if !has {
 				return false
 			}
 			return compareValues(val, operand) > 0
 		}, nil
-	case gen.ComparisonType_GREATER_THAN_OR_EQUALS:
+	case metadatapb.ComparisonType_GREATER_THAN_OR_EQUALS:
 		return func(val any, has bool) bool {
 			if !has {
 				return false
 			}
 			return compareValues(val, operand) >= 0
 		}, nil
-	case gen.ComparisonType_STARTS_WITH:
+	case metadatapb.ComparisonType_STARTS_WITH:
 		return func(val any, has bool) bool {
 			if !has {
 				return false
@@ -284,7 +284,7 @@ func simpleComparisonFromProto(sc *gen.SimpleComparison) (comparisonFunc, error)
 // with none is refused (Java's NullPointerException, which Go has no class for;
 // DIVERGENCES.md), both when the meta-data is loaded. Integers and floats widen
 // to the forms Go compares record values in.
-func extractValueOperand(v *gen.Value) (any, error) {
+func extractValueOperand(v *metadatapb.Value) (any, error) {
 	val, err := valueFromProto(v)
 	if err != nil {
 		return nil, err

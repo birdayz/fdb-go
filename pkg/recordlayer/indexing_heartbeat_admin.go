@@ -11,9 +11,9 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 )
@@ -23,8 +23,8 @@ import (
 // times, so a caller sees it instead of losing it.
 const InvalidHeartbeatInfo = "<< Invalid Heartbeat >>"
 
-func invalidHeartbeat() *gen.IndexBuildHeartbeat {
-	return &gen.IndexBuildHeartbeat{
+func invalidHeartbeat() *metadatapb.IndexBuildHeartbeat {
+	return &metadatapb.IndexBuildHeartbeat{
 		Info:                      proto.String(InvalidHeartbeatInfo),
 		CreateTimeMilliseconds:    proto.Int64(0),
 		HeartbeatTimeMilliseconds: proto.Int64(0),
@@ -36,12 +36,12 @@ func invalidHeartbeat() *gen.IndexBuildHeartbeat {
 // A key that is not a UUID heartbeat key is an IndexingHeartbeatKeyError, as in
 // admission: Java's getUUID on such a key throws too.
 // Matches Java's IndexingHeartbeat.getIndexingHeartbeats (IndexingHeartbeat.java:135-163).
-func GetIndexingHeartbeats(tx fdb.ReadTransaction, storeSubspace subspace.Subspace, index *Index, maxCount int) (map[uuid.UUID]*gen.IndexBuildHeartbeat, error) {
+func GetIndexingHeartbeats(tx fdb.ReadTransaction, storeSubspace subspace.Subspace, index *Index, maxCount int) (map[uuid.UUID]*metadatapb.IndexBuildHeartbeat, error) {
 	entries, err := collectIndexingHeartbeats(tx, storeSubspace, index, maxCount)
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[uuid.UUID]*gen.IndexBuildHeartbeat, len(entries))
+	out := make(map[uuid.UUID]*metadatapb.IndexBuildHeartbeat, len(entries))
 	for id, e := range entries {
 		out[id] = e.hb
 	}
@@ -56,7 +56,7 @@ func GetIndexingHeartbeats(tx fdb.ReadTransaction, storeSubspace subspace.Subspa
 // valid is false for a value that does not parse, which Java reports as the
 // invalid-heartbeat placeholder and Go carries in hb the same way.
 type heartbeatEntry struct {
-	hb    *gen.IndexBuildHeartbeat
+	hb    *metadatapb.IndexBuildHeartbeat
 	valid bool
 }
 
@@ -76,7 +76,7 @@ func collectIndexingHeartbeats(tx fdb.ReadTransaction, storeSubspace subspace.Su
 		if err != nil {
 			return nil, err
 		}
-		hb := &gen.IndexBuildHeartbeat{}
+		hb := &metadatapb.IndexBuildHeartbeat{}
 		if err := UnmarshalVTAsJava(hb, kv.Value); err != nil {
 			out[id] = heartbeatEntry{hb: invalidHeartbeat()}
 			continue
@@ -104,7 +104,7 @@ func ClearIndexingHeartbeats(tx fdb.WritableTransaction, storeSubspace subspace.
 	}
 	cleared := 0
 	for _, kv := range kvs {
-		var hb gen.IndexBuildHeartbeat
+		var hb metadatapb.IndexBuildHeartbeat
 		remove := true // an unparsable heartbeat is always cleared
 		if err := UnmarshalVTAsJava(&hb, kv.Value); err == nil {
 			remove = nowMs >= hb.GetHeartbeatTimeMilliseconds()+minAgeMs
@@ -182,7 +182,7 @@ func CheckAnyOngoingOnlineIndexBuildsForStore(store *FDBRecordStore, index *Inde
 // GetIndexingHeartbeats reads the primary target index's session heartbeats in one
 // transaction. Matches Java's OnlineIndexer.getIndexingHeartbeats(maxCount)
 // (IndexingBase.java:1235-1238).
-func (oi *OnlineIndexer) GetIndexingHeartbeats(ctx context.Context, maxCount int) (map[uuid.UUID]*gen.IndexBuildHeartbeat, error) {
+func (oi *OnlineIndexer) GetIndexingHeartbeats(ctx context.Context, maxCount int) (map[uuid.UUID]*metadatapb.IndexBuildHeartbeat, error) {
 	result, err := oi.run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		store, err := oi.openStore(rtx)
 		if err != nil {
@@ -193,7 +193,7 @@ func (oi *OnlineIndexer) GetIndexingHeartbeats(ctx context.Context, maxCount int
 	if err != nil {
 		return nil, err
 	}
-	return result.(map[uuid.UUID]*gen.IndexBuildHeartbeat), nil
+	return result.(map[uuid.UUID]*metadatapb.IndexBuildHeartbeat), nil
 }
 
 // ClearIndexingHeartbeats clears the primary target index's heartbeats older than

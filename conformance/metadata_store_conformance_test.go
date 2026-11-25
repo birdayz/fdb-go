@@ -14,7 +14,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	gofdb "fdb.dev/pkg/fdbgo/fdb"
@@ -69,7 +69,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 	// Java program reading an FDBMetaDataStore sets setLocalFileDescriptor.
 	localDemo := recordlayer.WithLocalFileDescriptor(demopb.File_record_layer_demo_proto)
 
-	buildMetaDataProto := func(version int32) *gen.MetaData {
+	buildMetaDataProto := func(version int32) *metadatapb.MetaData {
 		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
@@ -123,7 +123,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 			Expect(saveResult.SavedBytes).To(BeNumerically(">", 0))
 
 			// Go loads and verifies
-			var loaded *gen.MetaData
+			var loaded *metadatapb.MetaData
 			_, err = goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				store := recordlayer.NewFDBMetaDataStore(ss)
 				var loadErr error
@@ -154,7 +154,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(saved.SavedBytes).To(BeNumerically(">", 0))
 
-		want := map[string]*gen.PStoredQuery{
+		want := map[string]*metadatapb.PStoredQuery{
 			"warm_orders": {
 				Name:  proto.String("warm_orders"),
 				Query: proto.String("SELECT * FROM Order WHERE price > minimum_price()"),
@@ -165,7 +165,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 			},
 			"warm_customers": {Name: proto.String("warm_customers"), Query: proto.String("SELECT * FROM Customer")},
 		}
-		assertQueries := func(metadata *gen.MetaData) {
+		assertQueries := func(metadata *metadatapb.MetaData) {
 			Expect(metadata.GetStoredQueries()).To(HaveLen(len(want)))
 			seen := make(map[string]bool)
 			for _, query := range metadata.GetStoredQueries() {
@@ -1076,7 +1076,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 			Expect(saveResult.MetadataBytes).To(BeNumerically(">", 0))
 
 			// Go loads metadata, opens store, scans Orders.
-			var loadedMD *gen.MetaData
+			var loadedMD *metadatapb.MetaData
 			var scannedOrders []*demopb.Order
 			_, err = goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				mdStore := recordlayer.NewFDBMetaDataStore(ss)
@@ -1468,7 +1468,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 
 			// Go re-opens what Java wrote. Java's evolution being self-consistent
 			// is not enough — Go has to still find and scan the index.
-			var reloaded *gen.MetaData
+			var reloaded *metadatapb.MetaData
 			_, err = goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				var loadErr error
 				reloaded, loadErr = recordlayer.NewFDBMetaDataStore(ss).

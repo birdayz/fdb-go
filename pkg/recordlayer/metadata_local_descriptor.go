@@ -6,7 +6,7 @@
 package recordlayer
 
 import (
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -91,7 +91,7 @@ func (b *RecordMetaDataBuilder) fetchLocalUnionDescriptor(local protoreflect.Fil
 func hasUnion(fd protoreflect.FileDescriptor) bool {
 	for i := 0; i < fd.Messages().Len(); i++ {
 		msg := fd.Messages().Get(i)
-		if usage, ok := recordUsage(msg); msg.Name() == relationalUnionName || ok && usage == gen.RecordTypeOptions_UNION {
+		if usage, ok := recordUsage(msg); msg.Name() == relationalUnionName || ok && usage == metadatapb.RecordTypeOptions_UNION {
 			return true
 		}
 	}
@@ -114,7 +114,7 @@ func (b *RecordMetaDataBuilder) buildSyntheticUnion(local protoreflect.FileDescr
 		if msg == nil {
 			return nil, &MetaDataError{Message: "Record type " + string(field.Message().Name()) + " removed"}
 		}
-		if usage, ok := recordUsage(msg); ok && usage == gen.RecordTypeOptions_NESTED {
+		if usage, ok := recordUsage(msg); ok && usage == metadatapb.RecordTypeOptions_NESTED {
 			continue
 		}
 		fp := protodesc.ToFieldDescriptorProto(field)

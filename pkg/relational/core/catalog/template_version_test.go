@@ -5,7 +5,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/metadata"
 )
@@ -56,7 +56,7 @@ func TestSerializeTemplateStoresTheBuiltVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("serialize: %v", err)
 	}
-	p := &gen.MetaData{}
+	p := &metadatapb.MetaData{}
 	if err := proto.Unmarshal(payload, p); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}

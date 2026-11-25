@@ -4,6 +4,24 @@ managed:
   override:
     - file_option: go_package_prefix
       value: fdb.dev/gen
+    # Public Record Layer metadata proto closure: record_metadata.proto, its
+    # complete imported closure, and index_build.proto. Java proto packages stay
+    # unchanged; only Go import paths move under pkg/recordlayer/metadatapb.
+    - file_option: go_package
+      path: record_metadata.proto
+      value: fdb.dev/pkg/recordlayer/metadatapb
+    - file_option: go_package
+      path: record_metadata_options.proto
+      value: fdb.dev/pkg/recordlayer/metadatapb
+    - file_option: go_package
+      path: record_key_expression.proto
+      value: fdb.dev/pkg/recordlayer/metadatapb
+    - file_option: go_package
+      path: record_query_plan.proto
+      value: fdb.dev/pkg/recordlayer/metadatapb
+    - file_option: go_package
+      path: index_build.proto
+      value: fdb.dev/pkg/recordlayer/metadatapb
     # The demo schema is test data: its own package keeps its
     # com.apple.foundationdb.record types out of every production binary.
     - file_option: go_package
@@ -15,17 +33,18 @@ plugins:
       - run
       - "@org_golang_google_protobuf//cmd/protoc-gen-go"
       - --
-    out: gen
+    out: .
     opt:
-      - module=fdb.dev/gen
+      - module=fdb.dev
   - local:
       - bazelisk
       - run
       - "@com_github_planetscale_vtprotobuf//cmd/protoc-gen-go-vtproto"
       - --
-    out: gen
+    out: .
     opt:
-      - module=fdb.dev/gen
+      - module=fdb.dev
       - features=marshal+unmarshal+size+pool
       - pool=fdb.dev/gen.*
       - pool=fdb.dev/gen/demopb.*
+      - pool=fdb.dev/pkg/recordlayer/metadatapb.*

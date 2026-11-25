@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -345,7 +345,7 @@ var _ = Describe("DeleteRecordsWhere", func() {
 			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "")
+			return nil, store.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "")
 		})
 		Expect(err).NotTo(HaveOccurred())
 

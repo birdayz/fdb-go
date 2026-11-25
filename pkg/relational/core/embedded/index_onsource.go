@@ -15,9 +15,9 @@ import (
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"fdb.dev/gen"
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
@@ -307,7 +307,7 @@ func parseOnSourceIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, 
 	return nil
 }
 
-func findView(md *recordlayer.RecordMetaData, name string) *gen.PView {
+func findView(md *recordlayer.RecordMetaData, name string) *metadatapb.PView {
 	for _, v := range md.Views() {
 		if unicode15.EqualFold(v.GetName(), name) {
 			return v
@@ -323,7 +323,7 @@ func findView(md *recordlayer.RecordMetaData, name string) *gen.PView {
 // select cannot be re-projected that way (a star, a set operation) is read
 // as `SELECT cols FROM view ORDER BY keys` instead.
 func onViewIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, indexName string, unique, legacyExtremum bool,
-	keyCols []onSourceIndexedColumn, valueCols []string, view *gen.PView, md *recordlayer.RecordMetaData, b *metadata.Builder,
+	keyCols []onSourceIndexedColumn, valueCols []string, view *metadatapb.PView, md *recordlayer.RecordMetaData, b *metadata.Builder,
 ) error {
 	specs := def.IndexColumnList().AllIndexColumnSpec()
 	items := make([]string, 0, len(specs)+len(valueCols))

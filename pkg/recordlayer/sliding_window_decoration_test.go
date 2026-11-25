@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"bytes"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -35,16 +35,16 @@ var _ = Describe("SlidingWindowIndex decoration", func() {
 		// failure is the signal that the placement check has become reachable
 		// for this shape and the two must be reconciled.
 		idx := NewVectorIndex("sw_or_only", KeyWithValue(Concat(Field("coord_x"), Field("coord_y")), 0), 2)
-		rn := &gen.Predicate{RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+		rn := &metadatapb.Predicate{RowNumberWindowPredicate: &metadatapb.RowNumberWindowPredicate{
 			OrderingField: []string{"price"},
 			Size:          proto.Int32(2),
-			Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+			Direction:     metadatapb.RowNumberWindowPredicate_ASC.Enum(),
 		}}
-		trueArm := &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
-			Value: gen.ConstantPredicate_TRUE.Enum(),
+		trueArm := &metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{
+			Value: metadatapb.ConstantPredicate_TRUE.Enum(),
 		}}
-		Expect(idx.SetPredicateProto(&gen.Predicate{OrPredicate: &gen.OrPredicate{
-			Children: []*gen.Predicate{rn, trueArm},
+		Expect(idx.SetPredicateProto(&metadatapb.Predicate{OrPredicate: &metadatapb.OrPredicate{
+			Children: []*metadatapb.Predicate{rn, trueArm},
 		}})).To(Succeed())
 
 		Expect(idx.HasRowNumberWindowPredicate()).To(BeFalse())
@@ -61,11 +61,11 @@ var _ = Describe("SlidingWindowIndex decoration", func() {
 		// holds every record. Go must not refuse the metadata — refusing would
 		// make a Java-authored store unopenable — and must not decorate either.
 		idx := NewIndex("value_with_window", Field("price"))
-		Expect(idx.SetPredicateProto(&gen.Predicate{
-			RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+		Expect(idx.SetPredicateProto(&metadatapb.Predicate{
+			RowNumberWindowPredicate: &metadatapb.RowNumberWindowPredicate{
 				OrderingField: []string{"price"},
 				Size:          proto.Int32(2),
-				Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+				Direction:     metadatapb.RowNumberWindowPredicate_ASC.Enum(),
 			},
 		})).To(Succeed())
 
@@ -87,11 +87,11 @@ var _ = Describe("SlidingWindowIndex decoration", func() {
 		// two would write bytes under prefix 10 that no Java engine can read.
 		idx := NewIndex("spfresh_with_window", KeyWithValue(Field("vector_data"), 0))
 		idx.Type = IndexTypeVectorSPFresh
-		Expect(idx.SetPredicateProto(&gen.Predicate{
-			RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+		Expect(idx.SetPredicateProto(&metadatapb.Predicate{
+			RowNumberWindowPredicate: &metadatapb.RowNumberWindowPredicate{
 				OrderingField: []string{"price"},
 				Size:          proto.Int32(2),
-				Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+				Direction:     metadatapb.RowNumberWindowPredicate_ASC.Enum(),
 			},
 		})).To(Succeed())
 

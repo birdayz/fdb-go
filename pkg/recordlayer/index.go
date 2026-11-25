@@ -15,8 +15,8 @@ import (
 	"strconv"
 	"strings"
 
-	gen "fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -220,7 +220,7 @@ type Index struct {
 	// for round-tripping. Set when loading from proto (Java-defined predicates)
 	// or when using SetPredicateProto(). Nil for programmatic Go predicates
 	// set via SetPredicate().
-	predicateProto *gen.Predicate
+	predicateProto *metadatapb.Predicate
 
 	// primaryKeyComponentPositions tracks overlap between index key and primary key.
 	// Each element corresponds to a primary key component:
@@ -636,7 +636,7 @@ func (idx *Index) SetPredicate(p IndexPredicate) *Index {
 
 // SetPredicateProto sets a predicate from a proto message. This both stores
 // the proto for round-tripping and builds an evaluator function.
-func (idx *Index) SetPredicateProto(p *gen.Predicate) error {
+func (idx *Index) SetPredicateProto(p *metadatapb.Predicate) error {
 	if p == nil {
 		idx.predicateProto = nil
 		idx.Predicate = nil
@@ -646,7 +646,7 @@ func (idx *Index) SetPredicateProto(p *gen.Predicate) error {
 	// from the message, so retaining caller-owned mutable protobuf storage would
 	// let a post-Set mutation desynchronize serialized semantics from the
 	// already-published evaluator.
-	owned := proto.Clone(p).(*gen.Predicate)
+	owned := proto.Clone(p).(*metadatapb.Predicate)
 	fn, err := predicateFromProto(owned)
 	if err != nil {
 		// Compile before publishing either representation. A rejected proto must
@@ -663,11 +663,11 @@ func (idx *Index) SetPredicateProto(p *gen.Predicate) error {
 // Returns nil for programmatic Go predicates set via SetPredicate(). The
 // returned message is a defensive clone: callers cannot mutate the evaluator's
 // serialized authority through this accessor.
-func (idx *Index) GetPredicateProto() *gen.Predicate {
+func (idx *Index) GetPredicateProto() *metadatapb.Predicate {
 	if idx == nil || idx.predicateProto == nil {
 		return nil
 	}
-	return proto.Clone(idx.predicateProto).(*gen.Predicate)
+	return proto.Clone(idx.predicateProto).(*metadatapb.Predicate)
 }
 
 // HasPredicate reports whether this is a sparse/filtered index. Check both
@@ -760,7 +760,7 @@ func (idx *Index) equalsJava(o *Index) bool {
 // IndexPredicate.fromProto would build a RowNumberWindowPredicate from p: it
 // takes the first of the and, or, constant, not, value and row-number fields
 // that is set (IndexPredicate.java:105-121).
-func rowNumberWindowOf(p *gen.Predicate) *gen.RowNumberWindowPredicate {
+func rowNumberWindowOf(p *metadatapb.Predicate) *metadatapb.RowNumberWindowPredicate {
 	if p == nil || p.AndPredicate != nil || p.OrPredicate != nil || p.ConstantPredicate != nil ||
 		p.NotPredicate != nil || p.ValuePredicate != nil {
 		return nil
@@ -771,7 +771,7 @@ func rowNumberWindowOf(p *gen.Predicate) *gen.RowNumberWindowPredicate {
 // rowNumberWindowPredicatesEqual is RowNumberWindowPredicate.equals over the
 // fields Java builds from the proto (IndexPredicate.java:657-673, :790-801).
 // Either being nil means that side is not a row-number window.
-func rowNumberWindowPredicatesEqual(a, b *gen.RowNumberWindowPredicate) bool {
+func rowNumberWindowPredicatesEqual(a, b *metadatapb.RowNumberWindowPredicate) bool {
 	if a == nil || b == nil {
 		return false
 	}

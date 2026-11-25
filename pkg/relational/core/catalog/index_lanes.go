@@ -13,8 +13,8 @@ import (
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 )
@@ -42,7 +42,7 @@ import (
 // new version's NEW and CHANGED ones); an EQUIVALENT index carries the bytes the
 // tenant already has and is not re-checked, so a stored lane-less key never
 // refuses a new version that keeps it. nil checks every index.
-func checkIndexLanes(md *recordlayer.RecordMetaData, p *gen.MetaData, only map[string]bool) error {
+func checkIndexLanes(md *recordlayer.RecordMetaData, p *metadatapb.MetaData, only map[string]bool) error {
 	for _, idx := range p.GetIndexes() {
 		if only != nil && !only[idx.GetName()] {
 			continue
@@ -59,7 +59,7 @@ func checkIndexLanes(md *recordlayer.RecordMetaData, p *gen.MetaData, only map[s
 
 // indexRecordDescriptors is the descriptors of the record types an index
 // covers, every record type (in name order) for an index that names none.
-func indexRecordDescriptors(md *recordlayer.RecordMetaData, idx *gen.Index) []protoreflect.MessageDescriptor {
+func indexRecordDescriptors(md *recordlayer.RecordMetaData, idx *metadatapb.Index) []protoreflect.MessageDescriptor {
 	names := idx.GetRecordType()
 	if len(names) == 0 {
 		for name := range md.RecordTypes() {
@@ -80,7 +80,7 @@ type laneChecker struct{ index string }
 
 // walk finds every function key in e and checks it (keyOperandType checks an
 // arithmetic function's operands, and walks any other function's arguments).
-func (c laneChecker) walk(e *gen.KeyExpression, desc protoreflect.MessageDescriptor) error {
+func (c laneChecker) walk(e *metadatapb.KeyExpression, desc protoreflect.MessageDescriptor) error {
 	switch {
 	case e == nil:
 		return nil
@@ -115,7 +115,7 @@ func (c laneChecker) walk(e *gen.KeyExpression, desc protoreflect.MessageDescrip
 
 // keyOperandType is the type code of the Value Java builds for e as an operand,
 // checking e's lane when e is an arithmetic function.
-func (c laneChecker) keyOperandType(e *gen.KeyExpression, desc protoreflect.MessageDescriptor) (values.TypeCode, error) {
+func (c laneChecker) keyOperandType(e *metadatapb.KeyExpression, desc protoreflect.MessageDescriptor) (values.TypeCode, error) {
 	switch {
 	case e == nil:
 		return values.TypeCodeUnknown, nil
@@ -145,7 +145,7 @@ func (c laneChecker) keyOperandType(e *gen.KeyExpression, desc protoreflect.Mess
 			}
 			return values.TypeCodeUnknown, nil
 		}
-		args := []*gen.KeyExpression{fn.GetArguments()}
+		args := []*metadatapb.KeyExpression{fn.GetArguments()}
 		if then := fn.GetArguments().GetThen(); then != nil {
 			args = then.GetChild()
 		}
@@ -192,7 +192,7 @@ func keyValueFunctionName(name string) string {
 
 // nestedDescriptor is the message a nesting's parent field holds, nil when
 // the field is not a message.
-func nestedDescriptor(desc protoreflect.MessageDescriptor, parent *gen.Field) protoreflect.MessageDescriptor {
+func nestedDescriptor(desc protoreflect.MessageDescriptor, parent *metadatapb.Field) protoreflect.MessageDescriptor {
 	if desc == nil || parent == nil {
 		return nil
 	}
@@ -206,7 +206,7 @@ func nestedDescriptor(desc protoreflect.MessageDescriptor, parent *gen.Field) pr
 // fieldOperandType is Java's Type.TypeCode.fromProtobufFieldDescriptor for the
 // field f names in desc, and ARRAY for a repeated field not fanned out (or a
 // field holding a nullable-array wrapper). A field desc lacks is UNKNOWN.
-func fieldOperandType(desc protoreflect.MessageDescriptor, f *gen.Field) values.TypeCode {
+func fieldOperandType(desc protoreflect.MessageDescriptor, f *metadatapb.Field) values.TypeCode {
 	if desc == nil {
 		return values.TypeCodeUnknown
 	}
@@ -214,7 +214,7 @@ func fieldOperandType(desc protoreflect.MessageDescriptor, f *gen.Field) values.
 	if fd == nil {
 		return values.TypeCodeUnknown
 	}
-	if fd.Cardinality() == protoreflect.Repeated && f.GetFanType() != gen.Field_FAN_OUT {
+	if fd.Cardinality() == protoreflect.Repeated && f.GetFanType() != metadatapb.Field_FAN_OUT {
 		return values.TypeCodeArray
 	}
 	switch fd.Kind() {
@@ -247,7 +247,7 @@ func fieldOperandType(desc protoreflect.MessageDescriptor, f *gen.Field) values.
 
 // literalOperandType is the type of the LiteralValue Java builds for a
 // key-expression literal: its carrier's (LiteralKeyExpression.fromProto).
-func literalOperandType(v *gen.Value) values.TypeCode {
+func literalOperandType(v *metadatapb.Value) values.TypeCode {
 	switch {
 	case v.IntValue != nil:
 		return values.TypeCodeInt

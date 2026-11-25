@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -637,7 +637,7 @@ var _ = Describe("FDBRecordStore API", func() {
 		It("invalidates cacheable headers even with an unsupported format", func() {
 			ks := specSubspace()
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-				header := &gen.DataStoreInfo{FormatVersion: proto.Int32(999), Cacheable: proto.Bool(true)}
+				header := &metadatapb.DataStoreInfo{FormatVersion: proto.Int32(999), Cacheable: proto.Bool(true)}
 				raw, err := proto.Marshal(header)
 				Expect(err).NotTo(HaveOccurred())
 				rtx.Transaction().Set(ks.Pack(tuple.Tuple{StoreInfoKey}), raw)
@@ -1131,7 +1131,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
-				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test")
+				return nil, store.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test")
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1168,7 +1168,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
-				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test lock")
+				return nil, store.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test lock")
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1216,7 +1216,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
-				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test lock")
+				return nil, store.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test lock")
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1336,7 +1336,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
-				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test lock")
+				return nil, store.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test lock")
 			})
 			Expect(err).NotTo(HaveOccurred())
 

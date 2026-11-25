@@ -1,8 +1,8 @@
 package recordlayer
 
 import (
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
@@ -40,7 +40,7 @@ func (m *slidingWindowIndexMaintainer) queuedEntryKey(packed []byte) (slidingWin
 }
 
 func (m *slidingWindowIndexMaintainer) SerializePendingWriteQueue(oldRecord, newRecord *FDBStoredRecord[proto.Message]) (*anypb.Any, error) {
-	entry := &gen.SlidingWindowQueueEntry{}
+	entry := &metadatapb.SlidingWindowQueueEntry{}
 	maintainOld, err := m.shouldMaintain(oldRecord)
 	if err != nil {
 		return nil, err
@@ -75,7 +75,7 @@ func (m *slidingWindowIndexMaintainer) SerializePendingWriteQueue(oldRecord, new
 }
 
 func (m *slidingWindowIndexMaintainer) UpdateFromQueue(data *anypb.Any) error {
-	entry := &gen.SlidingWindowQueueEntry{}
+	entry := &metadatapb.SlidingWindowQueueEntry{}
 	if err := UnmarshalPendingQueueAny(data, entry); err != nil {
 		return &RecordCoreError{Message: "failed to parse sliding window pending write queue entry data", Cause: err}
 	}

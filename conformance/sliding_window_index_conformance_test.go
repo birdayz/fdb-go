@@ -16,7 +16,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -232,11 +232,11 @@ func NewSlidingWindowConformanceStore(recordDB *recordlayer.FDBDatabase, keyspac
 	idx := recordlayer.NewVectorIndex(swConformanceIndex,
 		recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 3)
 	idx.Options[recordlayer.IndexOptionVectorMetric] = "EUCLIDEAN_SQUARE_METRIC"
-	if err := idx.SetPredicateProto(&gen.Predicate{
-		RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+	if err := idx.SetPredicateProto(&metadatapb.Predicate{
+		RowNumberWindowPredicate: &metadatapb.RowNumberWindowPredicate{
 			OrderingField: []string{"price"},
 			Size:          proto.Int32(2),
-			Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+			Direction:     metadatapb.RowNumberWindowPredicate_ASC.Enum(),
 		},
 	}); err != nil {
 		return nil, err

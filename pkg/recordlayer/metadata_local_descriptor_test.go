@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -21,7 +21,7 @@ import (
 // its stored proto takes the compiled descriptors, as a Java program reading
 // an FDBMetaDataStore does to save its compiled records.
 var _ = Describe("WithLocalFileDescriptor", func() {
-	storedDemo := func() *gen.MetaData {
+	storedDemo := func() *metadatapb.MetaData {
 		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -41,9 +41,9 @@ var _ = Describe("WithLocalFileDescriptor", func() {
 
 	It("uses the compiled descriptors, keeping the stored keys and indexes", func() {
 		p := storedDemo()
-		plain, err := RecordMetaDataFromProto(proto.Clone(p).(*gen.MetaData))
+		plain, err := RecordMetaDataFromProto(proto.Clone(p).(*metadatapb.MetaData))
 		Expect(err).NotTo(HaveOccurred())
-		local, err := RecordMetaDataFromProto(proto.Clone(p).(*gen.MetaData), WithLocalFileDescriptor(demopb.File_record_layer_demo_proto))
+		local, err := RecordMetaDataFromProto(proto.Clone(p).(*metadatapb.MetaData), WithLocalFileDescriptor(demopb.File_record_layer_demo_proto))
 		Expect(err).NotTo(HaveOccurred())
 
 		order := (&demopb.Order{}).ProtoReflect().Descriptor()
@@ -145,7 +145,7 @@ var _ = Describe("WithLocalFileDescriptor", func() {
 		Expect(err).NotTo(HaveOccurred())
 		p, err := stored.ToProto()
 		Expect(err).NotTo(HaveOccurred())
-		_, err = RecordMetaDataFromProto(proto.Clone(p).(*gen.MetaData))
+		_, err = RecordMetaDataFromProto(proto.Clone(p).(*metadatapb.MetaData))
 		Expect(err).NotTo(HaveOccurred(), "the stored meta-data itself loads")
 		_, err = RecordMetaDataFromProto(p, WithLocalFileDescriptor(demopb.File_record_layer_demo_proto))
 		var evoErr *MetaDataEvolutionError
@@ -175,7 +175,7 @@ var _ = Describe("WithLocalFileDescriptor", func() {
 		return fd
 	}
 	// stored is fd's meta-data with every type keyed by id, as a store holds it.
-	stored := func(fd protoreflect.FileDescriptor, edit func(*RecordMetaDataBuilder)) *gen.MetaData {
+	stored := func(fd protoreflect.FileDescriptor, edit func(*RecordMetaDataBuilder)) *metadatapb.MetaData {
 		b := NewRecordMetaDataBuilder().SetRecords(fd)
 		for i := 0; i < fd.Messages().Len(); i++ {
 			if name := fd.Messages().Get(i).Name(); name != "RecordTypeUnion" {
@@ -203,7 +203,7 @@ var _ = Describe("WithLocalFileDescriptor", func() {
 		localFile := file(order("Order"), other, message("RecordTypeUnion", ref("_Order_low", 4, "Order"), ref("_Order", 5, "Order"), ref("_Other", 6, "Other")))
 		p := stored(storedFile, func(b *RecordMetaDataBuilder) { b.GetRecordType("Other").SetRecordTypeKey("other") })
 
-		plain, err := RecordMetaDataFromProto(proto.Clone(p).(*gen.MetaData))
+		plain, err := RecordMetaDataFromProto(proto.Clone(p).(*metadatapb.MetaData))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(plain.GetRecordType("Order").GetRecordTypeKey()).To(Equal(int64(5)))
 		md, err := RecordMetaDataFromProto(p, WithLocalFileDescriptor(localFile))
@@ -239,7 +239,7 @@ var _ = Describe("WithLocalFileDescriptor", func() {
 		localFile := file(renamedField, message("RecordTypeUnion", ref("_Order", 1, "Order")))
 		p := stored(storedFile, nil)
 
-		_, err := RecordMetaDataFromProto(proto.Clone(p).(*gen.MetaData), WithLocalFileDescriptor(localFile))
+		_, err := RecordMetaDataFromProto(proto.Clone(p).(*metadatapb.MetaData), WithLocalFileDescriptor(localFile))
 		var evoErr *MetaDataEvolutionError
 		Expect(errors.As(err, &evoErr)).To(BeTrue(), "the default validator refuses a field rename: %v (%T)", err, err)
 		lenient := NewMetaDataEvolutionValidator().SetAllowFieldRenames(true).Build()

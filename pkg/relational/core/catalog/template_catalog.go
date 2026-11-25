@@ -4,7 +4,7 @@ import (
 	"sort"
 	"sync"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/metadata"
 )
@@ -116,7 +116,7 @@ func (c *InMemorySchemaTemplateCatalog) LoadSchemaTemplateAtVersion(txn api.Tran
 // catalog keeps template objects and no bytes, so this is the template's
 // ToProto: it holds only templates Go built, through CreateTemplate, so there
 // is no unknown field or extension another engine wrote for it to lose.
-func (c *InMemorySchemaTemplateCatalog) LoadTemplateProto(txn api.Transaction, templateName string, version int) (*gen.MetaData, error) {
+func (c *InMemorySchemaTemplateCatalog) LoadTemplateProto(txn api.Transaction, templateName string, version int) (*metadatapb.MetaData, error) {
 	tmpl, err := c.LoadSchemaTemplateAtVersion(txn, templateName, version)
 	if err != nil {
 		return nil, err

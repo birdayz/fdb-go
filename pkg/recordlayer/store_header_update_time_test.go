@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	. "github.com/onsi/ginkgo/v2"
@@ -72,14 +72,14 @@ var _ = Describe("Store header last_update_time", func() {
 			{"SetHeaderUserField", func(s *FDBRecordStore) error { return s.SetHeaderUserField("k", []byte("v")) }},
 			{"ClearHeaderUserField", func(s *FDBRecordStore) error { return s.ClearHeaderUserField("k") }},
 			{"SetStoreLockState", func(s *FDBRecordStore) error {
-				return s.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "stamp")
+				return s.SetStoreLockState(metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "stamp")
 			}},
 			{"ClearStoreLockState", func(s *FDBRecordStore) error { return s.ClearStoreLockState() }},
 			{"UpdateIncarnation", func(s *FDBRecordStore) error {
 				return s.UpdateIncarnation(func(current int32) int32 { return current + 1 })
 			}},
 			{"UpdateRecordCountState", func(s *FDBRecordStore) error {
-				return s.UpdateRecordCountState(gen.DataStoreInfo_WRITE_ONLY)
+				return s.UpdateRecordCountState(metadatapb.DataStoreInfo_WRITE_ONLY)
 			}},
 			{"SetUserVersion", func(s *FDBRecordStore) error { return s.SetUserVersion(s.GetUserVersion() + 1) }},
 			// The same format version again: a header update all the same.

@@ -74,6 +74,7 @@ go_test(
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
+        "//pkg/recordlayer/metadatapb",
         "//pkg/recordlayer/vectorcodec",
         "//pkg/relational/api",
         "//pkg/relational/core/catalog",

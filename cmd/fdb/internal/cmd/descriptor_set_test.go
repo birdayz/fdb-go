@@ -17,7 +17,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 func descriptorFixturePath(t *testing.T) string {
@@ -76,7 +76,7 @@ func TestDescriptorSetCLIIndexesAndMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("metadata from annotations: %v\n%s", err, out)
 	}
-	var metadata gen.MetaData
+	var metadata metadatapb.MetaData
 	if err := protojson.Unmarshal([]byte(out), &metadata); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestDescriptorSetCLIContextAndSourceOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("context descriptor source: %v\n%s", err, out)
 	}
-	var metadata gen.MetaData
+	var metadata metadatapb.MetaData
 	if err := protojson.Unmarshal([]byte(out), &metadata); err != nil {
 		t.Fatal(err)
 	}

@@ -10,8 +10,8 @@ package cascades
 import (
 	"fmt"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer/internal/protovalue"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -32,7 +32,7 @@ import (
 // matched scan may serve" is the tempting reading and the wrong one: the rows
 // the maintainer kept are the only rows the index HAS, so a scan that serves it
 // as a full index serves a top-N slice as the whole table.
-func indexPredicateToQueryPredicate(p *gen.Predicate, base values.Value) (predicates.QueryPredicate, error) {
+func indexPredicateToQueryPredicate(p *metadatapb.Predicate, base values.Value) (predicates.QueryPredicate, error) {
 	switch {
 	case p == nil:
 		return nil, fmt.Errorf("nil predicate proto")
@@ -56,11 +56,11 @@ func indexPredicateToQueryPredicate(p *gen.Predicate, base values.Value) (predic
 		return predicates.NewNot(child), nil
 	case p.GetConstantPredicate() != nil:
 		switch p.GetConstantPredicate().GetValue() {
-		case gen.ConstantPredicate_TRUE:
+		case metadatapb.ConstantPredicate_TRUE:
 			return predicates.NewConstantPredicate(predicates.TriTrue), nil
-		case gen.ConstantPredicate_FALSE:
+		case metadatapb.ConstantPredicate_FALSE:
 			return predicates.NewConstantPredicate(predicates.TriFalse), nil
-		case gen.ConstantPredicate_NULL:
+		case metadatapb.ConstantPredicate_NULL:
 			return predicates.NewConstantPredicate(predicates.TriUnknown), nil
 		default:
 			return nil, fmt.Errorf("unknown constant predicate value %v", p.GetConstantPredicate().GetValue())
@@ -97,7 +97,7 @@ func indexPredicateToQueryPredicate(p *gen.Predicate, base values.Value) (predic
 	}
 }
 
-func indexPredicateChildren(children []*gen.Predicate, base values.Value) ([]predicates.QueryPredicate, error) {
+func indexPredicateChildren(children []*metadatapb.Predicate, base values.Value) ([]predicates.QueryPredicate, error) {
 	out := make([]predicates.QueryPredicate, 0, len(children))
 	for _, c := range children {
 		q, err := indexPredicateToQueryPredicate(c, base)
@@ -112,7 +112,7 @@ func indexPredicateChildren(children []*gen.Predicate, base values.Value) ([]pre
 // indexValuePredicateToQuery is ValuePredicate.toPredicate
 // (IndexPredicate.java:598-600): FieldValue.ofFieldNames(base, fieldPath) with
 // the comparison from IndexComparison.toComparison.
-func indexValuePredicateToQuery(vp *gen.ValuePredicate, base values.Value) (predicates.QueryPredicate, error) {
+func indexValuePredicateToQuery(vp *metadatapb.ValuePredicate, base values.Value) (predicates.QueryPredicate, error) {
 	path := vp.GetValue()
 	if len(path) == 0 {
 		return nil, fmt.Errorf("value predicate without field path")
@@ -138,7 +138,7 @@ func indexValuePredicateToQuery(vp *gen.ValuePredicate, base values.Value) (pred
 
 // indexComparisonToQuery is IndexComparison.toComparison: the SimpleComparison
 // arm (IndexComparison.java:265-303) and the NullComparison arm (:331-333).
-func indexComparisonToQuery(c *gen.Comparison) (predicates.Comparison, error) {
+func indexComparisonToQuery(c *metadatapb.Comparison) (predicates.Comparison, error) {
 	if c == nil {
 		return predicates.Comparison{}, fmt.Errorf("value predicate without comparison")
 	}
@@ -154,23 +154,23 @@ func indexComparisonToQuery(c *gen.Comparison) (predicates.Comparison, error) {
 	}
 	var typ predicates.ComparisonType
 	switch sc.GetType() {
-	case gen.ComparisonType_EQUALS:
+	case metadatapb.ComparisonType_EQUALS:
 		typ = predicates.ComparisonEquals
-	case gen.ComparisonType_NOT_EQUALS:
+	case metadatapb.ComparisonType_NOT_EQUALS:
 		typ = predicates.ComparisonNotEquals
-	case gen.ComparisonType_LESS_THAN:
+	case metadatapb.ComparisonType_LESS_THAN:
 		typ = predicates.ComparisonLessThan
-	case gen.ComparisonType_LESS_THAN_OR_EQUALS:
+	case metadatapb.ComparisonType_LESS_THAN_OR_EQUALS:
 		typ = predicates.ComparisonLessThanOrEq
-	case gen.ComparisonType_GREATER_THAN:
+	case metadatapb.ComparisonType_GREATER_THAN:
 		typ = predicates.ComparisonGreaterThan
-	case gen.ComparisonType_GREATER_THAN_OR_EQUALS:
+	case metadatapb.ComparisonType_GREATER_THAN_OR_EQUALS:
 		typ = predicates.ComparisonGreaterThanEq
-	case gen.ComparisonType_STARTS_WITH:
+	case metadatapb.ComparisonType_STARTS_WITH:
 		typ = predicates.ComparisonStartsWith
-	case gen.ComparisonType_NOT_NULL:
+	case metadatapb.ComparisonType_NOT_NULL:
 		return predicates.Comparison{Type: predicates.ComparisonIsNotNull}, nil
-	case gen.ComparisonType_IS_NULL:
+	case metadatapb.ComparisonType_IS_NULL:
 		return predicates.Comparison{Type: predicates.ComparisonIsNull}, nil
 	default:
 		return predicates.Comparison{}, fmt.Errorf("unsupported comparison type %v", sc.GetType())

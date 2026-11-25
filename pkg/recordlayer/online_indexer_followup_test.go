@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/dst"
@@ -201,7 +201,7 @@ var _ = Describe("OnlineIndexer follow-up liveness", func() {
 					Expect(rows).To(HaveLen(1), "old owner must not recreate its heartbeat")
 					stamp, err := store.LoadIndexingTypeStamp(oi.targetIndexes[0])
 					Expect(err).NotTo(HaveOccurred())
-					Expect(stamp.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_RECORDS))
+					Expect(stamp.GetMethod()).To(Equal(metadatapb.IndexBuildIndexingStamp_BY_RECORDS))
 				} else {
 					Expect(rows).To(BeEmpty())
 				}

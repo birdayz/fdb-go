@@ -10,10 +10,10 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 func TestCollationFunctionIn(t *testing.T) {
@@ -361,7 +361,7 @@ var _ = Describe("Go-only collation guard", func() {
 			Expect(err).NotTo(HaveOccurred(), "an update does not change the legacy count")
 			_, err = store.SaveRecordBatch([]proto.Message{customer(1)})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(store.UpdateRecordCountState(gen.DataStoreInfo_DISABLED)).To(Succeed())
+			Expect(store.UpdateRecordCountState(metadatapb.DataStoreInfo_DISABLED)).To(Succeed())
 			_, err = store.SaveRecord(customer(2))
 			Expect(err).NotTo(HaveOccurred())
 			return store.DeleteAllRecords()

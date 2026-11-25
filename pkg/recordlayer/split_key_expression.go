@@ -8,7 +8,7 @@ package recordlayer
 import (
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -82,10 +82,10 @@ func (s *SplitKeyExpression) ColumnSize() int {
 
 // ToKeyExpression serializes SplitKeyExpression to proto.
 // Matches Java's SplitKeyExpression.toKeyExpression().
-func (s *SplitKeyExpression) ToKeyExpression() *gen.KeyExpression {
+func (s *SplitKeyExpression) ToKeyExpression() *metadatapb.KeyExpression {
 	sz := int32(s.splitSize)
-	return &gen.KeyExpression{
-		Split: &gen.Split{
+	return &metadatapb.KeyExpression{
+		Split: &metadatapb.Split{
 			Joined:    s.joined.ToKeyExpression(),
 			SplitSize: &sz,
 		},

@@ -12,6 +12,7 @@ import (
 	unsafe "unsafe"
 
 	_ "fdb.dev/gen"
+	_ "fdb.dev/pkg/recordlayer/metadatapb"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )

@@ -11,29 +11,29 @@ import (
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // fanTypeToProto converts Go FanType to proto Field.FanType.
 // Go FanTypeNone → Proto SCALAR, FanTypeFanOut → FAN_OUT, FanTypeConcatenate → CONCATENATE.
 // Matches Java's KeyExpression.FanType.toProto().
-func fanTypeToProto(ft FanType) gen.Field_FanType {
+func fanTypeToProto(ft FanType) metadatapb.Field_FanType {
 	switch ft {
 	case FanTypeFanOut:
-		return gen.Field_FAN_OUT
+		return metadatapb.Field_FAN_OUT
 	case FanTypeConcatenate:
-		return gen.Field_CONCATENATE
+		return metadatapb.Field_CONCATENATE
 	default: // FanTypeNone
-		return gen.Field_SCALAR
+		return metadatapb.Field_SCALAR
 	}
 }
 
 // fanTypeFromProto converts proto Field.FanType to Go FanType.
-func fanTypeFromProto(ft gen.Field_FanType) FanType {
+func fanTypeFromProto(ft metadatapb.Field_FanType) FanType {
 	switch ft {
-	case gen.Field_FAN_OUT:
+	case metadatapb.Field_FAN_OUT:
 		return FanTypeFanOut
-	case gen.Field_CONCATENATE:
+	case metadatapb.Field_CONCATENATE:
 		return FanTypeConcatenate
 	default: // SCALAR
 		return FanTypeNone
@@ -44,10 +44,10 @@ func fanTypeFromProto(ft gen.Field_FanType) FanType {
 // Matches Java's FieldKeyExpression.toKeyExpression(): the
 // nullInterpretation field is written EXPLICITLY even at its NOT_UNIQUE
 // default — the stored bytes carry it (byte-golden-pinned).
-func (f *FieldKeyExpression) ToKeyExpression() *gen.KeyExpression {
+func (f *FieldKeyExpression) ToKeyExpression() *metadatapb.KeyExpression {
 	ft := fanTypeToProto(f.fanType)
-	return &gen.KeyExpression{
-		Field: &gen.Field{
+	return &metadatapb.KeyExpression{
+		Field: &metadatapb.Field{
 			FieldName:          &f.fieldName,
 			FanType:            &ft,
 			NullInterpretation: nullInterpretationEnum(f.nullStandin),
@@ -56,25 +56,25 @@ func (f *FieldKeyExpression) ToKeyExpression() *gen.KeyExpression {
 }
 
 // nullInterpretationEnum is Java's NullStandin.toProto (Key.java:395-407).
-func nullInterpretationEnum(standin NullStandin) *gen.Field_NullInterpretation {
+func nullInterpretationEnum(standin NullStandin) *metadatapb.Field_NullInterpretation {
 	switch standin {
 	case NullStandinNullUnique:
-		return gen.Field_UNIQUE.Enum()
+		return metadatapb.Field_UNIQUE.Enum()
 	case NullStandinNotNull:
-		return gen.Field_NOT_NULL.Enum()
+		return metadatapb.Field_NOT_NULL.Enum()
 	default:
-		return gen.Field_NOT_UNIQUE.Enum()
+		return metadatapb.Field_NOT_UNIQUE.Enum()
 	}
 }
 
 // nullStandinFromProto is Java's NullStandin.valueOf (Key.java:409-420). The
 // proto2 enum is closed: an unknown value is kept as an unknown field and the
 // field reads as its default, NOT_UNIQUE, in both engines.
-func nullStandinFromProto(ni gen.Field_NullInterpretation) NullStandin {
+func nullStandinFromProto(ni metadatapb.Field_NullInterpretation) NullStandin {
 	switch ni {
-	case gen.Field_UNIQUE:
+	case metadatapb.Field_UNIQUE:
 		return NullStandinNullUnique
-	case gen.Field_NOT_NULL:
+	case metadatapb.Field_NOT_NULL:
 		return NullStandinNotNull
 	default:
 		return NullStandinNull
@@ -83,13 +83,13 @@ func nullStandinFromProto(ni gen.Field_NullInterpretation) NullStandin {
 
 // ToKeyExpression serializes a CompositeKeyExpression (ThenKeyExpression) to proto.
 // Matches Java's ThenKeyExpression.toKeyExpression().
-func (c *CompositeKeyExpression) ToKeyExpression() *gen.KeyExpression {
-	children := make([]*gen.KeyExpression, len(c.expressions))
+func (c *CompositeKeyExpression) ToKeyExpression() *metadatapb.KeyExpression {
+	children := make([]*metadatapb.KeyExpression, len(c.expressions))
 	for i, child := range c.expressions {
 		children[i] = child.ToKeyExpression()
 	}
-	return &gen.KeyExpression{
-		Then: &gen.Then{
+	return &metadatapb.KeyExpression{
+		Then: &metadatapb.Then{
 			Child: children,
 		},
 	}
@@ -97,11 +97,11 @@ func (c *CompositeKeyExpression) ToKeyExpression() *gen.KeyExpression {
 
 // ToKeyExpression serializes a NestingKeyExpression to proto.
 // Matches Java's NestingKeyExpression.toKeyExpression().
-func (n *NestingKeyExpression) ToKeyExpression() *gen.KeyExpression {
+func (n *NestingKeyExpression) ToKeyExpression() *metadatapb.KeyExpression {
 	ft := fanTypeToProto(n.fanType)
-	return &gen.KeyExpression{
-		Nesting: &gen.Nesting{
-			Parent: &gen.Field{
+	return &metadatapb.KeyExpression{
+		Nesting: &metadatapb.Nesting{
+			Parent: &metadatapb.Field{
 				FieldName:          &n.parentField,
 				FanType:            &ft,
 				NullInterpretation: nullInterpretationEnum(n.parentNullStandin),
@@ -113,16 +113,16 @@ func (n *NestingKeyExpression) ToKeyExpression() *gen.KeyExpression {
 
 // ToKeyExpression serializes an EmptyKeyExpression to proto.
 // Matches Java's EmptyKeyExpression.toKeyExpression().
-func (e *EmptyKeyExpression) ToKeyExpression() *gen.KeyExpression {
-	return &gen.KeyExpression{
-		Empty: &gen.Empty{},
+func (e *EmptyKeyExpression) ToKeyExpression() *metadatapb.KeyExpression {
+	return &metadatapb.KeyExpression{
+		Empty: &metadatapb.Empty{},
 	}
 }
 
 // ToKeyExpression serializes a RecordTypeKeyExpression to proto.
-func (r *RecordTypeKeyExpression) ToKeyExpression() *gen.KeyExpression {
-	return &gen.KeyExpression{
-		RecordTypeKey: &gen.RecordTypeKey{},
+func (r *RecordTypeKeyExpression) ToKeyExpression() *metadatapb.KeyExpression {
+	return &metadatapb.KeyExpression{
+		RecordTypeKey: &metadatapb.RecordTypeKey{},
 	}
 }
 
@@ -135,14 +135,14 @@ const maxKeyExpressionDepth = 128
 
 // KeyExpressionFromProto deserializes a protobuf KeyExpression to a Go KeyExpression.
 // Exactly one field must be set. Matches Java's KeyExpression.fromProto().
-func KeyExpressionFromProto(expr *gen.KeyExpression) (KeyExpression, error) {
+func KeyExpressionFromProto(expr *metadatapb.KeyExpression) (KeyExpression, error) {
 	return keyExpressionFromProtoDepth(expr, 0)
 }
 
 // keyExpressionFromProtoDepth is the recursive worker. Helpers that
 // recurse pass depth+1 so a pathological proto hits the depth cap
 // before the goroutine stack.
-func keyExpressionFromProtoDepth(expr *gen.KeyExpression, depth int) (KeyExpression, error) {
+func keyExpressionFromProtoDepth(expr *metadatapb.KeyExpression, depth int) (KeyExpression, error) {
 	if depth > maxKeyExpressionDepth {
 		return nil, fmt.Errorf("key expression nested deeper than %d levels", maxKeyExpressionDepth)
 	}
@@ -260,7 +260,7 @@ func keyExpressionFromProtoDepth(expr *gen.KeyExpression, depth int) (KeyExpress
 }
 
 // dimensionsFromProto reconstructs a DimensionsKeyExpression from a proto Dimensions.
-func dimensionsFromProto(d *gen.Dimensions, depth int) (*DimensionsKeyExpression, error) {
+func dimensionsFromProto(d *metadatapb.Dimensions, depth int) (*DimensionsKeyExpression, error) {
 	wholeKey, err := keyExpressionFromProtoDepth(d.WholeKey, depth)
 	if err != nil {
 		return nil, fmt.Errorf("dimensions whole_key: %w", err)
@@ -276,7 +276,7 @@ func dimensionsFromProto(d *gen.Dimensions, depth int) (*DimensionsKeyExpression
 // the unknown fields. protobuf-go keeps it in the field, which the meta-data
 // loader moves (proto_closed_enums.go); a Field that reaches here without that
 // load is read the same way.
-func fieldFromProto(f *gen.Field) (*FieldKeyExpression, error) {
+func fieldFromProto(f *metadatapb.Field) (*FieldKeyExpression, error) {
 	if f.FieldName == nil {
 		return nil, &KeyExpressionDeserializationError{Message: "Serialized Field is missing field name"}
 	}
@@ -293,7 +293,7 @@ func fieldFromProto(f *gen.Field) (*FieldKeyExpression, error) {
 // nestingFromProto reconstructs a NestingKeyExpression from a proto Nesting, as
 // Java's NestingKeyExpression(Nesting) does (NestingKeyExpression.java:67-73):
 // the parent is read first, as a Field, then the child.
-func nestingFromProto(n *gen.Nesting, depth int) (KeyExpression, error) {
+func nestingFromProto(n *metadatapb.Nesting, depth int) (KeyExpression, error) {
 	if n.Parent == nil {
 		return nil, &KeyExpressionDeserializationError{Message: "Serialized Nesting is missing parent"}
 	}
@@ -320,7 +320,7 @@ func nestingFromProto(n *gen.Nesting, depth int) (KeyExpression, error) {
 // holding one Then of two children is accepted with those two, as Java
 // accepts it, and a nested Then an earlier Go wrote loads flat, as Java loads
 // it.
-func thenFromProto(t *gen.Then, depth int) (KeyExpression, error) {
+func thenFromProto(t *metadatapb.Then, depth int) (KeyExpression, error) {
 	exprs := make([]KeyExpression, len(t.Child))
 	for i, child := range t.Child {
 		expr, err := keyExpressionFromProtoDepth(child, depth)
@@ -337,7 +337,7 @@ func thenFromProto(t *gen.Then, depth int) (KeyExpression, error) {
 }
 
 // groupingFromProto reconstructs a GroupingKeyExpression from a proto Grouping.
-func groupingFromProto(g *gen.Grouping, depth int) (*GroupingKeyExpression, error) {
+func groupingFromProto(g *metadatapb.Grouping, depth int) (*GroupingKeyExpression, error) {
 	wholeKey, err := keyExpressionFromProtoDepth(g.WholeKey, depth)
 	if err != nil {
 		return nil, fmt.Errorf("grouping whole key: %w", err)
@@ -357,7 +357,7 @@ func groupingFromProto(g *gen.Grouping, depth int) (*GroupingKeyExpression, erro
 // Validates split_point against inner.ColumnSize — a negative or out-of-range
 // value from crafted proto would otherwise propagate into index-maintainer
 // slicing and cause an OOB panic.
-func keyWithValueFromProto(kwv *gen.KeyWithValue, depth int) (*KeyWithValueExpression, error) {
+func keyWithValueFromProto(kwv *metadatapb.KeyWithValue, depth int) (*KeyWithValueExpression, error) {
 	inner, err := keyExpressionFromProtoDepth(kwv.InnerKey, depth)
 	if err != nil {
 		return nil, fmt.Errorf("key_with_value inner key: %w", err)
@@ -372,10 +372,10 @@ func keyWithValueFromProto(kwv *gen.KeyWithValue, depth int) (*KeyWithValueExpre
 
 // ToKeyExpression serializes GroupingKeyExpression to proto.
 // Matches Java's GroupingKeyExpression.toKeyExpression().
-func (g *GroupingKeyExpression) ToKeyExpression() *gen.KeyExpression {
+func (g *GroupingKeyExpression) ToKeyExpression() *metadatapb.KeyExpression {
 	gc := int32(g.groupedCount)
-	return &gen.KeyExpression{
-		Grouping: &gen.Grouping{
+	return &metadatapb.KeyExpression{
+		Grouping: &metadatapb.Grouping{
 			WholeKey:     g.wholeKey.ToKeyExpression(),
 			GroupedCount: &gc,
 		},
@@ -384,19 +384,19 @@ func (g *GroupingKeyExpression) ToKeyExpression() *gen.KeyExpression {
 
 // ToKeyExpression serializes LiteralKeyExpression to proto.
 // Matches Java's LiteralKeyExpression.toKeyExpression().
-func (l *LiteralKeyExpression) ToKeyExpression() *gen.KeyExpression {
+func (l *LiteralKeyExpression) ToKeyExpression() *metadatapb.KeyExpression {
 	v, _ := valueToProto(l.value)
-	return &gen.KeyExpression{
+	return &metadatapb.KeyExpression{
 		Value: v,
 	}
 }
 
 // ToKeyExpression serializes KeyWithValueExpression to proto.
 // Matches Java's KeyWithValueExpression.toKeyExpression().
-func (k *KeyWithValueExpression) ToKeyExpression() *gen.KeyExpression {
+func (k *KeyWithValueExpression) ToKeyExpression() *metadatapb.KeyExpression {
 	sp := int32(k.splitPoint)
-	return &gen.KeyExpression{
-		KeyWithValue: &gen.KeyWithValue{
+	return &metadatapb.KeyExpression{
+		KeyWithValue: &metadatapb.KeyWithValue{
 			InnerKey:   k.innerKey.ToKeyExpression(),
 			SplitPoint: &sp,
 		},
@@ -405,17 +405,17 @@ func (k *KeyWithValueExpression) ToKeyExpression() *gen.KeyExpression {
 
 // ToKeyExpression serializes a VersionKeyExpression to proto.
 // Matches Java's VersionKeyExpression.toKeyExpression().
-func (v *VersionKeyExpression) ToKeyExpression() *gen.KeyExpression {
-	return &gen.KeyExpression{
-		Version: &gen.Version{},
+func (v *VersionKeyExpression) ToKeyExpression() *metadatapb.KeyExpression {
+	return &metadatapb.KeyExpression{
+		Version: &metadatapb.Version{},
 	}
 }
 
 // ToKeyExpression serializes a FunctionKeyExpression to proto.
 // Matches Java's FunctionKeyExpression.toKeyExpression().
-func (f *FunctionKeyExpression) ToKeyExpression() *gen.KeyExpression {
-	return &gen.KeyExpression{
-		Function: &gen.Function{
+func (f *FunctionKeyExpression) ToKeyExpression() *metadatapb.KeyExpression {
+	return &metadatapb.KeyExpression{
+		Function: &metadatapb.Function{
 			Name:      &f.name,
 			Arguments: f.arguments.ToKeyExpression(),
 		},
@@ -428,7 +428,7 @@ func (f *FunctionKeyExpression) ToKeyExpression() *gen.KeyExpression {
 // survive a catalog round-trip (the proto bytes are identical either way —
 // Function{name:"cardinality", arguments}). Mirrors Java's
 // FunctionKeyExpression.Registry dispatching the named builder.
-func functionFromProto(fn *gen.Function, depth int) (KeyExpression, error) {
+func functionFromProto(fn *metadatapb.Function, depth int) (KeyExpression, error) {
 	args, err := keyExpressionFromProtoDepth(fn.Arguments, depth)
 	if err != nil {
 		return nil, fmt.Errorf("function arguments: %w", err)
@@ -454,7 +454,7 @@ func functionFromProto(fn *gen.Function, depth int) (KeyExpression, error) {
 // splitFromProto reconstructs a SplitKeyExpression from a proto Split.
 // Rejects splitSize <= 0 with a typed error instead of letting Split() panic
 // — proto bytes from an untrusted catalog can trigger this path.
-func splitFromProto(s *gen.Split, depth int) (*SplitKeyExpression, error) {
+func splitFromProto(s *metadatapb.Split, depth int) (*SplitKeyExpression, error) {
 	size := int(s.GetSplitSize())
 	if size <= 0 {
 		return nil, fmt.Errorf("split size must be positive, got %d", size)
@@ -467,7 +467,7 @@ func splitFromProto(s *gen.Split, depth int) (*SplitKeyExpression, error) {
 }
 
 // listFromProto reconstructs a ListKeyExpression from a proto List.
-func listFromProto(l *gen.List, depth int) (*ListKeyExpression, error) {
+func listFromProto(l *metadatapb.List, depth int) (*ListKeyExpression, error) {
 	// Java's ListKeyExpression(RecordKeyExpressionProto.List) accepts empty children lists.
 	// Match Java: allow zero children for proto round-trip compatibility.
 	children := make([]KeyExpression, len(l.Child))

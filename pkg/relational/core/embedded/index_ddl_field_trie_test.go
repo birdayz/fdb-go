@@ -7,7 +7,7 @@ import (
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -85,7 +85,7 @@ func TestIndexDDLFieldTrieMatchesJavaStoredRoots(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ToProto: %v", err)
 			}
-			var ix *gen.Index
+			var ix *metadatapb.Index
 			for _, i := range md.GetIndexes() {
 				if i.GetName() == "IX" {
 					ix = i
@@ -94,7 +94,7 @@ func TestIndexDDLFieldTrieMatchesJavaStoredRoots(t *testing.T) {
 			if ix == nil {
 				t.Fatalf("no index IX in %v", md.GetIndexes())
 			}
-			want := &gen.KeyExpression{}
+			want := &metadatapb.KeyExpression{}
 			if err := prototext.Unmarshal([]byte(c.javaRoot), want); err != nil {
 				t.Fatalf("parse Java root: %v", err)
 			}

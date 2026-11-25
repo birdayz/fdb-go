@@ -16,9 +16,9 @@ import (
 	"os"
 
 	configv1 "fdb.dev/cmd/fdb/gen/fdb/config/v1"
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // Source abstracts where a RecordMetaData comes from. Implementations are
@@ -147,7 +147,7 @@ func (s *FDBStoreSource) Load(ctx context.Context) (*recordlayer.RecordMetaData,
 	if err != nil {
 		return nil, fmt.Errorf("read metadata from %s: %w", s.Name(), err)
 	}
-	mdProto, _ := result.(*gen.MetaData)
+	mdProto, _ := result.(*metadatapb.MetaData)
 	if mdProto == nil {
 		return nil, fmt.Errorf("no metadata stored at %s; app must call SaveRecordMetaData before fdb can inspect this store", s.Name())
 	}
@@ -161,7 +161,7 @@ func buildFromBytes(data []byte, sourceName string) (*recordlayer.RecordMetaData
 	if len(data) == 0 {
 		return nil, fmt.Errorf("%s is empty; expected a serialized RecordMetaDataProto.MetaData", sourceName)
 	}
-	mdProto := &gen.MetaData{}
+	mdProto := &metadatapb.MetaData{}
 	if err := recordlayer.UnmarshalAsJava(data, mdProto); err != nil {
 		return nil, fmt.Errorf("%s: unmarshal MetaData: %w", sourceName, err)
 	}
@@ -172,7 +172,7 @@ func buildFromBytes(data []byte, sourceName string) (*recordlayer.RecordMetaData
 // validates that the proto carries a non-empty record descriptor (the
 // requirement we mandate for fdb-readable metadata) and calls the
 // record-layer's proto-to-object converter.
-func buildFromProto(mdProto *gen.MetaData, sourceName string) (*recordlayer.RecordMetaData, error) {
+func buildFromProto(mdProto *metadatapb.MetaData, sourceName string) (*recordlayer.RecordMetaData, error) {
 	if mdProto.GetRecords() == nil {
 		return nil, fmt.Errorf("%s: MetaData.records is empty. fdb needs metadata with embedded proto descriptors — apps using programmatic metadata must call WriteRecordMetaData (Go) or meta.toProto().writeTo() (Java) with the full RecordMetaData, not a partial/incremental MetaData", sourceName)
 	}

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -46,7 +46,7 @@ var _ = Describe("Indexing heartbeat administration", func() {
 		Expect(err).NotTo(HaveOccurred())
 	}
 	beat := func(info string, atMs int64) []byte {
-		data, err := proto.Marshal(&gen.IndexBuildHeartbeat{
+		data, err := proto.Marshal(&metadatapb.IndexBuildHeartbeat{
 			Info: proto.String(info), CreateTimeMilliseconds: proto.Int64(atMs - 5), HeartbeatTimeMilliseconds: proto.Int64(atMs),
 		})
 		Expect(err).NotTo(HaveOccurred())

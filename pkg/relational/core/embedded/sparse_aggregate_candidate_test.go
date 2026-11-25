@@ -6,8 +6,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	gen "fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // TestSparseAggregateIndexIsNotACandidate_ProgrammaticPredicate pins that a
@@ -113,8 +113,8 @@ func TestIndexPredicateRepresentationsArePublishedTogether(t *testing.T) {
 		t.Fatal("a fresh index already carries a predicate; fixture is not clean")
 	}
 
-	tautology := &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
-		Value: gen.ConstantPredicate_TRUE.Enum(),
+	tautology := &metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{
+		Value: metadatapb.ConstantPredicate_TRUE.Enum(),
 	}}
 	if err := idx.SetPredicateProto(tautology); err != nil {
 		t.Fatalf("SetPredicateProto: %v", err)

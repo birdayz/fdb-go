@@ -32,8 +32,8 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
@@ -185,11 +185,11 @@ var _ = Describe("RFC-202 D11 index-DDL metadata cross-engine (stored bytes)", f
 			goProto, protoErr := goTmpl.Underlying().ToProto()
 			Expect(protoErr).NotTo(HaveOccurred())
 
-			javaIdx := make(map[string]*gen.Index, len(javaMD.GetIndexes()))
+			javaIdx := make(map[string]*metadatapb.Index, len(javaMD.GetIndexes()))
 			for _, idx := range javaMD.GetIndexes() {
 				javaIdx[idx.GetName()] = idx
 			}
-			goIdx := make(map[string]*gen.Index, len(goProto.GetIndexes()))
+			goIdx := make(map[string]*metadatapb.Index, len(goProto.GetIndexes()))
 			for _, idx := range goProto.GetIndexes() {
 				goIdx[idx.GetName()] = idx
 			}

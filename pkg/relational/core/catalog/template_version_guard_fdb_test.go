@@ -11,6 +11,7 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/metadata"
 )
@@ -465,7 +466,7 @@ func TestFDB_LoadTemplateProtoReturnsTheStoredBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ix := &gen.Index{
+	ix := &metadatapb.Index{
 		Name:            proto.String("legacy_ix"),
 		RecordType:      []string{"Order"},
 		RootExpression:  recordlayer.Field("order_id").ToKeyExpression(),
@@ -497,7 +498,7 @@ func TestFDB_LoadTemplateProtoReturnsTheStoredBytes(t *testing.T) {
 		if !proto.Equal(got, md) {
 			t.Fatalf("LoadTemplateProto differs from the stored MetaData")
 		}
-		var stored *gen.Index
+		var stored *metadatapb.Index
 		for _, i := range got.GetIndexes() {
 			if i.GetName() == "legacy_ix" {
 				stored = i

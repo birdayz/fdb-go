@@ -36,6 +36,7 @@ ensure-buf:
 # fails on any diff, so CI is the source of truth.
 generate: ensure-buf generate-parser generate-fdb generate-cli-example generate-unicode15
     rm -rf gen/
+    rm -f pkg/recordlayer/metadatapb/*.pb.go
     .tools/buf generate
     bazelisk run //:gazelle
     # genotelv1 builds against gen/, so it runs once gazelle has given gen/
@@ -243,7 +244,7 @@ fmt:
     #!/usr/bin/env bash
     set -euo pipefail
     GOFUMPT=$(bazelisk run --run_under="echo" @cc_mvdan_gofumpt//:gofumpt 2>/dev/null)
-    find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './cmd/fdb/gen/*' -not -path './pkg/relational/core/parser/gen/*' -not -path './.claude/*' -exec "$GOFUMPT" -w {} +
+    find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -name '*.pb.go' -not -path './cmd/fdb/gen/*' -not -path './pkg/relational/core/parser/gen/*' -not -path './.claude/*' -exec "$GOFUMPT" -w {} +
 
 # Check Go formatting (fails if any file needs formatting)
 # Uses Bazel-managed gofumpt — same version as nogo linter, no drift.
@@ -251,7 +252,7 @@ lint:
     #!/usr/bin/env bash
     set -euo pipefail
     GOFUMPT=$(bazelisk run --run_under="echo" @cc_mvdan_gofumpt//:gofumpt 2>/dev/null)
-    unformatted=$("$GOFUMPT" -l $(find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './cmd/fdb/gen/*' -not -path './pkg/relational/core/parser/gen/*' -not -path './.claude/*'))
+    unformatted=$("$GOFUMPT" -l $(find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -name '*.pb.go' -not -path './cmd/fdb/gen/*' -not -path './pkg/relational/core/parser/gen/*' -not -path './.claude/*'))
     if [ -n "$unformatted" ]; then
         echo "Unformatted files:"
         echo "$unformatted"

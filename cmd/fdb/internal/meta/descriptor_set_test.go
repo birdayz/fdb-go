@@ -17,8 +17,8 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	configv1 "fdb.dev/cmd/fdb/gen/fdb/config/v1"
-	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 func TestDescriptorSetSource_LoadCompilerAnnotations(t *testing.T) {
@@ -382,14 +382,14 @@ func TestDescriptorSetSource_InvalidPrimaryKeyDeclarations(t *testing.T) {
 			// use the compiler output unchanged rather than synthetic extensions.
 			switch tc.name {
 			case "missing":
-				proto.ClearExtension(id.Options, gen.E_Field)
+				proto.ClearExtension(id.Options, metadatapb.E_Field)
 			case "multiple":
 				email := descriptorField(t, customer, "email")
-				proto.SetExtension(email.Options, gen.E_Field, &gen.FieldOptions{PrimaryKey: proto.Bool(true)})
+				proto.SetExtension(email.Options, metadatapb.E_Field, &metadatapb.FieldOptions{PrimaryKey: proto.Bool(true)})
 			case "repeated":
-				proto.ClearExtension(id.Options, gen.E_Field)
+				proto.ClearExtension(id.Options, metadatapb.E_Field)
 				tags := descriptorField(t, customer, "tags")
-				proto.SetExtension(tags.Options, gen.E_Field, &gen.FieldOptions{PrimaryKey: proto.Bool(true)})
+				proto.SetExtension(tags.Options, metadatapb.E_Field, &metadatapb.FieldOptions{PrimaryKey: proto.Bool(true)})
 			}
 			path := writeDescriptorSet(t, set)
 			md, err := (&DescriptorSetSource{Path: path}).Load(context.Background())
@@ -584,12 +584,12 @@ func assertAnnotatedDescriptorMetaData(t *testing.T, md *recordlayer.RecordMetaD
 		field   string
 		typ     string
 		unique  bool
-		fanType gen.Field_FanType
+		fanType metadatapb.Field_FanType
 		values  [][]any
 	}{
-		{field: "email", typ: recordlayer.IndexTypeValue, unique: true, fanType: gen.Field_SCALAR, values: [][]any{{"customer@example.test"}}},
-		{field: "score", typ: recordlayer.IndexTypeRank, fanType: gen.Field_SCALAR, values: [][]any{{int64(37)}}},
-		{field: "tags", typ: recordlayer.IndexTypeValue, fanType: gen.Field_FAN_OUT, values: [][]any{{"red"}, {"blue"}}},
+		{field: "email", typ: recordlayer.IndexTypeValue, unique: true, fanType: metadatapb.Field_SCALAR, values: [][]any{{"customer@example.test"}}},
+		{field: "score", typ: recordlayer.IndexTypeRank, fanType: metadatapb.Field_SCALAR, values: [][]any{{int64(37)}}},
+		{field: "tags", typ: recordlayer.IndexTypeValue, fanType: metadatapb.Field_FAN_OUT, values: [][]any{{"red"}, {"blue"}}},
 	} {
 		name := "Customer$" + tc.field
 		index := md.GetIndex(name)
@@ -622,7 +622,7 @@ func assertAnnotatedDescriptorMetaData(t *testing.T, md *recordlayer.RecordMetaD
 	}
 }
 
-func assertCompilerDescriptorProtos(t *testing.T, output *gen.MetaData, input *descriptorpb.FileDescriptorSet) {
+func assertCompilerDescriptorProtos(t *testing.T, output *metadatapb.MetaData, input *descriptorpb.FileDescriptorSet) {
 	t.Helper()
 	if !proto.Equal(output.GetRecords(), descriptorFile(t, input, "records.proto")) {
 		t.Error("serialized records descriptor differs from the input FileDescriptorProto")

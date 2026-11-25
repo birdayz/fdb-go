@@ -24,9 +24,9 @@ go_library(
         "//pkg/relational/conformance:__subpackages__",
     ],
     deps = [
-        "//gen",
         "//pkg/fdbgo/fdb",
         "//pkg/recordlayer",
+        "//pkg/recordlayer/metadatapb",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/vectorcodec",
         "//pkg/relational/api",

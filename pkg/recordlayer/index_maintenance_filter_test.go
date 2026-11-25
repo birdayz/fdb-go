@@ -11,7 +11,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -289,8 +289,8 @@ var _ = Describe("A non-idempotent index under a BY_INDEX build", func() {
 			if _, err := store.ClearAndMarkIndexWriteOnly(count.Name); err != nil {
 				return err
 			}
-			if err := store.SaveIndexingTypeStamp(count, &gen.IndexBuildIndexingStamp{
-				Method:                         gen.IndexBuildIndexingStamp_BY_INDEX.Enum(),
+			if err := store.SaveIndexingTypeStamp(count, &metadatapb.IndexBuildIndexingStamp{
+				Method:                         metadatapb.IndexBuildIndexingStamp_BY_INDEX.Enum(),
 				SourceIndexSubspaceKey:         tuple.Tuple{source.SubspaceTupleKey()}.Pack(),
 				SourceIndexLastModifiedVersion: proto.Int32(int32(source.LastModifiedVersion)),
 			}); err != nil {
@@ -345,7 +345,7 @@ var _ = Describe("A non-idempotent index under a BY_INDEX build", func() {
 			if _, err := store.MarkIndexWriteOnly(count.Name); err != nil {
 				return nil, err
 			}
-			if err := store.SaveIndexingTypeStamp(count, &gen.IndexBuildIndexingStamp{Method: gen.IndexBuildIndexingStamp_SCRUB_REPAIR.Enum()}); err != nil {
+			if err := store.SaveIndexingTypeStamp(count, &metadatapb.IndexBuildIndexingStamp{Method: metadatapb.IndexBuildIndexingStamp_SCRUB_REPAIR.Enum()}); err != nil {
 				return nil, err
 			}
 			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Quantity: proto.Int32(3)})

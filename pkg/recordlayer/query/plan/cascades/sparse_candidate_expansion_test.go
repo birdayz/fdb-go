@@ -3,7 +3,7 @@ package cascades
 import (
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -17,7 +17,7 @@ func sparseTestRowType() *values.RecordType {
 	})
 }
 
-func sparseTestCandidate(t *testing.T, pred *gen.Predicate) *ValueIndexScanMatchCandidate {
+func sparseTestCandidate(t *testing.T, pred *metadatapb.Predicate) *ValueIndexScanMatchCandidate {
 	t.Helper()
 	nonFanOut := false
 	cand := NewValueIndexScanMatchCandidateWithFunctions(
@@ -65,12 +65,12 @@ func candidateSelectPredicates(t *testing.T, cand *ValueIndexScanMatchCandidate)
 // filtered index as full.
 func TestSparseCandidateExpansionCarriesPredicate(t *testing.T) {
 	t.Parallel()
-	lt := gen.ComparisonType_LESS_THAN
+	lt := metadatapb.ComparisonType_LESS_THAN
 	n := int32(200)
-	cand := sparseTestCandidate(t, &gen.Predicate{ValuePredicate: &gen.ValuePredicate{
+	cand := sparseTestCandidate(t, &metadatapb.Predicate{ValuePredicate: &metadatapb.ValuePredicate{
 		Value: []string{"COL1"},
-		Comparison: &gen.Comparison{SimpleComparison: &gen.SimpleComparison{
-			Type: &lt, Operand: &gen.Value{IntValue: &n},
+		Comparison: &metadatapb.Comparison{SimpleComparison: &metadatapb.SimpleComparison{
+			Type: &lt, Operand: &metadatapb.Value{IntValue: &n},
 		}},
 	}})
 	preds := candidateSelectPredicates(t, cand)
@@ -102,9 +102,9 @@ func TestSparseCandidateExpansionCarriesPredicate(t *testing.T) {
 // stays an ordinary full value index.
 func TestSparseCandidateExpansionSkipsTautology(t *testing.T) {
 	t.Parallel()
-	v := gen.ConstantPredicate_TRUE
-	cand := sparseTestCandidate(t, &gen.Predicate{
-		ConstantPredicate: &gen.ConstantPredicate{Value: &v},
+	v := metadatapb.ConstantPredicate_TRUE
+	cand := sparseTestCandidate(t, &metadatapb.Predicate{
+		ConstantPredicate: &metadatapb.ConstantPredicate{Value: &v},
 	})
 	for _, p := range candidateSelectPredicates(t, cand) {
 		if _, isPh := p.(*predicates.Placeholder); !isPh {
@@ -127,21 +127,21 @@ func TestSparseCandidateExpansionSkipsTautology(t *testing.T) {
 func TestUnprovablePredicateNeverMatchesAsAFullIndex(t *testing.T) {
 	t.Parallel()
 
-	rowWindow := func() *gen.Predicate {
-		return &gen.Predicate{RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+	rowWindow := func() *metadatapb.Predicate {
+		return &metadatapb.Predicate{RowNumberWindowPredicate: &metadatapb.RowNumberWindowPredicate{
 			Size: proto.Int32(100),
 		}}
 	}
-	trueArm := func() *gen.Predicate {
-		return &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
-			Value: gen.ConstantPredicate_TRUE.Enum(),
+	trueArm := func() *metadatapb.Predicate {
+		return &metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{
+			Value: metadatapb.ConstantPredicate_TRUE.Enum(),
 		}}
 	}
 
 	for _, tc := range []struct {
 		name string
 		why  string
-		pred *gen.Predicate
+		pred *metadatapb.Predicate
 	}{
 		{
 			name: "bare row-number window",
@@ -153,24 +153,24 @@ func TestUnprovablePredicateNeverMatchesAsAFullIndex(t *testing.T) {
 			name: "AND(rowWindow, TRUE)",
 			why: "the TRUE conjunct folds away and the row-window one survives; " +
 				"whether it survives wrapped or bare, the index is still partial",
-			pred: &gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+			pred: &metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{
 				rowWindow(), trueArm(),
 			}}},
 		},
 		{
 			name: "AND(nil)",
 			why:  "a malformed singleton must not normalize to nil and read as a full index",
-			pred: &gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{nil}}},
+			pred: &metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{nil}}},
 		},
 		{
 			name: "OR(nil)",
 			why:  "same, through the disjunctive singleton collapse",
-			pred: &gen.Predicate{OrPredicate: &gen.OrPredicate{Children: []*gen.Predicate{nil}}},
+			pred: &metadatapb.Predicate{OrPredicate: &metadatapb.OrPredicate{Children: []*metadatapb.Predicate{nil}}},
 		},
 		{
 			name: "AND(TRUE, nil)",
 			why:  "folding the provable conjunct must not leave the unprovable one erasable",
-			pred: &gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+			pred: &metadatapb.Predicate{AndPredicate: &metadatapb.AndPredicate{Children: []*metadatapb.Predicate{
 				trueArm(), nil,
 			}}},
 		},
@@ -210,8 +210,8 @@ func TestUnprovablePredicateNeverMatchesAsAFullIndex(t *testing.T) {
 // index still expands as the complete index it is.
 func TestProvableTautologyStillMatchesAsAFullIndex(t *testing.T) {
 	t.Parallel()
-	cand := sparseTestCandidate(t, &gen.Predicate{
-		ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()},
+	cand := sparseTestCandidate(t, &metadatapb.Predicate{
+		ConstantPredicate: &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_TRUE.Enum()},
 	})
 	if cand.GetPredicateProto() != nil {
 		t.Fatal("a WHERE TRUE predicate must still be erased — it provably accepts every record")

@@ -8,7 +8,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 )
@@ -187,14 +187,14 @@ var _ = Describe("Order function and predicate integration", func() {
 
 	It("predicate from proto — filters records during index maintenance", func() {
 		priceIndex := NewIndex("Order$price_gt500", Field("price"))
-		gt := gen.ComparisonType_GREATER_THAN
-		err := priceIndex.SetPredicateProto(&gen.Predicate{
-			ValuePredicate: &gen.ValuePredicate{
+		gt := metadatapb.ComparisonType_GREATER_THAN
+		err := priceIndex.SetPredicateProto(&metadatapb.Predicate{
+			ValuePredicate: &metadatapb.ValuePredicate{
 				Value: []string{"price"},
-				Comparison: &gen.Comparison{
-					SimpleComparison: &gen.SimpleComparison{
+				Comparison: &metadatapb.Comparison{
+					SimpleComparison: &metadatapb.SimpleComparison{
 						Type:    &gt,
-						Operand: &gen.Value{IntValue: proto.Int32(500)},
+						Operand: &metadatapb.Value{IntValue: proto.Int32(500)},
 					},
 				},
 			},
@@ -226,14 +226,14 @@ var _ = Describe("Order function and predicate integration", func() {
 
 	It("predicate from proto — delete of filtered record is no-op, indexed record is removed", func() {
 		priceIndex := NewIndex("Order$price_gt500_del", Field("price"))
-		gt := gen.ComparisonType_GREATER_THAN
-		err := priceIndex.SetPredicateProto(&gen.Predicate{
-			ValuePredicate: &gen.ValuePredicate{
+		gt := metadatapb.ComparisonType_GREATER_THAN
+		err := priceIndex.SetPredicateProto(&metadatapb.Predicate{
+			ValuePredicate: &metadatapb.ValuePredicate{
 				Value: []string{"price"},
-				Comparison: &gen.Comparison{
-					SimpleComparison: &gen.SimpleComparison{
+				Comparison: &metadatapb.Comparison{
+					SimpleComparison: &metadatapb.SimpleComparison{
 						Type:    &gt,
-						Operand: &gen.Value{IntValue: proto.Int32(500)},
+						Operand: &metadatapb.Value{IntValue: proto.Int32(500)},
 					},
 				},
 			},
@@ -288,29 +288,29 @@ var _ = Describe("Order function and predicate integration", func() {
 
 	It("predicate from proto — AND predicate filters correctly", func() {
 		priceIndex := NewIndex("Order$price_and", Field("price"))
-		gte := gen.ComparisonType_GREATER_THAN_OR_EQUALS
-		lte := gen.ComparisonType_LESS_THAN_OR_EQUALS
-		err := priceIndex.SetPredicateProto(&gen.Predicate{
-			AndPredicate: &gen.AndPredicate{
-				Children: []*gen.Predicate{
+		gte := metadatapb.ComparisonType_GREATER_THAN_OR_EQUALS
+		lte := metadatapb.ComparisonType_LESS_THAN_OR_EQUALS
+		err := priceIndex.SetPredicateProto(&metadatapb.Predicate{
+			AndPredicate: &metadatapb.AndPredicate{
+				Children: []*metadatapb.Predicate{
 					{
-						ValuePredicate: &gen.ValuePredicate{
+						ValuePredicate: &metadatapb.ValuePredicate{
 							Value: []string{"price"},
-							Comparison: &gen.Comparison{
-								SimpleComparison: &gen.SimpleComparison{
+							Comparison: &metadatapb.Comparison{
+								SimpleComparison: &metadatapb.SimpleComparison{
 									Type:    &gte,
-									Operand: &gen.Value{IntValue: proto.Int32(200)},
+									Operand: &metadatapb.Value{IntValue: proto.Int32(200)},
 								},
 							},
 						},
 					},
 					{
-						ValuePredicate: &gen.ValuePredicate{
+						ValuePredicate: &metadatapb.ValuePredicate{
 							Value: []string{"price"},
-							Comparison: &gen.Comparison{
-								SimpleComparison: &gen.SimpleComparison{
+							Comparison: &metadatapb.Comparison{
+								SimpleComparison: &metadatapb.SimpleComparison{
 									Type:    &lte,
-									Operand: &gen.Value{IntValue: proto.Int32(800)},
+									Operand: &metadatapb.Value{IntValue: proto.Int32(800)},
 								},
 							},
 						},
@@ -348,14 +348,14 @@ var _ = Describe("Order function and predicate integration", func() {
 
 	It("predicate proto round-trips through metadata serialization", func() {
 		priceIndex := NewIndex("Order$price_rt", Field("price"))
-		gt := gen.ComparisonType_GREATER_THAN
-		predProto := &gen.Predicate{
-			ValuePredicate: &gen.ValuePredicate{
+		gt := metadatapb.ComparisonType_GREATER_THAN
+		predProto := &metadatapb.Predicate{
+			ValuePredicate: &metadatapb.ValuePredicate{
 				Value: []string{"price"},
-				Comparison: &gen.Comparison{
-					SimpleComparison: &gen.SimpleComparison{
+				Comparison: &metadatapb.Comparison{
+					SimpleComparison: &metadatapb.SimpleComparison{
 						Type:    &gt,
-						Operand: &gen.Value{IntValue: proto.Int32(500)},
+						Operand: &metadatapb.Value{IntValue: proto.Int32(500)},
 					},
 				},
 			},

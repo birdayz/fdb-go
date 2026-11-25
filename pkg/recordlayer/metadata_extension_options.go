@@ -10,7 +10,7 @@ package recordlayer
 import (
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -29,7 +29,7 @@ import (
 // store_record_versions, set without a version bump, as Java assigns the
 // fields.
 func (b *RecordMetaDataBuilder) processSchemaOptions(fd protoreflect.FileDescriptor) {
-	schema, ok := messageExtension(fd.Options(), gen.E_Schema).(*gen.SchemaOptions)
+	schema, ok := messageExtension(fd.Options(), metadatapb.E_Schema).(*metadatapb.SchemaOptions)
 	if !ok || schema == nil {
 		return
 	}
@@ -45,7 +45,7 @@ func (b *RecordMetaDataBuilder) processSchemaOptions(fd protoreflect.FileDescrip
 // (RecordMetaDataBuilder.java:890-908): the message's (record) since_version
 // and record_type_key, then each field's (field) options.
 func (b *RecordMetaDataBuilder) processRecordTypeOptions(rt *RecordType) {
-	if opts, ok := messageExtension(rt.Descriptor.Options(), gen.E_Record).(*gen.RecordTypeOptions); ok && opts != nil {
+	if opts, ok := messageExtension(rt.Descriptor.Options(), metadatapb.E_Record).(*metadatapb.RecordTypeOptions); ok && opts != nil {
 		if opts.SinceVersion != nil {
 			rt.SinceVersion = int(opts.GetSinceVersion())
 		}
@@ -61,7 +61,7 @@ func (b *RecordMetaDataBuilder) processRecordTypeOptions(rt *RecordType) {
 	fields := rt.Descriptor.Fields()
 	for i := 0; i < fields.Len(); i++ {
 		fd := fields.Get(i)
-		if fo, ok := messageExtension(fd.Options(), gen.E_Field).(*gen.FieldOptions); ok && fo != nil {
+		if fo, ok := messageExtension(fd.Options(), metadatapb.E_Field).(*metadatapb.FieldOptions); ok && fo != nil {
 			b.processFieldOptions(rt, fd, fo)
 		}
 	}
@@ -71,12 +71,12 @@ func (b *RecordMetaDataBuilder) processRecordTypeOptions(rt *RecordType) {
 // 922-957): an index option adds an index named Type$field over the field (a
 // RANK over it ungrouped); a primary key option sets the primary key, once, on
 // a field that is not repeated.
-func (b *RecordMetaDataBuilder) processFieldOptions(rt *RecordType, fd protoreflect.FieldDescriptor, fo *gen.FieldOptions) {
+func (b *RecordMetaDataBuilder) processFieldOptions(rt *RecordType, fd protoreflect.FieldDescriptor, fo *metadatapb.FieldOptions) {
 	switch {
 	case fo.Index != nil || fo.Indexed != nil:
 		var typ string
 		var unique bool
-		var options []*gen.Index_Option
+		var options []*metadatapb.Index_Option
 		if fo.Index != nil {
 			typ = fo.GetIndex().GetType()
 			unique = fo.GetIndex().GetUnique()

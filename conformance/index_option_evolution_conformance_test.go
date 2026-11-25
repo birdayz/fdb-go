@@ -11,7 +11,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
@@ -33,7 +33,7 @@ type javaAnyVerdict struct {
 // kind carrying the given options, at the given meta-data version; the index
 // is added at the same builder version on both sides of a shape, so only its
 // options differ.
-func optionEvolutionMetaData(kind string, options map[string]string, version int) *gen.MetaData {
+func optionEvolutionMetaData(kind string, options map[string]string, version int) *metadatapb.MetaData {
 	var index *recordlayer.Index
 	recordType := "Order"
 	switch kind {
@@ -243,11 +243,11 @@ var _ = Describe("Text tokenizer version parsed at build", func() {
 // optionEvolutionMetaDataUnbuilt is optionEvolutionMetaData's text index
 // serialized without Go's Build, so a shape Go's Build would refuse can still
 // be handed to both loaders.
-func optionEvolutionMetaDataUnbuilt(options map[string]string) *gen.MetaData {
+func optionEvolutionMetaDataUnbuilt(options map[string]string) *metadatapb.MetaData {
 	p := optionEvolutionMetaData("text", nil, 3)
 	for _, idx := range p.GetIndexes() {
 		for k, v := range options {
-			idx.Options = append(idx.Options, &gen.Index_Option{Key: proto.String(k), Value: proto.String(v)})
+			idx.Options = append(idx.Options, &metadatapb.Index_Option{Key: proto.String(k), Value: proto.String(v)})
 		}
 	}
 	return p

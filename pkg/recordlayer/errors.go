@@ -12,9 +12,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"fdb.dev/gen"
 	"fdb.dev/internal/recordlayer/textcmp"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/protoname"
 )
 
@@ -817,8 +817,8 @@ type PartlyBuiltError struct {
 	Message       string
 	// Saved and Expected are the stamps themselves (Java getSavedStamp and
 	// getExpectedStamp). The build catcher resumes the saved stamp's method.
-	Saved    *gen.IndexBuildIndexingStamp
-	Expected *gen.IndexBuildIndexingStamp
+	Saved    *metadatapb.IndexBuildIndexingStamp
+	Expected *metadatapb.IndexBuildIndexingStamp
 	// IndexerID is the refusing indexer's identity, Java's INDEXER_ID log key
 	// (IndexingBase.java:604, :1011-1012).
 	IndexerID uuid.UUID

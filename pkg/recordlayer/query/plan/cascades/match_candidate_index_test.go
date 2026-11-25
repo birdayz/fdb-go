@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -282,10 +282,10 @@ func TestValueIndexScanMatchCandidate_FanOutElementIsNotCoveredAsArray(t *testin
 		false,
 		[]string{"ID"},
 		&reportedNoDuplicates,
-	).WithRootKeyExpression(&gen.KeyExpression{
-		Then: &gen.Then{Child: []*gen.KeyExpression{
-			candidateTestKeyField("TAGS", gen.Field_FAN_OUT),
-			candidateTestKeyField("SCORE", gen.Field_SCALAR),
+	).WithRootKeyExpression(&metadatapb.KeyExpression{
+		Then: &metadatapb.Then{Child: []*metadatapb.KeyExpression{
+			candidateTestKeyField("TAGS", metadatapb.Field_FAN_OUT),
+			candidateTestKeyField("SCORE", metadatapb.Field_SCALAR),
 		}},
 	}).WithKeyComponentTypes([]values.Type{values.NullableString, values.NullableLong}).
 		WithPrimaryKeyComponentTypes([]values.Type{values.NullableLong}).
@@ -307,7 +307,7 @@ func TestValueIndexScanMatchCandidate_FanOutElementIsNotCoveredAsArray(t *testin
 		false,
 		nil,
 		nil,
-	).WithRootKeyExpression(candidateTestKeyField("TAGS", gen.Field_FAN_OUT))
+	).WithRootKeyExpression(candidateTestKeyField("TAGS", metadatapb.Field_FAN_OUT))
 	if !missingSignalCandidate.CreatesDuplicates() {
 		t.Fatal("structured FAN_OUT must establish duplicates when the optional signal is missing")
 	}
@@ -453,7 +453,7 @@ func TestValueIndexScanMatchCandidate_FanOutElementIsNotCoveredAsArray(t *testin
 		false,
 		nil,
 		&noDuplicates,
-	).WithRootKeyExpression(candidateTestKeyField("SCORE", gen.Field_SCALAR)).
+	).WithRootKeyExpression(candidateTestKeyField("SCORE", metadatapb.Field_SCALAR)).
 		WithKeyComponentTypes([]values.Type{values.NullableLong})
 	if _, ok := scalarCandidate.PushValueThroughFetch(
 		field("SCORE"),
@@ -536,16 +536,16 @@ func TestValueIndexScanMatchCandidate_FunctionKeyCoversItsFieldsAndOrdersByTheFu
 		false,
 		[]string{"ID", "TAGS"},
 		&createsDuplicates,
-	).WithRootKeyExpression(&gen.KeyExpression{Then: &gen.Then{
-		Child: []*gen.KeyExpression{
-			{Function: &gen.Function{
+	).WithRootKeyExpression(&metadatapb.KeyExpression{Then: &metadatapb.Then{
+		Child: []*metadatapb.KeyExpression{
+			{Function: &metadatapb.Function{
 				Name: proto.String(FunctionKindCardinality),
 				Arguments: candidateTestKeyField(
 					"TAGS",
-					gen.Field_CONCATENATE,
+					metadatapb.Field_CONCATENATE,
 				),
 			}},
-			candidateTestKeyField("B", gen.Field_SCALAR),
+			candidateTestKeyField("B", metadatapb.Field_SCALAR),
 		},
 	}}).WithPrimaryKeyEntryOrdinals([]int{2, 3})
 
@@ -638,10 +638,10 @@ func TestValueIndexScanMatchCandidate_FanOutOrderingMatchesJava(t *testing.T) {
 		false,
 		nil,
 		&duplicates,
-	).WithRootKeyExpression(&gen.KeyExpression{
-		Then: &gen.Then{Child: []*gen.KeyExpression{
-			candidateTestKeyField("TAGS", gen.Field_FAN_OUT),
-			candidateTestKeyField("SCORE", gen.Field_SCALAR),
+	).WithRootKeyExpression(&metadatapb.KeyExpression{
+		Then: &metadatapb.Then{Child: []*metadatapb.KeyExpression{
+			candidateTestKeyField("TAGS", metadatapb.Field_FAN_OUT),
+			candidateTestKeyField("SCORE", metadatapb.Field_SCALAR),
 		}},
 	}).WithKeyComponentTypes([]values.Type{values.NullableString, values.NullableLong})
 
@@ -754,7 +754,7 @@ func TestValueIndexScanMatchCandidate_FanOutOrderingMatchesJava(t *testing.T) {
 		false,
 		nil,
 		&noDuplicates,
-	).WithRootKeyExpression(candidateTestKeyField("SCORE", gen.Field_SCALAR)).
+	).WithRootKeyExpression(candidateTestKeyField("SCORE", metadatapb.Field_SCALAR)).
 		WithKeyComponentTypes([]values.Type{values.NullableLong})
 	scalarParts := scalarCandidate.ComputeMatchedOrderingParts(
 		NewRegularMatchInfo(nil, nil, nil, nil, nil, nil, nil, nil),
@@ -769,9 +769,9 @@ func TestValueIndexScanMatchCandidate_FanOutOrderingMatchesJava(t *testing.T) {
 
 func candidateTestKeyField(
 	name string,
-	fanType gen.Field_FanType,
-) *gen.KeyExpression {
-	return &gen.KeyExpression{Field: &gen.Field{
+	fanType metadatapb.Field_FanType,
+) *metadatapb.KeyExpression {
+	return &metadatapb.KeyExpression{Field: &metadatapb.Field{
 		FieldName: proto.String(name),
 		FanType:   &fanType,
 	}}

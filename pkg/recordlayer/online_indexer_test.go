@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -1226,7 +1226,7 @@ var _ = Describe("OnlineIndexer", func() {
 				stamp, err := store.LoadIndexingTypeStamp(qtyIndex)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(stamp).NotTo(BeNil())
-				Expect(stamp.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_INDEX))
+				Expect(stamp.GetMethod()).To(Equal(metadatapb.IndexBuildIndexingStamp_BY_INDEX))
 
 				// SourceIndexSubspaceKey should be the tuple-packed subspace key of the source index.
 				expectedSubspaceKey := tuple.Tuple{priceIndex.SubspaceTupleKey()}.Pack()
@@ -1342,7 +1342,7 @@ var _ = Describe("OnlineIndexer", func() {
 					Expect(err).NotTo(HaveOccurred())
 					// The first attempt stamped BY_INDEX before validating the
 					// source; the records scan overwrote it.
-					Expect(stamp.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_RECORDS))
+					Expect(stamp.GetMethod()).To(Equal(metadatapb.IndexBuildIndexingStamp_BY_RECORDS))
 					missing, err := NewIndexingRangeSet(store.subspace, target).FirstMissingRange(rtx.Transaction())
 					Expect(err).NotTo(HaveOccurred())
 					Expect(missing).To(BeNil())
@@ -1384,7 +1384,7 @@ var _ = Describe("OnlineIndexer", func() {
 					Expect(store.GetIndexState(target.Name)).To(Equal(IndexStateWriteOnly))
 					stamp, err := store.LoadIndexingTypeStamp(target)
 					Expect(err).NotTo(HaveOccurred())
-					Expect(stamp.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_INDEX))
+					Expect(stamp.GetMethod()).To(Equal(metadatapb.IndexBuildIndexingStamp_BY_INDEX))
 					return nil, nil
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -1491,8 +1491,8 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 				NewIndexingRangeSet(ks, priceIndex).Clear(rtx.Transaction())
 
-				stamp := &gen.IndexBuildIndexingStamp{
-					Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+				stamp := &metadatapb.IndexBuildIndexingStamp{
+					Method: metadatapb.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
 				}
 				err = store.SaveIndexingTypeStamp(priceIndex, stamp)
 				Expect(err).NotTo(HaveOccurred())
@@ -1575,8 +1575,8 @@ var _ = Describe("OnlineIndexer", func() {
 				_, err = store.MarkIndexWriteOnly("Order$price")
 				Expect(err).NotTo(HaveOccurred())
 
-				stamp := &gen.IndexBuildIndexingStamp{
-					Method: gen.IndexBuildIndexingStamp_BY_INDEX.Enum(),
+				stamp := &metadatapb.IndexBuildIndexingStamp{
+					Method: metadatapb.IndexBuildIndexingStamp_BY_INDEX.Enum(),
 				}
 				err = store.SaveIndexingTypeStamp(priceIndex, stamp)
 				Expect(err).NotTo(HaveOccurred())
@@ -1638,8 +1638,8 @@ var _ = Describe("OnlineIndexer", func() {
 				_, err = store.ClearAndMarkIndexWriteOnly("Order$price")
 				Expect(err).NotTo(HaveOccurred())
 
-				stamp := &gen.IndexBuildIndexingStamp{
-					Method: gen.IndexBuildIndexingStamp_BY_INDEX.Enum(),
+				stamp := &metadatapb.IndexBuildIndexingStamp{
+					Method: metadatapb.IndexBuildIndexingStamp_BY_INDEX.Enum(),
 				}
 				err = store.SaveIndexingTypeStamp(priceIndex, stamp)
 				Expect(err).NotTo(HaveOccurred())
@@ -1688,7 +1688,7 @@ var _ = Describe("OnlineIndexer", func() {
 				stamp, err := store.LoadIndexingTypeStamp(priceIndex)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(stamp).NotTo(BeNil())
-				Expect(stamp.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_RECORDS))
+				Expect(stamp.GetMethod()).To(Equal(metadatapb.IndexBuildIndexingStamp_BY_RECORDS))
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -1853,7 +1853,7 @@ var _ = Describe("OnlineIndexer", func() {
 				stamp, err := store.LoadIndexingTypeStamp(priceIndex)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(stamp).NotTo(BeNil())
-				Expect(stamp.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_RECORDS))
+				Expect(stamp.GetMethod()).To(Equal(metadatapb.IndexBuildIndexingStamp_BY_RECORDS))
 
 				entries, err := AsList(ctx, store.ScanIndex(priceIndex, TupleRangeAll, nil, ForwardScan()))
 				Expect(err).NotTo(HaveOccurred())
@@ -1902,8 +1902,8 @@ var _ = Describe("OnlineIndexer", func() {
 				_, err = store.ClearAndMarkIndexWriteOnly("Order$price")
 				Expect(err).NotTo(HaveOccurred())
 
-				stamp := &gen.IndexBuildIndexingStamp{
-					Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+				stamp := &metadatapb.IndexBuildIndexingStamp{
+					Method: metadatapb.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
 				}
 				err = store.SaveIndexingTypeStamp(priceIndex, stamp)
 				Expect(err).NotTo(HaveOccurred())
@@ -2491,7 +2491,7 @@ var _ = Describe("OnlineIndexer", func() {
 				stamp, err := store.LoadIndexingTypeStamp(qtyIdx)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(stamp).NotTo(BeNil())
-				Expect(stamp.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS))
+				Expect(stamp.GetMethod()).To(Equal(metadatapb.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS))
 
 				// Target names must be sorted alphabetically.
 				Expect(stamp.GetTargetIndex()).To(Equal([]string{"Order$price", "Order$qty"}))
@@ -2500,7 +2500,7 @@ var _ = Describe("OnlineIndexer", func() {
 				stamp2, err := store.LoadIndexingTypeStamp(priceIdx)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(stamp2).NotTo(BeNil())
-				Expect(stamp2.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS))
+				Expect(stamp2.GetMethod()).To(Equal(metadatapb.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS))
 				Expect(stamp2.GetTargetIndex()).To(Equal([]string{"Order$price", "Order$qty"}))
 
 				return nil, nil
@@ -3097,8 +3097,8 @@ var _ = Describe("OnlineIndexer", func() {
 				_, err = store.ClearAndMarkIndexWriteOnly("Order$price")
 				Expect(err).NotTo(HaveOccurred())
 
-				stamp := &gen.IndexBuildIndexingStamp{
-					Method:  gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+				stamp := &metadatapb.IndexBuildIndexingStamp{
+					Method:  metadatapb.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
 					Block:   proto.Bool(true),
 					BlockID: proto.String("maintenance"),
 				}
@@ -3166,8 +3166,8 @@ var _ = Describe("OnlineIndexer", func() {
 				_, err = store.ClearAndMarkIndexWriteOnly("Order$price")
 				Expect(err).NotTo(HaveOccurred())
 
-				stamp := &gen.IndexBuildIndexingStamp{
-					Method:  gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+				stamp := &metadatapb.IndexBuildIndexingStamp{
+					Method:  metadatapb.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
 					Block:   proto.Bool(true),
 					BlockID: proto.String("maintenance"),
 				}
@@ -3225,8 +3225,8 @@ var _ = Describe("OnlineIndexer", func() {
 				_, err = store.ClearAndMarkIndexWriteOnly("Order$price")
 				Expect(err).NotTo(HaveOccurred())
 
-				stamp := &gen.IndexBuildIndexingStamp{
-					Method:  gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+				stamp := &metadatapb.IndexBuildIndexingStamp{
+					Method:  metadatapb.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
 					Block:   proto.Bool(true),
 					BlockID: proto.String("maintenance"),
 				}
@@ -3276,8 +3276,8 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Block with expiry 1ms in the past (already expired).
-				stamp := &gen.IndexBuildIndexingStamp{
-					Method:                       gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+				stamp := &metadatapb.IndexBuildIndexingStamp{
+					Method:                       metadatapb.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
 					Block:                        proto.Bool(true),
 					BlockID:                      proto.String("temp"),
 					BlockExpireEpochMilliSeconds: proto.Uint64(uint64(time.Now().Add(-1 * time.Second).UnixMilli())),
@@ -3339,8 +3339,8 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Stamp with block=true but already expired (won't be "blocked").
-				stamp := &gen.IndexBuildIndexingStamp{
-					Method:                       gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+				stamp := &metadatapb.IndexBuildIndexingStamp{
+					Method:                       metadatapb.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
 					Block:                        proto.Bool(true),
 					BlockID:                      proto.String("old-run"),
 					BlockExpireEpochMilliSeconds: proto.Uint64(uint64(time.Now().Add(-1 * time.Second).UnixMilli())),
@@ -3377,7 +3377,7 @@ var _ = Describe("OnlineIndexer", func() {
 				stamp, err := store.LoadIndexingTypeStamp(priceIndex)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(stamp).NotTo(BeNil())
-				Expect(stamp.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_RECORDS))
+				Expect(stamp.GetMethod()).To(Equal(metadatapb.IndexBuildIndexingStamp_BY_RECORDS))
 				Expect(stamp.GetBlock()).To(BeFalse())
 				Expect(stamp.GetBlockID()).To(BeEmpty())
 				return nil, nil
@@ -3461,8 +3461,8 @@ var _ = Describe("OnlineIndexer", func() {
 				_, err = store.ClearAndMarkIndexWriteOnly("Order$price")
 				Expect(err).NotTo(HaveOccurred())
 
-				stamp := &gen.IndexBuildIndexingStamp{
-					Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+				stamp := &metadatapb.IndexBuildIndexingStamp{
+					Method: metadatapb.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
 				}
 				err = store.SaveIndexingTypeStamp(priceIndex, stamp)
 				Expect(err).NotTo(HaveOccurred())
@@ -3529,8 +3529,8 @@ var _ = Describe("OnlineIndexer", func() {
 				_, err = store.ClearAndMarkIndexWriteOnly("Order$price")
 				Expect(err).NotTo(HaveOccurred())
 
-				stamp := &gen.IndexBuildIndexingStamp{
-					Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+				stamp := &metadatapb.IndexBuildIndexingStamp{
+					Method: metadatapb.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
 				}
 				err = store.SaveIndexingTypeStamp(priceIndex, stamp)
 				Expect(err).NotTo(HaveOccurred())
@@ -3550,7 +3550,7 @@ var _ = Describe("OnlineIndexer", func() {
 			stamps, err := indexer.QueryIndexingStamps(ctx)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(stamps).To(HaveKey("Order$price"))
-			Expect(stamps["Order$price"].GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_RECORDS))
+			Expect(stamps["Order$price"].GetMethod()).To(Equal(metadatapb.IndexBuildIndexingStamp_BY_RECORDS))
 		})
 
 		It("UnblockIndex clears block and allows build", func() {
@@ -3576,8 +3576,8 @@ var _ = Describe("OnlineIndexer", func() {
 				_, err = store.ClearAndMarkIndexWriteOnly("Order$price")
 				Expect(err).NotTo(HaveOccurred())
 
-				stamp := &gen.IndexBuildIndexingStamp{
-					Method:  gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+				stamp := &metadatapb.IndexBuildIndexingStamp{
+					Method:  metadatapb.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
 					Block:   proto.Bool(true),
 					BlockID: proto.String("maintenance"),
 				}
@@ -3652,8 +3652,8 @@ var _ = Describe("OnlineIndexer", func() {
 				_, err = store.ClearAndMarkIndexWriteOnly("Order$price")
 				Expect(err).NotTo(HaveOccurred())
 
-				stamp := &gen.IndexBuildIndexingStamp{
-					Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+				stamp := &metadatapb.IndexBuildIndexingStamp{
+					Method: metadatapb.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
 				}
 				err = store.SaveIndexingTypeStamp(priceIndex, stamp)
 				Expect(err).NotTo(HaveOccurred())
@@ -4083,14 +4083,14 @@ var _ = Describe("OnlineIndexer", func() {
 			Expect(o.orphan[qtyIndex.Name]).To(BeTrue())
 		})
 
-		stamped := &gen.IndexBuildIndexingStamp{Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum()}
+		stamped := &metadatapb.IndexBuildIndexingStamp{Method: metadatapb.IndexBuildIndexingStamp_BY_RECORDS.Enum()}
 		saveStamps := func(store *FDBRecordStore, indexes ...*Index) {
 			for _, index := range indexes {
 				Expect(store.SaveIndexingTypeStamp(index, stamped)).To(Succeed())
 			}
 		}
-		stampOf := func(sm subspaceAndMeta, index *Index) *gen.IndexBuildIndexingStamp {
-			var stamp *gen.IndexBuildIndexingStamp
+		stampOf := func(sm subspaceAndMeta, index *Index) *metadatapb.IndexBuildIndexingStamp {
+			var stamp *metadatapb.IndexBuildIndexingStamp
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(sm.md).SetSubspace(sm.ks).Open()
 				Expect(err).NotTo(HaveOccurred())
@@ -4327,8 +4327,8 @@ var _ = Describe("OnlineIndexer", func() {
 				// return, not the catcher's completed-by-peers arm.
 				sm := setup(markDisabled(priceIndex.Name), priceIndex)
 				source := sm.md.GetIndex(qtyIndex.Name)
-				stamp := &gen.IndexBuildIndexingStamp{
-					Method:                         gen.IndexBuildIndexingStamp_BY_INDEX.Enum(),
+				stamp := &metadatapb.IndexBuildIndexingStamp{
+					Method:                         metadatapb.IndexBuildIndexingStamp_BY_INDEX.Enum(),
 					SourceIndexSubspaceKey:         tuple.Tuple{source.SubspaceTupleKey()}.Pack(),
 					SourceIndexLastModifiedVersion: proto.Int32(int32(source.LastModifiedVersion)),
 				}
@@ -4394,7 +4394,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(info).To(Equal("BY_INDEX"), "Java names the heartbeat by the stamp's method")
 				Expect(total).To(Equal(int64(5)))
 				stamp := stampOf(sm, qtyIndex)
-				Expect(stamp.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_INDEX))
+				Expect(stamp.GetMethod()).To(Equal(metadatapb.IndexBuildIndexingStamp_BY_INDEX))
 				Expect(stamp.GetSourceIndexSubspaceKey()).To(Equal(tuple.Tuple{real.SubspaceTupleKey()}.Pack()))
 				Expect(stamp.GetSourceIndexLastModifiedVersion()).To(Equal(int32(real.LastModifiedVersion)))
 			})
@@ -4448,7 +4448,7 @@ var _ = Describe("OnlineIndexer", func() {
 				var storage *RecordCoreStorageError
 				Expect(errors.As(err, &storage)).To(BeTrue(), "error: %v", err)
 				Expect(oi.fallbackToRecordsScan).To(BeFalse(), "a Go-only state check sent the build to the records-scan fallback")
-				Expect(stampOf(sm, qtyIndex).GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_INDEX))
+				Expect(stampOf(sm, qtyIndex).GetMethod()).To(Equal(metadatapb.IndexBuildIndexingStamp_BY_INDEX))
 			})
 
 			It("refuses a source index the metadata does not define before writing anything", func() {
@@ -4500,14 +4500,14 @@ var _ = Describe("OnlineIndexer", func() {
 		})
 
 		Describe("build catcher", func() {
-			byIndexStamp := func(source *Index) *gen.IndexBuildIndexingStamp {
-				return &gen.IndexBuildIndexingStamp{
-					Method:                         gen.IndexBuildIndexingStamp_BY_INDEX.Enum(),
+			byIndexStamp := func(source *Index) *metadatapb.IndexBuildIndexingStamp {
+				return &metadatapb.IndexBuildIndexingStamp{
+					Method:                         metadatapb.IndexBuildIndexingStamp_BY_INDEX.Enum(),
 					SourceIndexSubspaceKey:         tuple.Tuple{source.SubspaceTupleKey()}.Pack(),
 					SourceIndexLastModifiedVersion: proto.Int32(int32(source.LastModifiedVersion)),
 				}
 			}
-			stampAs := func(stamp *gen.IndexBuildIndexingStamp, indexes ...*Index) func(*FDBRecordStore) {
+			stampAs := func(stamp *metadatapb.IndexBuildIndexingStamp, indexes ...*Index) func(*FDBRecordStore) {
 				return func(store *FDBRecordStore) {
 					for _, index := range indexes {
 						Expect(store.SaveIndexingTypeStamp(index, stamp)).To(Succeed())
@@ -4541,7 +4541,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 				return done
 			}
-			byRecords := gen.IndexBuildIndexingStamp_BY_RECORDS.Enum()
+			byRecords := metadatapb.IndexBuildIndexingStamp_BY_RECORDS.Enum()
 
 			It("continues a BY_RECORDS build that a BY_INDEX request finds, by scanning records", func() {
 				sm := setup(all(unfinished(qtyIndex.Name), stampAs(stamped, qtyIndex)), qtyIndex)
@@ -4554,7 +4554,7 @@ var _ = Describe("OnlineIndexer", func() {
 			})
 
 			It("continues a MULTI_TARGET_BY_RECORDS build as a single target when the policy allows the takeover", func() {
-				multi := &gen.IndexBuildIndexingStamp{Method: gen.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS.Enum(), TargetIndex: []string{priceIndex.Name, qtyIndex.Name}}
+				multi := &metadatapb.IndexBuildIndexingStamp{Method: metadatapb.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS.Enum(), TargetIndex: []string{priceIndex.Name, qtyIndex.Name}}
 				sm := setup(all(unfinished(qtyIndex.Name), stampAs(multi, qtyIndex)), qtyIndex)
 				_, err := buildQty(sm, priceIndex, &IndexingPolicy{AllowedTakeovers: map[TakeoverType]bool{TakeoverMultiTargetToSingle: true}}, false)
 				Expect(err).NotTo(HaveOccurred())
@@ -4569,7 +4569,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(total).To(Equal(int64(5)))
 				stamp := stampOf(sm, qtyIndex)
-				Expect(stamp.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_INDEX))
+				Expect(stamp.GetMethod()).To(Equal(metadatapb.IndexBuildIndexingStamp_BY_INDEX))
 				Expect(stamp.GetSourceIndexSubspaceKey()).To(Equal(byIndexStamp(priceIndex).GetSourceIndexSubspaceKey()))
 				Expect(complete(sm, qtyIndex)).To(BeTrue())
 				Expect(observe(sm).orphan[qtyIndex.Name]).To(BeTrue())
@@ -4598,7 +4598,7 @@ var _ = Describe("OnlineIndexer", func() {
 				o := observe(sm)
 				Expect(o.state[qtyIndex.Name]).To(Equal(IndexStateWriteOnly))
 				Expect(o.orphan[qtyIndex.Name]).To(BeFalse(), "the REBUILD did not clear the target")
-				Expect(stampOf(sm, qtyIndex).GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_INDEX))
+				Expect(stampOf(sm, qtyIndex).GetMethod()).To(Equal(metadatapb.IndexBuildIndexingStamp_BY_INDEX))
 
 				total, err := buildQty(sm, priceIndex, nil, true)
 				Expect(err).NotTo(HaveOccurred())
@@ -4612,9 +4612,9 @@ var _ = Describe("OnlineIndexer", func() {
 					_, err := buildQty(sm, nil, &IndexingPolicy{IfMismatchPrevious: action}, false)
 					var partly *PartlyBuiltError
 					Expect(errors.As(err, &partly)).To(BeTrue(), "action %d: %v", action, err)
-					Expect(partly.Saved.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_INDEX))
+					Expect(partly.Saved.GetMethod()).To(Equal(metadatapb.IndexBuildIndexingStamp_BY_INDEX))
 					Expect(partly.Expected.GetMethod()).To(Equal(*byRecords))
-					Expect(stampOf(sm, qtyIndex).GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_INDEX))
+					Expect(stampOf(sm, qtyIndex).GetMethod()).To(Equal(metadatapb.IndexBuildIndexingStamp_BY_INDEX))
 					Expect(observe(sm).orphan[qtyIndex.Name]).To(BeTrue())
 				}
 				policy := &IndexingPolicy{IfMismatchPrevious: DesiredActionRebuild}
@@ -4632,7 +4632,7 @@ var _ = Describe("OnlineIndexer", func() {
 				var partly *PartlyBuiltError
 				Expect(errors.As(err, &partly)).To(BeTrue(), "error: %v", err)
 				Expect(partly.Saved.GetMethod()).To(Equal(*byRecords))
-				Expect(partly.Expected.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS))
+				Expect(partly.Expected.GetMethod()).To(Equal(metadatapb.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS))
 			})
 
 			It("classifies every build transaction's target states as Java's expectedIndexStatesOrThrow does", func() {
@@ -4668,8 +4668,8 @@ var _ = Describe("OnlineIndexer", func() {
 
 			It("answers each failure the way Java's indexingCatcher does", func() {
 				sm := setup(func(*FDBRecordStore) {})
-				partly := func(saved gen.IndexBuildIndexingStamp_Method, key []byte) error {
-					return fmt.Errorf("attempt: %w", &PartlyBuiltError{IndexName: qtyIndex.Name, Saved: &gen.IndexBuildIndexingStamp{Method: saved.Enum(), SourceIndexSubspaceKey: key}})
+				partly := func(saved metadatapb.IndexBuildIndexingStamp_Method, key []byte) error {
+					return fmt.Errorf("attempt: %w", &PartlyBuiltError{IndexName: qtyIndex.Name, Saved: &metadatapb.IndexBuildIndexingStamp{Method: saved.Enum(), SourceIndexSubspaceKey: key}})
 				}
 				priceKey := byIndexStamp(priceIndex).GetSourceIndexSubspaceKey()
 				invalid := fmt.Errorf("attempt: %w", &IndexingValidationError{Message: "source index is not scannable"})
@@ -4710,11 +4710,11 @@ var _ = Describe("OnlineIndexer", func() {
 					Expect(oi.fallbackToRecordsScan).To(BeFalse())
 				}
 				arms := []arm{
-					{name: "past the attempt limit", indexer: single(nil, nil), err: partly(gen.IndexBuildIndexingStamp_BY_RECORDS, nil), attempt: indexingAttemptsLimit + 1, catch: indexingCatchFail, sameErr: true, check: unchanged},
-					{name: "CONTINUE over BY_RECORDS", indexer: single(nil, priceIndex), err: partly(gen.IndexBuildIndexingStamp_BY_RECORDS, nil), attempt: indexingAttemptsLimit, catch: indexingCatchRetry, check: fellBack},
-					{name: "CONTINUE over MULTI_TARGET_BY_RECORDS", indexer: single(nil, nil), err: partly(gen.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS, nil), attempt: 1, catch: indexingCatchRetry, check: fellBack},
+					{name: "past the attempt limit", indexer: single(nil, nil), err: partly(metadatapb.IndexBuildIndexingStamp_BY_RECORDS, nil), attempt: indexingAttemptsLimit + 1, catch: indexingCatchFail, sameErr: true, check: unchanged},
+					{name: "CONTINUE over BY_RECORDS", indexer: single(nil, priceIndex), err: partly(metadatapb.IndexBuildIndexingStamp_BY_RECORDS, nil), attempt: indexingAttemptsLimit, catch: indexingCatchRetry, check: fellBack},
+					{name: "CONTINUE over MULTI_TARGET_BY_RECORDS", indexer: single(nil, nil), err: partly(metadatapb.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS, nil), attempt: 1, catch: indexingCatchRetry, check: fellBack},
 					{
-						name: "CONTINUE over BY_INDEX", indexer: single(requestedPolicy, nil), err: partly(gen.IndexBuildIndexingStamp_BY_INDEX, priceKey), attempt: 1, catch: indexingCatchRetry,
+						name: "CONTINUE over BY_INDEX", indexer: single(requestedPolicy, nil), err: partly(metadatapb.IndexBuildIndexingStamp_BY_INDEX, priceKey), attempt: 1, catch: indexingCatchRetry,
 						check: func(oi *OnlineIndexer, next *requestedIndexingMethod, _ error) {
 							Expect(oi.sourceIndex).To(Equal(priceIndex))
 							Expect(oi.buildsByIndex()).To(BeTrue())
@@ -4722,7 +4722,7 @@ var _ = Describe("OnlineIndexer", func() {
 						},
 					},
 					{
-						name: "CONTINUE over BY_INDEX with an unknown source", indexer: single(nil, nil), err: partly(gen.IndexBuildIndexingStamp_BY_INDEX, tuple.Tuple{int64(999)}.Pack()), attempt: 1, catch: indexingCatchFail,
+						name: "CONTINUE over BY_INDEX with an unknown source", indexer: single(nil, nil), err: partly(metadatapb.IndexBuildIndexingStamp_BY_INDEX, tuple.Tuple{int64(999)}.Pack()), attempt: 1, catch: indexingCatchFail,
 						check: func(_ *OnlineIndexer, _ *requestedIndexingMethod, err error) {
 							var md *MetaDataError
 							Expect(errors.As(err, &md)).To(BeTrue(), "error: %v", err)
@@ -4730,17 +4730,17 @@ var _ = Describe("OnlineIndexer", func() {
 						},
 					},
 					{
-						name: "CONTINUE over BY_INDEX with a malformed source key", indexer: single(nil, nil), err: partly(gen.IndexBuildIndexingStamp_BY_INDEX, tuple.Tuple{int64(1), int64(2)}.Pack()), attempt: 1, catch: indexingCatchFail,
+						name: "CONTINUE over BY_INDEX with a malformed source key", indexer: single(nil, nil), err: partly(metadatapb.IndexBuildIndexingStamp_BY_INDEX, tuple.Tuple{int64(1), int64(2)}.Pack()), attempt: 1, catch: indexingCatchFail,
 						check: func(_ *OnlineIndexer, _ *requestedIndexingMethod, err error) {
 							var core *RecordCoreError
 							Expect(errors.As(err, &core)).To(BeTrue(), "error: %v", err)
 							Expect(core.Message).To(Equal("subspace key must encode a single item tuple"))
 						},
 					},
-					{name: "CONTINUE over MUTUAL_BY_RECORDS", indexer: single(nil, nil), err: partly(gen.IndexBuildIndexingStamp_MUTUAL_BY_RECORDS, nil), attempt: 1, catch: indexingCatchFail, sameErr: true, check: unchanged},
-					{name: "CONTINUE on a multi-target build", indexer: multi, err: partly(gen.IndexBuildIndexingStamp_BY_RECORDS, nil), attempt: 1, catch: indexingCatchFail, sameErr: true, check: unchanged},
+					{name: "CONTINUE over MUTUAL_BY_RECORDS", indexer: single(nil, nil), err: partly(metadatapb.IndexBuildIndexingStamp_MUTUAL_BY_RECORDS, nil), attempt: 1, catch: indexingCatchFail, sameErr: true, check: unchanged},
+					{name: "CONTINUE on a multi-target build", indexer: multi, err: partly(metadatapb.IndexBuildIndexingStamp_BY_RECORDS, nil), attempt: 1, catch: indexingCatchFail, sameErr: true, check: unchanged},
 					{
-						name: "REBUILD", indexer: single(&IndexingPolicy{IfMismatchPrevious: DesiredActionRebuild}, nil), err: partly(gen.IndexBuildIndexingStamp_BY_INDEX, priceKey), attempt: 1, catch: indexingCatchRetry,
+						name: "REBUILD", indexer: single(&IndexingPolicy{IfMismatchPrevious: DesiredActionRebuild}, nil), err: partly(metadatapb.IndexBuildIndexingStamp_BY_INDEX, priceKey), attempt: 1, catch: indexingCatchRetry,
 						check: func(oi *OnlineIndexer, next *requestedIndexingMethod, _ error) {
 							Expect(oi.policy.IfWriteOnly).To(Equal(DesiredActionRebuild))
 							Expect(oi.policy.IfMismatchPrevious).To(Equal(DesiredActionRebuild))
@@ -4749,10 +4749,10 @@ var _ = Describe("OnlineIndexer", func() {
 							Expect(next).To(BeNil())
 						},
 					},
-					{name: "ERROR", indexer: single(&IndexingPolicy{IfMismatchPrevious: DesiredActionError}, nil), err: partly(gen.IndexBuildIndexingStamp_BY_RECORDS, nil), attempt: 1, catch: indexingCatchFail, sameErr: true, check: unchanged},
-					{name: "MARK_READABLE", indexer: single(&IndexingPolicy{IfMismatchPrevious: DesiredActionMarkReadable}, nil), err: partly(gen.IndexBuildIndexingStamp_BY_RECORDS, nil), attempt: 1, catch: indexingCatchFail, sameErr: true, check: unchanged},
+					{name: "ERROR", indexer: single(&IndexingPolicy{IfMismatchPrevious: DesiredActionError}, nil), err: partly(metadatapb.IndexBuildIndexingStamp_BY_RECORDS, nil), attempt: 1, catch: indexingCatchFail, sameErr: true, check: unchanged},
+					{name: "MARK_READABLE", indexer: single(&IndexingPolicy{IfMismatchPrevious: DesiredActionMarkReadable}, nil), err: partly(metadatapb.IndexBuildIndexingStamp_BY_RECORDS, nil), attempt: 1, catch: indexingCatchFail, sameErr: true, check: unchanged},
 					{
-						name: "an action outside the enum", indexer: single(&IndexingPolicy{IfMismatchPrevious: IndexingDesiredAction(99)}, nil), err: partly(gen.IndexBuildIndexingStamp_BY_RECORDS, nil), attempt: 1, catch: indexingCatchFail,
+						name: "an action outside the enum", indexer: single(&IndexingPolicy{IfMismatchPrevious: IndexingDesiredAction(99)}, nil), err: partly(metadatapb.IndexBuildIndexingStamp_BY_RECORDS, nil), attempt: 1, catch: indexingCatchFail,
 						check: func(_ *OnlineIndexer, _ *requestedIndexingMethod, err error) {
 							var core *RecordCoreError
 							Expect(errors.As(err, &core)).To(BeTrue(), "error: %v", err)
@@ -5206,7 +5206,7 @@ var _ = Describe("OnlineIndexer", func() {
 				staleHB := NewIndexingHeartbeat("BY_RECORDS", 10_000, false, nil)
 				_, err = sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 					// Manually write a heartbeat proto with an old timestamp.
-					hbProto := &gen.IndexBuildHeartbeat{
+					hbProto := &metadatapb.IndexBuildHeartbeat{
 						Info:                      proto.String("BY_RECORDS"),
 						CreateTimeMilliseconds:    proto.Int64(staleHB.createTimeMs),
 						HeartbeatTimeMilliseconds: proto.Int64(time.Now().Add(-20 * time.Second).UnixMilli()), // 20s ago > 10s lease
@@ -5812,7 +5812,7 @@ var _ = Describe("OnlineIndexer", func() {
 					stamp, err := store.LoadIndexingTypeStamp(priceIndex)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(stamp).NotTo(BeNil())
-					Expect(stamp.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_MUTUAL_BY_RECORDS))
+					Expect(stamp.GetMethod()).To(Equal(metadatapb.IndexBuildIndexingStamp_MUTUAL_BY_RECORDS))
 					return nil, nil
 				})
 				Expect(err).NotTo(HaveOccurred())

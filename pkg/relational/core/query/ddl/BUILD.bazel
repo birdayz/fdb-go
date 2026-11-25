@@ -12,9 +12,9 @@ go_library(
     importpath = "fdb.dev/pkg/relational/core/query/ddl",
     visibility = ["//visibility:public"],
     deps = [
-        "//gen",
         "//internal/unicode15",
         "//pkg/recordlayer",
+        "//pkg/recordlayer/metadatapb",
         "//pkg/recordlayer/query/plan/cascades",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",

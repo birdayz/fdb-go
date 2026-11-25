@@ -14,8 +14,8 @@ import (
 	"sort"
 	"sync/atomic"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/protoname"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
@@ -127,17 +127,17 @@ type RecordMetaData struct {
 }
 
 // UserDefinedFunctions returns the schema's SQL functions (MetaData field 14).
-func (m *RecordMetaData) UserDefinedFunctions() []*gen.PUserDefinedFunction {
+func (m *RecordMetaData) UserDefinedFunctions() []*metadatapb.PUserDefinedFunction {
 	return m.preserved.userDefinedFunctions
 }
 
 // StoredQueries returns the stored queries (MetaData field 16).
-func (m *RecordMetaData) StoredQueries() []*gen.PStoredQuery {
+func (m *RecordMetaData) StoredQueries() []*metadatapb.PStoredQuery {
 	return m.preserved.storedQueries
 }
 
 // Views returns the schema's SQL views (MetaData field 15), in stored order.
-func (m *RecordMetaData) Views() []*gen.PView {
+func (m *RecordMetaData) Views() []*metadatapb.PView {
 	return m.preserved.views
 }
 
@@ -159,11 +159,11 @@ func (m *RecordMetaData) Views() []*gen.PView {
 // interpreting them must refuse rather than proceed — see
 // RecordMetaData.DeclaresSyntheticRecordTypes and its callers.
 type preservedMetaDataFields struct {
-	joinedRecordTypes    []*gen.JoinedRecordType
-	unnestedRecordTypes  []*gen.UnnestedRecordType
-	userDefinedFunctions []*gen.PUserDefinedFunction
-	views                []*gen.PView
-	storedQueries        []*gen.PStoredQuery
+	joinedRecordTypes    []*metadatapb.JoinedRecordType
+	unnestedRecordTypes  []*metadatapb.UnnestedRecordType
+	userDefinedFunctions []*metadatapb.PUserDefinedFunction
+	views                []*metadatapb.PView
+	storedQueries        []*metadatapb.PStoredQuery
 
 	// unknown holds everything the generated Go type has no field for —
 	// principally the MetaData extension range (1000-2000), which is where
@@ -172,7 +172,7 @@ type preservedMetaDataFields struct {
 	// These really are unknown fields, but that does NOT mean protobuf carries
 	// them across this round trip on its own. Unknown-field preservation keeps
 	// them attached to the message they were parsed into; ToProto constructs a
-	// FRESH gen.MetaData and copies modelled fields onto it, so the original's
+	// FRESH metadatapb.MetaData and copies modelled fields onto it, so the original's
 	// unknown bytes have no route to the result and were being dropped. That is
 	// the same defect as fields 12-15, arrived at from the opposite direction:
 	// there the fields were assumed unknown and were not, here they are genuinely
@@ -280,7 +280,7 @@ type KeyExpression interface {
 
 	// ToKeyExpression serializes this expression to its protobuf representation.
 	// Matches Java's KeyExpression.toKeyExpression().
-	ToKeyExpression() *gen.KeyExpression
+	ToKeyExpression() *metadatapb.KeyExpression
 }
 
 // RecordMetaDataBuilder provides a builder pattern for creating RecordMetaData
@@ -523,20 +523,20 @@ func (b *RecordMetaDataBuilder) SetRecordCountKey(key KeyExpression) *RecordMeta
 }
 
 // AddUserDefinedFunction appends a SQL function.
-func (b *RecordMetaDataBuilder) AddUserDefinedFunction(fn *gen.PUserDefinedFunction) *RecordMetaDataBuilder {
+func (b *RecordMetaDataBuilder) AddUserDefinedFunction(fn *metadatapb.PUserDefinedFunction) *RecordMetaDataBuilder {
 	b.preserved.userDefinedFunctions = append(b.preserved.userDefinedFunctions, fn)
 	return b
 }
 
 // AddStoredQuery appends a stored query (MetaData field 16).
-func (b *RecordMetaDataBuilder) AddStoredQuery(q *gen.PStoredQuery) *RecordMetaDataBuilder {
+func (b *RecordMetaDataBuilder) AddStoredQuery(q *metadatapb.PStoredQuery) *RecordMetaDataBuilder {
 	b.preserved.storedQueries = append(b.preserved.storedQueries, q)
 	return b
 }
 
 // AddView appends a SQL view (name and query text), as Java's RecordLayerView.asRawView.
 func (b *RecordMetaDataBuilder) AddView(name, definition string) *RecordMetaDataBuilder {
-	b.preserved.views = append(b.preserved.views, &gen.PView{Name: &name, Definition: &definition})
+	b.preserved.views = append(b.preserved.views, &metadatapb.PView{Name: &name, Definition: &definition})
 	return b
 }
 
@@ -1255,11 +1255,11 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	// rather than a property. Both proto boundaries already clone, so this costs
 	// nothing and removes the one remaining container Build shared silently.
 	preserved := b.preserved
-	preserved.joinedRecordTypes = append([]*gen.JoinedRecordType(nil), b.preserved.joinedRecordTypes...)
-	preserved.unnestedRecordTypes = append([]*gen.UnnestedRecordType(nil), b.preserved.unnestedRecordTypes...)
-	preserved.userDefinedFunctions = append([]*gen.PUserDefinedFunction(nil), b.preserved.userDefinedFunctions...)
-	preserved.views = append([]*gen.PView(nil), b.preserved.views...)
-	preserved.storedQueries = append([]*gen.PStoredQuery(nil), b.preserved.storedQueries...)
+	preserved.joinedRecordTypes = append([]*metadatapb.JoinedRecordType(nil), b.preserved.joinedRecordTypes...)
+	preserved.unnestedRecordTypes = append([]*metadatapb.UnnestedRecordType(nil), b.preserved.unnestedRecordTypes...)
+	preserved.userDefinedFunctions = append([]*metadatapb.PUserDefinedFunction(nil), b.preserved.userDefinedFunctions...)
+	preserved.views = append([]*metadatapb.PView(nil), b.preserved.views...)
+	preserved.storedQueries = append([]*metadatapb.PStoredQuery(nil), b.preserved.storedQueries...)
 	if b.preserved.unknown != nil {
 		preserved.unknown = make([]byte, len(b.preserved.unknown))
 		copy(preserved.unknown, b.preserved.unknown)
@@ -2353,7 +2353,7 @@ func keyConstructionFault(expr KeyExpression) (uint64, error) {
 }
 
 // UserDefinedFunctionName is a stored SQL function's name.
-func UserDefinedFunctionName(f *gen.PUserDefinedFunction) string {
+func UserDefinedFunctionName(f *metadatapb.PUserDefinedFunction) string {
 	if m := f.GetUserDefinedMacroFunction(); m != nil {
 		return m.GetFunctionName()
 	}
@@ -2363,13 +2363,13 @@ func UserDefinedFunctionName(f *gen.PUserDefinedFunction) string {
 // WithUserDefinedFunctions is m with fns added, each replacing a function of
 // its name: the schema as a transaction that declared temporary functions
 // sees it.
-func (m *RecordMetaData) WithUserDefinedFunctions(fns []*gen.PUserDefinedFunction) *RecordMetaData {
+func (m *RecordMetaData) WithUserDefinedFunctions(fns []*metadatapb.PUserDefinedFunction) *RecordMetaData {
 	overlay := *m
 	replaced := map[string]bool{}
 	for _, f := range fns {
 		replaced[UserDefinedFunctionName(f)] = true
 	}
-	var all []*gen.PUserDefinedFunction
+	var all []*metadatapb.PUserDefinedFunction
 	for _, f := range m.preserved.userDefinedFunctions {
 		if !replaced[UserDefinedFunctionName(f)] {
 			all = append(all, f)

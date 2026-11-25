@@ -25,7 +25,7 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // Record Layer format versions - should match Java FormatVersion enum.
@@ -172,10 +172,10 @@ type FDBRecordStore struct {
 	context            *FDBRecordContext
 	metaData           *RecordMetaData
 	subspace           subspace.Subspace
-	recordsSubspace    subspace.Subspace     // Cached subspace.Sub(RecordKey) — avoids alloc per method call
-	storeHeader        *gen.DataStoreInfo    // Cached store header, loaded on Open/Create or lazily
-	indexStates        map[string]IndexState // Cached index states, loaded on Open/Create or lazily
-	indexRebuildPolicy IndexRebuildPolicy    // Policy for rebuilding indexes on metadata version change
+	recordsSubspace    subspace.Subspace         // Cached subspace.Sub(RecordKey) — avoids alloc per method call
+	storeHeader        *metadatapb.DataStoreInfo // Cached store header, loaded on Open/Create or lazily
+	indexStates        map[string]IndexState     // Cached index states, loaded on Open/Create or lazily
+	indexRebuildPolicy IndexRebuildPolicy        // Policy for rebuilding indexes on metadata version change
 	// targetFormatVersion is the format version this store opens AT — the
 	// ceiling maybeUpgradeFormatVersion upgrades toward, not necessarily the
 	// newest the binary knows. 0 means formatVersionDefault.
@@ -317,7 +317,7 @@ func (store *FDBRecordStore) validateRecordUpdateAllowedLocked() error {
 	if lockState == nil {
 		return nil
 	}
-	if lockState.GetLockState() == gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE {
+	if lockState.GetLockState() == metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE {
 		return &StoreIsLockedForRecordUpdatesError{
 			Reason:    lockState.GetReason(),
 			Timestamp: lockState.GetTimestamp(),
@@ -333,7 +333,7 @@ func (store *FDBRecordStore) validateRecordUpdateAllowedLocked() error {
 // nullable (nil = none), so a lock stored with an empty reason is
 // bypassable by supplying "" — non-nil empty compares equal, exactly as
 // Java's `bypassFullStoreLockReason.equals(storeLockState.getReason())`.
-func validateStoreLockState(storeHeader *gen.DataStoreInfo, bypassFullStoreLockReason *string) error {
+func validateStoreLockState(storeHeader *metadatapb.DataStoreInfo, bypassFullStoreLockReason *string) error {
 	lockState := storeHeader.GetStoreLockState()
 	if lockState == nil {
 		return nil
@@ -342,7 +342,7 @@ func validateStoreLockState(storeHeader *gen.DataStoreInfo, bypassFullStoreLockR
 	state := lockState.GetLockState()
 
 	// FULL_STORE: blocked unless bypass reason matches exactly
-	if state == gen.DataStoreInfo_StoreLockState_FULL_STORE {
+	if state == metadatapb.DataStoreInfo_StoreLockState_FULL_STORE {
 		if bypassFullStoreLockReason != nil && *bypassFullStoreLockReason == lockState.GetReason() {
 			return nil // bypass successful
 		}
@@ -355,7 +355,7 @@ func validateStoreLockState(storeHeader *gen.DataStoreInfo, bypassFullStoreLockR
 	// At FormatVersion >= FULL_STORE_LOCK, reject unknown/unspecified states.
 	// FORBID_RECORD_UPDATE is known and handled at mutation time, so skip it here.
 	if storeHeader.GetFormatVersion() >= formatVersionFullStoreLock {
-		if state != gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE {
+		if state != metadatapb.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE {
 			return &UnknownStoreLockStateError{LockStateValue: int32(state), UnknownFields: lockState.ProtoReflect().GetUnknown()}
 		}
 	}
@@ -1458,7 +1458,7 @@ func (store *FDBRecordStore) updateOneIndex(index *Index, oldRecord, newRecord *
 		if err != nil {
 			return err
 		}
-		if err := store.enqueuePendingIndexWrite(index, &gen.PendingWritesQueueEntry{Operation: gen.PendingWritesQueueEntry_UPDATE.Enum(), Data: data}); err != nil {
+		if err := store.enqueuePendingIndexWrite(index, &metadatapb.PendingWritesQueueEntry{Operation: metadatapb.PendingWritesQueueEntry_UPDATE.Enum(), Data: data}); err != nil {
 			return err
 		}
 		store.context.addToSessionSet(WriteOnlyWithQueueIndexesUpdated, index.Name)
@@ -2165,7 +2165,7 @@ func (store *FDBRecordStore) SetHeaderUserField(key string, value []byte) error 
 			return store.writeStoreHeader(store.storeHeader)
 		}
 	}
-	store.storeHeader.UserField = append(store.storeHeader.UserField, &gen.DataStoreInfo_UserFieldEntry{
+	store.storeHeader.UserField = append(store.storeHeader.UserField, &metadatapb.DataStoreInfo_UserFieldEntry{
 		Key:   &key,
 		Value: value,
 	})
@@ -2197,7 +2197,7 @@ func (store *FDBRecordStore) ClearHeaderUserField(key string) error {
 // RecordStoreState captures the mutable state of a record store at a point in time.
 // Matches Java's RecordStoreState.
 type RecordStoreState struct {
-	StoreHeader *gen.DataStoreInfo
+	StoreHeader *metadatapb.DataStoreInfo
 	IndexStates map[string]IndexState
 }
 
@@ -2220,7 +2220,7 @@ func (store *FDBRecordStore) GetRecordStoreState() *RecordStoreState {
 // prevent the store from being opened entirely.
 // Goroutine-safe via stateMu (write lock).
 // Matches Java's FDBRecordStore.setStoreLockStateAsync().
-func (store *FDBRecordStore) SetStoreLockState(state gen.DataStoreInfo_StoreLockState_State, reason string) error {
+func (store *FDBRecordStore) SetStoreLockState(state metadatapb.DataStoreInfo_StoreLockState_State, reason string) error {
 	store.stateMu.Lock()
 	defer store.stateMu.Unlock()
 	if store.storeHeader == nil {
@@ -2230,7 +2230,7 @@ func (store *FDBRecordStore) SetStoreLockState(state gen.DataStoreInfo_StoreLock
 		return err
 	}
 	ts := store.context.Env().Now().UnixMilli()
-	store.storeHeader.StoreLockState = &gen.DataStoreInfo_StoreLockState{
+	store.storeHeader.StoreLockState = &metadatapb.DataStoreInfo_StoreLockState{
 		LockState: &state,
 		Reason:    &reason,
 		Timestamp: &ts,
@@ -2329,7 +2329,7 @@ func (store *FDBRecordStore) loadStoreState(existenceCheck StoreExistenceCheck, 
 	if entry.shared {
 		// Clone cached state so store mutations don't corrupt the shared cache entry.
 		// Matches Java's RecordStoreState.toImmutable() which returns an unmodifiable copy.
-		store.storeHeader = proto.Clone(cachedState.StoreHeader).(*gen.DataStoreInfo)
+		store.storeHeader = proto.Clone(cachedState.StoreHeader).(*metadatapb.DataStoreInfo)
 		store.indexStates = make(map[string]IndexState, len(cachedState.IndexStates))
 		for k, v := range cachedState.IndexStates {
 			store.indexStates[k] = v
@@ -2362,7 +2362,7 @@ func (store *FDBRecordStore) SetStateCacheability(cacheable bool) (bool, error) 
 	if store.storeHeader.GetCacheable() == cacheable {
 		return false, nil
 	}
-	header := proto.Clone(store.storeHeader).(*gen.DataStoreInfo)
+	header := proto.Clone(store.storeHeader).(*metadatapb.DataStoreInfo)
 	header.Cacheable = &cacheable
 	if err := store.writeStoreHeader(header); err != nil {
 		return false, err

@@ -11,7 +11,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -623,7 +623,7 @@ func metaWithRenamedField(t *testing.T, to string) *recordlayer.RecordMetaData {
 	}
 	// The key expressions reference the field BY NAME; leaving them behind makes
 	// the rebuild reject the metadata.
-	rename := func(ke *gen.KeyExpression) {
+	rename := func(ke *metadatapb.KeyExpression) {
 		if ke == nil {
 			return
 		}

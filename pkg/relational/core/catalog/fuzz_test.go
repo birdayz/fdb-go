@@ -7,6 +7,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -26,7 +27,7 @@ import (
 func FuzzDeserializeTemplate(f *testing.F) {
 	// An empty-but-valid MetaData proto — exercises "parses as proto but is
 	// semantically minimal" path. RecordMetaDataFromProto should error on it.
-	if empty, err := proto.Marshal(&gen.MetaData{}); err == nil {
+	if empty, err := proto.Marshal(&metadatapb.MetaData{}); err == nil {
 		f.Add(empty)
 	}
 	// Pathological inputs:

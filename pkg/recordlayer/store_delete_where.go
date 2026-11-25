@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"slices"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/types/known/anypb"
 
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -293,11 +293,11 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 			return err
 		}
 		if state.IsWriteOnlyWithQueue() {
-			data, err := anypb.New(&gen.DeleteWhere{Prefix: action.prefix.Pack()})
+			data, err := anypb.New(&metadatapb.DeleteWhere{Prefix: action.prefix.Pack()})
 			if err != nil {
 				return err
 			}
-			if err := store.enqueuePendingIndexWrite(action.index, &gen.PendingWritesQueueEntry{Operation: gen.PendingWritesQueueEntry_DELETE_WHERE.Enum(), Data: data}); err != nil {
+			if err := store.enqueuePendingIndexWrite(action.index, &metadatapb.PendingWritesQueueEntry{Operation: metadatapb.PendingWritesQueueEntry_DELETE_WHERE.Enum(), Data: data}); err != nil {
 				return err
 			}
 			continue

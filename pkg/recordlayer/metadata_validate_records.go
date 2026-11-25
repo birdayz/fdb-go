@@ -11,8 +11,8 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"fdb.dev/gen"
 	"fdb.dev/internal/unicode15"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // relationalUnionName is Java's RecordMetaDataBuilder.DEFAULT_UNION_NAME
@@ -91,7 +91,7 @@ func validateRecordUnion(fd protoreflect.FileDescriptor, union protoreflect.Mess
 		if msg.Name() == relationalUnionName {
 			return &MetaDataError{Message: "Union message type " + string(msg.Name()) + " cannot be a union field."}
 		}
-		if usage, ok := recordUsage(msg); ok && usage != gen.RecordTypeOptions_RECORD {
+		if usage, ok := recordUsage(msg); ok && usage != metadatapb.RecordTypeOptions_RECORD {
 			return &MetaDataError{Message: "Union field " + string(field.Name()) + " has type " +
 				string(msg.Name()) + " which is not a record"}
 		}
@@ -100,7 +100,7 @@ func validateRecordUnion(fd protoreflect.FileDescriptor, union protoreflect.Mess
 	for i := 0; i < messages.Len(); i++ {
 		msg := messages.Get(i)
 		usage, ok := recordUsage(msg)
-		if !ok || usage != gen.RecordTypeOptions_RECORD {
+		if !ok || usage != metadatapb.RecordTypeOptions_RECORD {
 			continue
 		}
 		if msg.Name() == relationalUnionName {
@@ -116,12 +116,12 @@ func validateRecordUnion(fd protoreflect.FileDescriptor, union protoreflect.Mess
 
 // recordUsage reads the (record).usage option, reporting whether it is set
 // (Java's recordTypeOptions.hasUsage()).
-func recordUsage(msg protoreflect.MessageDescriptor) (gen.RecordTypeOptions_Usage, bool) {
+func recordUsage(msg protoreflect.MessageDescriptor) (metadatapb.RecordTypeOptions_Usage, bool) {
 	opts, ok := msg.Options().(*descriptorpb.MessageOptions)
-	if !ok || opts == nil || !proto.HasExtension(opts, gen.E_Record) {
+	if !ok || opts == nil || !proto.HasExtension(opts, metadatapb.E_Record) {
 		return 0, false
 	}
-	rto, ok := proto.GetExtension(opts, gen.E_Record).(*gen.RecordTypeOptions)
+	rto, ok := proto.GetExtension(opts, metadatapb.E_Record).(*metadatapb.RecordTypeOptions)
 	if !ok || rto == nil || rto.Usage == nil {
 		return 0, false
 	}
@@ -153,13 +153,13 @@ func fetchUnionDescriptor(fd protoreflect.FileDescriptor) (protoreflect.MessageD
 		msg := messages.Get(i)
 		if u, ok := recordUsage(msg); ok {
 			switch u {
-			case gen.RecordTypeOptions_UNION:
+			case metadatapb.RecordTypeOptions_UNION:
 				if union != nil {
 					return nil, &MetaDataError{Message: "Only one union descriptor is allowed"}
 				}
 				union = msg
 				continue
-			case gen.RecordTypeOptions_NESTED:
+			case metadatapb.RecordTypeOptions_NESTED:
 				if msg.Name() == relationalUnionName {
 					return nil, &MetaDataError{Message: "Message type " + relationalUnionName + " cannot have NESTED usage"}
 				}

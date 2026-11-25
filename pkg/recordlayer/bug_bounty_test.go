@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -154,9 +154,11 @@ type customKeyExpression struct{}
 func (c *customKeyExpression) Evaluate(_ *FDBStoredRecord[proto.Message], _ proto.Message) ([][]any, error) {
 	return [][]any{{"val"}}, nil
 }
-func (c *customKeyExpression) FieldNames() []string                { return []string{"custom"} }
-func (c *customKeyExpression) ColumnSize() int                     { panic("not implemented") }
-func (c *customKeyExpression) ToKeyExpression() *gen.KeyExpression { return nil }
+
+func (c *customKeyExpression) FieldNames() []string { return []string{"custom"} }
+
+func (c *customKeyExpression) ColumnSize() int                            { panic("not implemented") }
+func (c *customKeyExpression) ToKeyExpression() *metadatapb.KeyExpression { return nil }
 
 func TestBug4_KeyExpressionColumnSizeDefaultZero(t *testing.T) {
 	t.Parallel()

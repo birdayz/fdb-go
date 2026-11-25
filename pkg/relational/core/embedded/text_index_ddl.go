@@ -5,9 +5,9 @@ import (
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"fdb.dev/gen"
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
 	"fdb.dev/pkg/relational/core/metadata"
@@ -162,18 +162,18 @@ func parseTextIndexOptions(ctx antlrgen.ITextIndexOptionsContext, indexName stri
 
 // SQL text access supports only direct scalar coordinates; unsupported key
 // expressions retain ordinary record filtering rather than losing identity.
-func textIndexScalarColumns(key *gen.KeyExpression) ([]string, bool) {
+func textIndexScalarColumns(key *metadatapb.KeyExpression) ([]string, bool) {
 	if key == nil {
 		return nil, false
 	}
 	switch {
 	case key.Field != nil:
-		if key.Field.GetFieldName() == "" || key.Field.GetFanType() != gen.Field_SCALAR {
+		if key.Field.GetFieldName() == "" || key.Field.GetFanType() != metadatapb.Field_SCALAR {
 			return nil, false
 		}
 		// NOT_NULL substitutes protobuf defaults for absent fields, but SQL reads NULL.
 		// Matching only the name would consume predicates with different truth values.
-		if key.Field.GetNullInterpretation() == gen.Field_NOT_NULL {
+		if key.Field.GetNullInterpretation() == metadatapb.Field_NOT_NULL {
 			return nil, false
 		}
 		return []string{recordlayer.ToUserIdentifier(key.Field.GetFieldName())}, true

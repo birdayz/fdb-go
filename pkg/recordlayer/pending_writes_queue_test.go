@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/dst"
@@ -362,18 +362,18 @@ func FuzzPendingQueuePayload(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
 		t.Parallel()
-		message := &gen.PendingWritesQueueEntry{}
+		message := &metadatapb.PendingWritesQueueEntry{}
 		if err := UnmarshalAsJava(data, message); err != nil {
 			return
 		}
-		if message.GetOperation() != gen.PendingWritesQueueEntry_UPDATE && message.GetOperation() != gen.PendingWritesQueueEntry_DELETE_WHERE {
+		if message.GetOperation() != metadatapb.PendingWritesQueueEntry_UPDATE && message.GetOperation() != metadatapb.PendingWritesQueueEntry_DELETE_WHERE {
 			t.Fatalf("closed required enum accepted operation %d", message.GetOperation())
 		}
 		wire, err := proto.Marshal(message)
 		if err != nil {
 			t.Fatal(err)
 		}
-		back := &gen.PendingWritesQueueEntry{}
+		back := &metadatapb.PendingWritesQueueEntry{}
 		if err := UnmarshalAsJava(wire, back); err != nil {
 			t.Fatalf("decoded payload no longer decodes after serialization: %v", err)
 		}
@@ -389,10 +389,10 @@ func FuzzPendingQueuePayload(f *testing.F) {
 // a missing required field. DELETE_WHERE rows, with duplicates.
 func TestPendingQueueOperationLastKnownWins(t *testing.T) {
 	t.Parallel()
-	const update, deleteWhere = gen.PendingWritesQueueEntry_UPDATE, gen.PendingWritesQueueEntry_DELETE_WHERE
+	const update, deleteWhere = metadatapb.PendingWritesQueueEntry_UPDATE, metadatapb.PendingWritesQueueEntry_DELETE_WHERE
 	for _, tc := range []struct {
 		wire        []byte
-		want        gen.PendingWritesQueueEntry_Operation
+		want        metadatapb.PendingWritesQueueEntry_Operation
 		keepUnknown bool
 		fails       bool
 	}{
@@ -406,7 +406,7 @@ func TestPendingQueueOperationLastKnownWins(t *testing.T) {
 		{wire: []byte{8, 99}, fails: true},
 		{wire: []byte{}, fails: true},
 	} {
-		message := &gen.PendingWritesQueueEntry{}
+		message := &metadatapb.PendingWritesQueueEntry{}
 		err := UnmarshalAsJava(tc.wire, message)
 		if tc.fails {
 			if err == nil {

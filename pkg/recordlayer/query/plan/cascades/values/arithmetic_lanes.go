@@ -8,8 +8,8 @@
 package values
 
 import (
-	"fdb.dev/gen"
 	"fdb.dev/internal/unicode15"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
 // ArithmeticLane is one row of Java's ArithmeticValue.PhysicalOperator table
@@ -213,16 +213,16 @@ func ArithmeticOperandIsPrimitive(tc TypeCode) bool {
 
 // arithmeticLaneProtoOperator is the lane's PArithmeticValue.PPhysicalOperator:
 // the table is in Java's enum order, numbered from 1.
-func arithmeticLaneProtoOperator(lane ArithmeticLane) (gen.PArithmeticValue_PPhysicalOperator, bool) {
+func arithmeticLaneProtoOperator(lane ArithmeticLane) (metadatapb.PArithmeticValue_PPhysicalOperator, bool) {
 	for i, l := range arithmeticLanes {
 		if l == lane {
-			return gen.PArithmeticValue_PPhysicalOperator(i + 1), true
+			return metadatapb.PArithmeticValue_PPhysicalOperator(i + 1), true
 		}
 	}
 	return 0, false
 }
 
-func arithmeticLaneForProto(op gen.PArithmeticValue_PPhysicalOperator) (ArithmeticLane, bool) {
+func arithmeticLaneForProto(op metadatapb.PArithmeticValue_PPhysicalOperator) (ArithmeticLane, bool) {
 	if op < 1 || int(op) > len(arithmeticLanes) {
 		return ArithmeticLane{}, false
 	}

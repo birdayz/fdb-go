@@ -6,8 +6,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/metadata"
 )
@@ -329,7 +329,7 @@ func TestInMemory_RepairSchemaRunsTheRebindValidator(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		p.RecordTypes[0].ExplicitKey = &gen.Value{LongValue: proto.Int64(key)}
+		p.RecordTypes[0].ExplicitKey = &metadatapb.Value{LongValue: proto.Int64(key)}
 		md, err := recordlayer.RecordMetaDataFromProto(p)
 		if err != nil {
 			t.Fatal(err)

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	. "github.com/onsi/ginkgo/v2"
@@ -72,10 +72,10 @@ var _ = Describe("a vector index in a binary that does not link vectorindex", fu
 
 	It("refuses to build a windowed VECTOR index it cannot validate", func() {
 		idx := NewVectorIndex("Order$window", KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1)
-		Expect(idx.SetPredicateProto(&gen.Predicate{RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+		Expect(idx.SetPredicateProto(&metadatapb.Predicate{RowNumberWindowPredicate: &metadatapb.RowNumberWindowPredicate{
 			OrderingField: []string{"price"},
 			Size:          proto.Int32(2),
-			Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+			Direction:     metadatapb.RowNumberWindowPredicate_ASC.Enum(),
 		}})).To(Succeed())
 		builder := baseBuilder()
 		builder.AddIndex("Order", idx)

@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -119,13 +119,13 @@ func TestNullStandin_ProtoRoundTrip(t *testing.T) {
 	// src and dst number their fields alike under other names, so the rename
 	// visitor rebuilds every field and nesting of the expression.
 	src, dst := nullStandinRenameDescriptors(t)
-	for _, ni := range []gen.Field_NullInterpretation{gen.Field_NOT_UNIQUE, gen.Field_UNIQUE, gen.Field_NOT_NULL} {
-		field := func(name string) *gen.Field {
-			return &gen.Field{FieldName: proto.String(name), FanType: gen.Field_SCALAR.Enum(), NullInterpretation: ni.Enum()}
+	for _, ni := range []metadatapb.Field_NullInterpretation{metadatapb.Field_NOT_UNIQUE, metadatapb.Field_UNIQUE, metadatapb.Field_NOT_NULL} {
+		field := func(name string) *metadatapb.Field {
+			return &metadatapb.Field{FieldName: proto.String(name), FanType: metadatapb.Field_SCALAR.Enum(), NullInterpretation: ni.Enum()}
 		}
-		in := &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{
+		in := &metadatapb.KeyExpression{Then: &metadatapb.Then{Child: []*metadatapb.KeyExpression{
 			{Field: field("price")},
-			{Nesting: &gen.Nesting{Parent: field("flower"), Child: &gen.KeyExpression{Field: field("type")}}},
+			{Nesting: &metadatapb.Nesting{Parent: field("flower"), Child: &metadatapb.KeyExpression{Field: field("type")}}},
 		}}}
 		expr, err := KeyExpressionFromProto(in)
 		if err != nil {
@@ -139,7 +139,7 @@ func TestNullStandin_ProtoRoundTrip(t *testing.T) {
 			t.Fatalf("%v: rename: %v", ni, err)
 		}
 		children := renamed.ToKeyExpression().GetThen().GetChild()
-		for _, got := range []gen.Field_NullInterpretation{
+		for _, got := range []metadatapb.Field_NullInterpretation{
 			children[0].GetField().GetNullInterpretation(),
 			children[1].GetNesting().GetParent().GetNullInterpretation(),
 			children[1].GetNesting().GetChild().GetField().GetNullInterpretation(),

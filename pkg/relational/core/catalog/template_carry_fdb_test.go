@@ -10,9 +10,9 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/metadata"
 )
@@ -84,23 +84,23 @@ func TestFDB_CreateTemplate_SplicesTheStoredIndexOfAnEquivalentIndex(t *testing.
 	e := newRestoreEnv(t)
 	e.name = "splice"
 	unknown := protowire.AppendVarint(protowire.AppendTag(nil, 1500, protowire.VarintType), 7)
-	v1 := demoMetaData(t, 3, func(p *gen.MetaData) {
+	v1 := demoMetaData(t, 3, func(p *metadatapb.MetaData) {
 		price := recordlayer.Field("price").ToKeyExpression()
 		qty := recordlayer.Field("quantity").ToKeyExpression()
 		// The deprecated fields are set by name (the generated fields are
 		// deprecated, which the linter refuses).
-		withType := &gen.Index{
+		withType := &metadatapb.Index{
 			Name: proto.String("BY_TYPE"), RecordType: []string{"Order"}, RootExpression: price,
 			SubspaceKey: tuple.Tuple{"BY_TYPE"}.Pack(), AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1),
 		}
-		withType.ProtoReflect().Set(indexField("index_type"), protoreflect.ValueOfEnum(gen.Index_UNIQUE.Number()))
-		withValue := &gen.Index{
+		withType.ProtoReflect().Set(indexField("index_type"), protoreflect.ValueOfEnum(metadatapb.Index_UNIQUE.Number()))
+		withValue := &metadatapb.Index{
 			Name: proto.String("BY_VALUE"), RecordType: []string{"Order"}, RootExpression: price,
 			Type: proto.String("value"), SubspaceKey: tuple.Tuple{"BY_VALUE"}.Pack(),
 			AddedVersion: proto.Int32(2), LastModifiedVersion: proto.Int32(2),
 		}
 		withValue.ProtoReflect().Set(indexField("value_expression"), protoreflect.ValueOfMessage(qty.ProtoReflect()))
-		withUnknown := &gen.Index{
+		withUnknown := &metadatapb.Index{
 			Name: proto.String("BY_UNKNOWN"), RecordType: []string{"Order"}, RootExpression: qty,
 			Type: proto.String("value"), SubspaceKey: tuple.Tuple{"BY_UNKNOWN"}.Pack(),
 			AddedVersion: proto.Int32(3), LastModifiedVersion: proto.Int32(3),
@@ -109,7 +109,7 @@ func TestFDB_CreateTemplate_SplicesTheStoredIndexOfAnEquivalentIndex(t *testing.
 		p.Indexes = append(p.Indexes, withType, withValue, withUnknown)
 	})
 	e.writeRow(1, v1)
-	var stored []*gen.Index
+	var stored []*metadatapb.Index
 	mustRun(t, e.run, func(tx api.Transaction) error {
 		p, err := e.cat.SchemaTemplateCatalog().LoadTemplateProto(tx, "splice", 1)
 		stored = p.GetIndexes()
@@ -144,7 +144,7 @@ func TestFDB_CreateTemplate_SplicesTheStoredIndexOfAnEquivalentIndex(t *testing.
 		if err != nil {
 			return err
 		}
-		byName := map[string]*gen.Index{}
+		byName := map[string]*metadatapb.Index{}
 		for _, idx := range p.GetIndexes() {
 			byName[idx.GetName()] = idx
 		}
@@ -165,38 +165,38 @@ func TestFDB_CreateTemplate_SplicesTheStoredIndexOfAnEquivalentIndex(t *testing.
 
 // indexField is a field of the Index message by name.
 func indexField(name protoreflect.Name) protoreflect.FieldDescriptor {
-	return (&gen.Index{}).ProtoReflect().Descriptor().Fields().ByName(name)
+	return (&metadatapb.Index{}).ProtoReflect().Descriptor().Fields().ByName(name)
 }
 
 // laneIndex is an index of Order over root, a key expression proto.
-func laneIndex(name string, root *gen.KeyExpression) *gen.Index {
-	return &gen.Index{
+func laneIndex(name string, root *metadatapb.KeyExpression) *metadatapb.Index {
+	return &metadatapb.Index{
 		Name: proto.String(name), RecordType: []string{"Order"}, RootExpression: root, Type: proto.String("value"),
 		SubspaceKey: tuple.Tuple{name}.Pack(), AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1),
 	}
 }
 
-func fn(name string, args ...*gen.KeyExpression) *gen.KeyExpression {
+func fn(name string, args ...*metadatapb.KeyExpression) *metadatapb.KeyExpression {
 	arguments := args[0]
 	if len(args) > 1 {
-		arguments = &gen.KeyExpression{Then: &gen.Then{Child: args}}
+		arguments = &metadatapb.KeyExpression{Then: &metadatapb.Then{Child: args}}
 	}
-	return &gen.KeyExpression{Function: &gen.Function{Name: proto.String(name), Arguments: arguments}}
+	return &metadatapb.KeyExpression{Function: &metadatapb.Function{Name: proto.String(name), Arguments: arguments}}
 }
 
-func field(name string) *gen.KeyExpression { return recordlayer.Field(name).ToKeyExpression() }
+func field(name string) *metadatapb.KeyExpression { return recordlayer.Field(name).ToKeyExpression() }
 
-func intLit(v int32) *gen.KeyExpression {
-	return &gen.KeyExpression{Value: &gen.Value{IntValue: proto.Int32(v)}}
+func intLit(v int32) *metadatapb.KeyExpression {
+	return &metadatapb.KeyExpression{Value: &metadatapb.Value{IntValue: proto.Int32(v)}}
 }
 
-func longLit(v int64) *gen.KeyExpression {
-	return &gen.KeyExpression{Value: &gen.Value{LongValue: proto.Int64(v)}}
+func longLit(v int64) *metadatapb.KeyExpression {
+	return &metadatapb.KeyExpression{Value: &metadatapb.Value{LongValue: proto.Int64(v)}}
 }
 
 // laneTemplate is the demo meta-data at template version `version` with one
 // index over root, built by hand (no DDL clause sees it).
-func laneTemplate(t *testing.T, name string, version int, root *gen.KeyExpression) api.SchemaTemplate {
+func laneTemplate(t *testing.T, name string, version int, root *metadatapb.KeyExpression) api.SchemaTemplate {
 	t.Helper()
 	p, err := buildVersionedTemplate(t, name, 1).(*metadata.RecordLayerSchemaTemplate).Underlying().ToProto()
 	if err != nil {
@@ -228,7 +228,7 @@ func TestCreateTemplate_LaneCheck(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
 		name  string
-		root  *gen.KeyExpression
+		root  *metadatapb.KeyExpression
 		types string // "" when admitted, else the refused operand types
 	}{
 		{"INT + INT", fn("add", field("price"), field("quantity")), ""},
@@ -307,7 +307,7 @@ func TestFDB_CreateTemplate_LaneCheckReadsOnlyTheIndexesASaveDefines(t *testing.
 	e := newRestoreEnv(t)
 	e.name = "lanekept"
 	noLane := fn("bitmap_bucket_offset", field("coord_x"), longLit(10000))
-	v1 := demoMetaData(t, 1, func(p *gen.MetaData) { p.Indexes = append(p.Indexes, laneIndex("LANE_IX", noLane)) })
+	v1 := demoMetaData(t, 1, func(p *metadatapb.MetaData) { p.Indexes = append(p.Indexes, laneIndex("LANE_IX", noLane)) })
 	e.writeRow(1, v1)
 	mustRun(t, e.run, func(tx api.Transaction) error {
 		loaded, err := e.cat.SchemaTemplateCatalog().LoadSchemaTemplateAtVersion(tx, "lanekept", 1)

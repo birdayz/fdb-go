@@ -7,8 +7,8 @@
 package recordlayer
 
 import (
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -119,13 +119,13 @@ func (l *ListKeyExpression) GetChildren() []KeyExpression {
 
 // ToKeyExpression serializes ListKeyExpression to proto.
 // Matches Java's ListKeyExpression.toKeyExpression().
-func (l *ListKeyExpression) ToKeyExpression() *gen.KeyExpression {
-	children := make([]*gen.KeyExpression, len(l.children))
+func (l *ListKeyExpression) ToKeyExpression() *metadatapb.KeyExpression {
+	children := make([]*metadatapb.KeyExpression, len(l.children))
 	for i, child := range l.children {
 		children[i] = child.ToKeyExpression()
 	}
-	return &gen.KeyExpression{
-		List: &gen.List{
+	return &metadatapb.KeyExpression{
+		List: &metadatapb.List{
 			Child: children,
 		},
 	}

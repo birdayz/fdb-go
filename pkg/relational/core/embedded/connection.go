@@ -24,7 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -400,7 +400,7 @@ type embeddedTx struct {
 
 	// tempFunctions are this transaction's CREATE TEMPORARY FUNCTIONs,
 	// dropped with it; tempMD is the schema metadata with them added.
-	tempFunctions []*gen.PUserDefinedFunction
+	tempFunctions []*metadatapb.PUserDefinedFunction
 	tempMD        *recordlayer.RecordMetaData
 	tempBase      *recordlayer.RecordMetaData
 

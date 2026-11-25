@@ -8,11 +8,11 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -273,7 +273,7 @@ func TestFilteredIndexProofChecksCurrentMetadata(t *testing.T) {
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
-	pred := &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_FALSE.Enum()}}
+	pred := &metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_FALSE.Enum()}}
 	idx := recordlayer.NewIndex("proof_index", recordlayer.Field("price"))
 	if err := idx.SetPredicateProto(pred); err != nil {
 		t.Fatal(err)
@@ -302,7 +302,7 @@ func TestFilteredIndexProofChecksCurrentMetadata(t *testing.T) {
 				t.Fatalf("invalid proof %x admitted: %v", invalid, err)
 			}
 		}
-		changed := &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_NULL.Enum()}}
+		changed := &metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{Value: metadatapb.ConstantPredicate_NULL.Enum()}}
 		if err := idx.SetPredicateProto(changed); err != nil {
 			return nil, err
 		}

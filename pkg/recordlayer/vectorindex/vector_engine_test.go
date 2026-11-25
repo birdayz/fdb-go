@@ -6,9 +6,9 @@ import (
 	"math"
 	"testing"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -139,7 +139,7 @@ func TestVectorScanOptionsWireEncoding(t *testing.T) {
 	if err != nil || !proto.Equal(wire, roundTrip) {
 		t.Fatalf("all-option round trip: %v, %v", roundTrip, err)
 	}
-	want := map[string]*gen.Value{
+	want := map[string]*metadatapb.Value{
 		"vectorReturnVectors": {BoolValue: proto.Bool(false)}, "hnswEfSearch": {IntValue: proto.Int32(11)},
 		"guardiannCandidatePoolFactor": {DoubleValue: proto.Float64(1.5)}, "guardiannSearchMaxClusters": {IntValue: proto.Int32(7)},
 		"guardiannSearchMinClustersBeforePruning": {IntValue: proto.Int32(7)}, "guardiannSearchDistanceRatioCutoff": {DoubleValue: proto.Float64(1.5)},
@@ -165,7 +165,7 @@ func TestVectorScanOptionsWireRoundTrip(t *testing.T) {
 		for _, null := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/null=%t", key, null), func(t *testing.T) {
 				t.Parallel()
-				value := &gen.Value{}
+				value := &metadatapb.Value{}
 				if !null {
 					switch key {
 					case "vectorReturnVectors":
@@ -176,7 +176,7 @@ func TestVectorScanOptionsWireRoundTrip(t *testing.T) {
 						value.IntValue = proto.Int32(0)
 					}
 				}
-				want := &gen.PVectorIndexScanOptions{OptionEntries: []*gen.PVectorIndexScanOptions_POptionEntry{{Key: proto.String(key), Value: value}}}
+				want := &metadatapb.PVectorIndexScanOptions{OptionEntries: []*metadatapb.PVectorIndexScanOptions_POptionEntry{{Key: proto.String(key), Value: value}}}
 				opts, err := recordlayer.VectorIndexScanOptionsFromProto(want)
 				if err != nil {
 					t.Fatal(err)
@@ -205,11 +205,11 @@ func TestVectorScanOptionsWireRoundTrip(t *testing.T) {
 
 func TestVectorScanOptionsAliasesAndRejections(t *testing.T) {
 	t.Parallel()
-	entry := func(key string, value *gen.Value) *gen.PVectorIndexScanOptions_POptionEntry {
-		return &gen.PVectorIndexScanOptions_POptionEntry{Key: proto.String(key), Value: value}
+	entry := func(key string, value *metadatapb.Value) *metadatapb.PVectorIndexScanOptions_POptionEntry {
+		return &metadatapb.PVectorIndexScanOptions_POptionEntry{Key: proto.String(key), Value: value}
 	}
 	for _, alias := range []string{"vectorReturnVectors", "hnswReturnVectors"} {
-		opts, err := recordlayer.VectorIndexScanOptionsFromProto(&gen.PVectorIndexScanOptions{OptionEntries: []*gen.PVectorIndexScanOptions_POptionEntry{entry(alias, &gen.Value{BoolValue: proto.Bool(true)})}})
+		opts, err := recordlayer.VectorIndexScanOptionsFromProto(&metadatapb.PVectorIndexScanOptions{OptionEntries: []*metadatapb.PVectorIndexScanOptions_POptionEntry{entry(alias, &metadatapb.Value{BoolValue: proto.Bool(true)})}})
 		if err != nil || opts.ReturnVectors == nil || !*opts.ReturnVectors {
 			t.Fatalf("alias %s: %v, %v", alias, opts, err)
 		}
@@ -218,22 +218,22 @@ func TestVectorScanOptionsAliasesAndRejections(t *testing.T) {
 			t.Fatalf("alias emitted noncanonical name: %v %v", wire, err)
 		}
 		for _, other := range []string{"vectorReturnVectors", "hnswReturnVectors"} {
-			_, err := recordlayer.VectorIndexScanOptionsFromProto(&gen.PVectorIndexScanOptions{OptionEntries: []*gen.PVectorIndexScanOptions_POptionEntry{entry(alias, &gen.Value{}), entry(other, &gen.Value{BoolValue: proto.Bool(false)})}})
+			_, err := recordlayer.VectorIndexScanOptionsFromProto(&metadatapb.PVectorIndexScanOptions{OptionEntries: []*metadatapb.PVectorIndexScanOptions_POptionEntry{entry(alias, &metadatapb.Value{}), entry(other, &metadatapb.Value{BoolValue: proto.Bool(false)})}})
 			var duplicate *recordlayer.RecordCoreError
 			if !errors.As(err, &duplicate) || duplicate.IndexOption != "vectorReturnVectors" {
 				t.Fatalf("duplicate %s/%s: %v", alias, other, err)
 			}
 		}
 	}
-	for _, e := range []*gen.PVectorIndexScanOptions_POptionEntry{
-		entry("unknown", &gen.Value{}), nil,
-		entry("hnswEfSearch", &gen.Value{LongValue: proto.Int64(1)}),
-		entry("vectorReturnVectors", &gen.Value{IntValue: proto.Int32(1)}),
-		entry("guardiannCandidatePoolFactor", &gen.Value{FloatValue: proto.Float32(1)}),
-		entry("guardiannSearchConcurrency", &gen.Value{BoolValue: proto.Bool(true)}),
-		entry("hnswEfSearch", &gen.Value{IntValue: proto.Int32(1), BoolValue: proto.Bool(true)}),
+	for _, e := range []*metadatapb.PVectorIndexScanOptions_POptionEntry{
+		entry("unknown", &metadatapb.Value{}), nil,
+		entry("hnswEfSearch", &metadatapb.Value{LongValue: proto.Int64(1)}),
+		entry("vectorReturnVectors", &metadatapb.Value{IntValue: proto.Int32(1)}),
+		entry("guardiannCandidatePoolFactor", &metadatapb.Value{FloatValue: proto.Float32(1)}),
+		entry("guardiannSearchConcurrency", &metadatapb.Value{BoolValue: proto.Bool(true)}),
+		entry("hnswEfSearch", &metadatapb.Value{IntValue: proto.Int32(1), BoolValue: proto.Bool(true)}),
 	} {
-		if _, err := recordlayer.VectorIndexScanOptionsFromProto(&gen.PVectorIndexScanOptions{OptionEntries: []*gen.PVectorIndexScanOptions_POptionEntry{e}}); err == nil {
+		if _, err := recordlayer.VectorIndexScanOptionsFromProto(&metadatapb.PVectorIndexScanOptions{OptionEntries: []*metadatapb.PVectorIndexScanOptions_POptionEntry{e}}); err == nil {
 			t.Fatalf("accepted malformed entry %v", e)
 		}
 	}
@@ -247,11 +247,11 @@ func TestVectorScanOptionsAliasesAndRejections(t *testing.T) {
 }
 
 func FuzzVectorScanOptionsProto(f *testing.F) {
-	for _, p := range []*gen.PVectorIndexScanOptions{
+	for _, p := range []*metadatapb.PVectorIndexScanOptions{
 		{},
-		{OptionEntries: []*gen.PVectorIndexScanOptions_POptionEntry{{Key: proto.String("hnswReturnVectors"), Value: &gen.Value{BoolValue: proto.Bool(false)}}}},
-		{OptionEntries: []*gen.PVectorIndexScanOptions_POptionEntry{{Key: proto.String("hnswEfSearch"), Value: &gen.Value{IntValue: proto.Int32(0)}}}},
-		{OptionEntries: []*gen.PVectorIndexScanOptions_POptionEntry{{Key: proto.String("vectorReturnVectors"), Value: &gen.Value{}}, {Key: proto.String("hnswReturnVectors"), Value: &gen.Value{}}}},
+		{OptionEntries: []*metadatapb.PVectorIndexScanOptions_POptionEntry{{Key: proto.String("hnswReturnVectors"), Value: &metadatapb.Value{BoolValue: proto.Bool(false)}}}},
+		{OptionEntries: []*metadatapb.PVectorIndexScanOptions_POptionEntry{{Key: proto.String("hnswEfSearch"), Value: &metadatapb.Value{IntValue: proto.Int32(0)}}}},
+		{OptionEntries: []*metadatapb.PVectorIndexScanOptions_POptionEntry{{Key: proto.String("vectorReturnVectors"), Value: &metadatapb.Value{}}, {Key: proto.String("hnswReturnVectors"), Value: &metadatapb.Value{}}}},
 	} {
 		data, err := proto.Marshal(p)
 		if err != nil {
@@ -260,7 +260,7 @@ func FuzzVectorScanOptionsProto(f *testing.F) {
 		f.Add(data)
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
-		var p gen.PVectorIndexScanOptions
+		var p metadatapb.PVectorIndexScanOptions
 		if err := proto.Unmarshal(data, &p); err != nil {
 			return
 		}

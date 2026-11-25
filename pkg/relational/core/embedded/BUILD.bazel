@@ -63,7 +63,6 @@ go_library(
     importpath = "fdb.dev/pkg/relational/core/embedded",
     visibility = ["//visibility:public"],
     deps = [
-        "//gen",
         "//internal/recordlayer/query/executor",
         "//internal/unicode15",
         "//pkg/fdbgo/fdb",
@@ -71,6 +70,7 @@ go_library(
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
         "//pkg/recordlayer/indexfetch",
+        "//pkg/recordlayer/metadatapb",
         "//pkg/recordlayer/protoname",
         "//pkg/recordlayer/query/plan/cascades",
         "//pkg/recordlayer/query/plan/cascades/expressions",
@@ -625,6 +625,7 @@ go_test(
         "//pkg/recordlayer",
         "//pkg/recordlayer/chaos",
         "//pkg/recordlayer/indexfetch",
+        "//pkg/recordlayer/metadatapb",
         "//pkg/recordlayer/protoname",
         "//pkg/recordlayer/query/plan/cascades",
         "//pkg/recordlayer/query/plan/cascades/expressions",

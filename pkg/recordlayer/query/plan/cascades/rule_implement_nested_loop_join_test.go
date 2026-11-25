@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -2693,7 +2693,7 @@ func TestImplementNestedLoopJoin_ExistsShortcutRejectsFanOutCandidate(t *testing
 
 	fanOut := true
 	scalar := false
-	scalarFanType := gen.Field_SCALAR
+	scalarFanType := metadatapb.Field_SCALAR
 	newCandidate := func(name string, columns []string, createsDuplicates *bool) MatchCandidate {
 		aliases := make([]values.CorrelationIdentifier, len(columns))
 		for i := range aliases {
@@ -2732,12 +2732,12 @@ func TestImplementNestedLoopJoin_ExistsShortcutRejectsFanOutCandidate(t *testing
 		false,
 		nil,
 		&scalar,
-	).WithRootKeyExpression(&gen.KeyExpression{Nesting: &gen.Nesting{
-		Parent: &gen.Field{
+	).WithRootKeyExpression(&metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{
+		Parent: &metadatapb.Field{
 			FieldName: proto.String("ADDR"),
 			FanType:   &scalarFanType,
 		},
-		Child: candidateTestKeyField("FK", gen.Field_SCALAR),
+		Child: candidateTestKeyField("FK", metadatapb.Field_SCALAR),
 	}})
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{
 		newCandidate("INNER$fk_tags_fanout", []string{"FK", "TAGS"}, &fanOut),

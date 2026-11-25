@@ -5,8 +5,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -16,9 +16,9 @@ import (
 func TestAddGeneratedIndex_CarriedVerbatim(t *testing.T) {
 	t.Parallel()
 
-	pred := &gen.Predicate{
-		ConstantPredicate: &gen.ConstantPredicate{
-			Value: gen.ConstantPredicate_TRUE.Enum(),
+	pred := &metadatapb.Predicate{
+		ConstantPredicate: &metadatapb.ConstantPredicate{
+			Value: metadatapb.ConstantPredicate_TRUE.Enum(),
 		},
 	}
 	root := recordlayer.KeyWithValue(

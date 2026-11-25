@@ -33,10 +33,10 @@ go_test(
     ],
     embed = [":fleet"],
     deps = [
-        "//gen",
         "//gen/demopb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",
+        "//pkg/recordlayer/metadatapb",
         "//pkg/relational/core/catalog",
         "//pkg/relational/core/keyspace",
         "@org_golang_google_protobuf//proto",

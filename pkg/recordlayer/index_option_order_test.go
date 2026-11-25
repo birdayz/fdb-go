@@ -5,7 +5,7 @@ import (
 	"slices"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -95,12 +95,12 @@ func TestIndexOptionOrder_ConstructorOptionsLead(t *testing.T) {
 func TestIndexOptionOrder_FromProtoKeepsStoredOrder(t *testing.T) {
 	t.Parallel()
 	stored := []string{"zeta", "unique", "alpha", "replacedBy_1", "mid", "replacedBy_0"}
-	p := &gen.Index{
+	p := &metadatapb.Index{
 		Name:           proto.String("i"),
 		RootExpression: Field("a").ToKeyExpression(),
 	}
 	for _, k := range stored {
-		p.Options = append(p.Options, &gen.Index_Option{Key: proto.String(k), Value: proto.String("v-" + k)})
+		p.Options = append(p.Options, &metadatapb.Index_Option{Key: proto.String(k), Value: proto.String("v-" + k)})
 	}
 	for range 50 {
 		idx, err := indexFromProto(p)
@@ -122,10 +122,10 @@ func TestIndexOptionOrder_FromProtoKeepsStoredOrder(t *testing.T) {
 // the last value silently).
 func TestIndexOptionOrder_FromProtoRefusesDuplicateKey(t *testing.T) {
 	t.Parallel()
-	p := &gen.Index{
+	p := &metadatapb.Index{
 		Name:           proto.String("i"),
 		RootExpression: Field("a").ToKeyExpression(),
-		Options: []*gen.Index_Option{
+		Options: []*metadatapb.Index_Option{
 			{Key: proto.String("unique"), Value: proto.String("true")},
 			{Key: proto.String("x"), Value: proto.String("1")},
 			{Key: proto.String("unique"), Value: proto.String("false")},
@@ -145,10 +145,10 @@ func TestIndexOptionOrder_FromProtoRefusesDuplicateKey(t *testing.T) {
 	// Adjacent repeats, the second input of the JVM spec "WS-J duplicate index
 	// option" (conformance/ws_j_index_fidelity_conformance_test.go), which pins the
 	// target's message for both inputs.
-	_, err = indexFromProto(&gen.Index{
+	_, err = indexFromProto(&metadatapb.Index{
 		Name:           proto.String("i"),
 		RootExpression: Field("a").ToKeyExpression(),
-		Options: []*gen.Index_Option{
+		Options: []*metadatapb.Index_Option{
 			{Key: proto.String("a"), Value: proto.String("1")},
 			{Key: proto.String("a"), Value: proto.String("2")},
 		},

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/vectorcodec"
 
 	"google.golang.org/protobuf/encoding/prototext"
@@ -102,16 +102,16 @@ func TestLiteralSerializationJavaCarriers(t *testing.T) {
 		name     string
 		value    any
 		typ      Type
-		expected *gen.Value
+		expected *metadatapb.Value
 	}{
-		{"int", int64(7), NotNullInt, &gen.Value{IntValue: proto.Int32(7)}},
-		{"float", float64(1.25), NotNullFloat, &gen.Value{FloatValue: proto.Float32(1.25)}},
-		{"long", int64(7), NotNullLong, &gen.Value{LongValue: proto.Int64(7)}},
-		{"native int", int(7), NotNullInt, &gen.Value{IntValue: proto.Int32(7)}},
-		{"narrow long carrier", int32(7), NotNullLong, &gen.Value{LongValue: proto.Int64(7)}},
-		{"narrow double carrier", float32(1.25), NotNullDouble, &gen.Value{DoubleValue: proto.Float64(1.25)}},
-		{"rounded float", float64(1.23456789), NotNullFloat, &gen.Value{FloatValue: proto.Float32(float32(1.23456789))}},
-		{"double", float64(1.25), NotNullDouble, &gen.Value{DoubleValue: proto.Float64(1.25)}},
+		{"int", int64(7), NotNullInt, &metadatapb.Value{IntValue: proto.Int32(7)}},
+		{"float", float64(1.25), NotNullFloat, &metadatapb.Value{FloatValue: proto.Float32(1.25)}},
+		{"long", int64(7), NotNullLong, &metadatapb.Value{LongValue: proto.Int64(7)}},
+		{"native int", int(7), NotNullInt, &metadatapb.Value{IntValue: proto.Int32(7)}},
+		{"narrow long carrier", int32(7), NotNullLong, &metadatapb.Value{LongValue: proto.Int64(7)}},
+		{"narrow double carrier", float32(1.25), NotNullDouble, &metadatapb.Value{DoubleValue: proto.Float64(1.25)}},
+		{"rounded float", float64(1.23456789), NotNullFloat, &metadatapb.Value{FloatValue: proto.Float32(float32(1.23456789))}},
+		{"double", float64(1.25), NotNullDouble, &metadatapb.Value{DoubleValue: proto.Float64(1.25)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -233,7 +233,7 @@ func TestBooleanAndLikeMacroBodiesSerialize(t *testing.T) {
 // back and rewrite unchanged; a struct with an enum field serializes too.
 func TestEnumMacroTypesRoundTrip(t *testing.T) {
 	t.Parallel()
-	var java gen.PUserDefinedFunction
+	var java metadatapb.PUserDefinedFunction
 	if err := prototext.Unmarshal([]byte(`user_defined_macro_function: {
 		function_name: "M"
 		arguments: { quantified_object_value: { alias: "e" result_type: { enum_type: {

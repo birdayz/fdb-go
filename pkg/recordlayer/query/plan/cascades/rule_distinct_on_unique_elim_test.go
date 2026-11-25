@@ -3,7 +3,7 @@ package cascades
 import (
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -500,7 +500,7 @@ func TestDistinctFinal_ThroughFilter(t *testing.T) {
 func secondaryUniqueTestCandidates() []MatchCandidate {
 	fanOut := true
 	scalar := false
-	scalarFanType := gen.Field_SCALAR
+	scalarFanType := metadatapb.Field_SCALAR
 	newUniqueCandidate := func(name, column string, createsDuplicates *bool) *ValueIndexScanMatchCandidate {
 		return NewValueIndexScanMatchCandidateWithFunctions(
 			name,
@@ -538,12 +538,12 @@ func secondaryUniqueTestCandidates() []MatchCandidate {
 			nil,
 			&scalar,
 		).WithKeyComponentTypes([]values.Type{values.NotNullString}).
-			WithRootKeyExpression(&gen.KeyExpression{Nesting: &gen.Nesting{
-				Parent: &gen.Field{
+			WithRootKeyExpression(&metadatapb.KeyExpression{Nesting: &metadatapb.Nesting{
+				Parent: &metadatapb.Field{
 					FieldName: proto.String("ADDR"),
 					FanType:   &scalarFanType,
 				},
-				Child: candidateTestKeyField("CITY", gen.Field_SCALAR),
+				Child: candidateTestKeyField("CITY", metadatapb.Field_SCALAR),
 			}}),
 		newUniqueCandidate("T$email_unique", "EMAIL", &scalar),
 		// Clauses 3 and 4 — and the ONLY arm that witnesses them. A SPARSE
@@ -559,8 +559,8 @@ func secondaryUniqueTestCandidates() []MatchCandidate {
 		// clause 5 does not subsume, and it is also the one whose cause is
 		// invisible in the index's key definition.
 		newUniqueCandidate("T$sparse_email_unique", "SPARSE_EMAIL", &scalar).
-			WithPredicateProto(&gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
-				Value: gen.ConstantPredicate_FALSE.Enum(),
+			WithPredicateProto(&metadatapb.Predicate{ConstantPredicate: &metadatapb.ConstantPredicate{
+				Value: metadatapb.ConstantPredicate_FALSE.Enum(),
 			}}),
 		// Clause 8, NULL direction. Under NULLS DISTINCT the uniqueness check is
 		// SKIPPED when the component is NULL, so this index legitimately holds

@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -66,7 +66,7 @@ var _ = Describe("vector indexes under core contracts", func() {
 	It("explicitly merges HNSW and sliding HNSW without inventing deferred work", func() {
 		root := specSubspace()
 		plain := recordlayer.NewVectorIndex("vector", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 1)
-		windowed := newWindowedVectorIndex("windowed", 2, gen.RowNumberWindowPredicate_ASC)
+		windowed := newWindowedVectorIndex("windowed", 2, metadatapb.RowNumberWindowPredicate_ASC)
 		builder := baseBuilder()
 		builder.AddIndex("Order", plain)
 		builder.AddIndex("Order", windowed)

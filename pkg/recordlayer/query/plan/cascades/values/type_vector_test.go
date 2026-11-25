@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -38,7 +38,7 @@ func TestVectorTypeIdentityAndProto(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := &gen.PType{SpecificType: &gen.PType_VectorType{VectorType: &gen.PType_PVectorType{Precision: proto.Int32(16), Dimensions: proto.Int32(3), IsNullable: proto.Bool(false)}}}
+	want := &metadatapb.PType{SpecificType: &metadatapb.PType_VectorType{VectorType: &metadatapb.PType_PVectorType{Precision: proto.Int32(16), Dimensions: proto.Int32(3), IsNullable: proto.Bool(false)}}}
 	if !proto.Equal(p, want) {
 		t.Fatalf("proto=%v, want %v", p, want)
 	}
@@ -55,7 +55,7 @@ func TestVectorTypeIdentityAndProto(t *testing.T) {
 	if fd.Kind() != protoreflect.BytesKind {
 		t.Fatalf("vector field kind: %v", fd.Kind())
 	}
-	opts := proto.GetExtension(fd.Options(), gen.E_Field).(*gen.FieldOptions).GetVectorOptions()
+	opts := proto.GetExtension(fd.Options(), metadatapb.E_Field).(*metadatapb.FieldOptions).GetVectorOptions()
 	if opts.GetPrecision() != 16 || opts.GetDimensions() != 3 {
 		t.Fatalf("vector options: %v", opts)
 	}
@@ -208,7 +208,7 @@ func TestVectorRecordSerializationIdentity(t *testing.T) {
 
 func TestVectorProtoRequiresNullability(t *testing.T) {
 	t.Parallel()
-	wire := &gen.PType{SpecificType: &gen.PType_VectorType{VectorType: &gen.PType_PVectorType{Precision: proto.Int32(16), Dimensions: proto.Int32(3)}}}
+	wire := &metadatapb.PType{SpecificType: &metadatapb.PType_VectorType{VectorType: &metadatapb.PType_PVectorType{Precision: proto.Int32(16), Dimensions: proto.Int32(3)}}}
 	if _, err := NewSerializationContext().TypeFromProto(wire); err == nil {
 		t.Fatal("Java requires vector isNullable presence")
 	}

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/dst"
@@ -164,8 +164,8 @@ func TestIndexBlockLeaseReadsTheEnvClock(t *testing.T) {
 				}
 				// A BY_RECORDS stamp is what BlockIndex marks and what the build compares
 				// against; without it BlockIndex has nothing to block.
-				return nil, store.SaveIndexingTypeStamp(priceIndex, &gen.IndexBuildIndexingStamp{
-					Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+				return nil, store.SaveIndexingTypeStamp(priceIndex, &metadatapb.IndexBuildIndexingStamp{
+					Method: metadatapb.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
 				})
 			}); err != nil {
 				t.Fatalf("seed: %v", err)

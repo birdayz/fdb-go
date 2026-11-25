@@ -22,8 +22,8 @@ import (
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
@@ -50,7 +50,7 @@ type GeneratedIndex struct {
 	// Predicate is the sparse-index predicate proto for a WHERE-carrying
 	// definition (getTopLevelPredicate → IndexPredicate.fromQueryPredicate,
 	// MaterializedViewIndexGenerator.java:169-172). Nil for a full index.
-	Predicate *gen.Predicate
+	Predicate *metadatapb.Predicate
 }
 
 // Options carries the caller-side switches Java threads into

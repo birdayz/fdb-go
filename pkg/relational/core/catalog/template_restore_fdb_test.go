@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -41,7 +42,7 @@ func newRestoreEnv(t *testing.T) *restoreEnv {
 
 // demoMetaData is the demo records' MetaData at metadata version mdVersion,
 // with mutate applied, marshalled: a template's stored META_DATA.
-func demoMetaData(t *testing.T, mdVersion int32, mutate func(*gen.MetaData)) []byte {
+func demoMetaData(t *testing.T, mdVersion int32, mutate func(*metadatapb.MetaData)) []byte {
 	t.Helper()
 	p, err := buildVersionedTemplate(t, "x", 1).(*metadata.RecordLayerSchemaTemplate).Underlying().ToProto()
 	if err != nil {
@@ -60,9 +61,9 @@ func demoMetaData(t *testing.T, mdVersion int32, mutate func(*gen.MetaData)) []b
 
 // withPriceIndex adds a value index on Order.price at the given versions, its
 // predicate pred when non-nil.
-func withPriceIndex(added, lastModified int32, root recordlayer.KeyExpression, pred *gen.Predicate) func(*gen.MetaData) {
-	return func(p *gen.MetaData) {
-		p.Indexes = append(p.Indexes, &gen.Index{
+func withPriceIndex(added, lastModified int32, root recordlayer.KeyExpression, pred *metadatapb.Predicate) func(*metadatapb.MetaData) {
+	return func(p *metadatapb.MetaData) {
+		p.Indexes = append(p.Indexes, &metadatapb.Index{
 			Name:                proto.String("Order$price"),
 			RecordType:          []string{"Order"},
 			RootExpression:      root.ToKeyExpression(),
@@ -75,11 +76,11 @@ func withPriceIndex(added, lastModified int32, root recordlayer.KeyExpression, p
 	}
 }
 
-func priceAbove(n int32) *gen.Predicate {
-	return &gen.Predicate{ValuePredicate: &gen.ValuePredicate{
+func priceAbove(n int32) *metadatapb.Predicate {
+	return &metadatapb.Predicate{ValuePredicate: &metadatapb.ValuePredicate{
 		Value: []string{"price"},
-		Comparison: &gen.Comparison{SimpleComparison: &gen.SimpleComparison{
-			Type: gen.ComparisonType_GREATER_THAN.Enum(), Operand: &gen.Value{IntValue: proto.Int32(n)},
+		Comparison: &metadatapb.Comparison{SimpleComparison: &metadatapb.SimpleComparison{
+			Type: metadatapb.ComparisonType_GREATER_THAN.Enum(), Operand: &metadatapb.Value{IntValue: proto.Int32(n)},
 		}},
 	}}
 }
@@ -142,7 +143,7 @@ func (e *restoreEnv) bind(db, schema string, version int, md []byte) {
 // openStore opens db/schema's store under md and runs fn on it.
 func (e *restoreEnv) openStore(db, schema string, md []byte, fn func(*recordlayer.FDBRecordStore) error) {
 	e.t.Helper()
-	p := &gen.MetaData{}
+	p := &metadatapb.MetaData{}
 	if err := proto.Unmarshal(md, p); err != nil {
 		e.t.Fatal(err)
 	}
@@ -348,11 +349,11 @@ func TestFDB_Restore_OneHistory(t *testing.T) {
 			return demoMetaData(t, 6, withPriceIndex(2, 5, recordlayer.Field("price"), priceAbove(1)))
 		}, "template version 1 has metadata version 6, above version 3's 5"},
 		{"a record type key that differs", func(t *testing.T) []byte {
-			return demoMetaData(t, 5, func(p *gen.MetaData) {
+			return demoMetaData(t, 5, func(p *metadatapb.MetaData) {
 				withPriceIndex(2, 5, recordlayer.Field("price"), priceAbove(1))(p)
 				for _, rt := range p.RecordTypes {
 					if rt.GetName() == "Customer" {
-						rt.ExplicitKey = &gen.Value{LongValue: proto.Int64(99)}
+						rt.ExplicitKey = &metadatapb.Value{LongValue: proto.Int64(99)}
 					}
 				}
 			})
@@ -368,21 +369,21 @@ func TestFDB_Restore_OneHistory(t *testing.T) {
 				return k
 			}
 			orderKey, customerKey := keyOf("Order"), keyOf("Customer")
-			return demoMetaData(t, 5, func(p *gen.MetaData) {
+			return demoMetaData(t, 5, func(p *metadatapb.MetaData) {
 				withPriceIndex(2, 5, recordlayer.Field("price"), priceAbove(1))(p)
 				for _, rt := range p.RecordTypes {
 					switch rt.GetName() {
 					case "Order":
-						rt.ExplicitKey = &gen.Value{LongValue: proto.Int64(customerKey)}
+						rt.ExplicitKey = &metadatapb.Value{LongValue: proto.Int64(customerKey)}
 					case "Customer":
-						rt.ExplicitKey = &gen.Value{LongValue: proto.Int64(orderKey)}
+						rt.ExplicitKey = &metadatapb.Value{LongValue: proto.Int64(orderKey)}
 					}
 				}
 			})
 		}, "record type key changed"},
 		{"a former-index key the other version's live index reuses", func(t *testing.T) []byte {
-			return demoMetaData(t, 5, func(p *gen.MetaData) {
-				p.FormerIndexes = append(p.FormerIndexes, &gen.FormerIndex{
+			return demoMetaData(t, 5, func(p *metadatapb.MetaData) {
+				p.FormerIndexes = append(p.FormerIndexes, &metadatapb.FormerIndex{
 					SubspaceKey: tuple.Tuple{"Order$price"}.Pack(), AddedVersion: proto.Int32(2),
 					RemovedVersion: proto.Int32(5), FormerName: proto.String("Order$price"),
 				})
@@ -395,13 +396,13 @@ func TestFDB_Restore_OneHistory(t *testing.T) {
 			return demoMetaData(t, 4, withPriceIndex(2, 4, recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("order_id")), priceAbove(1)))
 		}, ""},
 		{"a record type renamed at its union field", func(t *testing.T) []byte {
-			return demoMetaData(t, 5, func(p *gen.MetaData) {
+			return demoMetaData(t, 5, func(p *metadatapb.MetaData) {
 				withPriceIndex(2, 5, recordlayer.Field("price"), priceAbove(1))(p)
 				renameMessage(p, "Customer", "Client")
 			})
 		}, `record type name changed (old="Client", new="Customer")`},
 		{"an enum whose values are in another order", func(t *testing.T) []byte {
-			return demoMetaData(t, 5, func(p *gen.MetaData) {
+			return demoMetaData(t, 5, func(p *metadatapb.MetaData) {
 				withPriceIndex(2, 5, recordlayer.Field("price"), priceAbove(1))(p)
 				for _, e := range p.GetRecords().GetEnumType() {
 					if e.GetName() == "Color" {
@@ -444,8 +445,8 @@ func TestFDB_Restore_OneHistory(t *testing.T) {
 
 // withVector gives Order.vector_data a VECTOR column's options: its precision
 // and dimensions.
-func withVector(precision, dimensions int32) func(*gen.MetaData) {
-	return func(p *gen.MetaData) {
+func withVector(precision, dimensions int32) func(*metadatapb.MetaData) {
+	return func(p *metadatapb.MetaData) {
 		for _, m := range p.GetRecords().GetMessageType() {
 			if m.GetName() != "Order" {
 				continue
@@ -453,7 +454,7 @@ func withVector(precision, dimensions int32) func(*gen.MetaData) {
 			for _, f := range m.GetField() {
 				if f.GetName() == "vector_data" {
 					opts := &descriptorpb.FieldOptions{}
-					proto.SetExtension(opts, gen.E_Field, &gen.FieldOptions{VectorOptions: &gen.FieldOptions_VectorOptions{
+					proto.SetExtension(opts, metadatapb.E_Field, &metadatapb.FieldOptions{VectorOptions: &metadatapb.FieldOptions_VectorOptions{
 						Precision: proto.Int32(precision), Dimensions: proto.Int32(dimensions),
 					}})
 					f.Options = opts
@@ -784,7 +785,7 @@ func TestFDB_Restore_GuardSequence(t *testing.T) {
 
 // renameMessage renames a record message in the records file, its union field's
 // type and its RecordType entry: the same union field under another name.
-func renameMessage(p *gen.MetaData, from, to string) {
+func renameMessage(p *metadatapb.MetaData, from, to string) {
 	pkg := p.GetRecords().GetPackage()
 	for _, m := range p.GetRecords().GetMessageType() {
 		if m.GetName() == from {

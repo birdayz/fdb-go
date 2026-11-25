@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/metadatapb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -19,7 +19,7 @@ import (
 // RecordMetaData.java:219-223): a message only named like a record type is
 // refused, for the untyped store as for the typed one.
 var _ = Describe("SaveDescriptorIdentity", func() {
-	loaded := func(mutate func(*gen.MetaData)) *RecordMetaData {
+	loaded := func(mutate func(*metadatapb.MetaData)) *RecordMetaData {
 		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -36,7 +36,7 @@ var _ = Describe("SaveDescriptorIdentity", func() {
 		return md
 	}
 	// The stored Order has a field the compiled one lacks.
-	reshaped := func(p *gen.MetaData) {
+	reshaped := func(p *metadatapb.MetaData) {
 		for _, m := range p.Records.MessageType {
 			if m.GetName() == "Order" {
 				m.Field = append(m.Field, &descriptorpb.FieldDescriptorProto{
@@ -73,7 +73,7 @@ var _ = Describe("SaveDescriptorIdentity", func() {
 	}
 	for _, c := range []struct {
 		name   string
-		mutate func(*gen.MetaData)
+		mutate func(*metadatapb.MetaData)
 	}{
 		{"a same-named compiled message of another shape", reshaped},
 		{"a compiled message shaped alike, over meta-data loaded without WithLocalFileDescriptor", nil},
