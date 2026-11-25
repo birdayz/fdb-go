@@ -1,0 +1,29 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+package(default_visibility = ["//visibility:private"])
+
+go_test(
+    name = "shapeequiv_test",
+    size = "large",
+    timeout = "eternal",
+    srcs = [
+        "main_test.go",
+        "metamorphic_sweep_shapeequiv_fdb_test.go",
+    ],
+    tags = [
+        "resources:memory:700",
+        "test-full",
+    ],
+    deps = ["//pkg/relational/sqltest/testkit"],
+)
+
+# This package's test sources, for the whole-corpus census and the
+# transaction-budget census (//tests/sql:corpus).
+filegroup(
+    name = "corpus",
+    srcs = glob(
+        ["*_test.go"],
+        exclude = ["main_test.go"],
+    ),
+    visibility = ["//tests/sql:__pkg__"],
+)

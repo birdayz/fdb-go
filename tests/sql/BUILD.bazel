@@ -1,0 +1,45 @@
+package(default_visibility = ["//visibility:private"])
+
+# The end-to-end SQL suite against a real FoundationDB, one Go package per area
+# (helpers in //pkg/relational/sqltest/testkit). Every package's test sources, as
+# one corpus: the transaction-budget census reads them as data. A new package
+# must be listed here; //pkg/relational/sqltest/guard fails until it is.
+filegroup(
+    name = "corpus",
+    srcs = [
+        "//tests/sql/agg:corpus",
+        "//tests/sql/agg/distinctelision:corpus",
+        "//tests/sql/catalog:corpus",
+        "//tests/sql/core:corpus",
+        "//tests/sql/cte:corpus",
+        "//tests/sql/dml:corpus",
+        "//tests/sql/join:corpus",
+        "//tests/sql/metamorphic:corpus",
+        "//tests/sql/metamorphic/aggregates:corpus",
+        "//tests/sql/metamorphic/commute:corpus",
+        "//tests/sql/metamorphic/compositepk:corpus",
+        "//tests/sql/metamorphic/direction:corpus",
+        "//tests/sql/metamorphic/exprequiv:corpus",
+        "//tests/sql/metamorphic/joins:corpus",
+        "//tests/sql/metamorphic/minmaxnulls:corpus",
+        "//tests/sql/metamorphic/norec:corpus",
+        "//tests/sql/metamorphic/paging:corpus",
+        "//tests/sql/metamorphic/parens:corpus",
+        "//tests/sql/metamorphic/predicates:corpus",
+        "//tests/sql/metamorphic/rewrites:corpus",
+        "//tests/sql/metamorphic/rowdiff:corpus",
+        "//tests/sql/metamorphic/shapeequiv:corpus",
+        "//tests/sql/otel:corpus",
+        "//tests/sql/plan:corpus",
+        "//tests/sql/plan/caphit:corpus",
+        "//tests/sql/plan/options:corpus",
+        "//tests/sql/planshape:corpus",
+        "//tests/sql/select:corpus",
+        "//tests/sql/subquery:corpus",
+        "//tests/sql/types:corpus",
+    ],
+    visibility = [
+        "//internal/testinstruments/txbudgetcensus:__pkg__",
+        "//pkg/relational/sqltest/guard:__pkg__",
+    ],
+)

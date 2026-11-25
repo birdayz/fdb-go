@@ -19,7 +19,7 @@
 // rows are oracle output, and rewriting them is how a proof silently becomes an
 // opinion. A planner change that alters rows is therefore OUT OF SCOPE here —
 // it needs the oracle pipeline, not this tool. The corpus's own row-level
-// gate (//pkg/relational/conformance/factorycorpus/full:full_test, which
+// gate (//tests/relational/factorycorpus/full:full_test, which
 // executes every scenario against a real cluster) is what proves the rows still
 // hold, and it must be green BEFORE this tool is run and after.
 //
@@ -344,7 +344,7 @@ func verifyRecipe(path string, h *factorycorpus.Header, cand *factory.Candidate,
 // rows, and a hand-edited cell is on BOTH sides of it. Nothing in this tool can
 // detect that, because a frozen row's only authority is the oracle that
 // produced it — the check that catches falsification is
-// //pkg/relational/conformance/factorycorpus/full:full_test, which re-executes
+// //tests/relational/factorycorpus/full:full_test, which re-executes
 // every committed scenario against a real cluster, and it is required green
 // around a re-bless for exactly this reason. What this arm owns is narrower and
 // worth owning: the re-emission is faithful, so whatever the rows asserted

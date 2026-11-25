@@ -6,5 +6,8 @@ go_library(
     name = "coveringleaf",
     srcs = ["coveringleaf.go"],
     importpath = "fdb.dev/pkg/relational/conformance/coveringleaf",
-    visibility = ["//pkg/relational:__subpackages__"],
+    visibility = [
+        "//pkg/relational:__subpackages__",
+        "//tests/sql:__subpackages__",
+    ],
 )

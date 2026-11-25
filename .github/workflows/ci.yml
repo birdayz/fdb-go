@@ -570,8 +570,8 @@ jobs:
         # the scope "with measured numbers" the way RFC-107 §3 requires — the
         # corpora expanded into it. Measured, -race, four cores (the runner is a
         # 4-vCPU cx33), each target alone: the corpus execution target
-        # //pkg/relational/conformance/factorycorpus/full runs 5000 scenarios in
-        # 1328s and is the heaviest target in the lane, while
+        # //tests/relational/factorycorpus/full (since moved outside //pkg/relational/...)
+        # runs 5000 scenarios in 1328s and was the heaviest target in the lane, while
         # //pkg/relational/sqldriver takes 277s and
         # //pkg/relational/conformance/plandiff takes 31s. Co-scheduled four at a
         # time on a 4-vCPU / 7.6 GB box those numbers stop meaning anything: on
@@ -586,8 +586,8 @@ jobs:
         # race-coverage delta is ~0 and the cost is the merge queue. They keep
         # running non-instrumented in "Build, Lint & Test" on every PR.
         #
-        # The end-to-end SQL suite (//pkg/relational/sqltest/...) is excluded for
-        # the same reason: it is content coverage of that stack, not a concurrency
+        # The end-to-end SQL suite (//tests/sql/...) is outside //pkg/relational/...
+        # for the same reason: it is content coverage of that stack, not a concurrency
         # probe, and under -race on this runner it alone exceeded the 1h budget.
         # It runs non-instrumented in "Build, Lint & Test". The SQL layer's raced
         # target is //pkg/relational/sqldriver: the driver's own tests (connection,
@@ -606,7 +606,7 @@ jobs:
           echo "RACE_JOB_START=$(date -u +%FT%TZ)" >> "$GITHUB_ENV"
           bazelisk shutdown
           RACE_BASE="$HOME/.cache/bazel/_race_output_base"
-          REL_SCOPE="//pkg/relational/... //internal/relational/... -//pkg/relational/conformance/... -//pkg/relational/sqltest/..."
+          REL_SCOPE="//pkg/relational/... //internal/relational/... -//pkg/relational/conformance/..."
           CLIENT_SCOPE="//internal/fdbgo/client/... //internal/fdbgo/transport/... //pkg/fdbgo/fdb/... //tests/fdbgo/rywlocal/..."
           CASCADES_SCOPE="//pkg/recordlayer/query/plan/cascades/..."
           # No-op guard PER SCOPE: count each gate independently. Counting the

@@ -15,7 +15,7 @@ import (
 // driverTestFiles is the complete set of test files allowed in
 // pkg/relational/sqldriver: the driver's own tests (DSN, connection,
 // transactions, rows, errors, options) and the internal-package suites. An
-// end-to-end SQL test belongs in a pkg/relational/sqltest package instead; add a
+// end-to-end SQL test belongs in a tests/sql package instead; add a
 // file here only if it tests the driver itself.
 var driverTestFiles = []string{
 	"clusterfile_lookup_test.go",
@@ -105,7 +105,7 @@ func TestSQLDriverHoldsOnlyDriverTests(t *testing.T) {
 	for _, f := range got {
 		if !slices.Contains(driverTestFiles, f) {
 			t.Errorf("pkg/relational/sqldriver/%s is not a driver test: end-to-end SQL tests "+
-				"live in a pkg/relational/sqltest package (or, if it really tests the driver, "+
+				"live in a tests/sql package (or, if it really tests the driver, "+
 				"add it to driverTestFiles)", f)
 		}
 	}
@@ -119,13 +119,13 @@ func TestSQLDriverHoldsOnlyDriverTests(t *testing.T) {
 
 func TestEverySQLTestPackageIsInTheCorpusAndHasTests(t *testing.T) {
 	t.Parallel()
-	base := filepath.Join(root(t), "pkg/relational/sqltest")
+	base := filepath.Join(root(t), "tests/sql")
 	tests := map[string]int{}
 	err := filepath.WalkDir(base, func(p string, e os.DirEntry, err error) error {
 		if err != nil || e.IsDir() || !strings.HasSuffix(p, "_test.go") || e.Name() == "main_test.go" {
 			return err
 		}
-		pkg := filepath.ToSlash(filepath.Join("pkg/relational/sqltest", must(filepath.Rel(base, filepath.Dir(p)))))
+		pkg := filepath.ToSlash(filepath.Join("tests/sql", must(filepath.Rel(base, filepath.Dir(p)))))
 		if slices.Contains([]string{"guard", "testkit"}, filepath.Base(pkg)) {
 			return nil
 		}
@@ -137,7 +137,7 @@ func TestEverySQLTestPackageIsInTheCorpusAndHasTests(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(tests) == 0 {
-		t.Fatal("no sqltest package reached: the //pkg/relational/sqltest:corpus data dependency is missing")
+		t.Fatal("no sqltest package reached: the //tests/sql:corpus data dependency is missing")
 	}
 	for pkg, n := range tests {
 		if !slices.Contains(testkit.Packages, pkg) {
@@ -149,7 +149,7 @@ func TestEverySQLTestPackageIsInTheCorpusAndHasTests(t *testing.T) {
 	}
 	for _, pkg := range testkit.Packages {
 		if _, ok := tests[pkg]; !ok {
-			t.Errorf("testkit.Packages lists %s, but //pkg/relational/sqltest:corpus does not reach it "+
+			t.Errorf("testkit.Packages lists %s, but //tests/sql:corpus does not reach it "+
 				"(add its :corpus filegroup there) or it has no test files", pkg)
 		}
 	}

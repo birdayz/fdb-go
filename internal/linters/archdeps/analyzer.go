@@ -255,14 +255,14 @@ var (
 		"fdb.dev/pkg/recordlayer/query/plan/cascades/values": true,
 		"fdb.dev/pkg/recordlayer/vectorindex":                true,
 		"fdb.dev/pkg/relational/core/query/expr":             true,
-		"fdb.dev/pkg/relational/sqltest/agg":                 true,
-		"fdb.dev/pkg/relational/sqltest/core":                true,
-		"fdb.dev/pkg/relational/sqltest/cte":                 true,
-		"fdb.dev/pkg/relational/sqltest/join":                true,
-		"fdb.dev/pkg/relational/sqltest/select":              true,
-		"fdb.dev/pkg/relational/sqltest/subquery":            true,
-		"fdb.dev/pkg/relational/sqltest/types":               true,
 		"fdb.dev/pkg/testcontainers/foundationdb":            true,
+		"fdb.dev/tests/sql/agg":                              true,
+		"fdb.dev/tests/sql/core":                             true,
+		"fdb.dev/tests/sql/cte":                              true,
+		"fdb.dev/tests/sql/join":                             true,
+		"fdb.dev/tests/sql/select":                           true,
+		"fdb.dev/tests/sql/subquery":                         true,
+		"fdb.dev/tests/sql/types":                            true,
 	}
 	// r6Allow freezes the existing fdbClientRoots production files that
 	// import go.opentelemetry.io/otel/trace (split from transaction.go into tx_lifecycle.go + tx_metrics.go).
@@ -389,7 +389,7 @@ func run(pass *analysis.Pass) (any, error) {
 }
 
 // normalizePkgPath strips external _test suffixes and maps unembedded Bazel
-// go_test package paths (e.g. pkg/relational/sqltest/agg/agg_test) to fdb.dev/...
+// go_test package paths (e.g. tests/sql/agg/agg_test) to fdb.dev/...
 func normalizePkgPath(pkgPath string) string {
 	if within(pkgPath, "fdb.dev") {
 		return strings.TrimSuffix(pkgPath, "_test")

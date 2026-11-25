@@ -1,0 +1,65 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+package(default_visibility = ["//visibility:private"])
+
+go_test(
+    name = "planshape_test",
+    size = "large",
+    timeout = "eternal",
+    srcs = [
+        "main_test.go",
+        "plan_shape_agg_expr_1_test.go",
+        "plan_shape_agg_expr_2_test.go",
+        "plan_shape_agg_having_test.go",
+        "plan_shape_agg_index_1_test.go",
+        "plan_shape_agg_index_2_test.go",
+        "plan_shape_agg_index_3_test.go",
+        "plan_shape_agg_index_4_test.go",
+        "plan_shape_case_when_test.go",
+        "plan_shape_cte_1_test.go",
+        "plan_shape_cte_2_test.go",
+        "plan_shape_derived_table_1_test.go",
+        "plan_shape_derived_table_2_test.go",
+        "plan_shape_dml_delete_test.go",
+        "plan_shape_dml_insert_test.go",
+        "plan_shape_dml_lifecycle_test.go",
+        "plan_shape_dml_update_test.go",
+        "plan_shape_expr_misc_test.go",
+        "plan_shape_groupby_1_test.go",
+        "plan_shape_groupby_2_test.go",
+        "plan_shape_groupby_3_test.go",
+        "plan_shape_helpers_test.go",
+        "plan_shape_join_1_test.go",
+        "plan_shape_join_2_test.go",
+        "plan_shape_join_3_test.go",
+        "plan_shape_join_agg_test.go",
+        "plan_shape_null_test.go",
+        "plan_shape_outer_join_test.go",
+        "plan_shape_predicates_1_test.go",
+        "plan_shape_predicates_2_test.go",
+        "plan_shape_scan_index_1_test.go",
+        "plan_shape_scan_index_2_test.go",
+        "plan_shape_setop_test.go",
+        "plan_shape_sort_limit_1_test.go",
+        "plan_shape_sort_limit_2_test.go",
+        "plan_shape_subquery_1_test.go",
+        "plan_shape_subquery_2_test.go",
+        "plan_shape_text_test.go",
+    ],
+    tags = [
+        "resources:memory:700",
+        "test-full",
+    ],
+    deps = ["//pkg/relational/sqltest/testkit"],
+)
+
+# This package's test sources, for the whole-corpus census and the
+# transaction-budget census (//tests/sql:corpus).
+filegroup(
+    name = "corpus",
+    srcs = glob(
+        ["*_test.go"],
+        exclude = ["main_test.go"],
+    ),
+    visibility = ["//tests/sql:__pkg__"],
+)

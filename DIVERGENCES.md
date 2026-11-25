@@ -51,7 +51,7 @@ partition clause, setting the TEXT index options `textTokenizerName` and
 case-insensitive; an unknown option is `0A000`, a duplicate or a value of the
 wrong kind `42601` (the value is an unsigned integer literal, as in Java's
 `vectorIndexOptionValue`, so a negative version is a syntax error), and an
-unregistered tokenizer or a version above the tokenizer's range fails the template (`pkg/relational/sqltest/plan/fulltext_options_ddl_fdb_test.go`).
+unregistered tokenizer or a version above the tokenizer's range fails the template (`tests/sql/plan/fulltext_options_ddl_fdb_test.go`).
 A tokenizer registered only in Go makes the whole schema unreadable to Java,
 not just the index: Java builds the schema's metadata for every statement and
 its TEXT index validator refuses the unknown name (`42000 MetaDataException
@@ -1510,7 +1510,7 @@ transaction, as in Java. Pinned by
 `TestFDB_IndexStatePlanning_TransitionBetweenPlanAndFirstPageReadsOneSnapshot`
 (a shared first page), `TestFDB_IndexStatePlanning_TransitionBeforeASeparateFirstPageFails40001`
 (a separate one) and `TestFDB_IndexStatePlanning_TransitionBetweenPagesFails40001`
-(a later page), in `pkg/relational/sqltest/plan/index_state_planning_fdb_test.go`.
+(a later page), in `tests/sql/plan/index_state_planning_fdb_test.go`.
 
 ## GROUP BY keys with bound parameters (RFC-272, unmeasured)
 

@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 package(default_visibility = ["//pkg/relational/conformance:__subpackages__"])
 
 # keep: the committed RFC-201 factory corpus, exported so the FULL corpus
-# target (//pkg/relational/conformance/factorycorpus/full) and the producer's
+# target (//tests/relational/factorycorpus/full) and the producer's
 # determinism gate (//pkg/relational/conformance/factory) can stage it into
 # runfiles. It is deliberately NOT under the hand-authored yamsql testdata:
 # that directory feeds FEATURE_MATRIX.md, SQL_COVERAGE.md and
@@ -15,6 +15,7 @@ filegroup(
     visibility = [
         "//cmd/factory-rebless:__pkg__",
         "//pkg/relational/conformance:__subpackages__",
+        "//tests/relational:__subpackages__",
     ],
 )
 
@@ -46,6 +47,7 @@ go_library(
         "//cmd/factory-rebless-plan-shapes:__pkg__",
         "//cmd/factory-run:__pkg__",
         "//pkg/relational/conformance:__subpackages__",
+        "//tests/relational:__subpackages__",
     ],
     deps = [
         "//internal/relational/relapi",

@@ -120,7 +120,7 @@ negative version, a version outside 32 bits) is `42601`: the value is an
 unsigned integer literal, as Java's index option values (`vectorIndexOptionValue`)
 are. An unregistered tokenizer, an empty name or a version above the
 tokenizer's range fails the template with `42F59`
-(`pkg/relational/sqltest/plan/fulltext_options_ddl_fdb_test.go`). The options
+(`tests/sql/plan/fulltext_options_ddl_fdb_test.go`). The options
 are persisted in the index metadata. A tokenizer registered only in Go makes
 the whole schema unreadable to Java 4.14.2.0, not just the index: Java builds
 the schema's metadata for every statement, and its TEXT index validator
