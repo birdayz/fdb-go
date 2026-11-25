@@ -4,11 +4,11 @@ package fdb
 // drive its Run / RunRead path on any backend: the Transactor interface (which
 // already takes the WritableTransaction / ReadTransaction interfaces, not the
 // concrete pure-Go types) plus Close. The pure-Go Database satisfies it; the
-// libfdb_c backend (pkg/fdbgo/libfdbc) provides an alternative implementation
+// libfdb_c backend (internal/fdbclient/libfdbc) provides an alternative implementation
 // over cgofdb.
 //
 // Which implementation a binary carries is a BUILD-time choice (a build tag),
-// not a runtime one — see pkg/internal/fdbclient. That mirrors the physical
+// not a runtime one — see internal/fdbclient. That mirrors the physical
 // reality: libfdb_c's network thread is initialized once per process and is
 // unrecoverable, so there is no live switch between backends anyway.
 //

@@ -452,10 +452,8 @@ func inRestrictedVisibilityScope(rel string) bool {
 		strings.HasPrefix(rel, "pkg/relational/conformance/") ||
 		strings.HasPrefix(rel, "pkg/relational/sqltest/") ||
 		strings.HasPrefix(rel, "pkg/relational/txbudgetcensus/") ||
-		strings.HasPrefix(rel, "pkg/fdbgo/bench/") ||
-		strings.HasPrefix(rel, "pkg/fdbgo/bindingtest/") ||
-		strings.HasPrefix(rel, "pkg/fdbgo/conformance/") ||
-		strings.HasPrefix(rel, "pkg/fdbgo/recovery/")
+		strings.HasPrefix(rel, "bench/") ||
+		strings.HasPrefix(rel, "tests/")
 }
 
 var restrictedScopeRoots = []struct {
@@ -469,7 +467,6 @@ var restrictedScopeRoots = []struct {
 	{"internal/recordlayer/keystoretest/", []string{"//conformance:__pkg__", "//pkg/recordlayer:__pkg__", "//pkg/relational/conformance/javacorpus:__pkg__", "//pkg/relational/sqldriver:__pkg__"}},
 	{"layers/otel/otelsql/internal/", []string{"//layers/otel/otelsql:__subpackages__"}},
 	{"pkg/internal/", []string{"//pkg:__subpackages__"}},
-	{"pkg/fdbgo/internal/", []string{"//pkg/fdbgo:__subpackages__"}},
 	{"pkg/recordlayer/query/plan/cascades/internal/", []string{"//pkg/recordlayer/query/plan/cascades:__subpackages__"}},
 	{"pkg/relational/internal/", []string{"//pkg/relational:__subpackages__"}},
 	{"tools/clientbench/internal/", []string{"//tools/clientbench:__subpackages__"}},
@@ -480,10 +477,8 @@ var restrictedScopeRoots = []struct {
 	{"pkg/relational/conformance/", []string{"//pkg/relational/conformance:__subpackages__"}},
 	{"pkg/relational/sqltest/", []string{"//pkg/relational:__subpackages__"}},
 	{"pkg/relational/txbudgetcensus/", []string{"//visibility:private"}},
-	{"pkg/fdbgo/bench/", []string{"//pkg/fdbgo:__subpackages__"}},
-	{"pkg/fdbgo/bindingtest/", []string{"//pkg/fdbgo:__subpackages__"}},
-	{"pkg/fdbgo/conformance/", []string{"//pkg/fdbgo:__subpackages__"}},
-	{"pkg/fdbgo/recovery/", []string{"//pkg/fdbgo:__subpackages__"}},
+	{"bench/", []string{"//visibility:private"}},
+	{"tests/", []string{"//visibility:private"}},
 }
 
 func TestNoBlanketPublicVisibilityInRestrictedScopes(t *testing.T) {
@@ -742,12 +737,12 @@ go_library(
 		{[]string{"//visibility:private"}, "//pkg/b", "//pkg/a", false},
 		{[]string{"//cmd/dst-hunt:__pkg__"}, "//cmd/dst-hunt", "//pkg/simfdb/hunt", true},
 		{[]string{"//cmd/dst-hunt:__pkg__"}, "//cmd/dst-hunt/sub", "//pkg/simfdb/hunt", false},
-		{[]string{"//pkg/fdbgo:__subpackages__"}, "//pkg/fdbgo/client", "//pkg/fdbgo/internal/diag", true},
-		{[]string{"//pkg/fdbgo:__subpackages__"}, "//pkg/recordlayer", "//pkg/fdbgo/internal/diag", false},
+		{[]string{"//:__subpackages__"}, "//internal/fdbgo/client", "//internal/fdbgo/diag", true},
+		{[]string{"//pkg/fdbgo:__subpackages__"}, "//pkg/recordlayer", "//internal/fdbgo/diag", false},
 		{[]string{"//internal:consumers"}, "//pkg/recordlayer/vectorindex", "//internal/unicode15", true},
 		{[]string{"//internal:consumers"}, "//conformance", "//internal/unicode15", true},
 		{[]string{"//internal:consumers"}, "//conformance/sub", "//internal/unicode15", false},
-		{[]string{"//internal:consumers"}, "//pkg/fdbgo/client", "//internal/unicode15", false},
+		{[]string{"//internal:consumers"}, "//internal/fdbgo/client", "//internal/unicode15", false},
 	} {
 		if got := visibilityAllows(tc.vis, tc.caller, tc.target, groups); got != tc.want {
 			t.Errorf("visibilityAllows(%v, %q, %q) = %v, want %v", tc.vis, tc.caller, tc.target, got, tc.want)

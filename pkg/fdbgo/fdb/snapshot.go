@@ -1,7 +1,7 @@
 package fdb
 
 import (
-	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/internal/fdbgo/client"
 )
 
 // Snapshot is a handle to a FoundationDB transaction snapshot.

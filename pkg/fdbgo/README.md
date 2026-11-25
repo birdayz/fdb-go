@@ -165,10 +165,10 @@ git checkout 7.4.0  # or whatever
 
 # 2. Rebuild the C++ vtable extractor
 cd /path/to/this-repo
-bash cmd/fdb-schema-extract/build.sh /path/to/foundationdb pkg/fdbgo/wire/types/vtables_generated.go
+bash cmd/fdb-schema-extract/build.sh /path/to/foundationdb internal/fdbwire/types/vtables_generated.go
 
 # 3. Diff the generated output
-git diff pkg/fdbgo/wire/types/vtables_generated.go
+git diff internal/fdbwire/types/vtables_generated.go
 
 # 4. For each changed type:
 #    - If only vtable VALUES changed (field offsets shifted): no Go code changes needed,
@@ -222,7 +222,7 @@ The fast lane excludes heavy client, differential and stress targets; see
 
 ## Benchmarks
 
-The Go-vs-libfdb_c benchmarks live in [`bench/`](bench/bench_test.go); methodology and reproduction instructions are in [`bench/PERFORMANCE.md`](bench/PERFORMANCE.md). Earlier published speedup and write-parity claims were withdrawn: they do not describe the current default client behavior.
+The Go-vs-libfdb_c benchmarks live in [`bench/fdbgo/`](../../bench/fdbgo/bench_test.go); methodology and reproduction instructions are in [`bench/fdbgo/PERFORMANCE.md`](../../bench/fdbgo/PERFORMANCE.md). Earlier published speedup and write-parity claims were withdrawn: they do not describe the current default client behavior.
 
 ## Fault injection
 
@@ -308,7 +308,7 @@ source/tests when evaluating behavior.
 
 1. Add the C++ type to `cmd/fdb-schema-extract/main.cpp` (include header, add `extractType<T>()` call)
 2. If the type has field names in its `serialize()` method, add the source file + type name to `name_capture.cpp`
-3. Rebuild: `bash cmd/fdb-schema-extract/build.sh /path/to/fdb pkg/fdbgo/wire/types/vtables_generated.go`
+3. Rebuild: `bash cmd/fdb-schema-extract/build.sh /path/to/fdb internal/fdbwire/types/vtables_generated.go`
 4. Create `wire/types/my_type.go` with struct + `MarshalFDB()` / `UnmarshalFrom()` using the generated vtable and slot constants
 5. Wire it into the client code
 6. Test against real FDB

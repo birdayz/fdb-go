@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"fdb.dev/pkg/fdbgo/transport"
-	"fdb.dev/pkg/fdbgo/wire"
+	"fdb.dev/internal/fdbgo/transport"
+	"fdb.dev/internal/fdbwire"
 )
 
 // TestConvertError_ConnTeardownShape pins the EXACT shape a transport

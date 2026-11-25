@@ -6,8 +6,8 @@ import (
 	"errors"
 	"time"
 
-	"fdb.dev/pkg/fdbgo/client"
-	"fdb.dev/pkg/fdbgo/wire"
+	"fdb.dev/internal/fdbgo/client"
+	"fdb.dev/internal/fdbwire"
 )
 
 // transaction wraps client.Transaction with the API modeled on Apple's binding.

@@ -22,8 +22,8 @@ import (
 	"sort"
 	"strings"
 
-	"fdb.dev/pkg/fdbgo/wire"
-	"fdb.dev/pkg/fdbgo/wire/types"
+	"fdb.dev/internal/fdbwire"
+	"fdb.dev/internal/fdbwire/types"
 	"fdb.dev/tools/clientbench/internal/wiretrace"
 )
 

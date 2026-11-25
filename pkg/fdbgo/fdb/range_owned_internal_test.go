@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/internal/fdbgo/client"
 )
 
 // AllocsPerRun uses process-wide counters, so this test must remain exclusive.

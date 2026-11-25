@@ -1,7 +1,7 @@
 # FDB client cgo-parity audit
 
 `pkg/fdbgo/fdb` is the only public FoundationDB client (the build-tag backend
-selector moved to `pkg/internal/fdbclient`). That makes any gap versus Apple's C
+selector moved to `internal/fdbclient`). That makes any gap versus Apple's C
 binding a user-visible gap, so this audit compares our surface to Apple's Go
 binding and records what matches, what is intentionally different, and what was
 closed.
@@ -47,7 +47,7 @@ Four trivial package functions Apple had and we lacked:
 - **Write transactions are an interface because there are two backends.**
   `Transact`'s callback receives `WritableTransaction` (interface) where Apple
   passes the concrete `Transaction`. This is the seam that lets the Record Layer
-  and SQL engine run over either client: `pkg/fdbgo/libfdbc` implements
+  and SQL engine run over either client: `internal/fdbclient/libfdbc` implements
   `fdb.WritableTransaction`, and the layers hold the interface (about 290 call
   sites in `pkg/recordlayer` alone), so `-tags libfdbc` swaps the concrete client
   underneath with no source change. Apple's binding has a single backend, so a

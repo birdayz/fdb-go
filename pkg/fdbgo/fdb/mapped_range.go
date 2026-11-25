@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"unsafe"
 
-	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/internal/fdbgo/client"
 )
 
 // MappedResultKind names which arm of the per-row union is populated. It mirrors

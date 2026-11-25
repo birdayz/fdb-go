@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/internal/fdbgo/client"
 )
 
 // Snapshot().Get is issued in the call, as fdb_transaction_get is (ThreadSafeTransaction.cpp:426-434),

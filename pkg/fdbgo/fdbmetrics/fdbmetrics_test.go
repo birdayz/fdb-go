@@ -449,8 +449,8 @@ func TestFDBDatabaseSatisfiesMetricsSourceAndNoClientImport(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unquote import %s: %v", imp.Path.Value, err)
 		}
-		if p == "fdb.dev/pkg/fdbgo/client" || strings.HasPrefix(p, "fdb.dev/pkg/fdbgo/client/") {
-			t.Errorf("fdbmetrics.go must not import pkg/fdbgo/client (found %q)", p)
+		if p == "fdb.dev/internal/fdbgo/client" || strings.HasPrefix(p, "fdb.dev/internal/fdbgo/client/") {
+			t.Errorf("fdbmetrics.go must not import internal/fdbgo/client (found %q)", p)
 		}
 	}
 
@@ -461,7 +461,7 @@ func TestFDBDatabaseSatisfiesMetricsSourceAndNoClientImport(t *testing.T) {
 			return
 		}
 		visited[typ] = true
-		if pkg := typ.PkgPath(); pkg == "fdb.dev/pkg/fdbgo/client" || strings.HasPrefix(pkg, "fdb.dev/pkg/fdbgo/client/") {
+		if pkg := typ.PkgPath(); pkg == "fdb.dev/internal/fdbgo/client" || strings.HasPrefix(pkg, "fdb.dev/internal/fdbgo/client/") {
 			t.Errorf("public API leaks client type %s (%s)", typ, pkg)
 		}
 		switch typ.Kind() {

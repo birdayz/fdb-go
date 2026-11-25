@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/internal/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/fdbgo/transport"
 )
 
 // ErrorOr<GetReadVersionReply>: ComposedIdentifier<T, 2> | 15709388 (CommitProxyInterface.h:264).

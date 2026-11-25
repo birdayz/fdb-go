@@ -13,7 +13,7 @@ import (
 
 	oteltrace "go.opentelemetry.io/otel/trace"
 
-	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/internal/fdbgo/client"
 )
 
 // apiVersion is set-once, matching the Apple binding's global-init model

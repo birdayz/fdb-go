@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"runtime/debug"
 
-	"fdb.dev/pkg/fdbgo/internal/diag"
+	"fdb.dev/internal/fdbgo/diag"
 )
 
 // recoverFuturePanic is the RFC-110 backstop for the facade-future goroutines

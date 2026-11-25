@@ -27,7 +27,7 @@ package sqldriver_test
 //
 // The clock here is a wall clock plus an offset, NOT a sim clock, and that is
 // load-bearing: on a real backend the read-version instant comes from the pure-Go
-// client, which stamps it with time.Now() (pkg/fdbgo/client/grv.go — no dst usage
+// client, which stamps it with time.Now() (internal/fdbgo/client/grv.go — no dst usage
 // in grv.go or transaction.go at all). Pinning an Epoch-based sim clock against a
 // real backend would measure the gap between two unrelated epochs, which is the
 // hazard dst/env.go:57 warns about. An offset preserves the epoch and moves only

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/internal/fdbgo/client"
 )
 
 type ownershipCountingKey struct {

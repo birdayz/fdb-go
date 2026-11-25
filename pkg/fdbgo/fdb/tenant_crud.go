@@ -16,7 +16,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"fdb.dev/pkg/fdbgo/wire/types"
+	"fdb.dev/internal/fdbwire/types"
 )
 
 const (

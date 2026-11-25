@@ -72,7 +72,7 @@ pkg/recordlayer/testdata/*.ivecs
 .bazel-bep.jsonl
 test-report.html
 .tools/
-pkg/fdbgo/wire/types/v5/
+internal/fdbwire/types/v5/
 binding-stress-out/
 binding-stress-report.txt
 bench-raw.txt

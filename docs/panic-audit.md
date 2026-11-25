@@ -72,14 +72,14 @@ allowlist (file → permitted AST count). Keep the two in sync.
 
 | File | Count | Boundary / role |
 |---|---|---|
-| `pkg/fdbgo/client/panicbackstop.go` | 1 | client callback/goroutine backstop: panic → error/log, never crash the host |
-| `pkg/fdbgo/client/database.go` | 2 | `Run`/retry callback backstop on the client transact loop |
-| `pkg/fdbgo/client/grv.go` | 1 | background GRV goroutine: a panic fails the conn, not the process |
-| `pkg/fdbgo/client/native_commit.go` | 1 | retained native commit actor: count/log panics; rethrow to a still-waiting caller, never publish a successful versionstamp |
-| `pkg/fdbgo/transport/conn.go` | 2 | read/write IO goroutines: panic → fail connection |
+| `internal/fdbgo/client/panicbackstop.go` | 1 | client callback/goroutine backstop: panic → error/log, never crash the host |
+| `internal/fdbgo/client/database.go` | 2 | `Run`/retry callback backstop on the client transact loop |
+| `internal/fdbgo/client/grv.go` | 1 | background GRV goroutine: a panic fails the conn, not the process |
+| `internal/fdbgo/client/native_commit.go` | 1 | retained native commit actor: count/log panics; rethrow to a still-waiting caller, never publish a successful versionstamp |
+| `internal/fdbgo/transport/conn.go` | 2 | read/write IO goroutines: panic → fail connection |
 | `pkg/fdbgo/fdb/panic.go` | 1 | `panicToError` — a panicking user closure becomes a tx error |
 | `pkg/fdbgo/fdb/transaction.go` | 1 | `Transact` closure boundary |
-| `pkg/fdbgo/libfdbc/backend.go` | 1 | cgo libfdb_c backend: translate cgo/callback panics to Go errors (`cgo && libfdbc` only) |
+| `internal/fdbclient/libfdbc/backend.go` | 1 | cgo libfdb_c backend: translate cgo/callback panics to Go errors (`cgo && libfdbc` only) |
 | `pkg/relational/core/parser/parser.go` | 4 | ANTLR bailout panic → syntax error |
 | `pkg/relational/core/embedded/connection.go` | 2 | public SQL connection API: panic → SQL error (`recoverInto`, deferred by every exported connection, transaction, result-set and DirectAccess entry), and `embeddedTx.abortOnContextGoroutine`, the abort a context's `AfterFunc` runs on its own goroutine; both close the connection |
 | `pkg/relational/sqldriver/driver.go` | 1 | `Connector.Connect`: a panic initializing the connector → SQL internal error; the next `Connect` initializes again |
@@ -121,7 +121,7 @@ guard (§"The gate"):
 
 - **parser** — `FuzzParse` (`pkg/relational/core/parser/fuzz_test.go`)
 - **planner** — `FuzzTranslateToCascades` (`pkg/relational/core/query/cascades_translator_test.go`)
-- **wire decode** — `FuzzNewReader` (`pkg/fdbgo/wire/reader_fuzz_test.go`)
+- **wire decode** — `FuzzNewReader` (`internal/fdbwire/reader_fuzz_test.go`)
 - **tuple decode** — `FuzzUnpack` (`pkg/fdbgo/fdb/tuple/tuple_malformed_test.go`)
 
 RFC-134 pre-flight fuzzed each at `-fuzztime=60s`: zero panics / zero new crashers (see the PR).

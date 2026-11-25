@@ -14,7 +14,7 @@ import (
 // client, which resolved each selector with a getKey and took that getKey's span plus the
 // resolved range; the client now records C++'s addConflictRange(GetRangeReq)
 // (ReadYourWrites.actor.cpp:245-319), pinned against libfdb_c by
-// //pkg/fdbgo/client:selector_range_conformance_test. Each entry is a seed, the scenario that
+// //internal/fdbgo/client:selector_range_conformance_test. Each entry is a seed, the scenario that
 // diverged and the outcome the real cluster gave.
 var selectorRangeDivergences = []struct {
 	arm      string // "diff" for runDifferentialConflictOutcome, else the runArm name

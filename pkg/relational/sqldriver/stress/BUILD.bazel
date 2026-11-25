@@ -24,8 +24,8 @@ go_test(
     ],
     deps = [
         "//gen/demopb",
+        "//internal/fdbgo/client",
         "//internal/recordlayer/query/executor",
-        "//pkg/fdbgo/client",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
@@ -70,8 +70,8 @@ go_test(
     visibility = ["//pkg/relational/sqldriver/stress/tenmguard:__pkg__"],
     deps = [
         "//gen/demopb",
+        "//internal/fdbgo/client",
         "//internal/recordlayer/query/executor",
-        "//pkg/fdbgo/client",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",

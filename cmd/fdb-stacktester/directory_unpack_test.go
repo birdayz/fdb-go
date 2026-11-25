@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/internal/fdbgo/client"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 )

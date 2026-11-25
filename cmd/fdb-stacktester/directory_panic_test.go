@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/internal/fdbgo/client"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 )
 

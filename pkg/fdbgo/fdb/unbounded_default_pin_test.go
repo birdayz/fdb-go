@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/internal/fdbgo/client"
 )
 
 func TestWrappedDatabaseContextReachesTransactionsAndSnapshots(t *testing.T) {

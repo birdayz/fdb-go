@@ -1,0 +1,441 @@
+package client
+
+import (
+	"context"
+	"encoding/binary"
+	"math"
+	"reflect"
+	"testing"
+
+	"fdb.dev/internal/fdbgo/transport"
+	"fdb.dev/internal/fdbwire/types"
+)
+
+// ============================================================================
+// stripTenantPrefix — turns proxy-absolute boundaries into tenant-relative.
+// ============================================================================
+
+func TestStripTenantPrefix_Tenant42(t *testing.T) {
+	t.Parallel()
+	const tenantID int64 = 42
+	var prefix [8]byte
+	binary.BigEndian.PutUint64(prefix[:], uint64(tenantID))
+
+	entries := []locationEntry{
+		{begin: append(append([]byte{}, prefix[:]...), 'a'), end: append(append([]byte{}, prefix[:]...), 'z')},
+		{begin: append(append([]byte{}, prefix[:]...), 0x00), end: append(append([]byte{}, prefix[:]...), 0xFF)},
+	}
+	stripTenantPrefix(entries, tenantID)
+
+	if string(entries[0].begin) != "a" {
+		t.Errorf("entry[0].begin: got %q, want \"a\"", entries[0].begin)
+	}
+	if string(entries[0].end) != "z" {
+		t.Errorf("entry[0].end: got %q, want \"z\"", entries[0].end)
+	}
+	if len(entries[1].begin) != 1 || entries[1].begin[0] != 0x00 {
+		t.Errorf("entry[1].begin: got %x, want [0]", entries[1].begin)
+	}
+	if len(entries[1].end) != 1 || entries[1].end[0] != 0xFF {
+		t.Errorf("entry[1].end: got %x, want [0xFF]", entries[1].end)
+	}
+}
+
+func TestStripTenantPrefix_NegativeTenantNoop(t *testing.T) {
+	t.Parallel()
+	// NoTenantID is -1. Function must early-return without mutation.
+	entries := []locationEntry{
+		{begin: []byte("aa"), end: []byte("zz")},
+	}
+	originalBegin := entries[0].begin
+	originalEnd := entries[0].end
+
+	stripTenantPrefix(entries, NoTenantID)
+	if &entries[0].begin[0] != &originalBegin[0] || string(entries[0].begin) != "aa" {
+		t.Errorf("begin must not be touched: got %q", entries[0].begin)
+	}
+	if &entries[0].end[0] != &originalEnd[0] || string(entries[0].end) != "zz" {
+		t.Errorf("end must not be touched: got %q", entries[0].end)
+	}
+}
+
+func TestStripTenantPrefix_TooShortToContainPrefix(t *testing.T) {
+	t.Parallel()
+	const tenantID int64 = 7
+	// begin is shorter than the 8-byte tenant prefix → bytes.HasPrefix returns
+	// false → leave it alone.
+	entries := []locationEntry{
+		{begin: []byte("abc"), end: []byte("xyz")},
+	}
+	stripTenantPrefix(entries, tenantID)
+	if string(entries[0].begin) != "abc" {
+		t.Errorf("begin should not be modified when prefix absent: got %q", entries[0].begin)
+	}
+	if string(entries[0].end) != "xyz" {
+		t.Errorf("end should not be modified when prefix absent: got %q", entries[0].end)
+	}
+}
+
+func TestStripTenantPrefix_DifferentTenantsPrefixNotStripped(t *testing.T) {
+	t.Parallel()
+	// Function is asked to strip prefix for tenant 7, but the entries carry
+	// tenant 99's prefix. Even though the bytes are LONG enough (>=8) and
+	// LOOK like a tenant prefix, they must be left alone — the function's
+	// contract is strip-only-if-matches, NOT strip-always-the-first-8-bytes.
+	const targetTenant int64 = 7
+	const wrongTenant int64 = 99
+	var wrongPrefix [8]byte
+	binary.BigEndian.PutUint64(wrongPrefix[:], uint64(wrongTenant))
+
+	entries := []locationEntry{{
+		begin: append(append([]byte{}, wrongPrefix[:]...), 'a'),
+		end:   append(append([]byte{}, wrongPrefix[:]...), 'z'),
+	}}
+	originalBegin := append([]byte{}, entries[0].begin...)
+	originalEnd := append([]byte{}, entries[0].end...)
+
+	stripTenantPrefix(entries, targetTenant)
+
+	if !bytesEqual(entries[0].begin, originalBegin) {
+		t.Errorf("different-tenant prefix was wrongly stripped: got %x, want %x",
+			entries[0].begin, originalBegin)
+	}
+	if !bytesEqual(entries[0].end, originalEnd) {
+		t.Errorf("different-tenant prefix was wrongly stripped: got %x, want %x",
+			entries[0].end, originalEnd)
+	}
+}
+
+func TestStripTenantPrefix_NilEndUntouched(t *testing.T) {
+	t.Parallel()
+	// Final shard's end can be nil (end-of-keyspace marker). Must not panic.
+	const tenantID int64 = 99
+	var prefix [8]byte
+	binary.BigEndian.PutUint64(prefix[:], uint64(tenantID))
+	entries := []locationEntry{
+		{begin: append(append([]byte{}, prefix[:]...), 'k'), end: nil},
+	}
+	stripTenantPrefix(entries, tenantID)
+	if string(entries[0].begin) != "k" {
+		t.Errorf("begin: got %q, want \"k\"", entries[0].begin)
+	}
+	if entries[0].end != nil {
+		t.Errorf("end: got %v, want nil", entries[0].end)
+	}
+}
+
+// ============================================================================
+// buildGetKeyServerLocationsRequest — wire-construction round-trip.
+// ============================================================================
+
+func TestBuildGetKeyServerLocationsRequest_RoundTrip(t *testing.T) {
+	t.Parallel()
+	key := []byte("user/42")
+	const tenantID int64 = 5
+	replyToken := transport.UID{First: 0xCAFE, Second: 0xBABE}
+	// refresh derives this child span once and passes it verbatim; the builder must
+	// stamp it (C++ GetKeyServerLocationsRequest(span.context,…), NativeAPI.actor.cpp:3037).
+	span := types.SpanContext{
+		TraceID: [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+		SpanID:  0x99,
+		Flags:   traceFlagSampled,
+	}
+
+	body := buildGetKeyServerLocationsRequest(key, false, tenantID, span, replyToken)
+
+	var req types.GetKeyServerLocationsRequest
+	if err := req.UnmarshalFDB(body); err != nil {
+		t.Fatalf("UnmarshalFDB: %v", err)
+	}
+	if string(req.Begin) != string(key) {
+		t.Errorf("Begin: got %q, want %q", req.Begin, key)
+	}
+	// Revert-prove: drop the SpanContext field in buildGetKeyServerLocationsRequest → zero → red.
+	if req.SpanContext != span {
+		t.Errorf("SpanContext: got %+v, want %+v", req.SpanContext, span)
+	}
+	if req.HasEnd {
+		t.Error("HasEnd: got true for single-key request, want false")
+	}
+	if req.Limit != 100 {
+		t.Errorf("Limit: got %d, want 100", req.Limit)
+	}
+	if req.Tenant.TenantId != tenantID {
+		t.Errorf("TenantId: got %d, want %d", req.Tenant.TenantId, tenantID)
+	}
+	if req.MinTenantVersion != LatestVersion {
+		t.Errorf("MinTenantVersion: got %d, want %d (LatestVersion)", req.MinTenantVersion, LatestVersion)
+	}
+	first := binary.LittleEndian.Uint64(req.Reply.Token[0:8])
+	second := binary.LittleEndian.Uint64(req.Reply.Token[8:16])
+	if first != replyToken.First || second != replyToken.Second {
+		t.Errorf("reply token: got {%x,%x}, want {%x,%x}",
+			first, second, replyToken.First, replyToken.Second)
+	}
+	// The round-trip above only exercises reverse=false and asserts every field EXCEPT Reverse — the
+	// #10 wire field. TestBuildGetKeyServerLocationsRequest_ReverseField below pins it on both values.
+}
+
+// TestBuildGetKeyServerLocationsRequest_ReverseField pins the #10 single-key wire field: a BACKWARD getKey
+// location request must set Reverse=true so the commit proxy resolves rangeContainingKeyBefore (the shard
+// ENDING at the key), matching C++ getKeyLocation_internal's
+// GetKeyServerLocationsRequest(span, tenant, key, {}, 100, isBackward, ...) (NativeAPI.actor.cpp:3037).
+// The forward round-trip above never asserts this field, so a dropped `Reverse: reverse` at the build site
+// would ship silently. Revert-proof: hardcode `Reverse: false` in buildGetKeyServerLocationsRequest → the
+// reverse=true case reds.
+func TestBuildGetKeyServerLocationsRequest_ReverseField(t *testing.T) {
+	t.Parallel()
+	const tenantID int64 = 7
+	replyToken := transport.UID{First: 1, Second: 2}
+	for _, reverse := range []bool{false, true} {
+		body := buildGetKeyServerLocationsRequest([]byte("k"), reverse, tenantID, types.SpanContext{}, replyToken)
+		var req types.GetKeyServerLocationsRequest
+		if err := req.UnmarshalFDB(body); err != nil {
+			t.Fatalf("reverse=%v: UnmarshalFDB: %v", reverse, err)
+		}
+		if req.Reverse != reverse {
+			t.Errorf("reverse=%v: round-tripped Reverse=%v, want %v (#10 backward getKey wire field)",
+				reverse, req.Reverse, reverse)
+		}
+	}
+}
+
+// ============================================================================
+// buildGetKeyServerLocationsRangeRequest — range variant with reverse flag.
+// ============================================================================
+
+func TestBuildGetKeyServerLocationsRangeRequest_Forward(t *testing.T) {
+	t.Parallel()
+	begin, end := []byte("a"), []byte("z")
+	const (
+		limit    = 50
+		tenantID = 3
+	)
+	span := types.SpanContext{TraceID: [16]byte{0xAB, 0xCD}, SpanID: 0x77, Flags: traceFlagSampled}
+	body := buildGetKeyServerLocationsRangeRequest(begin, end, limit, false /*reverse*/, tenantID,
+		span, transport.UID{First: 1, Second: 2})
+
+	var req types.GetKeyServerLocationsRequest
+	if err := req.UnmarshalFDB(body); err != nil {
+		t.Fatalf("UnmarshalFDB: %v", err)
+	}
+	if string(req.Begin) != "a" || string(req.End) != "z" {
+		t.Errorf("range: got [%q,%q), want [a,z)", req.Begin, req.End)
+	}
+	if req.SpanContext != span {
+		t.Errorf("SpanContext: got %+v, want %+v", req.SpanContext, span)
+	}
+	if !req.HasEnd {
+		t.Error("HasEnd must be true for the range variant")
+	}
+	if req.Limit != int32(limit) {
+		t.Errorf("Limit: got %d, want %d", req.Limit, limit)
+	}
+	if req.Reverse {
+		t.Error("Reverse: got true, want false")
+	}
+}
+
+func TestBuildGetKeyServerLocationsRangeRequest_Reverse(t *testing.T) {
+	t.Parallel()
+	body := buildGetKeyServerLocationsRangeRequest(
+		[]byte("a"), []byte("z"), 10, true /*reverse*/, 0,
+		types.SpanContext{}, transport.UID{First: 1, Second: 2})
+
+	var req types.GetKeyServerLocationsRequest
+	if err := req.UnmarshalFDB(body); err != nil {
+		t.Fatalf("UnmarshalFDB: %v", err)
+	}
+	if !req.Reverse {
+		t.Error("Reverse: got false, want true")
+	}
+}
+
+// ============================================================================
+// cachedLocationsLocked — getCachedLocations' walk from the scan origin.
+// ============================================================================
+
+func cachedShardBegins(results []LocationResult) []string {
+	out := make([]string, len(results))
+	for i, r := range results {
+		out[i] = string(r.ShardBegin)
+	}
+	return out
+}
+
+func TestCachedLocations_EmptyCacheMisses(t *testing.T) {
+	t.Parallel()
+	lc := &locationCache{}
+	for _, reverse := range []bool{false, true} {
+		if got, ok := lc.cachedLocationsLocked(0, []byte("a"), []byte("z"), 0, reverse); ok || got != nil {
+			t.Errorf("reverse=%v: got %v, %v; want a miss", reverse, got, ok)
+		}
+	}
+}
+
+func TestCachedLocations_OnlyMatchingTenant(t *testing.T) {
+	t.Parallel()
+	lc := &locationCache{}
+	// Cache invariant: entries sorted by (tenantId, begin). Tenant 2's entry
+	// MUST come after all tenant-1 entries.
+	lc.entries = []locationEntry{
+		{tenantId: 1, begin: []byte("a"), end: []byte("c")},
+		{tenantId: 1, begin: []byte("c"), end: []byte("e")},
+		{tenantId: 1, begin: []byte("e"), end: []byte("g")},
+		{tenantId: 2, begin: []byte("a"), end: []byte("z")}, // different tenant — must be excluded
+	}
+	for _, tc := range []struct {
+		reverse bool
+		want    []string
+	}{{false, []string{"a", "c", "e"}}, {true, []string{"e", "c", "a"}}} {
+		got, ok := lc.cachedLocationsLocked(1, []byte("b"), []byte("f"), 0, tc.reverse)
+		if !ok || !reflect.DeepEqual(cachedShardBegins(got), tc.want) {
+			t.Errorf("reverse=%v: got %q, %v; want %q", tc.reverse, cachedShardBegins(got), ok, tc.want)
+		}
+	}
+}
+
+func TestCachedLocations_StopsAtLimitOrRangeEdge(t *testing.T) {
+	t.Parallel()
+	lc := &locationCache{}
+	lc.entries = []locationEntry{
+		{tenantId: 1, begin: []byte("a"), end: []byte("c")},
+		{tenantId: 1, begin: []byte("c"), end: []byte("e")},
+		{tenantId: 1, begin: []byte("e"), end: []byte("g")},
+		{tenantId: 1, begin: []byte("g"), end: []byte("z")},
+	}
+	for _, tc := range []struct {
+		begin, end string
+		limit      int
+		reverse    bool
+		want       []string
+	}{
+		{"b", "d", 0, false, []string{"a", "c"}},
+		{"b", "z", 2, false, []string{"a", "c"}},
+		{"b", "d", 0, true, []string{"c", "a"}},
+		{"b", "z", 2, true, []string{"g", "e"}},
+		{"c", "e", 0, true, []string{"c"}},
+	} {
+		got, ok := lc.cachedLocationsLocked(1, []byte(tc.begin), []byte(tc.end), tc.limit, tc.reverse)
+		if !ok || !reflect.DeepEqual(cachedShardBegins(got), tc.want) {
+			t.Errorf("[%s,%s) limit=%d reverse=%v: got %q, %v; want %q", tc.begin, tc.end, tc.limit, tc.reverse, cachedShardBegins(got), ok, tc.want)
+		}
+	}
+}
+
+func TestCachedLocations_MissesAtGapBeforeLimit(t *testing.T) {
+	t.Parallel()
+	lc := &locationCache{}
+	lc.entries = []locationEntry{
+		{tenantId: 1, begin: []byte("a"), end: []byte("c")},
+		{tenantId: 1, begin: []byte("e"), end: []byte("g")}, // [c, e) is not cached
+	}
+	for _, tc := range []struct {
+		begin, end string
+		limit      int
+		reverse    bool
+		want       []string // nil: a miss
+	}{
+		{"b", "f", 0, false, nil},
+		{"b", "f", 0, true, nil},
+		{"b", "f", 1, false, []string{"a"}},
+		{"b", "f", 1, true, []string{"e"}},
+		{"b", "c", 0, false, []string{"a"}},
+		{"f", "g", 0, true, []string{"e"}},
+	} {
+		got, ok := lc.cachedLocationsLocked(1, []byte(tc.begin), []byte(tc.end), tc.limit, tc.reverse)
+		if ok != (tc.want != nil) || (ok && !reflect.DeepEqual(cachedShardBegins(got), tc.want)) {
+			t.Errorf("[%s,%s) limit=%d reverse=%v: got %q, %v; want %q", tc.begin, tc.end, tc.limit, tc.reverse, cachedShardBegins(got), ok, tc.want)
+		}
+	}
+}
+
+func TestCachedLocations_FinalShardWithNilEnd(t *testing.T) {
+	t.Parallel()
+	lc := &locationCache{}
+	lc.entries = []locationEntry{
+		{tenantId: 1, begin: []byte("a"), end: nil}, // tail shard
+	}
+	for _, reverse := range []bool{false, true} {
+		got, ok := lc.cachedLocationsLocked(1, []byte("b"), []byte("z"), 0, reverse)
+		if !ok || len(got) != 1 || got[0].ShardEnd != nil {
+			t.Errorf("reverse=%v: got %v, %v; want the open-ended tail shard", reverse, got, ok)
+		}
+	}
+}
+
+func TestContiguousLocations_RejectsReplyHoles(t *testing.T) {
+	t.Parallel()
+	servers := []ServerInfo{{Address: "s"}}
+	entry := func(begin, end string) locationEntry {
+		e := locationEntry{begin: []byte(begin), servers: servers}
+		if end != "" {
+			e.end = []byte(end)
+		}
+		return e
+	}
+	const all = math.MaxInt32
+	for _, tc := range []struct {
+		name       string
+		entries    []locationEntry
+		begin, end string
+		limit      int
+		reverse    bool
+		want       []string
+	}{
+		{"forward_whole", []locationEntry{entry("a", "c"), entry("c", "e"), entry("e", "")}, "b", "f", all, false, []string{"a", "c", "e"}},
+		{"forward_limited", []locationEntry{entry("a", "c"), entry("c", "e")}, "b", "f", 2, false, []string{"a", "c"}},
+		{"forward_tail_dropped", []locationEntry{entry("a", "c"), entry("c", "e")}, "b", "f", all, false, nil},
+		{"forward_tail_reaches_end", []locationEntry{entry("a", "c"), entry("c", "f")}, "b", "f", all, false, []string{"a", "c"}},
+		{"forward_hole", []locationEntry{entry("a", "c"), entry("e", "g")}, "b", "f", all, false, nil},
+		{"forward_origin_missing", []locationEntry{entry("c", "e")}, "b", "f", all, false, nil},
+		{"forward_origin_ends_at_begin", []locationEntry{entry("a", "b"), entry("b", "g")}, "b", "f", all, false, nil},
+		{"forward_origin_at_begin", []locationEntry{entry("b", "g")}, "b", "f", all, false, []string{"b"}},
+		{"reverse_whole", []locationEntry{entry("e", "g"), entry("c", "e"), entry("a", "c")}, "b", "f", all, true, []string{"e", "c", "a"}},
+		{"reverse_limited", []locationEntry{entry("e", "g"), entry("c", "e")}, "b", "f", 2, true, []string{"e", "c"}},
+		{"reverse_tail_dropped", []locationEntry{entry("e", "g"), entry("c", "e")}, "b", "f", all, true, nil},
+		{"reverse_tail_reaches_begin", []locationEntry{entry("e", "g"), entry("b", "e")}, "b", "f", all, true, []string{"e", "b"}},
+		{"reverse_hole", []locationEntry{entry("e", "g"), entry("a", "c")}, "b", "f", all, true, nil},
+		{"reverse_origin_missing", []locationEntry{entry("a", "c")}, "b", "f", all, true, nil},
+		{"reverse_origin_ends_at_end", []locationEntry{entry("a", "f")}, "b", "f", all, true, []string{"a"}},
+		{"reverse_origin_begins_at_end", []locationEntry{entry("f", "g")}, "b", "f", all, true, nil},
+		{"reverse_origin_open_ended", []locationEntry{entry("a", "")}, "b", "f", all, true, []string{"a"}},
+		{"empty_reply", nil, "b", "f", all, false, nil},
+	} {
+		got := contiguousLocations(tc.entries, []byte(tc.begin), []byte(tc.end), tc.limit, tc.reverse)
+		if gotBegins := cachedShardBegins(got); (tc.want == nil) != (got == nil) || (tc.want != nil && !reflect.DeepEqual(gotBegins, tc.want)) {
+			t.Errorf("%s: got %q, want %q", tc.name, gotBegins, tc.want)
+		}
+	}
+}
+
+func TestLocateRangeWith_AsksAgainAfterReplyHole(t *testing.T) {
+	t.Parallel()
+	servers := []ServerInfo{{Address: "s"}}
+	replies := [][]locationEntry{
+		{{begin: []byte("c"), end: []byte("e"), servers: servers}},                                                           // origin dropped
+		{{begin: []byte("a"), end: []byte("c"), servers: servers}, {begin: []byte("e"), end: []byte("g"), servers: servers}}, // hole
+		{{begin: []byte("a"), end: []byte("c"), servers: servers}},                                                           // tail dropped
+		{{begin: []byte("a"), end: []byte("c"), servers: servers}, {begin: []byte("c"), end: []byte("g"), servers: servers}},
+	}
+	lc := &locationCache{}
+	calls := 0
+	got, err := lc.locateRangeWith(context.Background(), []byte("b"), []byte("f"), math.MaxInt32, false, NoTenantID, func() ([]locationEntry, error) {
+		calls++
+		return replies[calls-1], nil
+	})
+	if err != nil || calls != 4 || !reflect.DeepEqual(cachedShardBegins(got), []string{"a", "c"}) {
+		t.Fatalf("got %q after %d requests, err %v; want [a c] after 4", cachedShardBegins(got), calls, err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	calls = 0
+	got, err = lc.locateRangeWith(ctx, []byte("x"), []byte("z"), 2, false, NoTenantID, func() ([]locationEntry, error) {
+		calls++
+		cancel()
+		return replies[0], nil
+	})
+	if err == nil || got != nil || calls != 1 {
+		t.Fatalf("canceled locate returned %q after %d requests, err %v; want an error", cachedShardBegins(got), calls, err)
+	}
+}

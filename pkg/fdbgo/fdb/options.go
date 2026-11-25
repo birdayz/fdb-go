@@ -1,6 +1,6 @@
 package fdb
 
-import "fdb.dev/pkg/fdbgo/client"
+import "fdb.dev/internal/fdbgo/client"
 
 // TransactionOptions sets options that affect a Transaction, obtained via
 // ReadTransaction.Options(). It is an interface so a non-pure-Go backend can

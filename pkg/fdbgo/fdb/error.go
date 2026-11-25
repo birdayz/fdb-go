@@ -21,7 +21,7 @@ func (e Error) Error() string {
 // Retryable reports whether this error is retryable per the canonical
 // FDB_ERROR_PREDICATE_RETRYABLE classification. Convenience method for
 // the package-level IsRetryable function — symmetrical with the
-// wire-side FDBError.Retryable in pkg/fdbgo/wire.
+// wire-side FDBError.Retryable in internal/fdbwire.
 func (e Error) Retryable() bool {
 	return IsRetryable(e.Code)
 }

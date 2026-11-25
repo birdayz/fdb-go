@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/internal/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/fdbgo/transport"
 	tcfdb "fdb.dev/pkg/testcontainers/foundationdb"
 	"fdb.dev/tools/clientbench/internal/wgscenarios"
 	"fdb.dev/tools/clientbench/internal/wiregolden"

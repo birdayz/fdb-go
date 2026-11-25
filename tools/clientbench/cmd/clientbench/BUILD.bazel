@@ -39,7 +39,7 @@ go_binary(
     pure = "on",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/fdbgo/client",
+        "//internal/fdbgo/client",
         "//pkg/fdbgo/fdb",
         "//tools/clientbench/internal/bench",
     ],

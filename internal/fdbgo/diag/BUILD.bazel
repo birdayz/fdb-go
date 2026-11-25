@@ -1,0 +1,10 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+package(default_visibility = ["//:__subpackages__"])
+
+go_library(
+    name = "diag",
+    srcs = ["diag.go"],
+    importpath = "fdb.dev/internal/fdbgo/diag",
+    visibility = ["//:__subpackages__"],
+)

@@ -17,13 +17,13 @@ func TestParseNMOutput_AggregationAndEdgeCases(t *testing.T) {
 
 	sample := strings.Join([]string{
 		// Normal package functions, methods, and %2e versioned module paths.
-		"  53b600        139 T fdb.dev/pkg/fdbgo/client.(*ClientMetrics).observeReadLatency",
-		"  53b760       2255 T fdb.dev/pkg/fdbgo/client.(*ClusterFile).String",
+		"  53b600        139 T fdb.dev/internal/fdbgo/client.(*ClientMetrics).observeReadLatency",
+		"  53b760       2255 T fdb.dev/internal/fdbgo/client.(*ClusterFile).String",
 		" 1167c60       1000 T gopkg.in/yaml%2ev3.(*Encoder).Encode",
 		" 1167d80        500 t gopkg.in/yaml%2ev3.(*Node).Encode.deferwrap1",
 		// Generic symbols containing spaces and nested import paths inside [...].
 		"  59e0a0        786 T crypto/internal/fips140/hkdf.Expand[go.shape.interface { BlockSize() int; Reset() }]",
-		"  5b2450        200 R errors..dict.AsType[*fdb.dev/pkg/fdbgo/wire.FDBError]",
+		"  5b2450        200 R errors..dict.AsType[*fdb.dev/internal/fdbwire.FDBError]",
 		// Compiler/linker prefixes and constants.
 		"  6d6138       3000 r go:func.*",
 		"  5026e0        400 T type:.eq.EES",
@@ -47,7 +47,7 @@ func TestParseNMOutput_AggregationAndEdgeCases(t *testing.T) {
 
 	want := []PackageSize{
 		{Package: "go:", Bytes: 3000, Symbols: 1},
-		{Package: "fdb.dev/pkg/fdbgo/client", Bytes: 2394, Symbols: 2},
+		{Package: "fdb.dev/internal/fdbgo/client", Bytes: 2394, Symbols: 2},
 		{Package: "gopkg.in/yaml.v3", Bytes: 1500, Symbols: 2},
 		{Package: "crypto/internal/fips140/hkdf", Bytes: 786, Symbols: 1},
 		{Package: "type:", Bytes: 400, Symbols: 1},
@@ -85,7 +85,7 @@ func TestParseGoList_ClassificationAndErrors(t *testing.T) {
 	stream := strings.Join([]string{
 		`{"ImportPath":"runtime","Name":"runtime","Standard":true}`,
 		`{"ImportPath":"fdb.dev/pkg/fdbgo/fdb","Name":"fdb","Standard":false,"Module":{"Path":"fdb.dev","Main":true}}`,
-		`{"ImportPath":"fdb.dev/pkg/fdbgo/client","Name":"client","Standard":false,"Module":{"Path":"fdb.dev","Main":true}}`,
+		`{"ImportPath":"fdb.dev/internal/fdbgo/client","Name":"client","Standard":false,"Module":{"Path":"fdb.dev","Main":true}}`,
 		`{"ImportPath":"go.opentelemetry.io/otel","Name":"otel","Standard":false,"Module":{"Path":"go.opentelemetry.io/otel","Main":false}}`,
 		`{"ImportPath":"go.opentelemetry.io/otel/trace","Name":"trace","Standard":false,"Module":{"Path":"go.opentelemetry.io/otel","Main":false}}`,
 		`{"ImportPath":"github.com/zeebo/xxh3","Name":"xxh3","Standard":false,"Module":{"Path":"github.com/zeebo/xxh3","Main":false}}`,
@@ -253,7 +253,7 @@ func TestMarkdownRendering(t *testing.T) {
 				StrippedBytes:   3952800,
 				TopPackages: []PackageSize{
 					{Package: "go:", Bytes: 255000, Symbols: 20},
-					{Package: "fdb.dev/pkg/fdbgo/client", Bytes: 120000, Symbols: 85},
+					{Package: "fdb.dev/internal/fdbgo/client", Bytes: 120000, Symbols: 85},
 				},
 			},
 		},
@@ -265,7 +265,7 @@ func TestMarkdownRendering(t *testing.T) {
 		"| `fdb.dev/pkg/fdbgo/fdb` | library | 205 | 184 | 9 | 12 | 6 | 5970649 | 3952800 |",
 		"### Top 2 packages by symbol size: `fdb.dev/pkg/fdbgo/fdb`",
 		"| 1 | `go:` | 255000 | 20 |",
-		"| 2 | `fdb.dev/pkg/fdbgo/client` | 120000 | 85 |",
+		"| 2 | `fdb.dev/internal/fdbgo/client` | 120000 | 85 |",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("markdown missing %q in:\n%s", want, md)

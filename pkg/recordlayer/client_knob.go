@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"strings"
 
+	"fdb.dev/internal/fdbclient"
 	"fdb.dev/internal/unicode15"
-	"fdb.dev/pkg/internal/fdbclient"
 )
 
 // FDBClientKnob is Java's FDBClientKnob (#4488): a FoundationDB client knob

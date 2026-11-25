@@ -15,7 +15,7 @@ import (
 	"strconv"
 	"time"
 
-	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/internal/fdbgo/client"
 	gofdb "fdb.dev/pkg/fdbgo/fdb"
 )
 

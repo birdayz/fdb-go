@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/internal/fdbgo/client"
 	"fdb.dev/pkg/fdbgo/fdb"
 )
 

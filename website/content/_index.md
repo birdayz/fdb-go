@@ -101,12 +101,12 @@ defer rows.Close()
 <section class="launch-section launch-evidence" aria-labelledby="evidence-heading">
   <div class="section-heading"><h2 id="evidence-heading">Compatibility testing</h2><p>Each suite compares specific cases with an external reference implementation. A passing suite does not establish compatibility outside the tested cases.</p></div>
   <div class="evidence-grid">
-    <article><h3>Client behavior</h3><p>Differential tests run the Go client and <code>libfdb_c</code> against the same FoundationDB cluster and compare the results.</p><a href="https://github.com/birdayz/fdb-go/tree/master/pkg/fdbgo/bench">Client differential tests <span aria-hidden="true">↗</span></a></article>
+    <article><h3>Client behavior</h3><p>Differential tests run the Go client and <code>libfdb_c</code> against the same FoundationDB cluster and compare the results.</p><a href="https://github.com/birdayz/fdb-go/tree/master/bench/fdbgo">Client differential tests <span aria-hidden="true">↗</span></a></article>
     <article><h3>Record-store data</h3><p>Conformance tests exercise Go and Java reads and writes on shared stores. The Java reference is Record Layer 4.14.2.0.</p><a href="https://github.com/birdayz/fdb-go/tree/master/conformance">Java conformance suite <span aria-hidden="true">↗</span></a></article>
     <article><h3>SQL results and plans</h3><p>Cross-engine scenarios and regression tests compare query behavior with the Java relational layer.</p><a href="https://github.com/birdayz/fdb-go/tree/master/pkg/relational/conformance">SQL conformance scenarios <span aria-hidden="true">↗</span></a></article>
   </div>
   <div class="launch-boundary"><div><strong>Mixing Go and Java writers</strong><p>Collation, TEXT Unicode behavior, Go-only vector layouts, and engine-private SQL continuation tokens have documented exceptions. Existing Go SQL storage may require an explicit migration.</p></div><div class="boundary-links"><a href="https://github.com/birdayz/fdb-go/blob/master/docs/compatibility.md">Compatibility boundaries →</a><a href="https://github.com/birdayz/fdb-go/blob/master/docs/upgrade.md">Upgrading and rolling back →</a></div></div>
-  <p class="performance-note">Earlier Go-vs-libfdb_c speedup and write-parity claims were withdrawn. Benchmark results apply only to the measured configurations. <a href="/docs/benchmarks/">Benchmarks →</a> · <a href="https://github.com/birdayz/fdb-go/blob/master/pkg/fdbgo/bench/PERFORMANCE.md">Correction and methodology →</a></p>
+  <p class="performance-note">Earlier Go-vs-libfdb_c speedup and write-parity claims were withdrawn. Benchmark results apply only to the measured configurations. <a href="/docs/benchmarks/">Benchmarks →</a> · <a href="https://github.com/birdayz/fdb-go/blob/master/bench/fdbgo/PERFORMANCE.md">Correction and methodology →</a></p>
 </section>
 
 <section class="launch-section launch-next" aria-labelledby="next-heading">

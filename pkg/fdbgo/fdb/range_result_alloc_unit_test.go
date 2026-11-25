@@ -6,7 +6,7 @@ import (
 	"testing"
 	"unsafe"
 
-	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/internal/fdbgo/client"
 )
 
 func TestKeyValueLayoutMatchesClient(t *testing.T) {

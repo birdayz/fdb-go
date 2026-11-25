@@ -1,0 +1,161 @@
+package client
+
+import (
+	"crypto/tls"
+	"log/slog"
+	"time"
+
+	oteltrace "go.opentelemetry.io/otel/trace"
+
+	"fdb.dev/internal/fdbgo/transport"
+)
+
+// DialFunc is the custom-dialer signature (alias of transport.DialFunc) so
+// callers configuring WithDialFunc don't need to import the transport package.
+type DialFunc = transport.DialFunc
+
+// Option configures a database opened via OpenDatabase / OpenDatabaseFromConfig.
+// Options compose and are forward-compatible — new knobs don't break callers.
+type Option func(*openOptions)
+
+type openOptions struct {
+	dialFn            DialFunc
+	tlsConfig         *tls.Config
+	logger            *slog.Logger
+	clusterFilePath   string           // internal: set by OpenDatabase for cluster-file persistence (RFC-111)
+	rangeByteCeiling  int64            // opt-in GetRange materialization ceiling (RFC-115 §2); 0 = unlimited (default)
+	tracingSampleRate float64          // distributed-trace sample rate (RFC-115 §4); 0.0 = unsampled (default, matches C++ TRACING_SAMPLE_RATE)
+	tracer            oteltrace.Tracer // OpenTelemetry export backend (RFC-115 §4 Layer 2); nil → noop (no telemetry)
+	apiVersion        int              // selected FDB API version (RFC-149); required — OpenDatabase rejects an unset version
+	readTagSampling   *readTagSampling // test override of READ_TAG_SAMPLE_RATE; nil = the knob
+	dialOpts          []transport.DialOption
+}
+
+func applyOptions(opts []Option) openOptions {
+	var o openOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
+	}
+	return o
+}
+
+// WithDialFunc overrides the dialer used for every connection. nil (the default)
+// uses a standard net.Dialer. Useful for fault injection, custom networking, or
+// traffic shaping in tests.
+func WithDialFunc(fn DialFunc) Option {
+	return func(o *openOptions) { o.dialFn = fn }
+}
+
+// WithTLSConfig connects to the cluster over TLS using the given standard
+// *crypto/tls.Config — bring any config: in-memory certs, rotation via
+// GetClientCertificate, custom VerifyPeerCertificate, cipher/version policy.
+// The config keeps Go's verification, including a host-name check against each
+// dialed address, which libfdb_c does not make; for libfdb_c's check set
+// InsecureSkipVerify and transport.VerifyPolicy's VerifyConnection.
+//
+// It takes precedence over the FDB_TLS_* environment / cluster-file ":tls"
+// resolution and enables TLS even when the cluster string lacks ":tls". When not
+// supplied, a ":tls" cluster string falls back to the FDB_TLS_* env convenience
+// layer (matching the C++ client). A non-nil config is the only "use TLS" signal
+// — there is no separate boolean, so TLS can never be silently downgraded.
+//
+// WithTLSConfig(nil) is a no-op (it does NOT force plaintext): a ":tls" cluster
+// string + FDB_TLS_* env still enables TLS. To stay plaintext, use a cluster
+// string without ":tls".
+func WithTLSConfig(cfg *tls.Config) Option {
+	return func(o *openOptions) { o.tlsConfig = cfg }
+}
+
+// withClusterFilePath records the on-disk cluster-file path so coordinator-set
+// changes can be persisted back to it (RFC-111). Internal — set by OpenDatabase.
+// OpenDatabaseFromConfig leaves it empty (memory-only, no persistence).
+func withClusterFilePath(path string) Option {
+	return func(o *openOptions) { o.clusterFilePath = path }
+}
+
+// WithRangeByteCeiling bounds how many bytes a single GetRange may materialize
+// into memory before it fails with a *RangeMaterializationLimitError, instead of
+// OOM-ing the process on a runaway unbounded scan. n ≤ 0 (the default) means
+// UNLIMITED — matching libfdb_c, whose GetSliceWithError equivalent also
+// materializes a range unbounded and never returns a "too big" error. This is a
+// Go-only OPT-IN OOM safety valve, off by default so the default facade behavior
+// stays oracle-matching; an operator sets a ceiling (e.g. 256<<20) as a
+// last-resort guard. The bounded, streaming Iterator() honors StreamingMode and
+// is the right tool for large result sets; this ceiling is the backstop for code
+// that calls GetSliceWithError on an unexpectedly huge range. The cap bounds
+// total materialized key+value bytes; a single read may overshoot it by at most
+// one reply (~80 KB) before the check fires.
+func WithRangeByteCeiling(n int64) Option {
+	return func(o *openOptions) { o.rangeByteCeiling = n }
+}
+
+// WithTracingSampleRate sets the fraction (0.0–1.0) of transactions whose trace span
+// is flagged SAMPLED. The default 0.0 matches C++ FLOW_KNOBS->TRACING_SAMPLE_RATE: every
+// transaction still carries a real, randomly-generated SpanContext on every request
+// (wire-faithful with C++), but flagged unsampled so collectors drop it. Raise it to
+// emit sampled spans for a fraction of transactions. RFC-115 §4.
+func WithTracingSampleRate(rate float64) Option {
+	return func(o *openOptions) { o.tracingSampleRate = rate }
+}
+
+// WithTracer sets the application-owned OpenTelemetry export backend. A sampled
+// attempt emits a "Transaction" span and native-read children (getValue, getKey,
+// getRange). Wire propagation is independent: exported spans share the wire trace
+// ID, but use SDK-generated span IDs. There are no separate commit or GRV spans.
+// nil (the default) disables export without constructing OTel contexts or spans;
+// the client does not install a global provider or depend on an SDK or exporter.
+// WithTracingSampleRate gates export before the provider's own sampler.
+//
+// Managed Transact and ReadTransact helpers end their spans on every exit. Raw
+// CreateTransaction handles require commit success, OnError retry, Reset, or Cancel
+// to end a started span. Always Cancel or Reset an uncommitted raw handle.
+// Callbacks are synchronous: keep them bounded and do not call transaction
+// methods from a tracer or span processor, including Reset and Cancel. The application
+// owns provider flushing and shutdown; Database.Close does not shut it down.
+func WithTracer(t oteltrace.Tracer) Option {
+	return func(o *openOptions) { o.tracer = t }
+}
+
+// The API version range this client accepts. MaxAPIVersion is libfdb_c 7.3's
+// FDB_API_VERSION; below MinAPIVersion would need semantics this client does not
+// model. 510-699 run with 7.x semantics apart from the 510/520 gates.
+const (
+	MinAPIVersion = 510
+	MaxAPIVersion = 730
+)
+
+// WithAPIVersion records the selected FDB API version; required — OpenDatabase
+// rejects an unset version (2200) or one outside [MinAPIVersion, MaxAPIVersion]
+// (api_version_not_supported, 2203), the Apple Go binding's answer. Gates
+// version-dependent wire behaviour, e.g. the Min→MinV2/And→AndV2 atomic upgrade
+// at >=510.
+func WithAPIVersion(v int) Option {
+	return func(o *openOptions) { o.apiVersion = v }
+}
+
+// WithCoalesceDelay sets each connection's timer-based batch delay bounds (default
+// 0, 0 on D-NG; 10/20 µs on WithLegacyWriter(); the last linger/coalesce option wins).
+func WithCoalesceDelay(minDelay, maxDelay time.Duration) Option {
+	return func(o *openOptions) {
+		o.dialOpts = append(o.dialOpts, transport.WithCoalesceDelay(minDelay, maxDelay))
+	}
+}
+
+// WithAdaptiveLinger configures Nagle-style adaptive linger on the D-NG writer
+// (0 disables; the last linger/coalesce option wins; RFC-282).
+func WithAdaptiveLinger(d time.Duration) Option {
+	return func(o *openOptions) {
+		o.dialOpts = append(o.dialOpts, transport.WithAdaptiveLinger(d))
+	}
+}
+
+// WithLogger sets the per-handle logger for the client's operational events
+// (transaction retries, commit_unknown_result — RFC-097). nil (the default)
+// uses slog.Default(), so zero-config apps keep the standard integration
+// point (slog.SetDefault); the per-handle option exists for multi-tenant
+// hosts and for tests, which must never mutate process-global state.
+func WithLogger(logger *slog.Logger) Option {
+	return func(o *openOptions) { o.logger = logger }
+}

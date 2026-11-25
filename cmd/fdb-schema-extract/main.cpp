@@ -124,10 +124,10 @@ struct GoEmitterV5 {
             fprintf(f, "import (\n");
             if (needsBinary) fprintf(f, "\t\"encoding/binary\"\n");
             if (needsMath) fprintf(f, "\t\"math\"\n");
-            fprintf(f, "\n\t\"fdb.dev/pkg/fdbgo/wire\"\n");
+            fprintf(f, "\n\t\"fdb.dev/internal/fdbwire\"\n");
             fprintf(f, ")\n\n");
         } else {
-            fprintf(f, "import \"fdb.dev/pkg/fdbgo/wire\"\n\n");
+            fprintf(f, "import \"fdb.dev/internal/fdbwire\"\n\n");
         }
 
         // Slot constants.

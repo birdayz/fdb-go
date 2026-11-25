@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/fdbgo/transport"
+	"fdb.dev/internal/fdbgo/transport"
 )
 
 type pki struct {

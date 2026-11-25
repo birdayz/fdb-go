@@ -110,7 +110,7 @@ go_test(
     },
     tags = ["manual"],
     deps = [
-        "//pkg/fdbgo/wire/types",
+        "//internal/fdbwire/types",
     ],
 )
 

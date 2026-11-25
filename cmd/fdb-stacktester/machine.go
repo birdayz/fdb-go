@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"fdb.dev/pkg/fdbgo/client"
-	"fdb.dev/pkg/fdbgo/wire"
+	"fdb.dev/internal/fdbgo/client"
+	"fdb.dev/internal/fdbwire"
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 )
