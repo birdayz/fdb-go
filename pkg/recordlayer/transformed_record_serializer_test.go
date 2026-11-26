@@ -22,6 +22,7 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	"fdb.dev/internal/dst"
+	"fdb.dev/internal/recordlayer/rlcrypto"
 )
 
 // transform is transformRead with the reader of the unions these tests write
@@ -84,7 +85,7 @@ func TestTransformedSerializer_NoTransformations(t *testing.T) {
 		t.Fatalf("a bare union message read as %x, %v", back, err)
 	}
 	stored, err := s.transform(union, nil)
-	if err != nil || stored[0] != transformPrefixClear || !bytes.Equal(stored[1:], union) {
+	if err != nil || stored[0] != rlcrypto.TransformPrefixClear || !bytes.Equal(stored[1:], union) {
 		t.Fatalf("no transformation stored %x, %v; want 02 then the message", stored, err)
 	}
 	back, err = s.untransform(stored)
@@ -100,7 +101,7 @@ func TestTransformedSerializer_CompressionIsKeptOnlyWhenItShrinks(t *testing.T) 
 	s := mustSerializer(t, NewTransformedRecordSerializerBuilder().SetCompressWhenSerializing(true))
 	for _, union := range [][]byte{unionOf("abc"), unionOf("abcd"), unionOf("z!Q")} {
 		stored, err := s.transform(union, nil)
-		if err != nil || stored[0] != transformPrefixClear {
+		if err != nil || stored[0] != rlcrypto.TransformPrefixClear {
 			t.Fatalf("a %d-byte union compressed: %x, %v", len(union), stored, err)
 		}
 	}
@@ -109,7 +110,7 @@ func TestTransformedSerializer_CompressionIsKeptOnlyWhenItShrinks(t *testing.T) 
 		t.Fatal(err)
 	}
 	stored, err := s.transform(unionOf(string(random)), nil)
-	if err != nil || stored[0] != transformPrefixClear {
+	if err != nil || stored[0] != rlcrypto.TransformPrefixClear {
 		t.Fatalf("an incompressible union compressed: prefix %x, %v", stored[0], err)
 	}
 	union := unionOf(sonnet108 + sonnet108)
@@ -117,7 +118,7 @@ func TestTransformedSerializer_CompressionIsKeptOnlyWhenItShrinks(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored[0] != transformPrefixCompressed || stored[1] != maxCompressionVersion ||
+	if stored[0] != rlcrypto.TransformPrefixCompressed || stored[1] != rlcrypto.MaxCompressionVersion ||
 		binary.BigEndian.Uint32(stored[2:6]) != uint32(len(union)) || len(stored) >= len(union) { //nolint:gosec
 		t.Fatalf("a compressible union stored as prefix %x version %x length %d (%d bytes of %d)",
 			stored[0], stored[1], binary.BigEndian.Uint32(stored[2:6]), len(stored), len(union))
@@ -169,7 +170,7 @@ func TestTransformedSerializer_DecompressWithoutAdler(t *testing.T) {
 	if err := fw.Flush(); err != nil { // a sync flush, never Close: no final block, no Adler-32
 		t.Fatal(err)
 	}
-	stored := []byte{transformPrefixCompressed, maxCompressionVersion, 0, 0, 0, 0}
+	stored := []byte{rlcrypto.TransformPrefixCompressed, rlcrypto.MaxCompressionVersion, 0, 0, 0, 0}
 	binary.BigEndian.PutUint32(stored[2:6], uint32(len(union))) //nolint:gosec
 	stored = append(stored, deflated.Bytes()...)
 	s := mustSerializer(t, NewTransformedRecordSerializerBuilder())
@@ -184,7 +185,7 @@ func compressedSonnet(t *testing.T) (*TransformedRecordSerializer, []byte, []byt
 	s := mustSerializer(t, NewTransformedRecordSerializerBuilder().SetCompressWhenSerializing(true).SetCompressionLevel(9))
 	union := unionOf(sonnet108)
 	stored, err := s.transform(union, nil)
-	if err != nil || stored[0] != transformPrefixCompressed {
+	if err != nil || stored[0] != rlcrypto.TransformPrefixCompressed {
 		t.Fatalf("setup: %x, %v", stored[:1], err)
 	}
 	return s, union, stored
@@ -240,7 +241,7 @@ func TestTransformedSerializer_PrefixRefusals(t *testing.T) {
 		{"empty", "transformation prefix malformed", nil},
 		{
 			"encrypted, key past int", "unrecognized transformation encoding",
-			pad(protowire.AppendVarint(nil, transformPrefixEncrypted+uint64(1<<31)<<3)),
+			pad(protowire.AppendVarint(nil, rlcrypto.TransformPrefixEncrypted+uint64(1<<31)<<3)),
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -257,18 +258,18 @@ func TestTransformedSerializer_PrefixIsAProtobufVarint(t *testing.T) {
 	r := mathrand.New(mathrand.NewPCG(1, 2))
 	for i := 0; i < 200; i++ {
 		key := int32(r.Uint32()) //nolint:gosec
-		st := &transformState{data: []byte("x"), encrypted: true, compressed: i%2 == 0, keyNumber: key}
-		out := encodeTransformPrefix(st)
-		want := uint64(transformPrefixEncrypted) | uint64(key)<<transformKeyShift //nolint:gosec
-		if st.compressed {
-			want |= transformPrefixCompressed
+		st := &transformState{Data: []byte("x"), Encrypted: true, Compressed: i%2 == 0, KeyNumber: key}
+		out := rlcrypto.EncodeTransformPrefix(st)
+		want := uint64(rlcrypto.TransformPrefixEncrypted) | uint64(key)<<rlcrypto.TransformKeyShift //nolint:gosec
+		if st.Compressed {
+			want |= rlcrypto.TransformPrefixCompressed
 		}
 		if got := protowire.AppendVarint(nil, want); !bytes.Equal(out[:len(got)], got) {
 			t.Fatalf("key %d: prefix %x, want the varint %x", key, out[:len(got)], got)
 		}
-		back, prefixed, err := decodeTransformPrefix(out)
-		if err != nil || !prefixed || back.keyNumber != key || back.compressed != st.compressed || !back.encrypted ||
-			string(back.data) != "x" {
+		back, prefixed, err := rlcrypto.DecodeTransformPrefix(out)
+		if err != nil || !prefixed || back.KeyNumber != key || back.Compressed != st.Compressed || !back.Encrypted ||
+			string(back.Data) != "x" {
 			t.Fatalf("key %d decoded as %+v, %t, %v", key, back, prefixed, err)
 		}
 	}
@@ -298,11 +299,11 @@ func TestTransformedSerializer_EncryptWhenSerializing(t *testing.T) {
 			if err != nil {
 				t.Fatalf("key %d compress %t: %v", keySize, compress, err)
 			}
-			want := byte(transformPrefixEncrypted)
+			want := byte(rlcrypto.TransformPrefixEncrypted)
 			if compress {
-				want = transformPrefixCompressedThenEncrypted
+				want = rlcrypto.TransformPrefixCompressedThenEncrypted
 			}
-			if stored[0] != want || (len(stored)-1-cipherIVSize)%16 != 0 {
+			if stored[0] != want || (len(stored)-1-rlcrypto.CipherIVSize)%16 != 0 {
 				t.Fatalf("key %d compress %t: stored prefix %x, %d bytes", keySize, compress, stored[0], len(stored))
 			}
 			if bytes.Contains(stored, []byte("brain")) {
@@ -360,14 +361,14 @@ func TestTransformedSerializer_EncryptionRefusals(t *testing.T) {
 	// reaching, are Java's defensive arms (TransformedRecordSerializer.encrypt,
 	// TransformedRecordSerializerJCE.encrypt): driven on serializers built
 	// without encryption and asked to encrypt.
-	plainState := &transformState{data: []byte("x")}
+	plainState := &transformState{Data: []byte("x")}
 	wantSerializationError(t, mustSerializer(t, NewTransformedRecordSerializerBuilder()).encrypt(plainState, nil), "this serializer cannot encrypt")
 	wantSerializationError(t, mustSerializer(t, NewTransformedRecordSerializerJCEBuilder()).encrypt(plainState, nil),
 		"attempted to encrypt without setting key manager (cipher name and key)")
 
 	// A key number the manager does not serve.
 	wrongKey := append([]byte(nil), stored...)
-	wrongKey[0] = transformPrefixEncrypted | 1<<transformKeyShift
+	wrongKey[0] = rlcrypto.TransformPrefixEncrypted | 1<<rlcrypto.TransformKeyShift
 	_, err = enc.untransform(wrongKey)
 	wantSerializationError(t, err, "only provide key number 0")
 
@@ -472,7 +473,7 @@ func TestTransformedSerializer_DeserializeReattempts(t *testing.T) {
 	}
 	// A permanently corrupt body fails every attempt.
 	corrupt := append([]byte(nil), stored...)
-	corrupt[1+cipherIVSize] ^= 0xFF
+	corrupt[1+rlcrypto.CipherIVSize] ^= 0xFF
 	s := mustSerializer(t, NewTransformedRecordSerializerJCEBuilder().SetEncryptionKey(key).SetDeserializeReattemptCount(3))
 	if _, err := s.untransform(corrupt); err == nil {
 		t.Fatal("a corrupt encrypted body read")
@@ -488,7 +489,7 @@ func TestTransformedSerializer_CorruptAnyBit(t *testing.T) {
 		SetCompressionLevel(9).SetWriteValidationRatio(1))
 	union := unionOf(sonnet108 + "\n" + sonnet108)
 	stored, err := s.transform(union, nil)
-	if err != nil || stored[0] != transformPrefixCompressed {
+	if err != nil || stored[0] != rlcrypto.TransformPrefixCompressed {
 		t.Fatalf("setup: %v", err)
 	}
 	for i := 6; i < len(stored); i++ {
@@ -552,7 +553,7 @@ func TestTransformedSerializer_RandomnessIsSeamed(t *testing.T) {
 	samples := func(seed uint64) int {
 		env, n := simEnv(dst.NewSim(seed)), 0
 		for range 256 {
-			if shouldIncludeInSample(0.5, env) {
+			if rlcrypto.ShouldIncludeInSample(0.5, env) {
 				n++
 			}
 		}
@@ -561,7 +562,7 @@ func TestTransformedSerializer_RandomnessIsSeamed(t *testing.T) {
 	if a, b := samples(3), samples(3); a != b || a == 0 || a == 256 {
 		t.Errorf("seeded validation samples %d and %d: want equal, and neither none nor all of 256", a, b)
 	}
-	if !shouldIncludeInSample(1, nil) || shouldIncludeInSample(0, nil) {
+	if !rlcrypto.ShouldIncludeInSample(1, nil) || rlcrypto.ShouldIncludeInSample(0, nil) {
 		t.Error("ratio 1 must always sample and ratio 0 never")
 	}
 }
@@ -598,7 +599,7 @@ func (m *validationKeyManager) GetKey(keyNumber int32) ([]byte, error) {
 func (m *validationKeyManager) GetCipher(int32) (string, error) { return DefaultCipher, nil }
 
 func (m *validationKeyManager) GetRandom(int32) (io.Reader, error) {
-	return bytes.NewReader(make([]byte, cipherIVSize)), nil
+	return bytes.NewReader(make([]byte, rlcrypto.CipherIVSize)), nil
 }
 
 // keyWithBadPadding is a key, found by search from a fixed start, under which
@@ -608,15 +609,15 @@ func (m *validationKeyManager) GetRandom(int32) (io.Reader, error) {
 // instead of failing "decryption error"; a test asserting that failure must
 // use a key it has checked. Computed with crypto/aes directly.
 func keyWithBadPadding(stored []byte, keyLen int) ([]byte, error) {
-	st, _, err := decodeTransformPrefix(stored)
+	st, _, err := rlcrypto.DecodeTransformPrefix(stored)
 	if err != nil {
 		return nil, err
 	}
-	if !st.encrypted || len(st.data) < 2*aes.BlockSize || len(st.data)%aes.BlockSize != 0 {
+	if !st.Encrypted || len(st.Data) < 2*aes.BlockSize || len(st.Data)%aes.BlockSize != 0 {
 		return nil, errors.New("keyWithBadPadding: not an encrypted record")
 	}
-	prev := st.data[len(st.data)-2*aes.BlockSize : len(st.data)-aes.BlockSize]
-	last := st.data[len(st.data)-aes.BlockSize:]
+	prev := st.Data[len(st.Data)-2*aes.BlockSize : len(st.Data)-aes.BlockSize]
+	last := st.Data[len(st.Data)-aes.BlockSize:]
 	for i := 0; i < 1<<16; i++ {
 		k := bytes.Repeat([]byte{0xa5}, keyLen)
 		k[0], k[1] = byte(i), byte(i>>8)
@@ -709,7 +710,7 @@ func TestTransformedSerializer_WriteValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a validated write under key 1: %v", err)
 	}
-	if st, _, err := decodeTransformPrefix(stored); err != nil || st.keyNumber != 1 || !st.encrypted {
+	if st, _, err := rlcrypto.DecodeTransformPrefix(stored); err != nil || st.KeyNumber != 1 || !st.Encrypted {
 		t.Fatalf("the prefix: %+v, %v, want encrypted under key 1", st, err)
 	}
 	if back, err := s.untransform(stored); err != nil || !bytes.Equal(back, union) {
@@ -844,7 +845,7 @@ func TestTransformedSerializer_ZlibStateIsReused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if wantFast[0] != transformPrefixCompressed || wantBest[0] != transformPrefixCompressed {
+	if wantFast[0] != rlcrypto.TransformPrefixCompressed || wantBest[0] != rlcrypto.TransformPrefixCompressed {
 		t.Fatal("fixture: the union must compress at both levels")
 	}
 	// The expected bytes come from a FRESH writer, not the shared lists: after
@@ -865,7 +866,7 @@ func TestTransformedSerializer_ZlibStateIsReused(t *testing.T) {
 		if err := w.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if !bytes.Equal(c.stored[1+compressionHeaderSize:], fresh.Bytes()) {
+		if !bytes.Equal(c.stored[1+rlcrypto.CompressionHeaderSize:], fresh.Bytes()) {
 			t.Fatalf("level %d: the stored stream is not a fresh writer's", c.level)
 		}
 	}
@@ -899,14 +900,14 @@ func TestTransformedSerializer_ZlibStateIsReused(t *testing.T) {
 	// to learn which writer and reader it used is harmless for the same
 	// reason: they go back onto lists with room to spare.
 	private := mustSerializer(t, NewTransformedRecordSerializerBuilder().SetCompressWhenSerializing(true))
-	private.zlib = newZlibFreeLists(2, 2)
+	private.zlib = rlcrypto.NewZlibFreeLists(2, 2)
 	level := DeflaterBestCompression - DeflaterDefaultCompression
 	holds := func(when string) {
 		t.Helper()
-		if len(private.zlib.writers[level]) != 1 || len(private.zlib.readers) != 1 {
+		if len(private.zlib.Writers[level]) != 1 || len(private.zlib.Readers) != 1 {
 			t.Fatalf("%s the private lists hold %d writer(s) and %d reader(s), want 1 and 1: the serializer "+
 				"built zlib state it did not take from its lists (2) or kept what it took (0)",
-				when, len(private.zlib.writers[level]), len(private.zlib.readers))
+				when, len(private.zlib.Writers[level]), len(private.zlib.Readers))
 		}
 	}
 	roundTrip := func(when string) {
@@ -922,10 +923,10 @@ func TestTransformedSerializer_ZlibStateIsReused(t *testing.T) {
 	}
 	roundTrip("the first record")
 	holds("after the first record each way")
-	usedWriter := <-private.zlib.writers[level]
-	usedReader := <-private.zlib.readers
-	private.zlib.writers[level] <- usedWriter
-	private.zlib.readers <- usedReader
+	usedWriter := <-private.zlib.Writers[level]
+	usedReader := <-private.zlib.Readers
+	private.zlib.Writers[level] <- usedWriter
+	private.zlib.Readers <- usedReader
 	roundTrip("the second record")
 	holds("after the second record each way")
 	// A reader goes back onto the list after an error in the middle of a stream
@@ -953,37 +954,37 @@ func TestTransformedSerializer_ZlibStateIsReused(t *testing.T) {
 	}
 	roundTrip("the record after two corrupt streams")
 	holds("after the corrupt streams")
-	if w := <-private.zlib.writers[level]; w != usedWriter {
+	if w := <-private.zlib.Writers[level]; w != usedWriter {
 		t.Fatal("a later record compressed with a writer the lists did not hand it")
 	}
-	if r := <-private.zlib.readers; r != usedReader {
+	if r := <-private.zlib.Readers; r != usedReader {
 		t.Fatal("a later record decompressed with a reader the lists did not hand it")
 	}
 
-	l := newZlibFreeLists(1, 1)
+	l := rlcrypto.NewZlibFreeLists(1, 1)
 	var sink bytes.Buffer
-	w, err := l.acquireWriter(&sink, DeflaterBestCompression)
+	w, err := l.AcquireWriter(&sink, DeflaterBestCompression)
 	if err != nil {
 		t.Fatal(err)
 	}
-	l.releaseWriter(w, DeflaterBestCompression)
-	if again, _ := l.acquireWriter(&sink, DeflaterBestCompression); again != w {
+	l.ReleaseWriter(w, DeflaterBestCompression)
+	if again, _ := l.AcquireWriter(&sink, DeflaterBestCompression); again != w {
 		t.Fatal("a released writer was not reused at its level")
 	}
-	l.releaseWriter(w, DeflaterBestCompression)
-	if other, _ := l.acquireWriter(&sink, 1); other == w {
+	l.ReleaseWriter(w, DeflaterBestCompression)
+	if other, _ := l.AcquireWriter(&sink, 1); other == w {
 		t.Fatal("a level-9 writer served level 1")
 	}
 	body := wantBest[6:] // the zlib stream after the prefix and header
-	r, err := l.acquireReader(bytes.NewReader(body))
+	r, err := l.AcquireReader(bytes.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
-	l.releaseReader(r)
-	if _, err := l.acquireReader(bytes.NewReader([]byte{0xff, 0xff})); err == nil {
+	l.ReleaseReader(r)
+	if _, err := l.AcquireReader(bytes.NewReader([]byte{0xff, 0xff})); err == nil {
 		t.Fatal("a refused header read")
 	}
-	again, err := l.acquireReader(bytes.NewReader(body))
+	again, err := l.AcquireReader(bytes.NewReader(body))
 	if err != nil || again != r {
 		t.Fatalf("the reader, returned after a refused header, was not reused (%v)", err)
 	}
@@ -1103,7 +1104,7 @@ func BenchmarkReadStoredRecordAllocations(b *testing.B) {
 		for _, prefixed := range []bool{false, true} {
 			stored := union
 			if prefixed {
-				stored = append([]byte{transformPrefixClear}, union...)
+				stored = append([]byte{rlcrypto.TransformPrefixClear}, union...)
 			}
 			const samples = 1000
 			direct := testing.AllocsPerRun(samples, func() {
@@ -1133,36 +1134,4 @@ func BenchmarkReadStoredRecordAllocations(b *testing.B) {
 		}
 	}
 	b.Logf("readStoredRecord allocation cases=%d", cases)
-}
-
-// TestDecodeTransformPrefixDoesNotAllocate: the prefix is decoded once per
-// record read, so its state is a value. Allocation accounting is process-wide,
-// so the measurement runs in its own process, away from parallel tests.
-func TestDecodeTransformPrefixDoesNotAllocate(t *testing.T) {
-	t.Parallel()
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	const bench = "BenchmarkDecodeTransformPrefixAllocations"
-	output, err := exec.CommandContext(t.Context(), executable,
-		"-test.run=^$", "-test.bench=^"+bench+"$", "-test.benchtime=1x").CombinedOutput()
-	if err != nil || !bytes.Contains(output, []byte(bench)) {
-		t.Fatalf("allocation benchmark: %v\n%s", err, output)
-	}
-}
-
-func BenchmarkDecodeTransformPrefixAllocations(b *testing.B) {
-	stored := append(protowire.AppendVarint(nil, transformPrefixCompressed), 'x')
-	var st transformState
-	var prefixed bool
-	allocations := testing.AllocsPerRun(100, func() {
-		st, prefixed, _ = decodeTransformPrefix(stored)
-	})
-	if !prefixed || !st.compressed || string(st.data) != "x" {
-		b.Fatalf("decoded %+v, prefixed=%t", st, prefixed)
-	}
-	if allocations != 0 {
-		b.Fatalf("decodeTransformPrefix allocated %.0f times per record", allocations)
-	}
 }

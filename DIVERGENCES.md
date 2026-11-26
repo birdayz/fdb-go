@@ -4323,7 +4323,7 @@ Java's default serializer (`DynamicMessageRecordSerializer`) reads a stored reco
 DynamicMessage. Its map field is the list of its entries in stored order, a key written twice
 included. A load-then-save writes that list back, each entry re-encoded with its key and its
 value, then the fields the entry carries that its type does not declare. Go's load-then-save
-writes the same map entries (`rewriteMaps`, `pkg/recordlayer/record_wire_map_order.go:425`), an
+writes the same map entries (`RewriteMaps`, `internal/recordlayer/rlwire/map_order_merge.go:73`), an
 entry's unknown fields included. Two JVM specs compare both engines' re-saves byte for byte:
 "Map entries are maintained in the record's wire order, as Java maintains them"
 (`conformance/key_validation_conformance_test.go:324`) and "A record re-saved unchanged is written
@@ -4351,14 +4351,14 @@ or built the record, the order is Go's:
 - A new record's maps are in key order.
 
 An element of a repeated message field is matched to the stored elements by content
-(`elementPriors`, `record_wire_map_order.go:524-634`). The match runs along a longest common
+(`ElementPriors`, `internal/recordlayer/rlwire/map_order_merge.go:160-245`). The match runs along a longest common
 subsequence of the two lists and then by content in order. So an unchanged run keeps its own
 order when elements are inserted, removed, changed or swapped around it, as Java's does.
-`TestElementPriorsMatching` (`record_wire_map_order_test.go:1045`) pins two exceptions:
+`TestElementPriorsMatching` (`internal/recordlayer/rlwire/map_order_test.go:185`) pins two exceptions:
 - An inserted element equal in content to a stored one is not told from it. Stored [B] saved as
   [B', B] pairs the stored B with B', the element at its position, and writes the B that was
   stored as a new element, its maps in key order, where Java keeps B's order.
-- Past `maxLCSCells` (2^20, `:637`) cells, the product of the two lists' lengths, no
+- Past `MaxLCSCells` (2^20, `:280`) cells, the product of the two lists' lengths, no
   subsequence is computed and elements are matched by content in order. An unchanged element can
   then take an earlier stored element equal to it rather than its own. Stored [A1, B, A2], A1 and
   A2 equal but for their maps' order, saved as [B, A]: A takes A1's order where Java's keeps A2's.
@@ -4477,7 +4477,7 @@ what Go writes, and in both a Java reader reads what Go writes:
 - **The ciphers are the AES transformations Java's serializer can run.** Java initializes every
   cipher with a 16-byte `IvParameterSpec` (`TransformedRecordSerializerJCE.java:67-72`,
   `:98-106`), so only an AES mode that takes that IV works. Go implements those modes from NIST
-  SP 800-38A, its addendum and FIPS 81 (`pkg/recordlayer/jce_cipher.go`):
+  SP 800-38A, its addendum and FIPS 81 (`internal/recordlayer/rlcrypto/jce_cipher.go`):
   - CBC and PCBC, with NoPadding, PKCS5Padding or ISO10126Padding;
   - CTS (CBC-CS3) and CTR, with NoPadding;
   - CFB and OFB, with a unit of 1 to 16 whole bytes and any of those paddings;
@@ -4490,7 +4490,7 @@ what Go writes, and in both a Java reader reads what Go writes:
 
   Names parse as `Cipher.getInstance` parses them. Which it accepts, with which keys, in which
   order of refusal (getInstance, then the key, then the IV), and the bytes of each mode at each
-  length were measured on JDK 21.0.9's SunJCE and pinned (`jce_cipher_test.go`, "MatchesJDK").
+  length were measured on JDK 21.0.9's SunJCE and pinned (`internal/recordlayer/rlcrypto/jce_cipher_test.go`, "MatchesJDK").
   Any other name fails the record with Java's "encryption error" or "decryption error", its
   cause "unsupported cipher X". Java fails ECB, GCM, KW, KWP, ChaCha20 and the 8-byte-block
   ciphers on that IV too. Go does not implement a cipher a JCE provider other than SunJCE adds.
@@ -4504,13 +4504,13 @@ what Go writes, and in both a Java reader reads what Go writes:
 - **A key store is PKCS12 or JCEKS**, the types `KeyStore.getInstance(File, password)` detects
   that hold a secret key. A JKS file cannot hold one, so neither engine serves a key from it: Go
   refuses it at load, Java when a key is read. Within PKCS12, Go reads the protections the JDK
-  writes (`pbeDecrypt`, `keystore_key_manager.go:530`): PBES2 (PBKDF2 with an HMAC-SHA PRF,
+  writes (`pbeDecrypt`, `internal/recordlayer/rlcrypto/pkcs12.go:333`): PBES2 (PBKDF2 with an HMAC-SHA PRF,
   AES-128/192/256-CBC), the JDK 12+ default, and the older pbeWithSHAAnd3-KeyTripleDES-CBC, under a
   MAC over SHA-1, SHA-224, SHA-256, SHA-384 or SHA-512. As in the JDK, a key's password and the
-  store's password must be printable ASCII ("Password is not ASCII", `checkPBEPassword`,
-  `keystore_key_manager.go:245-255`). The JDK derives the key-entry and the MAC keys through a
+  store's password must be printable ASCII ("Password is not ASCII", `CheckPBEPassword`,
+  `internal/recordlayer/rlcrypto/pkcs12.go:48-58`). The JDK derives the key-entry and the MAC keys through a
   `PBEKey`, and was measured refusing to store either. A JCEKS store is read as SunJCE's
-  `JceKeyStore` reads it (`pkg/recordlayer/jceks.go`, ported from pyjks): its SHA-1 digest keyed by
+  `JceKeyStore` reads it (`internal/recordlayer/rlcrypto/jceks.go`, ported from pyjks): its SHA-1 digest keyed by
   the store password (any characters), and each secret key a serialized SealedObject sealed with
   PBEWithMD5AndTripleDES under the key password (printable ASCII, the empty one admitted), around a
   SecretKeySpec or a KeyRep. A wrong store password is Java's "Keystore was tampered with, or

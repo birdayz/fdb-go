@@ -13,6 +13,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"fdb.dev/internal/recordlayer/rlcrypto"
 )
 
 type largeContextCodec struct {
@@ -209,7 +211,7 @@ func TestLargeContextCompression(t *testing.T) {
 					if c.name == "repetitive_positive_control_not_representative" && codec.serializer != nil && saving < 80 {
 						t.Fatalf("%s positive control did not shrink: %.3f%%", codec.name, saving)
 					}
-					if c.name == "random_bytes_negative_control_not_messages" && codec.serializer != nil && (len(stored) != len(union)+1 || stored[0] != transformPrefixClear) {
+					if c.name == "random_bytes_negative_control_not_messages" && codec.serializer != nil && (len(stored) != len(union)+1 || stored[0] != rlcrypto.TransformPrefixClear) {
 						t.Fatalf("%s failed incompressible clear fallback", codec.name)
 					}
 					fmt.Printf("LARGE_CONTEXT_CODEC corpus=%s codec=%s round=%d raw_union_bytes=%d stored_bytes=%d saved_pct=%.6f encode_wall_ns=%d decode_wall_ns=%d encode_process_cpu_ns=%d decode_process_cpu_ns=%d encode_alloc_bytes=%d decode_alloc_bytes=%d encode_mallocs=%d decode_mallocs=%d sha256=%x warmup=1\n",

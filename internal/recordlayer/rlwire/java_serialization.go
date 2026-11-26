@@ -1,4 +1,5 @@
-package recordlayer
+// Package rlwire holds pure wire-format helpers for Record Layer serialization.
+package rlwire
 
 import (
 	"encoding/binary"
@@ -17,33 +18,33 @@ import (
 // key store's digest check, so nothing it holds is trusted: every length is
 // bounded by the data, and class hierarchies by javaMaxClassDepth.
 
-// javaObject is a deserialized object: its class and its serialized fields, by
-// name. A field is a []byte (byte[]), a string, a *javaObject, a javaEnum, or nil.
-type javaObject struct {
-	class  *javaClassDesc
-	fields map[string]any
+// JavaObject is a deserialized object: its class and its serialized fields, by
+// name. A field is a []byte (byte[]), a string, a *JavaObject, a JavaEnum, or nil.
+type JavaObject struct {
+	Class  *JavaClassDesc
+	Fields map[string]any
 }
 
-// javaClassDesc is a class descriptor. chain is the class and its serializable
+// JavaClassDesc is a class descriptor. Chain is the class and its serializable
 // superclasses, topmost first, set once the descriptor is complete.
-type javaClassDesc struct {
-	name   string
-	flags  byte
-	fields []string // object fields' names, in stream order
-	super  *javaClassDesc
-	chain  []*javaClassDesc
+type JavaClassDesc struct {
+	Name   string
+	Flags  byte
+	Fields []string // object fields' names, in stream order
+	Super  *JavaClassDesc
+	Chain  []*JavaClassDesc
 }
 
-// javaEnum is an enum constant.
-type javaEnum struct {
-	class    *javaClassDesc
-	constant string
+// JavaEnum is an enum constant.
+type JavaEnum struct {
+	Class    *JavaClassDesc
+	Constant string
 }
 
-// isA says the class or a superclass is name.
-func (c *javaClassDesc) isA(name string) bool {
-	for _, d := range c.chain {
-		if d.name == name {
+// IsA says the class or a superclass is name.
+func (c *JavaClassDesc) IsA(name string) bool {
+	for _, d := range c.Chain {
+		if d.Name == name {
 			return true
 		}
 	}
@@ -71,9 +72,10 @@ const (
 
 var errJavaStreamTruncated = errors.New("serialized object: truncated")
 
-type javaStreamReader struct {
-	data    []byte
-	pos     int
+// JavaStreamReader reads Java Object Serialization and JCEKS binary streams.
+type JavaStreamReader struct {
+	Data    []byte
+	Pos     int
 	handles []any
 	depth   int
 	// allow, when set, admits each class the stream names, as a
@@ -81,11 +83,11 @@ type javaStreamReader struct {
 	allow func(name string) bool
 }
 
-// readJavaObject reads one object stream, its magic, version and one object,
+// ReadJavaObject reads one object stream, its magic, version and one object,
 // from the start of data. It returns the object and the bytes the stream took.
-func readJavaObject(data []byte, allow func(string) bool) (any, int, error) {
-	r := &javaStreamReader{data: data, allow: allow}
-	head, err := r.take(4)
+func ReadJavaObject(data []byte, allow func(string) bool) (any, int, error) {
+	r := &JavaStreamReader{Data: data, allow: allow}
+	head, err := r.Take(4)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -96,44 +98,46 @@ func readJavaObject(data []byte, allow func(string) bool) (any, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	return v, r.pos, nil
+	return v, r.Pos, nil
 }
 
-func (r *javaStreamReader) take(n int) ([]byte, error) {
-	if n < 0 || n > len(r.data)-r.pos {
+// Take advances the stream by n bytes and returns the slice.
+func (r *JavaStreamReader) Take(n int) ([]byte, error) {
+	if n < 0 || n > len(r.Data)-r.Pos {
 		return nil, errJavaStreamTruncated
 	}
-	b := r.data[r.pos : r.pos+n]
-	r.pos += n
+	b := r.Data[r.Pos : r.Pos+n]
+	r.Pos += n
 	return b, nil
 }
 
-func (r *javaStreamReader) u8() (byte, error) {
-	b, err := r.take(1)
+func (r *JavaStreamReader) u8() (byte, error) {
+	b, err := r.Take(1)
 	if err != nil {
 		return 0, err
 	}
 	return b[0], nil
 }
 
-func (r *javaStreamReader) i32() (int, error) {
-	b, err := r.take(4)
+// I32 reads a signed big-endian 32-bit integer.
+func (r *JavaStreamReader) I32() (int, error) {
+	b, err := r.Take(4)
 	if err != nil {
 		return 0, err
 	}
 	return int(int32(binary.BigEndian.Uint32(b))), nil //nolint:gosec // a Java int
 }
 
-// utf reads a string as DataInput.readUTF does: a 2-byte length, then modified
+// UTF reads a string as DataInput.readUTF does: a 2-byte length, then modified
 // UTF-8 (UTF-16 code units in one, two or three bytes; NUL as C0 80 or 00; a
 // supplementary character as two encoded surrogates). A four-byte sequence
 // is malformed, as in Java. An unpaired surrogate reads as U+FFFD.
-func (r *javaStreamReader) utf() (string, error) {
-	lb, err := r.take(2)
+func (r *JavaStreamReader) UTF() (string, error) {
+	lb, err := r.Take(2)
 	if err != nil {
 		return "", err
 	}
-	b, err := r.take(int(binary.BigEndian.Uint16(lb)))
+	b, err := r.Take(int(binary.BigEndian.Uint16(lb)))
 	if err != nil {
 		return "", err
 	}
@@ -158,12 +162,12 @@ func (r *javaStreamReader) utf() (string, error) {
 }
 
 // newHandle assigns the next wire handle to v, which may be filled in later.
-func (r *javaStreamReader) newHandle(v any) int {
+func (r *JavaStreamReader) newHandle(v any) int {
 	r.handles = append(r.handles, v)
 	return len(r.handles) - 1
 }
 
-func (r *javaStreamReader) content() (any, error) {
+func (r *JavaStreamReader) content() (any, error) {
 	r.depth++
 	defer func() { r.depth-- }()
 	if r.depth > javaMaxDepth {
@@ -177,7 +181,7 @@ func (r *javaStreamReader) content() (any, error) {
 	case javaTCNull:
 		return nil, nil
 	case javaTCReference:
-		h, err := r.i32()
+		h, err := r.I32()
 		if err != nil {
 			return nil, err
 		}
@@ -187,7 +191,7 @@ func (r *javaStreamReader) content() (any, error) {
 		}
 		return r.handles[h], nil
 	case javaTCString:
-		s, err := r.utf()
+		s, err := r.UTF()
 		if err != nil {
 			return nil, err
 		}
@@ -200,15 +204,15 @@ func (r *javaStreamReader) content() (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if desc.name != "[B" {
-			return nil, fmt.Errorf("serialized object: a %s array, not byte[]", desc.name)
+		if desc.Name != "[B" {
+			return nil, fmt.Errorf("serialized object: a %s array, not byte[]", desc.Name)
 		}
 		h := r.newHandle(nil)
-		n, err := r.i32()
+		n, err := r.I32()
 		if err != nil {
 			return nil, err
 		}
-		b, err := r.take(n)
+		b, err := r.Take(n)
 		if err != nil {
 			return nil, err
 		}
@@ -230,7 +234,7 @@ func (r *javaStreamReader) content() (any, error) {
 		if !ok {
 			return nil, errors.New("serialized object: an enum constant not named by a string")
 		}
-		v := javaEnum{class: desc, constant: s}
+		v := JavaEnum{Class: desc, Constant: s}
 		r.handles[h] = v
 		return v, nil
 	case javaTCObject:
@@ -242,35 +246,35 @@ func (r *javaStreamReader) content() (any, error) {
 // classDesc reads the class descriptor an object, array or enum names: a new
 // one or a reference to a complete one. A descriptor still being read (one
 // naming itself, directly or not, as its superclass) is refused.
-func (r *javaStreamReader) classDesc() (*javaClassDesc, error) {
+func (r *JavaStreamReader) classDesc() (*JavaClassDesc, error) {
 	v, err := r.content()
 	if err != nil {
 		return nil, err
 	}
-	desc, ok := v.(*javaClassDesc)
-	if !ok || desc.chain == nil {
+	desc, ok := v.(*JavaClassDesc)
+	if !ok || desc.Chain == nil {
 		return nil, errors.New("serialized object: not a complete class descriptor")
 	}
 	return desc, nil
 }
 
-func (r *javaStreamReader) newClassDesc() (*javaClassDesc, error) {
-	name, err := r.utf()
+func (r *JavaStreamReader) newClassDesc() (*JavaClassDesc, error) {
+	name, err := r.UTF()
 	if err != nil {
 		return nil, err
 	}
 	if r.allow != nil && name != "[B" && !r.allow(name) {
 		return nil, fmt.Errorf("serialized object: class %s rejected", name)
 	}
-	if _, err := r.take(8); err != nil { // serialVersionUID
+	if _, err := r.Take(8); err != nil { // serialVersionUID
 		return nil, err
 	}
-	desc := &javaClassDesc{name: name}
+	desc := &JavaClassDesc{Name: name}
 	r.newHandle(desc)
-	if desc.flags, err = r.u8(); err != nil {
+	if desc.Flags, err = r.u8(); err != nil {
 		return nil, err
 	}
-	nb, err := r.take(2)
+	nb, err := r.Take(2)
 	if err != nil {
 		return nil, err
 	}
@@ -279,7 +283,7 @@ func (r *javaStreamReader) newClassDesc() (*javaClassDesc, error) {
 		if err != nil {
 			return nil, err
 		}
-		field, err := r.utf()
+		field, err := r.UTF()
 		if err != nil {
 			return nil, err
 		}
@@ -291,7 +295,7 @@ func (r *javaStreamReader) newClassDesc() (*javaClassDesc, error) {
 		} else if _, ok := typ.(string); !ok {
 			return nil, fmt.Errorf("serialized object: field %s's type is not a string", field)
 		}
-		desc.fields = append(desc.fields, field)
+		desc.Fields = append(desc.Fields, field)
 	}
 	if end, err := r.u8(); err != nil {
 		return nil, err
@@ -304,39 +308,39 @@ func (r *javaStreamReader) newClassDesc() (*javaClassDesc, error) {
 		return nil, err
 	}
 	if sup != nil {
-		s, ok := sup.(*javaClassDesc)
-		if !ok || s.chain == nil {
+		s, ok := sup.(*JavaClassDesc)
+		if !ok || s.Chain == nil {
 			return nil, fmt.Errorf("serialized object: class %s's superclass is not a complete class descriptor", name)
 		}
-		if len(s.chain) >= javaMaxClassDepth {
+		if len(s.Chain) >= javaMaxClassDepth {
 			return nil, fmt.Errorf("serialized object: class %s has more than %d serializable superclasses", name, javaMaxClassDepth-1)
 		}
-		desc.super = s
-		desc.chain = append(append(make([]*javaClassDesc, 0, len(s.chain)+1), s.chain...), desc)
+		desc.Super = s
+		desc.Chain = append(append(make([]*JavaClassDesc, 0, len(s.Chain)+1), s.Chain...), desc)
 	} else {
-		desc.chain = []*javaClassDesc{desc}
+		desc.Chain = []*JavaClassDesc{desc}
 	}
 	return desc, nil
 }
 
-func (r *javaStreamReader) newObject() (any, error) {
+func (r *JavaStreamReader) newObject() (any, error) {
 	desc, err := r.classDesc()
 	if err != nil {
 		return nil, err
 	}
-	obj := &javaObject{class: desc, fields: map[string]any{}}
+	obj := &JavaObject{Class: desc, Fields: map[string]any{}}
 	r.newHandle(obj)
 	// Class data runs from the topmost serializable superclass down.
-	for _, c := range desc.chain {
-		if c.flags&(javaSCExternal|javaSCWriteMethod) != 0 || c.flags&javaSCSerializable == 0 {
-			return nil, fmt.Errorf("serialized object: class %s is not serializable by default (flags %#x)", c.name, c.flags)
+	for _, c := range desc.Chain {
+		if c.Flags&(javaSCExternal|javaSCWriteMethod) != 0 || c.Flags&javaSCSerializable == 0 {
+			return nil, fmt.Errorf("serialized object: class %s is not serializable by default (flags %#x)", c.Name, c.Flags)
 		}
-		for _, f := range c.fields {
+		for _, f := range c.Fields {
 			v, err := r.content()
 			if err != nil {
 				return nil, err
 			}
-			obj.fields[f] = v
+			obj.Fields[f] = v
 		}
 	}
 	return obj, nil

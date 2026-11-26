@@ -318,7 +318,7 @@ func expectMaintainedAsJava(label string, root recordlayer.KeyExpression, predic
 }
 
 // A record's map entries are maintained in the order its bytes hold them, as
-// Java maintains them (record_wire_map_order.go). The root is a covering index
+// Java maintains them (internal/recordlayer/rlwire/map_order.go). The root is a covering index
 // whose key two entries can share, so the stored value is the last entry's:
 // the order is visible in the bytes. The records are raw bytes: entries out of
 // key order, a key written twice, and an entry with no value. Java saves them

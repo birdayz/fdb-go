@@ -83,7 +83,7 @@ func TestCheckUTF8Strings_EveryArm(t *testing.T) {
 	rec := file.Messages().ByName("Rec")
 	inner := file.Messages().ByName("Inner")
 	reach := newStringReach(rec)
-	rt := &RecordType{Name: "Rec", Descriptor: rec, unionFieldNumber: 1, reachesString: reach.reaches(rec), stringReach: reach}
+	rt := &RecordType{Name: "Rec", Descriptor: rec, unionFieldNumber: 1, reachesString: reach.Reaches(rec), stringReach: reach}
 	str := protoreflect.ValueOfString
 	innerWith := func(m protoreflect.Message, text string) protoreflect.Value {
 		v := dynamicpb.NewMessage(inner)
@@ -140,7 +140,7 @@ func TestCheckUTF8Strings_EveryArm(t *testing.T) {
 	// The reach prunes a type that holds no string at any depth, recursive
 	// ones included.
 	for name, want := range map[protoreflect.Name]bool{"Rec": true, "Inner": true, "NoStr": false} {
-		if got := reach.reaches(file.Messages().ByName(name)); got != want {
+		if got := reach.Reaches(file.Messages().ByName(name)); got != want {
 			t.Errorf("reaches(%s) = %t, want %t", name, got, want)
 		}
 	}

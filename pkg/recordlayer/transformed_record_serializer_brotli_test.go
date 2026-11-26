@@ -7,13 +7,14 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"hash/crc32"
 	"io"
 	mathrand "math/rand/v2"
 	"sync"
 	"testing"
 
 	"github.com/andybalholm/brotli"
+
+	"fdb.dev/internal/recordlayer/rlcrypto"
 )
 
 func brotliSerializer(t *testing.T, level int) *TransformedRecordSerializer {
@@ -40,26 +41,26 @@ func TestTransformedSerializer_BrotliOptInAndLegacyBytes(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	want := []byte{transformPrefixCompressed, 1, 0, 0, 0, 0}
+	want := []byte{rlcrypto.TransformPrefixCompressed, 1, 0, 0, 0, 0}
 	binary.BigEndian.PutUint32(want[2:6], uint32(len(union))) //nolint:gosec
 	want = append(want, fresh.Bytes()...)
 	if !bytes.Equal(v1, want) {
 		t.Fatal("default compression changed Java's version-1 bytes")
 	}
-	for level := 0; level <= maxBrotliCompressionLevel; level++ {
+	for level := 0; level <= rlcrypto.MaxBrotliCompressionLevel; level++ {
 		t.Run(fmt.Sprint(level), func(t *testing.T) {
 			s := brotliSerializer(t, level)
 			v2, err := s.transform(union, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if v2[0] != transformPrefixCompressed || v2[1] != brotliCompressionVersion || len(v2) >= len(union) {
+			if v2[0] != rlcrypto.TransformPrefixCompressed || v2[1] != rlcrypto.BrotliCompressionVersion || len(v2) >= len(union) {
 				t.Fatalf("Brotli did not store a smaller v2 body: raw=%d stored=%d prefix=%x", len(union), len(v2), v2[:2])
 			}
-			if binary.BigEndian.Uint32(v2[2:6]) != uint32(len(union)) || binary.BigEndian.Uint32(v2[6:10]) != crc32.Checksum(union, brotliChecksumTable) { //nolint:gosec
+			if binary.BigEndian.Uint32(v2[2:6]) != uint32(len(union)) || binary.BigEndian.Uint32(v2[6:10]) != rlcrypto.BrotliChecksum(union) { //nolint:gosec
 				t.Fatal("wrong length or CRC32C in version-2 header")
 			}
-			for _, encoded := range [][]byte{union, append([]byte{transformPrefixClear}, union...), v1, v2} {
+			for _, encoded := range [][]byte{union, append([]byte{rlcrypto.TransformPrefixClear}, union...), v1, v2} {
 				back, err := s.untransform(encoded)
 				if err != nil || !bytes.Equal(back, union) || sha256.Sum256(back) != sha256.Sum256(union) {
 					t.Fatalf("opted reader lost exact bytes: %v", err)
@@ -74,7 +75,7 @@ func TestTransformedSerializer_BrotliOptInAndLegacyBytes(t *testing.T) {
 				t.Fatalf("read-only opt-in: %v", err)
 			}
 			clear, err := readOnly.transform(union, nil)
-			if err != nil || clear[0] != transformPrefixClear || !bytes.Equal(clear[1:], union) {
+			if err != nil || clear[0] != rlcrypto.TransformPrefixClear || !bytes.Equal(clear[1:], union) {
 				t.Fatalf("disabled compressed writes: %v", err)
 			}
 		})
@@ -95,11 +96,11 @@ func TestTransformedSerializer_BrotliFallbackAndBounds(t *testing.T) {
 	for i := range random {
 		random[i] = byte(rng.Uint64())
 	}
-	for level := 0; level <= maxBrotliCompressionLevel; level++ {
+	for level := 0; level <= rlcrypto.MaxBrotliCompressionLevel; level++ {
 		s := brotliSerializer(t, level)
 		for _, union := range [][]byte{unionOf(""), unionOf("short"), unionOf(string(random))} {
 			stored, err := s.transform(union, nil)
-			if err != nil || stored[0] != transformPrefixClear || !bytes.Equal(stored[1:], union) {
+			if err != nil || stored[0] != rlcrypto.TransformPrefixClear || !bytes.Equal(stored[1:], union) {
 				t.Fatalf("level %d did not keep an unprofitable body clear: %v", level, err)
 			}
 			back, err := s.untransform(stored)
@@ -109,15 +110,15 @@ func TestTransformedSerializer_BrotliFallbackAndBounds(t *testing.T) {
 		}
 	}
 	s := brotliSerializer(t, 1)
-	limit := make([]byte, maxBrotliRecordBytes+1)
+	limit := make([]byte, rlcrypto.MaxBrotliRecordBytes+1)
 	_, err := s.transform(limit, nil)
 	wantSerializationError(t, err, "exceeds 10000000 bytes")
-	stored, err := s.transform(limit[:maxBrotliRecordBytes], nil)
-	if err != nil || stored[0] != transformPrefixCompressed {
+	stored, err := s.transform(limit[:rlcrypto.MaxBrotliRecordBytes], nil)
+	if err != nil || stored[0] != rlcrypto.TransformPrefixCompressed {
 		t.Fatalf("exact size cap was refused: %v", err)
 	}
 	back, err := s.untransform(stored)
-	if err != nil || !bytes.Equal(back, limit[:maxBrotliRecordBytes]) {
+	if err != nil || !bytes.Equal(back, limit[:rlcrypto.MaxBrotliRecordBytes]) {
 		t.Fatalf("exact size cap did not round trip: %v", err)
 	}
 }
@@ -127,7 +128,7 @@ func TestTransformedSerializer_BrotliRejectsCorruption(t *testing.T) {
 	s := brotliSerializer(t, 1)
 	union := unionOf(sonnet108 + sonnet108)
 	stored, err := s.transform(union, nil)
-	if err != nil || stored[0] != transformPrefixCompressed {
+	if err != nil || stored[0] != rlcrypto.TransformPrefixCompressed {
 		t.Fatalf("compression control: %v", err)
 	}
 	mutate := func(f func([]byte) []byte) []byte { return f(bytes.Clone(stored)) }
@@ -137,7 +138,7 @@ func TestTransformedSerializer_BrotliRejectsCorruption(t *testing.T) {
 	}{
 		{"unknown version", "unknown compression version", mutate(func(b []byte) []byte { b[1] = 3; return b })},
 		{"negative length", "invalid decompressed length", mutate(func(b []byte) []byte { b[2] = 0x80; return b })},
-		{"over cap", "invalid decompressed length", mutate(func(b []byte) []byte { binary.BigEndian.PutUint32(b[2:6], maxBrotliRecordBytes+1); return b })},
+		{"over cap", "invalid decompressed length", mutate(func(b []byte) []byte { binary.BigEndian.PutUint32(b[2:6], rlcrypto.MaxBrotliRecordBytes+1); return b })},
 		{"short declared length", "decompressed record too large", mutate(func(b []byte) []byte { binary.BigEndian.PutUint32(b[2:6], uint32(len(union)-1)); return b })}, //nolint:gosec
 		{"long declared length", "decompressed record too small", mutate(func(b []byte) []byte { binary.BigEndian.PutUint32(b[2:6], uint32(len(union)+1)); return b })},  //nolint:gosec
 		{"checksum", "decompression checksum mismatch", mutate(func(b []byte) []byte { b[6] ^= 0xff; return b })},
@@ -164,7 +165,7 @@ func TestTransformedSerializer_BrotliRejectsCorruption(t *testing.T) {
 		})
 	}
 	bomb, err := s.transform(unionOf(string(bytes.Repeat([]byte{'x'}, 200_000))), nil)
-	if err != nil || bomb[0] != transformPrefixCompressed {
+	if err != nil || bomb[0] != rlcrypto.TransformPrefixCompressed {
 		t.Fatalf("expansion control: %v", err)
 	}
 	binary.BigEndian.PutUint32(bomb[2:6], 1)
@@ -177,7 +178,7 @@ func TestTransformedSerializer_BrotliFailedReadersAreDiscarded(t *testing.T) {
 	union := unionOf(sonnet108 + sonnet108)
 	writer := brotliSerializer(t, 1)
 	stored, err := writer.transform(union, nil)
-	if err != nil || stored[0] != transformPrefixCompressed {
+	if err != nil || stored[0] != rlcrypto.TransformPrefixCompressed {
 		t.Fatalf("compression control: %v", err)
 	}
 	mutate := func(f func([]byte) []byte) []byte { return f(bytes.Clone(stored)) }
@@ -199,28 +200,28 @@ func TestTransformedSerializer_BrotliFailedReadersAreDiscarded(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := brotliSerializer(t, 1)
-			s.brotli = newBrotliFreeLists(1, 1)
+			s.brotli = rlcrypto.NewBrotliFreeLists(1, 1)
 			back, err := s.untransform(stored)
-			if err != nil || !bytes.Equal(back, union) || len(s.brotli.readers) != 1 {
+			if err != nil || !bytes.Equal(back, union) || len(s.brotli.Readers) != 1 {
 				t.Fatalf("successful decode did not populate the private pool: %v", err)
 			}
-			failed := <-s.brotli.readers
-			s.brotli.readers <- failed
+			failed := <-s.brotli.Readers
+			s.brotli.Readers <- failed
 			if _, err := s.untransform(malformed); err == nil {
 				t.Fatal("malformed control was accepted")
 			}
-			if len(s.brotli.readers) != 0 {
+			if len(s.brotli.Readers) != 0 {
 				t.Fatal("failed, incomplete or unchecked decoder was returned to the pool")
 			}
 			back, err = s.untransform(stored)
-			if err != nil || !bytes.Equal(back, union) || len(s.brotli.readers) != 1 {
+			if err != nil || !bytes.Equal(back, union) || len(s.brotli.Readers) != 1 {
 				t.Fatalf("valid record after a refusal did not decode cleanly: %v", err)
 			}
-			replacement := <-s.brotli.readers
+			replacement := <-s.brotli.Readers
 			if replacement == failed {
 				t.Fatal("refused decoder was reused instead of discarded")
 			}
-			s.brotli.readers <- replacement
+			s.brotli.Readers <- replacement
 		})
 	}
 }
@@ -232,7 +233,7 @@ func TestTransformedSerializer_BrotliEncryptionAndValidation(t *testing.T) {
 		SetEncryptWhenSerializing(true).SetEncryptionKey(key).SetWriteValidationRatio(1).SetWriteEncryptionValidationRatio(1))
 	union := unionOf(sonnet108 + sonnet108)
 	stored, err := s.transform(union, nil)
-	if err != nil || stored[0] != transformPrefixCompressedThenEncrypted {
+	if err != nil || stored[0] != rlcrypto.TransformPrefixCompressedThenEncrypted {
 		t.Fatalf("compression/encryption/validation pipeline: %v", err)
 	}
 	back, err := s.untransform(stored)
@@ -249,7 +250,7 @@ func TestTransformedSerializer_BrotliEncryptionAndValidation(t *testing.T) {
 func TestTransformedSerializer_BrotliStateReuseAndConcurrentOwnership(t *testing.T) {
 	t.Parallel()
 	s := brotliSerializer(t, 1)
-	s.brotli = newBrotliFreeLists(2, 2)
+	s.brotli = rlcrypto.NewBrotliFreeLists(2, 2)
 	union := unionOf(sonnet108 + sonnet108)
 	stored, err := s.transform(union, nil)
 	if err != nil {
@@ -258,12 +259,12 @@ func TestTransformedSerializer_BrotliStateReuseAndConcurrentOwnership(t *testing
 	if _, err := s.untransform(stored); err != nil {
 		t.Fatal(err)
 	}
-	if len(s.brotli.writers[1]) != 1 || len(s.brotli.readers) != 1 {
+	if len(s.brotli.Writers[1]) != 1 || len(s.brotli.Readers) != 1 {
 		t.Fatal("first call did not return its states")
 	}
-	writer, reader := <-s.brotli.writers[1], <-s.brotli.readers
-	s.brotli.writers[1] <- writer
-	s.brotli.readers <- reader
+	writer, reader := <-s.brotli.Writers[1], <-s.brotli.Readers
+	s.brotli.Writers[1] <- writer
+	s.brotli.Readers <- reader
 	for i := 0; i < 5; i++ {
 		got, err := s.transform(union, nil)
 		if err != nil || !bytes.Equal(got, stored) {
@@ -273,22 +274,22 @@ func TestTransformedSerializer_BrotliStateReuseAndConcurrentOwnership(t *testing
 		if err != nil || !bytes.Equal(back, union) {
 			t.Fatalf("reused reader changed bytes: %v", err)
 		}
-		if len(s.brotli.writers[1]) != 1 || len(s.brotli.readers) != 1 {
+		if len(s.brotli.Writers[1]) != 1 || len(s.brotli.Readers) != 1 {
 			t.Fatal("state reuse grew or emptied a list")
 		}
-		gotWriter, gotReader := <-s.brotli.writers[1], <-s.brotli.readers
+		gotWriter, gotReader := <-s.brotli.Writers[1], <-s.brotli.Readers
 		if gotWriter != writer || gotReader != reader {
 			t.Fatal("states were replaced rather than reused")
 		}
-		s.brotli.writers[1] <- gotWriter
-		s.brotli.readers <- gotReader
+		s.brotli.Writers[1] <- gotWriter
+		s.brotli.Readers <- gotReader
 	}
 	var fresh bytes.Buffer
 	w := brotli.NewWriterOptions(&fresh, brotli.WriterOptions{Quality: 1, LGWin: 20})
 	if _, err := w.Write(union); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Close(); err != nil || !bytes.Equal(fresh.Bytes(), stored[1+brotliCompressionHeader:]) {
+	if err := w.Close(); err != nil || !bytes.Equal(fresh.Bytes(), stored[1+rlcrypto.BrotliCompressionHeader:]) {
 		t.Fatalf("reused writer differs from a fresh writer: %v", err)
 	}
 	var wg sync.WaitGroup
@@ -317,26 +318,26 @@ func TestTransformedSerializer_BrotliStateReuseAndConcurrentOwnership(t *testing
 	for err := range errs {
 		t.Error(err)
 	}
-	if len(s.brotli.writers[1]) > 2 || len(s.brotli.readers) > 2 {
+	if len(s.brotli.Writers[1]) > 2 || len(s.brotli.Readers) > 2 {
 		t.Fatal("reuse exceeded the bounded lists")
 	}
 	// Simultaneous acquires must be distinct, and excess releases are dropped.
-	writers := []*brotli.Writer{s.brotli.acquireWriter(&fresh, 1), s.brotli.acquireWriter(&fresh, 1), s.brotli.acquireWriter(&fresh, 1)}
-	readers := []*brotli.Reader{s.brotli.acquireReader(bytes.NewReader(stored[1+brotliCompressionHeader:])), s.brotli.acquireReader(bytes.NewReader(stored[1+brotliCompressionHeader:])), s.brotli.acquireReader(bytes.NewReader(stored[1+brotliCompressionHeader:]))}
+	writers := []*brotli.Writer{s.brotli.AcquireWriter(&fresh, 1), s.brotli.AcquireWriter(&fresh, 1), s.brotli.AcquireWriter(&fresh, 1)}
+	readers := []*brotli.Reader{s.brotli.AcquireReader(bytes.NewReader(stored[1+rlcrypto.BrotliCompressionHeader:])), s.brotli.AcquireReader(bytes.NewReader(stored[1+rlcrypto.BrotliCompressionHeader:])), s.brotli.AcquireReader(bytes.NewReader(stored[1+rlcrypto.BrotliCompressionHeader:]))}
 	if writers[0] == writers[1] || writers[0] == writers[2] || writers[1] == writers[2] || readers[0] == readers[1] || readers[0] == readers[2] || readers[1] == readers[2] {
 		t.Fatal("a state has concurrent owners")
 	}
 	for _, writer := range writers {
-		s.brotli.releaseWriter(writer, 1)
+		s.brotli.ReleaseWriter(writer, 1)
 	}
 	for _, reader := range readers {
 		back, err := io.ReadAll(reader)
 		if err != nil || !bytes.Equal(back, union) {
 			t.Fatalf("reader cannot be released before a complete validated stream: %v", err)
 		}
-		s.brotli.releaseReader(reader)
+		s.brotli.ReleaseReader(reader)
 	}
-	if len(s.brotli.writers[1]) != 2 || len(s.brotli.readers) != 2 {
+	if len(s.brotli.Writers[1]) != 2 || len(s.brotli.Readers) != 2 {
 		t.Fatal("release failed to enforce list capacities")
 	}
 }

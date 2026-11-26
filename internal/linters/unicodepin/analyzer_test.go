@@ -284,6 +284,9 @@ var compatibilityFiles = []struct {
 	pkg  string
 	file string
 }{
+	{"fdb.dev/internal/recordlayer/rlcrypto", "internal/recordlayer/rlcrypto/framing.go"},
+	{"fdb.dev/internal/recordlayer/rlcrypto", "internal/recordlayer/rlcrypto/jce_cipher.go"},
+	{"fdb.dev/internal/recordlayer/rlcrypto", "internal/recordlayer/rlcrypto/pkcs12.go"},
 	{"fdb.dev/internal/recordlayer/textcmp", "internal/recordlayer/textcmp/tokenizer.go"},
 	{"fdb.dev/pkg/recordlayer", "pkg/recordlayer/text_tokenizer.go"},
 	{"fdb.dev/pkg/recordlayer", "pkg/recordlayer/text_index_maintainer.go"},
@@ -297,8 +300,8 @@ var compatibilityFiles = []struct {
 
 func TestCompatibilityCallerMutations(t *testing.T) {
 	t.Parallel()
-	if len(compatibilityFiles) != 9 {
-		t.Fatalf("compatibility caller controls = %d, want 9", len(compatibilityFiles))
+	if len(compatibilityFiles) != 12 {
+		t.Fatalf("compatibility caller controls = %d, want 12", len(compatibilityFiles))
 	}
 	for _, caller := range compatibilityFiles {
 		t.Run(caller.file, func(t *testing.T) {
@@ -381,11 +384,16 @@ func TestCompatibilityCallerBoundaries(t *testing.T) {
 		pkg, filename string
 		want          int
 	}{
+		{"fdb.dev/internal/recordlayer/rlcrypto", "internal/recordlayer/rlcrypto/pkcs12.go", 2},
+		{"fdb.dev/internal/recordlayer/rlcrypto", "internal/recordlayer/rlcrypto/jce_cipher.go", 2},
+		{"fdb.dev/internal/recordlayer/rlcrypto", "internal/recordlayer/rlcrypto/framing.go", 2},
+		{"fdb.dev/internal/recordlayer/rlcrypto", "internal/recordlayer/rlcrypto/pkcs12_test.go", 0},
 		{"fdb.dev/internal/recordlayer/textcmp", "internal/recordlayer/textcmp/tokenizer.go", 2},
 		{"fdb.dev/internal/recordlayer/textcmp", "internal/recordlayer/textcmp/tokenizer_test.go", 0},
 		{"fdb.dev/pkg/unrelated", "pkg/unrelated/tokenizer.go", 0},
 		{"fdb.dev/pkg/recordlayer", "/tmp/execroot/pkg/recordlayer/text_tokenizer.go", 2},
 		{"fdb.dev/pkg/recordlayer", `C:\execroot\pkg\recordlayer\text_tokenizer.go`, 2},
+		{"fdb.dev/pkg/recordlayer", "pkg/recordlayer/keystore_key_manager.go", 2},
 		{"fdb.dev/pkg/recordlayer", "pkg/recordlayer/text_index_maintainer.go", 2},
 		{"fdb.dev/pkg/recordlayer", "pkg/recordlayer/text_index_maintainer_test.go", 0},
 		{"fdb.dev/pkg/unrelated", "pkg/unrelated/text_index_maintainer.go", 0},

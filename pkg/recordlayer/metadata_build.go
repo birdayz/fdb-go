@@ -349,8 +349,8 @@ func (b *RecordMetaDataBuilder) populateRecordTypeRuntime(types map[string]*Reco
 	enumReach := newClosedEnumReach(false, roots...)
 	for _, rt := range types {
 		if rt.Descriptor != nil {
-			rt.reachesMap, rt.mapReach = reach.reaches(rt.Descriptor), reach
-			rt.reachesString, rt.stringReach = stringTypes.reaches(rt.Descriptor), stringTypes
+			rt.reachesMap, rt.mapReach = reach.Reaches(rt.Descriptor), reach
+			rt.reachesString, rt.stringReach = stringTypes.Reaches(rt.Descriptor), stringTypes
 			rt.reachesClosedEnum, rt.closedEnumReach = enumReach.reaches(rt.Descriptor), enumReach
 			rt.closedEnumRoot, _, _ = enumReach.planFor(rt.Descriptor)
 		}

@@ -34,7 +34,7 @@ FoundationDB C client and its Go bindings.
 
 pyjks
 -----
-The JCEKS key store reader in pkg/recordlayer/jceks.go, and the test writer in
+The JCEKS key store reader in internal/recordlayer/rlcrypto/jceks.go, and the test writer in
 internal/recordlayer/keystoretest/jceks.go, are Go ports of parts of pyjks
 (https://github.com/kurtbrose/pyjks), version 20.0.0, licensed under the MIT
 License:

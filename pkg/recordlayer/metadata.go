@@ -209,14 +209,14 @@ type RecordType struct {
 	unionFieldNumber protowire.Number
 
 	// reachesMap is whether the record message can hold a map field at any
-	// depth, computed at Build (record_wire_map_order.go), and mapReach the
+	// depth, computed at Build (internal/recordlayer/rlwire/map_order.go), and mapReach the
 	// answer for every message type the meta-data's record types reach, shared
 	// read-only by the walks of its records.
 	reachesMap bool
 	mapReach   mapReach
 
 	// reachesString is whether the record can hold a string at any depth,
-	// which the save checks is valid UTF-8 (utf8_strings.go).
+	// which the save checks is valid UTF-8 (internal/recordlayer/rlwire/utf8_strings.go).
 	reachesString bool
 	stringReach   stringReach
 

@@ -17,6 +17,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/recordlayer/rlcrypto"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -117,7 +118,7 @@ var _ = Describe("Go-only Brotli record serialization", func() {
 			assertRecord(ctx, ks, md, codec, want)
 			raw := snapshot(ctx, ks.Sub(RecordKey, id))
 			Expect(raw).To(HaveLen(1), path.name)
-			Expect(raw[0].Value[:2]).To(Equal([]byte{transformPrefixCompressed, brotliCompressionVersion}), path.name)
+			Expect(raw[0].Value[:2]).To(Equal([]byte{rlcrypto.TransformPrefixCompressed, rlcrypto.BrotliCompressionVersion}), path.name)
 		}
 		var drySize int
 		want := order(20, 20)
@@ -258,7 +259,7 @@ var _ = Describe("Go-only Brotli record serialization", func() {
 		})).To(Succeed())
 		raw := snapshot(ctx, ks.Sub(RecordKey, int64(1)))
 		Expect(len(raw)).To(BeNumerically(">", 1))
-		Expect(raw[0].Value[:2]).To(Equal([]byte{transformPrefixCompressed, brotliCompressionVersion}))
+		Expect(raw[0].Value[:2]).To(Equal([]byte{rlcrypto.TransformPrefixCompressed, rlcrypto.BrotliCompressionVersion}))
 		assertRecord(ctx, ks, md, codec, large)
 		small := order(1, 2)
 		Expect(withStore(ctx, ks, md, codec, func(s *FDBRecordStore) error { _, err := s.SaveRecordBatch([]proto.Message{small}); return err })).To(Succeed())

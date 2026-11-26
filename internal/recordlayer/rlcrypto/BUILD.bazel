@@ -1,0 +1,39 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+package(default_visibility = ["//:__subpackages__"])
+
+go_library(
+    name = "rlcrypto",
+    srcs = [
+        "brotli.go",
+        "framing.go",
+        "jce_cipher.go",
+        "jceks.go",
+        "pkcs12.go",
+    ],
+    importpath = "fdb.dev/internal/recordlayer/rlcrypto",
+    visibility = [
+        "//internal/recordlayer:__subpackages__",
+        "//pkg/recordlayer:__subpackages__",
+    ],
+    deps = [
+        "//internal/recordlayer/rlwire",
+        "//internal/unicode15",
+        "@com_github_andybalholm_brotli//:brotli",
+    ],
+)
+
+go_test(
+    name = "rlcrypto_test",
+    srcs = [
+        "framing_test.go",
+        "jce_cipher_test.go",
+        "jceks_test.go",
+        "pkcs12_test.go",
+    ],
+    embed = [":rlcrypto"],
+    deps = [
+        "//internal/recordlayer/rlwire",
+        "@org_golang_google_protobuf//encoding/protowire",
+    ],
+)
