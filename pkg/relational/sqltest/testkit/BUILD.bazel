@@ -36,6 +36,7 @@ go_library(
         "join_ordinalization_boundary.go",
         "lateral_unnest_chain_fdb.go",
         "lazy_render_census_gate.go",
+        "leg_identity_census.go",
         "metamorphic_sweep_aggregates_fdb.go",
         "metamorphic_sweep_composite_pk_fdb.go",
         "metamorphic_sweep_predicates_fdb.go",
@@ -66,8 +67,13 @@ go_library(
         "window_options_fdb.go",
     ],
     importpath = "fdb.dev/pkg/relational/sqltest/testkit",
-    visibility = ["//pkg/relational:__subpackages__"],
+    visibility = [
+        "//pkg/relational:__subpackages__",
+        "//tests/relational:__subpackages__",
+        "//tests/sql:__subpackages__",
+    ],
     deps = [
+        "//internal/fdbclient",
         "//internal/recordlayer/query/executor",
         "//internal/relational/catalog",
         "//internal/relational/fleet",

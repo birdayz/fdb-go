@@ -1,6 +1,6 @@
 // Package sqlbench holds SQL benchmarks whose source is identical in every
 // compared tree: the plan_cache_bench_test.go workloads of
-// pkg/relational/sqltest/metamorphic (same schemas, data, statements and timed
+// tests/sql/metamorphic (same schemas, data, statements and timed
 // loops), outside that package's test binary, whose TestMain arms query
 // censuses that differ between trees. Results are checked outside the timer,
 // and each benchmark reports its schema's store prefix length, which the

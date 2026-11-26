@@ -31,7 +31,7 @@ go_test(
     size = "large",
     # The driver's own tests (DSN, connection, transactions, rows, errors,
     # options) and the internal-package simfdb suites. The end-to-end SQL suite
-    # lives in //pkg/relational/sqltest/...; this target is what the CI race lane
+    # lives in //tests/sql/...; this target is what the CI race lane
     # runs for the SQL layer. Budget history: git log of this file.
     timeout = "eternal",
     srcs = [

@@ -21,6 +21,8 @@ go_library(
     visibility = [
         "//cmd/sql-diff-stress:__pkg__",
         "//pkg/relational:__subpackages__",
+        "//tests/relational:__subpackages__",
+        "//tests/sql:__subpackages__",
     ],
     deps = [
         "//internal/relational/relapi",

@@ -1,0 +1,50 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+package(default_visibility = ["//visibility:private"])
+
+# The full committed RFC-201 corpus runs in `just test-full` and non-race CI,
+# as eight shards (see shard_count below).
+#
+# What it costs, measured, because an earlier version of this comment claimed
+# "well under a minute at 2000 scenarios" and the corpus is now 5000:
+#
+#   514s   non-race, alone on the CI runner (run 30747534073)
+#   1328s  -race, four cores, all 5000 scenarios passing
+#   1830s  -race on the CI runner while co-scheduled with three other targets
+#   3612s  the same, on a run where it hit the wall and TIMED OUT (PR #590)
+#
+# That last line is why the corpus targets are no longer in the PR race lane
+# (tests/relational/ sits outside ci.yml's REL_SCOPE //pkg/relational/...). The
+# eternal budget is not the problem and raising it further would not help: the
+# spread between 1328s and 3612s is contention on a 7.6 GB box, not work.
+go_test(
+    name = "full_test",
+    # keep: eternal => 3600s (Bazel's default, pinned in .bazelrc). At 5000
+    # scenarios the measured -race cost is ~1328s (37%); the headroom is for
+    # corpus growth, and cmd/test-budget now reports the utilisation every run
+    # so the growth is visible before it is a timeout.
+    timeout = "eternal",
+    srcs = [
+        "domain_registration_test.go",
+        "full_corpus_fdb_test.go",
+    ],
+    data = ["//pkg/relational/conformance/factorycorpus:testdata"],
+    # keep: Bazel (rules_go) shards by TOP-LEVEL TEST FUNCTION, and the corpus
+    # runs as one function per shard (TestFDB_FactoryCorpusFull0..7, each over a
+    # disjoint, size-balanced set of corpus files). Must equal fullShards in
+    # full_corpus_fdb_test.go. Each shard is its own process and SimFDB backend.
+    shard_count = 8,
+    tags = [
+        "resources:cpu:5",
+        "resources:memory:2000",
+        "test-full",
+    ],
+    deps = [
+        "//internal/dst",
+        "//internal/dstwire",
+        "//internal/relational/keyspace",
+        "//internal/simfdb",
+        "//pkg/recordlayer",
+        "//pkg/relational/conformance/factorycorpus",
+    ],
+)

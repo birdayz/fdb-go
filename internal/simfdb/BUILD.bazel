@@ -44,6 +44,8 @@ go_library(
         "//pkg/fdbgo:__subpackages__",
         "//pkg/recordlayer:__subpackages__",
         "//pkg/relational:__subpackages__",
+        "//tests/relational:__subpackages__",
+        "//tests/sql:__subpackages__",
     ],
     deps = [
         "//internal/dst",

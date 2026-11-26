@@ -1,0 +1,77 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+package(default_visibility = ["//visibility:private"])
+
+go_test(
+    name = "core_test",
+    size = "large",
+    timeout = "eternal",
+    srcs = [
+        "covering_leaf_column_metadata_fdb_test.go",
+        "current_timestamp_crosspage_test.go",
+        "current_timestamp_join_shapes_test.go",
+        "current_timestamp_stability_test.go",
+        "ddl_stated_error_fdb_test.go",
+        "direct_access_fdb_test.go",
+        "driver_robustness_fdb_test.go",
+        "embedded_fdb_test.go",
+        "enum_assignment_error_fdb_test.go",
+        "fleet_fanout_fdb_test.go",
+        "main_test.go",
+        "named_call_fdb_test.go",
+        "plan_cache_bindings_fdb_test.go",
+        "plan_cache_engine_fdb_test.go",
+        "plan_logging_fdb_test.go",
+        "range_table_function_fdb_test.go",
+        "read_your_writes_index_fdb_test.go",
+        "sliding_window_view_fdb_test.go",
+        "sql_function_columns_fdb_test.go",
+        "sql_function_fdb_test.go",
+        "statement_read_fdb_test.go",
+        "store_timer_metrics_fdb_test.go",
+    ],
+    tags = [
+        "resources:memory:700",
+        "test-full",
+    ],
+    deps = [
+        "//internal/dst",
+        "//internal/dstwire",
+        "//internal/fdbclient",
+        "//internal/recordlayer/query/executor",
+        "//internal/relational/catalog",
+        "//internal/relational/connknob",
+        "//internal/relational/ddl",
+        "//internal/relational/fleet",
+        "//internal/relational/relapi",
+        "//internal/relational/rowstruct",
+        "//internal/simfdb",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/recordlayer/rlmetrics",
+        "//pkg/recordlayer/vectorindex",
+        "//pkg/relational/conformance/coveringleaf",
+        "//pkg/relational/core/embedded",
+        "//pkg/relational/sqldriver",
+        "//pkg/relational/sqltest/testkit",
+        "@com_github_google_uuid//:uuid",
+        "@com_github_onsi_gomega//:gomega",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/dynamicpb",
+    ],
+)
+
+# This package's test sources, for the whole-corpus census and the
+# transaction-budget census (//pkg/relational/sqltest:corpus).
+filegroup(
+    name = "corpus",
+    srcs = glob(
+        ["*_test.go"],
+        exclude = ["main_test.go"],
+    ),
+    visibility = ["//tests/sql:__pkg__"],
+)

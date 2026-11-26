@@ -88,20 +88,20 @@ sequential, on a host also running other work.
 |---|---|---|
 | [client.txt](2026-10-12/client.txt) | [`pkg/fdbgo/bench`](../../pkg/fdbgo/bench/bench_test.go) | `Get`, `GetRange`, `Set`: Go client vs. Apple's binding over libfdb_c 7.3.77 |
 | [recordlayer.txt](2026-10-12/recordlayer.txt) | [`pkg/recordlayer`](../../pkg/recordlayer/benchmark_test.go) | `SaveRecord`, `SaveRecordWithIndex`, `LoadRecord`, `ScanIndexRecords` |
-| [sql.txt](2026-10-12/sql.txt) | [`pkg/relational/sqltest/metamorphic`](../../pkg/relational/sqltest/metamorphic/plan_cache_bench_test.go) | `FDB_PlanCacheHit` (point select), `FDB_IndexScanRange`, `FDB_TimestampInsert` |
+| [sql.txt](2026-10-12/sql.txt) | [`tests/sql/metamorphic`](../../tests/sql/metamorphic/plan_cache_bench_test.go) | `FDB_PlanCacheHit` (point select), `FDB_IndexScanRange`, `FDB_TimestampInsert` |
 | [testcontainer.txt](2026-10-12/testcontainer.txt) | below | `foundationdbtc.Run` until it returns, image already pulled |
 
 Reproduce (needs Docker):
 
 ```sh
 bazelisk build //bench/fdbgo:fdbgo_test //pkg/recordlayer:recordlayer_test \
-  //pkg/relational/sqltest/metamorphic:metamorphic_test
+  //tests/sql/metamorphic:metamorphic_test
 flags='-test.run=^$ -test.benchtime=3s -test.count=5 -test.benchmem'
 bazel-bin/bench/fdbgo/fdbgo_test_/fdbgo_test $flags \
   -test.bench='^Benchmark(Get|Set|GetRange)$'
 bazel-bin/pkg/recordlayer/recordlayer_test_/recordlayer_test $flags --ginkgo.skip='.*' \
   -test.bench='^Benchmark(SaveRecord|LoadRecord|SaveRecordWithIndex|ScanIndexRecords)$'
-bazel-bin/pkg/relational/sqltest/metamorphic/metamorphic_test_/metamorphic_test $flags \
+bazel-bin/tests/sql/metamorphic/metamorphic_test_/metamorphic_test $flags \
   -test.bench='^BenchmarkFDB_(PlanCacheHit|IndexScanRange|TimestampInsert)$'
 ```
 

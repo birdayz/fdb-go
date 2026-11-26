@@ -72,7 +72,7 @@ context timeout (normally two minutes). Do not run binding stress concurrently
 with the fast lane. Respect the owner's shared-machine resource limits and locks.
 
 For SQL-visible changes, pin end-to-end behavior in yamsql or the SQL integration
-suite under `pkg/relational/sqltest/<area>` (helpers in `sqltest/testkit`). For
+suite under `tests/sql/<area>` (helpers in `pkg/relational/sqltest/testkit`). For
 planner optimizations assert the plan shape with `EXPLAIN`, not just the rows a
 fallback can also return. Record-layer internals need FDB integration coverage.
 

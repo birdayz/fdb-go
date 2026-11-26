@@ -70,7 +70,7 @@ exports_files([
 # fdb_c.h), `stress`
 # (heavy benchmarks under bench/relational/stress), and `factorycorpus` (the
 # full RFC-201 committed corpus under
-# pkg/relational/conformance/factorycorpus/full). Caveat of enabling a tag globally:
+# tests/relational/factorycorpus/full). Caveat of enabling a tag globally:
 # a `//go:build !stress` / `!bazelrunfiles` / `!factorycorpus` file would be silently
 # dropped from every Bazel build — don't introduce one.
 # gazelle:build_tags bazelrunfiles,stress,factorycorpus

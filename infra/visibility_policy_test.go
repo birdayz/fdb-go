@@ -755,6 +755,8 @@ go_library(
 		{"internal/recordlayer/keystoretest/BUILD.bazel", true},
 		{"internal/testinstruments/constfoldcensus/BUILD.bazel", true},
 		{"internal/testinstruments/txbudgetcensus/BUILD.bazel", true},
+		{"tests/BUILD.bazel", true},
+		{"tests/sql/agg/BUILD.bazel", true},
 		{"pkg/fdbgo/fdb/BUILD.bazel", false},
 	} {
 		if got := inRestrictedVisibilityScope(tc.rel); got != tc.want {

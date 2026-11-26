@@ -366,7 +366,7 @@ func TestReblessToleratesTheFloatTagCanonicalization(t *testing.T) {
 //
 // That is not a hole to plug here: a frozen row's only authority is the oracle
 // that produced it, so the check that catches falsification is
-// //pkg/relational/conformance/factorycorpus/full:full_test, which re-executes
+// //tests/relational/factorycorpus/full:full_test, which re-executes
 // every committed scenario against a real cluster. Requiring it green around a
 // re-bless is what covers this, and this test exists so the division of labour
 // is stated in code rather than only in prose.

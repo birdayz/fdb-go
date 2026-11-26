@@ -115,7 +115,7 @@ build:
 # Bazel schedules tests in command-line order and has no priority knob, so a
 # 5-10 minute target listed by label order starts minutes late and becomes the
 # tail. Ordering only; a stale entry is harmless.
-test_full_first := "//conformance:rfc257_oracle_test //pkg/relational/conformance/factorycorpus/full:full_test //conformance:rfc257_guardiann_java_test //conformance:conformance_probes_test //conformance:conformance_test //internal/fdbgo/client:client_test //pkg/relational/conformance/factory:factory_test //conformance:conformance_corpora_test //pkg/recordlayer:million_record_test //internal/recordlayer/chaos:chaos_test"
+test_full_first := "//conformance:rfc257_oracle_test //tests/relational/factorycorpus/full:full_test //conformance:rfc257_guardiann_java_test //conformance:conformance_probes_test //conformance:conformance_test //internal/fdbgo/client:client_test //pkg/relational/conformance/factory:factory_test //conformance:conformance_corpora_test //pkg/recordlayer:million_record_test //internal/recordlayer/chaos:chaos_test"
 
 # Standard edit/commit loop: unit tests and bounded integration tests, with nogo.
 # Heavy suites are tagged test-full (or conformance_java/stress/manual).
@@ -130,7 +130,7 @@ test-race *args:
 # The end-to-end SQL suite: the driver's own tests plus every sqltest package
 # (cached; an edited test reruns only its own package).
 sqltest *args:
-    bazelisk test //pkg/relational/sqldriver:all //pkg/relational/sqltest/... {{args}}
+    bazelisk test //pkg/relational/sqldriver:all //tests/sql/... {{args}}
 
 # Thorough lane: all Bazel test targets, including manual stress/oracle targets,
 # except those tagged realcluster (they need a real FDB cluster; see stress-10m).
@@ -148,7 +148,7 @@ test-full *args:
 # It is part of `just test-full` too; this recipe exists for a forced standalone
 # re-run.
 factory-corpus:
-    bazelisk test //pkg/relational/conformance/factorycorpus/full:full_test \
+    bazelisk test //tests/relational/factorycorpus/full:full_test \
         --test_output=streamed --nocache_test_results
 
 # Generate and commit a factory batch (RFC-201 §5). Writes scenarios into the

@@ -8,40 +8,40 @@ import (
 )
 
 // Packages are the packages of the end-to-end suite. Each is a member of the
-// whole-corpus census (//pkg/relational/sqltest:corpus); the sqltest guard holds
+// whole-corpus census (//tests/sql:corpus); the sqltest guard holds
 // the two lists equal, and Main refuses to run a package missing here, so a new
 // package cannot silently drop out of the census.
 var Packages = []string{
-	"pkg/relational/sqltest/agg",
-	"pkg/relational/sqltest/agg/distinctelision",
-	"pkg/relational/sqltest/catalog",
-	"pkg/relational/sqltest/core",
-	"pkg/relational/sqltest/cte",
-	"pkg/relational/sqltest/dml",
-	"pkg/relational/sqltest/join",
-	"pkg/relational/sqltest/metamorphic",
-	"pkg/relational/sqltest/metamorphic/aggregates",
-	"pkg/relational/sqltest/metamorphic/commute",
-	"pkg/relational/sqltest/metamorphic/compositepk",
-	"pkg/relational/sqltest/metamorphic/direction",
-	"pkg/relational/sqltest/metamorphic/exprequiv",
-	"pkg/relational/sqltest/metamorphic/joins",
-	"pkg/relational/sqltest/metamorphic/minmaxnulls",
-	"pkg/relational/sqltest/metamorphic/norec",
-	"pkg/relational/sqltest/metamorphic/paging",
-	"pkg/relational/sqltest/metamorphic/parens",
-	"pkg/relational/sqltest/metamorphic/predicates",
-	"pkg/relational/sqltest/metamorphic/rewrites",
-	"pkg/relational/sqltest/metamorphic/rowdiff",
-	"pkg/relational/sqltest/metamorphic/shapeequiv",
-	"pkg/relational/sqltest/otel",
-	"pkg/relational/sqltest/plan",
-	"pkg/relational/sqltest/plan/caphit",
-	"pkg/relational/sqltest/plan/options",
-	"pkg/relational/sqltest/planshape",
-	"pkg/relational/sqltest/select",
-	"pkg/relational/sqltest/subquery",
-	"pkg/relational/sqltest/types",
+	"tests/sql/agg",
+	"tests/sql/agg/distinctelision",
+	"tests/sql/catalog",
+	"tests/sql/core",
+	"tests/sql/cte",
+	"tests/sql/dml",
+	"tests/sql/join",
+	"tests/sql/metamorphic",
+	"tests/sql/metamorphic/aggregates",
+	"tests/sql/metamorphic/commute",
+	"tests/sql/metamorphic/compositepk",
+	"tests/sql/metamorphic/direction",
+	"tests/sql/metamorphic/exprequiv",
+	"tests/sql/metamorphic/joins",
+	"tests/sql/metamorphic/minmaxnulls",
+	"tests/sql/metamorphic/norec",
+	"tests/sql/metamorphic/paging",
+	"tests/sql/metamorphic/parens",
+	"tests/sql/metamorphic/predicates",
+	"tests/sql/metamorphic/rewrites",
+	"tests/sql/metamorphic/rowdiff",
+	"tests/sql/metamorphic/shapeequiv",
+	"tests/sql/otel",
+	"tests/sql/plan",
+	"tests/sql/plan/caphit",
+	"tests/sql/plan/options",
+	"tests/sql/planshape",
+	"tests/sql/select",
+	"tests/sql/subquery",
+	"tests/sql/types",
 }
 
 // driverTarget shares Main but is not part of the corpus.
@@ -55,7 +55,7 @@ func checkRegistered() {
 	pkg := strings.TrimPrefix(strings.SplitN(t, ":", 2)[0], "//")
 	if !slices.Contains(Packages, pkg) {
 		fmt.Fprintf(os.Stderr, "%s is not registered: add %q to testkit.Packages and "+
-			"its :corpus filegroup to //pkg/relational/sqltest:corpus\n", t, pkg)
+			"its :corpus filegroup to //tests/sql:corpus\n", t, pkg)
 		os.Exit(1)
 	}
 }

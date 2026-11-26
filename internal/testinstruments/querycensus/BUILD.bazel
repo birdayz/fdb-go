@@ -28,7 +28,11 @@ go_library(
         "unresolved_result_type_census.go",
     ],
     importpath = "fdb.dev/internal/testinstruments/querycensus",
-    visibility = ["//pkg:__subpackages__"],
+    visibility = [
+        "//pkg:__subpackages__",
+        "//tests/relational:__subpackages__",
+        "//tests/sql:__subpackages__",
+    ],
     deps = ["//pkg/recordlayer/query/plan/cascades/values"],
 )
 

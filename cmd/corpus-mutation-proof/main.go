@@ -97,7 +97,7 @@ func main() {
 	var (
 		mutFile  = flag.String("mutations", "", "JSON file describing the mutations (required)")
 		keepFile = flag.String("keep-list", "", "newline-separated scenario names forming the subset under test (required)")
-		target   = flag.String("target", "//pkg/relational/conformance/factorycorpus/full:full_test", "corpus test target")
+		target   = flag.String("target", "//tests/relational/factorycorpus/full:full_test", "corpus test target")
 		only     = flag.String("only", "", "run just this mutation by name")
 		allFile  = flag.String("all-list", "", "every scenario name in the corpus; enables the random-sample control")
 		ctlSeed  = flag.Int64("control-seed", 1, "seed for the random-sample control")

@@ -50,7 +50,7 @@ deterministic regression: `bazelisk test //pkg/...:foo_test
   Keep Bazel caching enabled. Do not substitute standalone `go test`, `go vet`,
   or `go get` for this module's just/Bazel validation. Nogo already runs during
   compilation.
-- The end-to-end SQL suite lives in `//pkg/relational/sqltest/<area>` packages
+- The end-to-end SQL suite lives in `//tests/sql/<area>` packages
   (`just sqltest`), so an edited test reruns only its package.
 - Classify heavyweight targets using the `test-full` BUILD tag, not test skips
   or global build-tag changes. New ordinary targets enter the fast lane by default.
