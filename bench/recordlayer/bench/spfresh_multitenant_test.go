@@ -30,7 +30,7 @@ import (
 // fairness with many busy tenants, and the pending-work probe at fleet scale.
 //
 //	SPFRESH_BENCH=1 SIFT_TENANTS=20 SIFT_TENANT_N=2000 bazelisk test \
-//	  //pkg/recordlayer/bench:bench_test \
+//	  //bench/recordlayer/bench:bench_test \
 //	  --test_arg="--test.run=TestSPFreshMultiTenantSoak" --test_output=streamed \
 //	  --test_env=SPFRESH_BENCH --test_env=SIFT_TENANTS --test_env=SIFT_TENANT_N
 func TestSPFreshMultiTenantSoak(t *testing.T) {

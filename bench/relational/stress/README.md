@@ -92,15 +92,15 @@ SaveRecord comparisons.
 
 ```sh
 # All stress tests
-bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed
+bazelisk test //bench/relational/stress:stress_test --test_output=streamed
 
 # Specific benchmark
-bazelisk test //pkg/relational/sqldriver/stress:stress_test \
+bazelisk test //bench/relational/stress:stress_test \
   --test_arg="--test.run=TestFDB_SaveRecordConcurrentVsBatch" \
   --test_output=streamed --cache_test_results=no
 
 # 1M stress suite (all query types)
-bazelisk test //pkg/relational/sqldriver/stress:stress_test \
+bazelisk test //bench/relational/stress:stress_test \
   --test_arg="--test.run=TestFDB_Stress_1M" \
   --test_arg="--test.timeout=600s" \
   --test_output=streamed --test_timeout=600

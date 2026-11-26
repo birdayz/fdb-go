@@ -9,7 +9,7 @@ You are a performance expert brought in to grind out query performance issues in
 Run the 1M stress test and identify slow queries:
 
 ```bash
-bazelisk test //pkg/relational/sqldriver/stress:stress_test \
+bazelisk test //bench/relational/stress:stress_test \
   --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" \
   --test_arg="--test.v" --test_arg="--test.timeout=600s" --cache_test_results=no
 ```
@@ -162,7 +162,7 @@ If the plan looks right but the query is slow, the issue is in the executor (sca
 ```
 pkg/relational/core/embedded/plan_harness.go            — PlanQueryForTest: SQL+schema → plan (no FDB)
 pkg/relational/core/embedded/plan_harness_test.go       — 19+ planner unit tests pinning plan shapes
-pkg/relational/sqldriver/stress/stress_test.go          — 1M stress test (wall-clock validation)
+bench/relational/stress/stress_test.go                   — 1M stress test (wall-clock validation)
 pkg/relational/core/embedded/cascades_generator.go      — SQL → Cascades entry point + fetchTableStatistics
 pkg/relational/core/query/cascades_translator.go        — logical → Cascades translation
 pkg/recordlayer/query/plan/cascades/planner.go          — Cascades planner + WithStatistics

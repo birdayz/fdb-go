@@ -36,6 +36,7 @@ go_library(
     ],
     importpath = "fdb.dev/internal/simfdb",
     visibility = [
+        "//bench:__subpackages__",
         "//bench/fdbgo:__pkg__",
         "//internal/recordlayer/chaos:__pkg__",
         "//internal/relational:__subpackages__",

@@ -1,5 +1,7 @@
 load("@rules_go//go:def.bzl", "go_test")
 
+package(default_visibility = ["//visibility:private"])
+
 # Store-level index-fetch benchmarks (ScanIndexRecordsWithFetchMethod). The
 # test binary has no tests; `bazelisk test` only compiles and runs it empty.
 # Run the benchmarks from the built binary, e.g.

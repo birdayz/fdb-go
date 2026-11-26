@@ -161,7 +161,7 @@ factory-run date seeds="1200" quota="1000":
 # cannot sustain them, so the target refuses to start one.
 #   just stress-10m /etc/foundationdb/fdb.cluster
 stress-10m cluster_file:
-    bazelisk test //pkg/relational/sqldriver/stress:stress_10m_test \
+    bazelisk test //bench/relational/stress:stress_10m_test \
         --test_env=FDB_STRESS_CLUSTER_FILE="$(realpath {{cluster_file}})" \
         --test_filter='TestFDB_(Stress|Ingest)_10M' --test_timeout=10800 \
         --test_output=streamed --nocache_test_results
@@ -171,7 +171,7 @@ stress-10m cluster_file:
 # share one Bazel target, so the timeout covers the aggregate suite rather than
 # any individual scale point.
 stress:
-    bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_timeout=1800 --test_output=streamed
+    bazelisk test //bench/relational/stress:stress_test --test_timeout=1800 --test_output=streamed
 
 # Run conformance server. NOTE: stdin is load-bearing — the server halts on
 # stdin EOF (parent-death watchdog), so run it with a live stdin (a terminal

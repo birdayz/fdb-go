@@ -25,8 +25,8 @@ const progressEvery = 500
 // target on every build, for a signal nobody reads at that moment.
 //
 // The repo already has this distinction: `just test` is
-// `bazelisk test //... --test_tag_filters=-stress`, and pkg/relational/
-// sqldriver/stress carries the tag. Tagging THIS target would also drop the
+// `bazelisk test //... --test_tag_filters=-stress`, and bench/relational/
+// stress carries the tag. Tagging THIS target would also drop the
 // deterministic gates that share it — the eligibility census, the rule
 // registry check, the rewrite-soundness table, the benign-error allowlist, and
 // the QOV/arity regression pins — all of which are fast and must keep running.
