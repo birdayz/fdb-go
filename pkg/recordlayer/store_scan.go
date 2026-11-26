@@ -222,7 +222,7 @@ type FDBStoredRecord[M proto.Message] struct {
 	VersionedInline bool
 
 	// wire is the stored bytes the record was decoded from, for a type that
-	// reaches a map field (record_wire_map_order.go); nil otherwise.
+	// reaches a map field (internal/recordlayer/rlwire/map_order.go); nil otherwise.
 	wire *recordWire
 }
 

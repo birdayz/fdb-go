@@ -429,7 +429,7 @@ func (store *FDBRecordStore) readStoredRecord(stored []byte) ([]byte, error) {
 // deserializeAndDiscover reads the union wire format tag to discover the record type,
 // then unmarshals the inner bytes directly into the concrete message type.
 // Skips allocating/parsing a full UnionDescriptor. The returned wire keeps the
-// inner bytes when the type reaches a map field (record_wire_map_order.go); a
+// inner bytes when the type reaches a map field (internal/recordlayer/rlwire/map_order.go); a
 // FDBStoredRecord built from the message carries it. data is the stored bytes,
 // which readStoredRecord decodes first.
 func (store *FDBRecordStore) deserializeAndDiscover(data []byte) (*RecordType, proto.Message, *recordWire, error) {
@@ -518,7 +518,7 @@ func priorRecordInner(oldRT *RecordType, oldWire *recordWire, recordType *Record
 	if oldWire == nil || oldRT != recordType {
 		return nil
 	}
-	return oldWire.bytes
+	return oldWire.Bytes()
 }
 
 // unionInner is the inner bytes of the union field numbered field in data, nil

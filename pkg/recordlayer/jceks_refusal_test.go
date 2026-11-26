@@ -12,6 +12,8 @@ import (
 	"unicode/utf16"
 
 	"fdb.dev/internal/recordlayer/keystoretest"
+	"fdb.dev/internal/recordlayer/rlcrypto"
+	"fdb.dev/internal/recordlayer/rlwire"
 )
 
 // Malformed serialized objects and JCEKS stores are refused, each for its
@@ -47,48 +49,6 @@ func jsDesc(name, flags, super string, fields ...[2]string) string {
 
 func jsBytes(b []byte) string {
 	return "75" + jsDesc("[B", "02", "70") + fmt.Sprintf("%08x", len(b)) + hex.EncodeToString(b)
-}
-
-func TestReadJavaObject_Refusals(t *testing.T) {
-	t.Parallel()
-	nested := jsHead + "73" + jsDesc("A", "02", "70", [2]string{"f", "LA;"})
-	for range 40 {
-		nested += "73" + "71007e0000"
-	}
-	nested += "70"
-	deep := "70"
-	for i := range 9 {
-		deep = "72" + jsUTF(fmt.Sprintf("C%d", i)) + jsUID + "02" + "0000" + "78" + deep
-	}
-	for _, c := range []struct {
-		name, stream, want string
-		allow              func(string) bool
-	}{
-		{"bad header", "aced0004" + "70", "bad stream header", nil},
-		{"truncated", "aced00", "truncated", nil},
-		{"bad type code", jsHead + "7f", "unsupported type code", nil},
-		{"bad back-reference", jsHead + "71007e0005", "bad reference", nil},
-		{"nested too deep", nested, "nested too deep", nil},
-		{"an int array", jsHead + "75" + jsDesc("[I", "02", "70") + "00000000", "not byte[]", nil},
-		{"externalizable", jsHead + "73" + jsDesc("A", "04", "70"), "not serializable by default", nil},
-		{"not serializable", jsHead + "73" + jsDesc("A", "00", "70"), "not serializable by default", nil},
-		{"its own writeObject", jsHead + "73" + jsDesc("A", "03", "70"), "not serializable by default", nil},
-		{"a primitive field", jsHead + "73" + "72" + jsUTF("A") + jsUID + "02" + "0001" + "49" + jsUTF("i") + "78" + "70", "primitive field", nil},
-		{"class annotations", jsHead + "73" + "72" + jsUTF("A") + jsUID + "02" + "0000" + "70" + "78" + "70", "carries annotations", nil},
-		{"a field type not a string", jsHead + "73" + "72" + jsUTF("A") + jsUID + "02" + "0001" + "4c" + jsUTF("f") + "70" + "78" + "70", "type is not a string", nil},
-		{"bad UTF", jsHead + "74" + "0001ff", "malformed input", nil},
-		{"four-byte UTF-8", jsHead + "74" + "0004f09f9880", "malformed input", nil},
-		{"a negative array length", jsHead + "75" + jsDesc("[B", "02", "70") + "ffffffff", "truncated", nil},
-		{"a superclass naming its subclass", jsHead + "73" + "72" + jsUTF("A") + jsUID + "02" + "0000" + "78" + "71007e0000", "not a complete class descriptor", nil},
-		{"too many superclasses", jsHead + "73" + deep, "serializable superclasses", nil},
-		{"a rejected class", jsHead + "73" + jsDesc("Evil", "02", "70"), "class Evil rejected", func(string) bool { return false }},
-		{"an enum not named by a string", jsHead + "7e" + jsDesc("E", "12", "70") + "70", "not named by a string", nil},
-	} {
-		_, _, err := readJavaObject(jsHex(c.stream), c.allow)
-		if err == nil || !strings.Contains(err.Error(), c.want) {
-			t.Errorf("%s: %v, want %q", c.name, err, c.want)
-		}
-	}
 }
 
 // The 30-byte JCEKS store that, read before a superclass had to be complete,
@@ -130,7 +90,7 @@ func sealedKey(t *testing.T, sealAlg string, salt []byte, iterations int, passwo
 	params := jsHex(fmt.Sprintf("30%02x04%02x", 2+len(salt)+2+len(iter), len(salt)), hex.EncodeToString(salt),
 		fmt.Sprintf("02%02x", len(iter)), hex.EncodeToString(iter))
 	content := []byte{0, 0, 0, 0, 0, 0, 0, 0}
-	if iterations > 0 && iterations <= jceksMaxIterations && len(salt) == 8 {
+	if iterations > 0 && iterations <= rlcrypto.JCEKSMaxIterations && len(salt) == 8 {
 		var err error
 		if content, err = keystoretest.SealPBEWithMD5AndTripleDES(inner, password, salt, iterations); err != nil {
 			t.Fatal(err)
@@ -165,19 +125,19 @@ func TestJCEKS_UnsealRefusals(t *testing.T) {
 	}{
 		{"not a SealedObject", jsHead + jsString("x"), "Invalid secret key format"},
 		{"another seal", sealedKey(t, "PBEWithMD5AndDES", salt, 10, "kp", secretKeySpec("AES", key)), "sealed with"},
-		{"a 7-byte salt", sealedKey(t, jceksPBEAlgorithm, salt[:7], 10, "kp", nil), "bad PBEWithMD5AndTripleDES parameters"},
-		{"no iterations", sealedKey(t, jceksPBEAlgorithm, salt, 0, "kp", nil), "IterationCount must be a positive number"},
-		{"too many iterations", sealedKey(t, jceksPBEAlgorithm, salt, jceksMaxIterations+1, "kp", nil), "PBE iteration count too large"},
-		{"a wrong key password", sealedKey(t, jceksPBEAlgorithm, salt, 10, "other", secretKeySpec("AES", key)), "not properly padded"},
-		{"a non-key class", sealedKey(t, jceksPBEAlgorithm, salt, 10, "kp", jsHex(jsHead, "73", jsDesc("java.util.Date", "02", "70"))), "class java.util.Date rejected"},
-		{"an Enum object", sealedKey(t, jceksPBEAlgorithm, salt, 10, "kp", jsHex(jsHead, "73", jsDesc("java.lang.Enum", "02", "70"))), "not a secret key"},
-		{"a public KeyRep", sealedKey(t, jceksPBEAlgorithm, salt, 10, "kp", keyRep("java.security.KeyRep$Type", "PUBLIC", "RAW", key)), "not a raw secret key"},
-		{"an X.509 KeyRep", sealedKey(t, jceksPBEAlgorithm, salt, 10, "kp", keyRep("java.security.KeyRep$Type", "SECRET", "X.509", key)), "not a raw secret key"},
-		{"a KeyRep typed by Enum itself", sealedKey(t, jceksPBEAlgorithm, salt, 10, "kp", keyRep("java.lang.Enum", "SECRET", "RAW", key)), "not a raw secret key"},
+		{"a 7-byte salt", sealedKey(t, rlcrypto.JCEKSPBEAlgorithm, salt[:7], 10, "kp", nil), "bad PBEWithMD5AndTripleDES parameters"},
+		{"no iterations", sealedKey(t, rlcrypto.JCEKSPBEAlgorithm, salt, 0, "kp", nil), "IterationCount must be a positive number"},
+		{"too many iterations", sealedKey(t, rlcrypto.JCEKSPBEAlgorithm, salt, rlcrypto.JCEKSMaxIterations+1, "kp", nil), "PBE iteration count too large"},
+		{"a wrong key password", sealedKey(t, rlcrypto.JCEKSPBEAlgorithm, salt, 10, "other", secretKeySpec("AES", key)), "not properly padded"},
+		{"a non-key class", sealedKey(t, rlcrypto.JCEKSPBEAlgorithm, salt, 10, "kp", jsHex(jsHead, "73", jsDesc("java.util.Date", "02", "70"))), "class java.util.Date rejected"},
+		{"an Enum object", sealedKey(t, rlcrypto.JCEKSPBEAlgorithm, salt, 10, "kp", jsHex(jsHead, "73", jsDesc("java.lang.Enum", "02", "70"))), "not a secret key"},
+		{"a public KeyRep", sealedKey(t, rlcrypto.JCEKSPBEAlgorithm, salt, 10, "kp", keyRep("java.security.KeyRep$Type", "PUBLIC", "RAW", key)), "not a raw secret key"},
+		{"an X.509 KeyRep", sealedKey(t, rlcrypto.JCEKSPBEAlgorithm, salt, 10, "kp", keyRep("java.security.KeyRep$Type", "SECRET", "X.509", key)), "not a raw secret key"},
+		{"a KeyRep typed by Enum itself", sealedKey(t, rlcrypto.JCEKSPBEAlgorithm, salt, 10, "kp", keyRep("java.lang.Enum", "SECRET", "RAW", key)), "not a raw secret key"},
 	} {
-		sealed, _, err := readJavaObject(jsHex(c.sealed), nil)
+		sealed, _, err := rlwire.ReadJavaObject(jsHex(c.sealed), nil)
 		if err == nil {
-			_, err = unsealJCEKSKey(sealed, "kp")
+			_, err = rlcrypto.UnsealJCEKSKey(sealed, "kp")
 		}
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v, want %q", c.name, err, c.want)
@@ -185,19 +145,19 @@ func TestJCEKS_UnsealRefusals(t *testing.T) {
 	}
 	// The same sealed key, well formed, unseals; as a KeyRep too.
 	for _, inner := range [][]byte{secretKeySpec("AES", key), keyRep("java.security.KeyRep$Type", "SECRET", "RAW", key)} {
-		sealed, _, err := readJavaObject(jsHex(sealedKey(t, jceksPBEAlgorithm, salt, 10, "kp", inner)), nil)
+		sealed, _, err := rlwire.ReadJavaObject(jsHex(sealedKey(t, rlcrypto.JCEKSPBEAlgorithm, salt, 10, "kp", inner)), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if k, err := unsealJCEKSKey(sealed, "kp"); err != nil || string(k.bytes) != string(key) {
-			t.Errorf("%x, %v", k.bytes, err)
+		if k, err := rlcrypto.UnsealJCEKSKey(sealed, "kp"); err != nil || string(k.Bytes) != string(key) {
+			t.Errorf("%x, %v", k.Bytes, err)
 		}
 	}
 }
 
 func TestJCEKS_StoreRefusals(t *testing.T) {
 	t.Parallel()
-	ok := jceksEntry(3, "6b", sealedKey(t, jceksPBEAlgorithm, []byte{1, 2, 3, 4, 5, 6, 7, 8}, 10, "kp", secretKeySpec("AES", fixtureKey(1, 16))))
+	ok := jceksEntry(3, "6b", sealedKey(t, rlcrypto.JCEKSPBEAlgorithm, []byte{1, 2, 3, 4, 5, 6, 7, 8}, 10, "kp", secretKeySpec("AES", fixtureKey(1, 16))))
 	good := jceksStore(2, "sp", ok)
 	for _, c := range []struct {
 		name string
@@ -213,13 +173,13 @@ func TestJCEKS_StoreRefusals(t *testing.T) {
 		{"not a SealedObject", jceksStore(2, "sp", jceksEntry(3, "6b", jsHead+jsString("x"))), "Invalid secret key format"},
 		{"a malformed alias", jceksStore(2, "sp", jceksEntry(3, "f09f9880", "")), "malformed input"},
 	} {
-		_, err := readJCEKSEntries(c.data, "sp")
+		_, err := rlcrypto.ReadJCEKSEntries(c.data, "sp")
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v, want %q", c.name, err, c.want)
 		}
 	}
 	// A negative entry count, a Java int, reads no entries (measured).
-	if entries, err := readJCEKSEntries(jceksSigned(jsHex("cececece00000002ffffffff"), "sp"), "sp"); err != nil || len(entries) != 0 {
+	if entries, err := rlcrypto.ReadJCEKSEntries(jceksSigned(jsHex("cececece00000002ffffffff"), "sp"), "sp"); err != nil || len(entries) != 0 {
 		t.Errorf("a negative count: %v, %v", entries, err)
 	}
 }
@@ -232,7 +192,7 @@ func TestJCEKS_ReadsAsTheJDK(t *testing.T) {
 	t.Parallel()
 	salt := []byte{1, 2, 3, 4, 5, 6, 7, 8}
 	sealed := func(k []byte) string {
-		return sealedKey(t, jceksPBEAlgorithm, salt, 10, "kp", secretKeySpec("AES", k))
+		return sealedKey(t, rlcrypto.JCEKSPBEAlgorithm, salt, 10, "kp", secretKeySpec("AES", k))
 	}
 	k1, k2 := fixtureKey(0x01, 16), fixtureKey(0x20, 16)
 	for _, c := range []struct {
@@ -262,24 +222,6 @@ func TestJCEKS_ReadsAsTheJDK(t *testing.T) {
 	}
 }
 
-// FuzzReadJavaObject: any input is read or refused without a panic. The
-// reader bounds every length by the input and class chains by
-// javaMaxClassDepth; this target checks that it returns, and stays in the input.
-func FuzzReadJavaObject(f *testing.F) {
-	f.Add(secretKeySpec("AES", fixtureKey(1, 16)))
-	f.Add(keyRep("java.security.KeyRep$Type", "SECRET", "RAW", fixtureKey(1, 24)))
-	f.Add(jsHex(jsHead + "73" + "72" + jsUTF("A") + jsUID + "02" + "0000" + "78" + "71007e0000"))
-	f.Fuzz(func(t *testing.T, data []byte) {
-		if len(data) > 1<<16 {
-			return
-		}
-		_, n, err := readJavaObject(data, nil)
-		if err == nil && n > len(data) {
-			t.Fatalf("read %d of %d bytes", n, len(data))
-		}
-	})
-}
-
 // FuzzReadJCEKSEntries: any store is read or refused without a panic.
 // Reading decrypts nothing (keys unseal when asked for), so no input reaches
 // the PBE iterations.
@@ -290,6 +232,6 @@ func FuzzReadJCEKSEntries(f *testing.F) {
 		if len(data) > 1<<16 {
 			return
 		}
-		_, _ = readJCEKSEntries(data, "sp")
+		_, _ = rlcrypto.ReadJCEKSEntries(data, "sp")
 	})
 }

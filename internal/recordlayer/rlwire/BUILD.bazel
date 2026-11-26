@@ -1,0 +1,43 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+package(default_visibility = ["//:__subpackages__"])
+
+go_library(
+    name = "rlwire",
+    srcs = [
+        "java_serialization.go",
+        "map_order.go",
+        "map_order_merge.go",
+        "utf8_strings.go",
+    ],
+    importpath = "fdb.dev/internal/recordlayer/rlwire",
+    visibility = [
+        "//internal/recordlayer:__subpackages__",
+        "//pkg/recordlayer:__subpackages__",
+    ],
+    deps = [
+        "@org_golang_google_protobuf//encoding/protowire",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/dynamicpb",
+    ],
+)
+
+go_test(
+    name = "rlwire_test",
+    srcs = [
+        "java_serialization_test.go",
+        "map_order_test.go",
+        "utf8_strings_test.go",
+    ],
+    embed = [":rlwire"],
+    deps = [
+        "@org_golang_google_protobuf//encoding/protowire",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protodesc",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//reflect/protoregistry",
+        "@org_golang_google_protobuf//types/descriptorpb",
+        "@org_golang_google_protobuf//types/dynamicpb",
+    ],
+)

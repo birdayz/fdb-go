@@ -110,7 +110,10 @@ func compatibilityCaller(pkg, filename string) bool {
 		rel = trimmed
 	}
 	switch rel + "/" + path.Base(strings.ReplaceAll(filename, "\\", "/")) {
-	case "recordlayer/textcmp/tokenizer.go",
+	case "recordlayer/rlcrypto/framing.go",
+		"recordlayer/rlcrypto/jce_cipher.go",
+		"recordlayer/rlcrypto/pkcs12.go",
+		"recordlayer/textcmp/tokenizer.go",
 		"recordlayer/text_tokenizer.go",
 		"recordlayer/text_index_maintainer.go",
 		"recordlayer/collate_function_key_expression.go",

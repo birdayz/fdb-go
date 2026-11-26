@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/recordlayer/rlcrypto"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -218,7 +219,7 @@ var _ = Describe("Large LLM context through Record Layer serializers", func() {
 			corpus, err := loadLargeContextCorpus()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(corpus)).To(BeNumerically(">", 300000))
-			Expect(len(corpus)).To(BeNumerically("<", maxBrotliRecordBytes))
+			Expect(len(corpus)).To(BeNumerically("<", rlcrypto.MaxBrotliRecordBytes))
 			corpusDigest := sha256.Sum256(corpus)
 			ks := specSubspace()
 			md, err := largeContextStoreMetadata()

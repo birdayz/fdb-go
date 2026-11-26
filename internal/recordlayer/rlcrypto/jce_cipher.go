@@ -1,4 +1,6 @@
-package recordlayer
+// Package rlcrypto holds pure cryptographic, key-store, compression, and
+// record-framing helpers for Record Layer serialization.
+package rlcrypto
 
 import (
 	"crypto/aes"
@@ -54,8 +56,8 @@ const (
 	jceWrapKey                      // keySize bytes, "Invalid key length: N bytes" (the AES_n key wraps)
 )
 
-// jceTransformation is a transformation name as Cipher.getInstance finds it.
-type jceTransformation struct {
+// JCETransformation is a transformation name as Cipher.getInstance finds it.
+type JCETransformation struct {
 	name     string
 	keySize  int
 	keyCheck jceKeyCheck
@@ -84,71 +86,42 @@ const (
 var jceTransformations sync.Map // string → jceParse
 
 type jceParse struct {
-	t   jceTransformation
+	t   JCETransformation
 	err error
 }
 
-// parseJCETransformation reads a name as Cipher.getInstance does: one token or
+// ParseJCETransformation reads a name as Cipher.getInstance does: one token or
 // three, "/"-separated, each trimmed of control characters and spaces and upper-
 // cased as Java's toUpperCase(Locale.ENGLISH) does (so "ı" is "I" but the Kelvin
 // sign is not "K"), none empty. Its error is getInstance's NoSuchAlgorithmException.
-func parseJCETransformation(name string) (jceTransformation, error) {
+func ParseJCETransformation(name string) (JCETransformation, error) {
 	if p, ok := jceTransformations.Load(name); ok {
 		return p.(jceParse).t, p.(jceParse).err
 	}
 	t, ok := parseJCETokens(name)
 	var err error
 	if !ok {
-		t, err = jceTransformation{}, fmt.Errorf("unsupported cipher %s: Cannot find any provider supporting it", name)
+		t, err = JCETransformation{}, fmt.Errorf("unsupported cipher %s: Cannot find any provider supporting it", name)
 	}
 	jceTransformations.Store(name, jceParse{t, err})
 	return t, err
 }
 
-func parseJCETokens(name string) (jceTransformation, bool) {
+func parseJCETokens(name string) (JCETransformation, bool) {
 	tokens := strings.Split(name, "/")
 	for i, tok := range tokens {
 		tokens[i] = unicode15.ToUpperString(strings.TrimFunc(tok, func(r rune) bool { return r <= ' ' }))
 		if tokens[i] == "" {
-			return jceTransformation{}, false
+			return JCETransformation{}, false
 		}
 	}
-	t := jceTransformation{name: name, unit: aes.BlockSize}
+	t := JCETransformation{name: name, unit: aes.BlockSize}
 	if len(tokens) == 1 {
-		// An algorithm alone takes its provider's default mode: AES's is ECB,
-		// and an OID names its own transformation.
-		if tokens[0] == "AES" {
-			t.initRefusal = jceECBRefusal
-			return t, true
-		}
-		size, arc, ok := aesOIDAlias(tokens[0])
-		if !ok {
-			return t, false
-		}
-		t.keySize, t.keyCheck = size, jceSizedKey
-		switch arc {
-		case 0, 1:
-			t.initRefusal = jceECBRefusal
-		case 2:
-			t.mode = jceCBC
-		case 3:
-			t.mode = jceOFB
-		case 4:
-			t.mode = jceCFB
-		case 5, 8:
-			t.keyCheck, t.initRefusal = jceWrapKey, jceKWRefusal
-		case 6:
-			t.initRefusal, t.refuseBeforeKey = jceGCMRefusal, true
-		}
-		if arc == 0 {
-			t.keyCheck = jceAnyAESKey
-		}
-		return t, true
+		return parseSingleJCEToken(t, tokens[0])
 	}
 	if len(tokens) != 3 {
 		return t, false
 	}
-	alg, mode := tokens[0], tokens[1]
 	switch tokens[2] {
 	case "NOPADDING":
 	case "PKCS5PADDING":
@@ -158,42 +131,87 @@ func parseJCETokens(name string) (jceTransformation, bool) {
 	default:
 		return t, false
 	}
+	alg, mode := tokens[0], tokens[1]
 	switch alg {
 	case "AES":
-		// AES's registered transformations, then its general cipher.
-		switch {
-		case mode == "GCM" && t.padding == jceNoPadding:
-			t.initRefusal, t.refuseBeforeKey = jceGCMRefusal, true
-		case mode == "KW" && t.padding != jceISO10126Padding, mode == "KWP" && t.padding == jceNoPadding:
-			t.initRefusal = jceKWRefusal
-		case mode == "ECB":
-			t.initRefusal = jceECBRefusal
-		default:
-			return t, t.setMode(mode)
-		}
-		return t, true
+		return parseAESTransformation(t, mode)
 	case "AES_128", "AES_192", "AES_256":
-		// Only the transformations SunJCE registers under these names.
-		bits, _ := strconv.Atoi(alg[4:])
-		t.keySize, t.keyCheck = bits/8, jceSizedKey
-		switch {
-		case t.padding == jcePKCS5Padding && mode == "KW":
-			t.keyCheck, t.initRefusal = jceWrapKey, jceKWRefusal
-		case t.padding != jceNoPadding:
-			return t, false
-		case mode == "CBC", mode == "CFB", mode == "OFB":
-			return t, t.setMode(mode)
-		case mode == "ECB":
-			t.initRefusal = jceECBRefusal
-		case mode == "GCM":
-			t.initRefusal, t.refuseBeforeKey = jceGCMRefusal, true
-		case mode == "KW", mode == "KWP":
-			t.keyCheck, t.initRefusal = jceWrapKey, jceKWRefusal
-		default:
-			return t, false
-		}
+		return parseAESSizedTransformation(t, alg, mode)
+	}
+	return parseOIDTransformation(t, alg, mode)
+}
+
+func parseSingleJCEToken(t JCETransformation, tok string) (JCETransformation, bool) {
+	// An algorithm alone takes its provider's default mode: AES's is ECB,
+	// and an OID names its own transformation.
+	if tok == "AES" {
+		t.initRefusal = jceECBRefusal
 		return t, true
 	}
+	size, arc, ok := aesOIDAlias(tok)
+	if !ok {
+		return t, false
+	}
+	t.keySize, t.keyCheck = size, jceSizedKey
+	switch arc {
+	case 0, 1:
+		t.initRefusal = jceECBRefusal
+	case 2:
+		t.mode = jceCBC
+	case 3:
+		t.mode = jceOFB
+	case 4:
+		t.mode = jceCFB
+	case 5, 8:
+		t.keyCheck, t.initRefusal = jceWrapKey, jceKWRefusal
+	case 6:
+		t.initRefusal, t.refuseBeforeKey = jceGCMRefusal, true
+	}
+	if arc == 0 {
+		t.keyCheck = jceAnyAESKey
+	}
+	return t, true
+}
+
+func parseAESTransformation(t JCETransformation, mode string) (JCETransformation, bool) {
+	// AES's registered transformations, then its general cipher.
+	switch {
+	case mode == "GCM" && t.padding == jceNoPadding:
+		t.initRefusal, t.refuseBeforeKey = jceGCMRefusal, true
+	case mode == "KW" && t.padding != jceISO10126Padding, mode == "KWP" && t.padding == jceNoPadding:
+		t.initRefusal = jceKWRefusal
+	case mode == "ECB":
+		t.initRefusal = jceECBRefusal
+	default:
+		return t, t.setMode(mode)
+	}
+	return t, true
+}
+
+func parseAESSizedTransformation(t JCETransformation, alg, mode string) (JCETransformation, bool) {
+	// Only the transformations SunJCE registers under these names.
+	bits, _ := strconv.Atoi(alg[4:])
+	t.keySize, t.keyCheck = bits/8, jceSizedKey
+	switch {
+	case t.padding == jcePKCS5Padding && mode == "KW":
+		t.keyCheck, t.initRefusal = jceWrapKey, jceKWRefusal
+	case t.padding != jceNoPadding:
+		return t, false
+	case mode == "CBC", mode == "CFB", mode == "OFB":
+		return t, t.setMode(mode)
+	case mode == "ECB":
+		t.initRefusal = jceECBRefusal
+	case mode == "GCM":
+		t.initRefusal, t.refuseBeforeKey = jceGCMRefusal, true
+	case mode == "KW", mode == "KWP":
+		t.keyCheck, t.initRefusal = jceWrapKey, jceKWRefusal
+	default:
+		return t, false
+	}
+	return t, true
+}
+
+func parseOIDTransformation(t JCETransformation, alg, mode string) (JCETransformation, bool) {
 	// An OID with a mode and padding is the cipher its alias names, set to that
 	// mode: the ECB, CBC, OFB and CFB ciphers take the general modes, keeping their
 	// key size; the GCM, KW and KWP ciphers their own mode only.
@@ -240,7 +258,7 @@ func parseJCETokens(name string) (jceTransformation, bool) {
 // setMode sets one of the general cipher's modes that take a 16-byte IV. CTR
 // and CTS take NoPadding only; CFB and OFB take a unit of whole bytes, its width
 // written canonically (SunJCE refuses CFB008 and CFB+8).
-func (t *jceTransformation) setMode(mode string) bool {
+func (t *JCETransformation) setMode(mode string) bool {
 	switch {
 	case mode == "CBC":
 		t.mode = jceCBC
@@ -297,9 +315,9 @@ func aesOIDAlias(tok string) (keySize, arc int, ok bool) {
 	return keySize, arc, arc != 7
 }
 
-// newBlock is AES under key, initialized as SunJCE initializes the cipher:
+// NewBlock is AES under key, initialized as SunJCE initializes the cipher:
 // the key checked, then the IV.
-func (t jceTransformation) newBlock(key []byte) (cipher.Block, error) {
+func (t JCETransformation) NewBlock(key []byte) (cipher.Block, error) {
 	if t.initRefusal != "" && t.refuseBeforeKey {
 		return nil, fmt.Errorf("unsupported cipher %s: %s", t.name, t.initRefusal)
 	}
@@ -316,9 +334,9 @@ func (t jceTransformation) newBlock(key []byte) (cipher.Block, error) {
 	return aes.NewCipher(key)
 }
 
-// encrypt returns iv, then the cipher text of plain padded, in one allocation.
+// Encrypt returns iv, then the cipher text of plain padded, in one allocation.
 // ISO 10126 padding draws its filler from filler.
-func (t jceTransformation) encrypt(block cipher.Block, iv, plain []byte, filler io.Reader) ([]byte, error) {
+func (t JCETransformation) Encrypt(block cipher.Block, iv, plain []byte, filler io.Reader) ([]byte, error) {
 	n := 0
 	if t.padding != jceNoPadding {
 		n = aes.BlockSize - len(plain)%aes.BlockSize
@@ -346,8 +364,8 @@ func (t jceTransformation) encrypt(block cipher.Block, iv, plain []byte, filler 
 	return out, nil
 }
 
-// decrypt deciphers text under iv and removes its padding.
-func (t jceTransformation) decrypt(block cipher.Block, iv, text []byte) ([]byte, error) {
+// Decrypt deciphers text under iv and removes its padding.
+func (t JCETransformation) Decrypt(block cipher.Block, iv, text []byte) ([]byte, error) {
 	if t.padding != jceNoPadding && len(text)%aes.BlockSize != 0 {
 		return nil, errors.New("Input length must be multiple of 16 when decrypting with padded cipher")
 	}
@@ -377,7 +395,7 @@ func (t jceTransformation) decrypt(block cipher.Block, iv, text []byte) ([]byte,
 
 // checkLength refuses an unpadded length the mode cannot take: CBC and PCBC
 // take whole blocks, CTS at least one block or nothing.
-func (t jceTransformation) checkLength(n int) error {
+func (t JCETransformation) checkLength(n int) error {
 	switch {
 	case (t.mode == jceCBC || t.mode == jcePCBC) && n%aes.BlockSize != 0:
 		return errors.New("Input length not multiple of 16 bytes")
@@ -389,7 +407,7 @@ func (t jceTransformation) checkLength(n int) error {
 
 // crypt enciphers or deciphers src into dst, which is src itself or apart
 // from it. The length has passed checkLength (padded input is whole blocks).
-func (t jceTransformation) crypt(block cipher.Block, iv, dst, src []byte, decrypt bool) {
+func (t JCETransformation) crypt(block cipher.Block, iv, dst, src []byte, decrypt bool) {
 	switch t.mode {
 	case jceCBC:
 		cbc(block, iv, dst, src, decrypt)

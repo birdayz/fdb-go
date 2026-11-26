@@ -463,7 +463,7 @@ func (store *FDBRecordStore) UpdateRecord(record proto.Message) (*FDBStoredRecor
 // priorInner, nil for a new record or one of another type (priorRecordInner):
 // a type that reaches a map field keeps
 // each map in the order priorInner stored it (marshalMapRecord,
-// record_wire_map_order.go), and is never written with vtproto's MarshalVT,
+// internal/recordlayer/rlwire/map_order_merge.go), and is never written with vtproto's MarshalVT,
 // whose map order is Go's random iteration order.
 func serializeUnionOver(record proto.Message, recordType *RecordType, priorInner []byte) ([]byte, error) {
 	if err := recordType.checkUTF8Strings(record); err != nil {
@@ -486,7 +486,7 @@ func serializeUnionOverChecked(record proto.Message, recordType *RecordType, pri
 			// through the rewrite too, which writes that entry in Java's form.
 			priorInner = []byte{}
 		}
-		innerBytes, err := marshalMapRecord(record, priorInner, recordType.mapReach)
+		innerBytes, err := marshalMapRecord(record, priorInner, recordType.mapReach, recordType.closedEnumReach)
 		if err != nil {
 			return nil, err
 		}

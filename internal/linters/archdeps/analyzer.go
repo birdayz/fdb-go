@@ -186,6 +186,8 @@ var (
 		"fdb.dev/internal/recordlayer/protoname",
 		"fdb.dev/internal/recordlayer/protoscope",
 		"fdb.dev/internal/recordlayer/protovalue",
+		"fdb.dev/internal/recordlayer/rlcrypto",
+		"fdb.dev/internal/recordlayer/rlwire",
 		"fdb.dev/internal/recordlayer/textcmp",
 		"fdb.dev/internal/recordlayer/tupleordering",
 		"fdb.dev/internal/recordlayer/vectorcodec",

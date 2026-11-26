@@ -555,6 +555,20 @@ func TestRules(t *testing.T) {
 			want:     1,
 		},
 		{
+			name:     "L0 rlwire leaf importing recordlayer fails",
+			pkgPath:  "fdb.dev/internal/recordlayer/rlwire",
+			filename: "internal/recordlayer/rlwire/x.go",
+			src:      srcImporting("rlwire", "fdb.dev/pkg/recordlayer"),
+			want:     1,
+		},
+		{
+			name:     "L0 rlcrypto leaf importing rlwire leaf passes",
+			pkgPath:  "fdb.dev/internal/recordlayer/rlcrypto",
+			filename: "internal/recordlayer/rlcrypto/x.go",
+			src:      srcImporting("rlcrypto", "fdb.dev/internal/recordlayer/rlwire"),
+			want:     0,
+		},
+		{
 			name:     "L0 leaf importing gen and sibling leaf passes",
 			pkgPath:  "fdb.dev/pkg/recordlayer/indexpredicate",
 			filename: "pkg/recordlayer/indexpredicate/normalize.go",

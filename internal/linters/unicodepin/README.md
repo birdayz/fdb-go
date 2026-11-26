@@ -24,6 +24,7 @@ packages; an empty population fails.
 
 A narrower, direct-use policy applies only to these package/file pairs:
 
+- `internal/recordlayer/rlcrypto/{framing,jce_cipher,pkcs12}.go`
 - `internal/recordlayer/textcmp/tokenizer.go`
 - `pkg/recordlayer/{text_tokenizer,text_index_maintainer,collate_function_key_expression,keystore_key_manager,java_parse}.go`
 - `pkg/recordlayer/query/plan/cascades/values/{values,uuid_parse}.go`

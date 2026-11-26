@@ -394,7 +394,7 @@ func (n *NestingKeyExpression) evaluateRepeated(record *FDBStoredRecord[proto.Me
 // evaluateMap fans out a map field's entries, as Java does: protobuf-java
 // reads a map as the repeated entry messages (key = 1, value = 2) it is on the
 // wire, and NestingKeyExpression evaluates the child over each, in the order
-// the record's bytes hold them (record_wire_map_order.go): a record decoded
+// the record's bytes hold them (internal/recordlayer/rlwire/map_order.go): a record decoded
 // from stored bytes in wire order, and one Go is saving in key order, which is
 // the order it is written in.
 func (n *NestingKeyExpression) evaluateMap(record *FDBStoredRecord[proto.Message], m protoreflect.Message, fd protoreflect.FieldDescriptor) ([][]any, error) {
@@ -405,7 +405,7 @@ func (n *NestingKeyExpression) evaluateMap(record *FDBStoredRecord[proto.Message
 	var entries []protoreflect.Message
 	inWireOrder := false
 	if record != nil {
-		entries, inWireOrder = record.wire.mapEntries(record.Record, m, fd)
+		entries, inWireOrder = record.wire.MapEntries(record.Record, m, fd)
 	}
 	if !inWireOrder {
 		if mp.Len() == 0 {
@@ -422,20 +422,6 @@ func (n *NestingKeyExpression) evaluateMap(record *FDBStoredRecord[proto.Message
 		result = append(result, childTuples...)
 	}
 	return result, nil
-}
-
-// mapKeyLess orders map keys of one kind: bool, integers, or strings.
-func mapKeyLess(a, b protoreflect.MapKey) bool {
-	switch av := a.Interface().(type) {
-	case bool:
-		return !av && b.Bool()
-	case string:
-		return av < b.String()
-	case int32, int64:
-		return a.Int() < b.Int()
-	default:
-		return a.Uint() < b.Uint()
-	}
 }
 
 // FieldNames returns the parent field name plus child field names.

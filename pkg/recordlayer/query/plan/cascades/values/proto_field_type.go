@@ -71,7 +71,7 @@ func fieldTypeForProtoField(fd protoreflect.FieldDescriptor, active map[protoref
 	// no QueryComponent: its query surface is SQL alone, which has no map type
 	// in either engine (the relational DataType.Code has none), so no Go query
 	// reaches that match. The index is maintained as Java maintains it
-	// (record_wire_map_order.go).
+	// (internal/recordlayer/rlwire/map_order.go).
 	if fd == nil || fd.IsMap() {
 		return UnknownType
 	}
