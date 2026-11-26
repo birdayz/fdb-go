@@ -7,6 +7,7 @@ go_library(
     srcs = [
         "decode_budget.go",
         "reader.go",
+        "reader_decode.go",
         "serializer.go",
         "vtable.go",
         "writer.go",

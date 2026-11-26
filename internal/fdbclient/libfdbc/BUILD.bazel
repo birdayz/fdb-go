@@ -44,6 +44,7 @@ go_library(
     name = "libfdbc_native",
     srcs = [
         "backend.go",
+        "backend_adapters.go",
         "mappedrange_cref.go",
         "options.go",
         "range_cref.go",

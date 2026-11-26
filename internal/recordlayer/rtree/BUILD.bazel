@@ -8,6 +8,8 @@ go_library(
         "errors.go",
         "hilbert.go",
         "rtree.go",
+        "rtree_delete.go",
+        "rtree_insert.go",
         "storage.go",
         "types.go",
     ],

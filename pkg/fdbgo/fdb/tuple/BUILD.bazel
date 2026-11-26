@@ -2,7 +2,11 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "tuple",
-    srcs = ["tuple.go"],
+    srcs = [
+        "tuple.go",
+        "tuple_pack.go",
+        "tuple_unpack.go",
+    ],
     importpath = "fdb.dev/pkg/fdbgo/fdb/tuple",
     visibility = ["//visibility:public"],
     deps = ["//pkg/fdbgo/fdb"],
