@@ -269,45 +269,63 @@ func vectorcodecRoundtrip(vec []float64) ([]float64, error) {
 // spfreshInsertRouted is the post-routing half of the insert; the WriteOnly
 // staging path routes within a single FINALIZED cell instead of on the cache.
 func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, routed []spfreshRouted, pk tuple.Tuple, vec []float64) error {
-	// Fence: verify candidates ACTIVE with REAL state reads, in nearest-first
-	// order, until Replication verified candidates are in hand. The cache said
-	// ACTIVE; the authoritative row decides: SEALED/absent ⇒ drop and take the
-	// next-nearest (RFC-094 §5 step 2); FORWARD ⇒ a stale cache routed us to a
-	// split parent — FOLLOW its children from the authoritative row instead of
-	// skipping, or an insert near a freshly split centroid fails with no
-	// candidates until the cache reloads. Worklist kept
-	// d2-sorted as children are spliced in; visit budget bounds forward chains.
-	// verified is kept d2-ASCENDING by sorted insertion: spfreshClosure
-	// assumes nearest-first (verified[0] is its c1), and a followed FORWARD
-	// child can be NEARER than an already-verified candidate — appending
-	// would hand closure a wrong c1 and mis-assign the insert. The
-	// cutoff is sound for the same reason: stop only when the
-	// sorted worklist's head can no longer improve the best Replication.
-	verified := make([]spfreshCandidate, 0, m.config.Replication+2)
-	vecs := make(map[int64][]float64, m.config.Replication)
-	cells := make(map[int64]int64, m.config.Replication)
-	var sealed []recordlayer.SPFreshSealedPosting
+	verified, vecs, cells, sealed, err := m.spfreshFenceCandidates(storage, routed, vec)
+	if err != nil {
+		return err
+	}
+	if len(verified) == 0 {
+		if len(sealed) > 0 {
+			// Every reachable centroid is mid-lifecycle (SEALED) — the §6
+			// cold-start corner where ONE hot posting is being split and no
+			// ACTIVE sibling exists yet. The window is not bounded by the
+			// split's two transactions: a chunked drain keeps the parent
+			// SEALED across every chunk and publishes only in the last one,
+			// concurrent deletes can abort and stretch the split's read, and
+			// a seal whose rebalancer died holds until a lease takeover
+			// finishes the split. Surface the same retryable conflict a
+			// resolver abort would (RFC-094 §6 "whichever loses retries"), so
+			// the enclosing transaction re-runs with a fresh read version and
+			// sees the children ACTIVE. The typed error wraps not_committed;
+			// the attempt loop retries it without counting an attempt.
+			return &recordlayer.SPFreshSplitWindowError{Sealed: sealed}
+		}
+		// Keep this error CHEAP: it is a normal retryable outcome during
+		// split churn, raised inside the caller's save transaction. The full
+		// topology dump (spfreshDebugTopology) scans every posting in the
+		// index — embedding it here turned a transient retry into O(index)
+		// range reads. Diagnostics go through the exported
+		// SPFreshDebugTopology instead.
+		return fmt.Errorf("spfresh index %q: no ACTIVE fine centroid among %d routed candidates: %w", m.Index().Name, len(routed), errSPFreshStaleRoute)
+	}
+	kept := spfreshClosure(verified, m.config.Replication, m.config.Alpha)
+	m.timer.IncrementBy(countSPFreshInsertReplicas, int64(len(kept)))
+
+	// (Speculative futures the cutoffs never examined are simply dropped:
+	// snapshot reads, no conflict ranges, already paid for by the burst.)
+	return m.spfreshCommitRoutedInsert(storage, kept, vecs, cells, pk, vec)
+}
+
+// spfreshFenceCandidates verifies candidates ACTIVE with REAL state reads, in
+// nearest-first order, until Replication verified candidates are in hand. The
+// cache said ACTIVE; the authoritative row decides: SEALED/absent ⇒ drop and
+// take the next-nearest (RFC-094 §5 step 2); FORWARD ⇒ a stale cache routed us
+// to a split parent — FOLLOW its children from the authoritative row instead of
+// skipping, or an insert near a freshly split centroid fails with no candidates
+// until the cache reloads. Worklist kept d2-sorted as children are spliced in;
+// visit budget bounds forward chains. verified is kept d2-ASCENDING by sorted
+// insertion: spfreshClosure assumes nearest-first (verified[0] is its c1), and
+// a followed FORWARD child can be NEARER than an already-verified candidate —
+// appending would hand closure a wrong c1 and mis-assign the insert. The cutoff
+// is sound for the same reason: stop only when the sorted worklist's head can
+// no longer improve the best Replication.
+func (m *spfreshIndexMaintainer) spfreshFenceCandidates(storage *spfreshStorage, routed []spfreshRouted, vec []float64,
+) (verified []spfreshCandidate, vecs map[int64][]float64, cells map[int64]int64, sealed []recordlayer.SPFreshSealedPosting, err error) {
+	verified = make([]spfreshCandidate, 0, m.config.Replication+2)
+	vecs = make(map[int64][]float64, m.config.Replication)
+	cells = make(map[int64]int64, m.config.Replication)
 	work := append([]spfreshRouted(nil), routed...)
 	seen := make(map[int64]bool, len(work))
-	// Speculative verification burst: the loop REAL-reads candidate rows as
-	// its lifecycle fence, and reading them one-by-one serialized up to
-	// spfreshClosurePool() round trips inside the user's save transaction —
-	// the RNG diversity scan made this the fill bottleneck (916→615 vec/s
-	// at 100k when the pool widened). Issue the likely candidates as ONE
-	// snapshot burst; a read conflict key is added only for rows the loop
-	// actually examines (snapshot read + explicit conflict key ≡ the
-	// serializable read: same read version, same data, same conflict
-	// surface — speculative rows the cutoffs never reach contribute none).
-	// Keyed by (cellID, fineID) — the exact key the future was issued for —
-	// so the consumed data and the conflict key can never diverge: a
-	// candidate surfacing at a DIFFERENT cell than the burst read simply
-	// misses the map and takes the direct serializable read (a conflict
-	// fence must be locally correct, not correct via lifecycle-wide
-	// arguments about where a fineID can appear).
-	specFuts := make(map[spfreshSpecKey]fdb.FutureByteSlice, spfreshClosurePool(m.config.Replication))
-	for i := 0; i < len(work) && i < spfreshClosurePool(m.config.Replication); i++ {
-		specFuts[spfreshSpecKey{work[i].cellID, work[i].fineID}] = m.Transaction().Snapshot().Get(storage.centroidKey(work[i].cellID, work[i].fineID))
-	}
+	specFuts := m.spfreshStartSpeculativeBurst(storage, work)
 	// Drain whatever the cutoffs never consumed before this attempt returns
 	// (consumed entries are deleted from the map): a pending future must not
 	// outlive the attempt — Transact may reset and retry this transaction,
@@ -353,7 +371,7 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 			if errors.Is(rerr, errSPFreshNotFound) {
 				continue
 			}
-			return rerr
+			return nil, nil, nil, nil, rerr
 		}
 		switch row.state {
 		case spfreshStateActive:
@@ -362,30 +380,8 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 			sealed = append(sealed, recordlayer.SPFreshSealedPosting{CellID: cand.cellID, PostingID: cand.fineID, Epoch: row.epoch})
 			continue // a split owns it; next-nearest (or retry below)
 		case spfreshStateForward:
-			for _, childID := range []int64{row.childA, row.childB} {
-				if childID == 0 || seen[childID] {
-					continue
-				}
-				crow, cerr := spfreshReadCentroidForWrite(m.Transaction(), storage, cand.cellID, childID)
-				if cerr != nil {
-					if errors.Is(cerr, errSPFreshNotFound) {
-						continue
-					}
-					return cerr
-				}
-				cvec, cverr := crow.vector()
-				if cverr != nil {
-					return cverr
-				}
-				child := spfreshRouted{cellID: cand.cellID, fineID: childID, vec: cvec, d2: spfreshSquaredDistance(vec, cvec)}
-				at := len(work)
-				for i := range work {
-					if child.d2 < work[i].d2 {
-						at = i
-						break
-					}
-				}
-				work = append(work[:at], append([]spfreshRouted{child}, work[at:]...)...)
+			if work, err = m.spfreshInsertForwardChildren(storage, cand.cellID, row, vec, work, seen); err != nil {
+				return nil, nil, nil, nil, err
 			}
 			continue
 		default:
@@ -393,7 +389,7 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 		}
 		cvec, verr := row.vector()
 		if verr != nil {
-			return verr
+			return nil, nil, nil, nil, verr
 		}
 		nc := spfreshCandidate{id: cand.fineID, d2: cand.d2, vec: cvec}
 		at := len(verified)
@@ -407,36 +403,60 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 		vecs[cand.fineID] = cvec
 		cells[cand.fineID] = cand.cellID
 	}
-	if len(verified) == 0 {
-		if len(sealed) > 0 {
-			// Every reachable centroid is mid-lifecycle (SEALED) — the §6
-			// cold-start corner where ONE hot posting is being split and no
-			// ACTIVE sibling exists yet. The window is not bounded by the
-			// split's two transactions: a chunked drain keeps the parent
-			// SEALED across every chunk and publishes only in the last one,
-			// concurrent deletes can abort and stretch the split's read, and
-			// a seal whose rebalancer died holds until a lease takeover
-			// finishes the split. Surface the same retryable conflict a
-			// resolver abort would (RFC-094 §6 "whichever loses retries"), so
-			// the enclosing transaction re-runs with a fresh read version and
-			// sees the children ACTIVE. The typed error wraps not_committed;
-			// the attempt loop retries it without counting an attempt.
-			return &recordlayer.SPFreshSplitWindowError{Sealed: sealed}
-		}
-		// Keep this error CHEAP: it is a normal retryable outcome during
-		// split churn, raised inside the caller's save transaction. The full
-		// topology dump (spfreshDebugTopology) scans every posting in the
-		// index — embedding it here turned a transient retry into O(index)
-		// range reads. Diagnostics go through the exported
-		// SPFreshDebugTopology instead.
-		return fmt.Errorf("spfresh index %q: no ACTIVE fine centroid among %d routed candidates: %w", m.Index().Name, len(routed), errSPFreshStaleRoute)
+	return verified, vecs, cells, sealed, nil
+}
+
+// spfreshStartSpeculativeBurst issues the likely candidates as ONE snapshot
+// burst: the fence loop REAL-reads candidate rows, and reading them one-by-one
+// serialized up to spfreshClosurePool() round trips inside the user's save
+// transaction — the RNG diversity scan made this the fill bottleneck (916→615
+// vec/s at 100k when the pool widened). A read conflict key is added only for
+// rows the loop actually examines (snapshot read + explicit conflict key ≡ the
+// serializable read: same read version, same data, same conflict surface —
+// speculative rows the cutoffs never reach contribute none). Keyed by
+// (cellID, fineID) — the exact key the future was issued for — so the consumed
+// data and the conflict key can never diverge: a candidate surfacing at a
+// DIFFERENT cell than the burst read simply misses the map and takes the direct
+// serializable read (a conflict fence must be locally correct, not correct via
+// lifecycle-wide arguments about where a fineID can appear).
+func (m *spfreshIndexMaintainer) spfreshStartSpeculativeBurst(storage *spfreshStorage, work []spfreshRouted) map[spfreshSpecKey]fdb.FutureByteSlice {
+	specFuts := make(map[spfreshSpecKey]fdb.FutureByteSlice, spfreshClosurePool(m.config.Replication))
+	for i := 0; i < len(work) && i < spfreshClosurePool(m.config.Replication); i++ {
+		specFuts[spfreshSpecKey{work[i].cellID, work[i].fineID}] = m.Transaction().Snapshot().Get(storage.centroidKey(work[i].cellID, work[i].fineID))
 	}
-	kept := spfreshClosure(verified, m.config.Replication, m.config.Alpha)
-	m.timer.IncrementBy(countSPFreshInsertReplicas, int64(len(kept)))
+	return specFuts
+}
 
-	// (Speculative futures the cutoffs never examined are simply dropped:
-	// snapshot reads, no conflict ranges, already paid for by the burst.)
+func (m *spfreshIndexMaintainer) spfreshInsertForwardChildren(storage *spfreshStorage, cellID int64, row spfreshCentroidRow, vec []float64, work []spfreshRouted, seen map[int64]bool) ([]spfreshRouted, error) {
+	for _, childID := range []int64{row.childA, row.childB} {
+		if childID == 0 || seen[childID] {
+			continue
+		}
+		crow, cerr := spfreshReadCentroidForWrite(m.Transaction(), storage, cellID, childID)
+		if cerr != nil {
+			if errors.Is(cerr, errSPFreshNotFound) {
+				continue
+			}
+			return nil, cerr
+		}
+		cvec, cverr := crow.vector()
+		if cverr != nil {
+			return nil, cverr
+		}
+		child := spfreshRouted{cellID: cellID, fineID: childID, vec: cvec, d2: spfreshSquaredDistance(vec, cvec)}
+		at := len(work)
+		for i := range work {
+			if child.d2 < work[i].d2 {
+				at = i
+				break
+			}
+		}
+		work = append(work[:at], append([]spfreshRouted{child}, work[at:]...)...)
+	}
+	return work, nil
+}
 
+func (m *spfreshIndexMaintainer) spfreshCommitRoutedInsert(storage *spfreshStorage, kept []spfreshCandidate, vecs map[int64][]float64, cells map[int64]int64, pk tuple.Tuple, vec []float64) error {
 	// Same-pk serialization point: an existing copy-set means this is an
 	// update — clear the old keys derived from THIS read (a split moving the
 	// pk concurrently rewrites membership, so the resolver orders us).

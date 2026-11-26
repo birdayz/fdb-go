@@ -45,6 +45,11 @@ type SPFreshRecallReport struct {
 	PerfectFraction float64 // fraction of queries with recall@k == 1.0
 }
 
+type spfreshRecallEntry struct {
+	pk  tuple.Tuple
+	vec []float64
+}
+
 // MeasureSPFreshRecall measures recall@k of a readable SPFresh index against
 // brute-force ground truth over `querySamples` query vectors drawn from the
 // index's own records (deterministic by seed). Returns a zero-query report when
@@ -80,24 +85,38 @@ func MeasureSPFreshRecall(ctx context.Context, store *recordlayer.FDBRecordStore
 		return report, err
 	}
 
+	corpus, err := spfreshScanRecallCorpus(ctx, store, idx, config.NumDimensions)
+	if err != nil {
+		return report, err
+	}
+
+	report.CorpusSize = len(corpus)
+	if len(corpus) == 0 {
+		return report, nil // empty index: vacuously fine, no queries
+	}
+	if k > len(corpus) {
+		k = len(corpus)
+		report.K = k
+	}
+	return spfreshEvaluateRecall(store, indexName, config, corpus, k, querySamples, seed)
+}
+
+// spfreshScanRecallCorpus builds the ground-truth corpus: every indexed
+// record's (pk, vector).
+func spfreshScanRecallCorpus(ctx context.Context, store *recordlayer.FDBRecordStore, idx *recordlayer.Index, numDimensions int) ([]spfreshRecallEntry, error) {
 	// Which record types this index covers.
 	allowed := map[string]bool{}
 	for _, rt := range store.GetMetaData().RecordTypesForIndex(idx) {
 		allowed[rt.Name] = true
 	}
 
-	// Build the ground-truth corpus: every indexed record's (pk, vector).
-	type corpusEntry struct {
-		pk  tuple.Tuple
-		vec []float64
-	}
-	var corpus []corpusEntry
+	var corpus []spfreshRecallEntry
 	cursor := store.ScanRecords(nil, recordlayer.ForwardScan())
 	defer func() { _ = cursor.Close() }()
 	for {
 		res, err := cursor.OnNext(ctx)
 		if err != nil {
-			return report, fmt.Errorf("spfresh recall: scan records: %w", err)
+			return nil, fmt.Errorf("spfresh recall: scan records: %w", err)
 		}
 		if !res.HasNext() {
 			break
@@ -122,24 +141,20 @@ func MeasureSPFreshRecall(ctx context.Context, store *recordlayer.FDBRecordStore
 				t[i] = v
 			}
 			vec, verr := tupleToVector(t)
-			if verr != nil || len(vec) != config.NumDimensions {
+			if verr != nil || len(vec) != numDimensions {
 				continue
 			}
-			corpus = append(corpus, corpusEntry{pk: rec.PrimaryKey, vec: vec})
+			corpus = append(corpus, spfreshRecallEntry{pk: rec.PrimaryKey, vec: vec})
 		}
 		if len(corpus) > spfreshMaxRecallCorpus {
-			return report, fmt.Errorf("spfresh recall: corpus exceeds %d vectors — too large for full ground truth; sample the corpus upstream", spfreshMaxRecallCorpus)
+			return nil, fmt.Errorf("spfresh recall: corpus exceeds %d vectors — too large for full ground truth; sample the corpus upstream", spfreshMaxRecallCorpus)
 		}
 	}
+	return corpus, nil
+}
 
-	report.CorpusSize = len(corpus)
-	if len(corpus) == 0 {
-		return report, nil // empty index: vacuously fine, no queries
-	}
-	if k > len(corpus) {
-		k = len(corpus)
-		report.K = k
-	}
+func spfreshEvaluateRecall(store *recordlayer.FDBRecordStore, indexName string, config SPFreshConfig, corpus []spfreshRecallEntry, k, querySamples int, seed int64) (SPFreshRecallReport, error) {
+	report := SPFreshRecallReport{K: k, CorpusSize: len(corpus)}
 
 	// Deterministic query sample (without replacement) from the corpus.
 	rng := rand.New(rand.NewPCG(uint64(seed), 0x5eed))

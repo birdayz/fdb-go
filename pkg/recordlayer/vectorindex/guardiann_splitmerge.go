@@ -310,31 +310,7 @@ func (g *guardiann) applyRepartitioning(tx fdb.WritableTransaction, random *spli
 		}
 		newIDs = append(newIDs, id)
 	}
-	// nearestOver is assignPrimaryVectorReferences' map of the new clusters
-	// and the neighbours, its statistics from the clusters' own, and the
-	// primaries' nearest clusters over it.
-	nearestOver := func(drop map[tuple.UUID]bool) (*orderedClusters, map[tuple.UUID]guardiannRunningStats, map[string][]guardiannClusterWithDistance, error) {
-		clusters := newOrderedClusters()
-		for i, c := range cand.kMeans.centroids {
-			if !drop[newIDs[i]] {
-				clusters.put(guardiannClusterWithDistance{meta: guardiannClusterMetadata{id: newIDs[i], stats: runningStatsIdentity()}, centroid: c})
-			}
-		}
-		for _, c := range cls.neighboring {
-			clusters.put(c)
-		}
-		stats := map[tuple.UUID]guardiannRunningStats{}
-		for _, k := range clusters.keys {
-			stats[k] = clusters.values[k].meta.stats
-		}
-		inverted, updates, err := g.computeNearestClusters(cand.primaries, clusters.list())
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		mergeStatsUpdates(stats, updates)
-		return clusters, stats, inverted, nil
-	}
-	clusters, stats, inverted, err := nearestOver(nil)
+	clusters, stats, inverted, err := g.computeRepartitionNearest(cand, newIDs, nil)
 	if err != nil {
 		return err
 	}
@@ -359,10 +335,46 @@ func (g *guardiann) applyRepartitioning(tx fdb.WritableTransaction, random *spli
 		}
 	}
 	if len(drop) > 0 {
-		if clusters, stats, inverted, err = nearestOver(drop); err != nil {
+		if clusters, stats, inverted, err = g.computeRepartitionNearest(cand, newIDs, drop); err != nil {
 			return err
 		}
 	}
+	assignment, err := g.assignRepartitionedVectors(cand, newIDs, inverted, stats)
+	if err != nil {
+		return err
+	}
+	return g.persistRepartitioning(tx, random, cls, clusters, stats, assignment, newIDs, surviving)
+}
+
+// computeRepartitionNearest is assignPrimaryVectorReferences' map of the new
+// clusters and the neighbours, its statistics from the clusters' own, and the
+// primaries' nearest clusters over it.
+func (g *guardiann) computeRepartitionNearest(cand *repartitioningCandidate, newIDs []tuple.UUID, drop map[tuple.UUID]bool,
+) (*orderedClusters, map[tuple.UUID]guardiannRunningStats, map[string][]guardiannClusterWithDistance, error) {
+	clusters := newOrderedClusters()
+	for i, c := range cand.kMeans.centroids {
+		if !drop[newIDs[i]] {
+			clusters.put(guardiannClusterWithDistance{meta: guardiannClusterMetadata{id: newIDs[i], stats: runningStatsIdentity()}, centroid: c})
+		}
+	}
+	for _, c := range cand.cls.neighboring {
+		clusters.put(c)
+	}
+	stats := map[tuple.UUID]guardiannRunningStats{}
+	for _, k := range clusters.keys {
+		stats[k] = clusters.values[k].meta.stats
+	}
+	inverted, updates, err := g.computeNearestClusters(cand.primaries, clusters.list())
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	mergeStatsUpdates(stats, updates)
+	return clusters, stats, inverted, nil
+}
+
+func (g *guardiann) assignRepartitionedVectors(cand *repartitioningCandidate, newIDs []tuple.UUID,
+	inverted map[string][]guardiannClusterWithDistance, stats map[tuple.UUID]guardiannRunningStats,
+) (*orderedAssignments, error) {
 	assignment := newOrderedAssignments()
 	topKs := map[tuple.UUID]*guardiannTopK{}
 	var topKOrder []tuple.UUID
@@ -376,7 +388,7 @@ func (g *guardiann) applyRepartitioning(tx fdb.WritableTransaction, random *spli
 		assignment.put(p.meta.id, r.toPrimary())
 		selected, err := g.selectReplicas(r, p.distance, near[1:], stats, nil)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		for _, s := range selected {
 			if containsUUID(newIDs, s.cluster) {
@@ -395,6 +407,13 @@ func (g *guardiann) applyRepartitioning(tx fdb.WritableTransaction, random *spli
 	for _, k := range topKOrder {
 		assignment.put(k, topKs[k].unsorted()...)
 	}
+	return assignment, nil
+}
+
+func (g *guardiann) persistRepartitioning(tx fdb.WritableTransaction, random *splittableRandom, cls *clusterClassification,
+	clusters *orderedClusters, stats map[tuple.UUID]guardiannRunningStats, assignment *orderedAssignments,
+	newIDs, surviving []tuple.UUID,
+) error {
 	// replaceCentroidsInHnsw
 	for _, c := range cls.core {
 		if err := g.centroids.Delete(tx, tuple.Tuple{c.meta.id}); err != nil {

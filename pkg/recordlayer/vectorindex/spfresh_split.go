@@ -143,230 +143,24 @@ func spfreshSplitFine(ctx context.Context, db *recordlayer.FDBDatabase, s *spfre
 	err := spfreshRun(ctx, db, func(rtx *recordlayer.FDBRecordContext) error {
 		oversized, deferred = false, false
 		tx := rtx.Transaction()
-		cent, err := spfreshReadCentroidForWrite(tx, s, cellID, fineID)
-		if err != nil {
-			return spfreshSplitGoneOr(tx, s, fineID, err)
-		}
-		if cent.state == spfreshStateForward {
-			return nil // commit_unknown retry of a committed split: no-op
-		}
-		if cent.state != spfreshStateSealed {
-			return fmt.Errorf("spfresh split: centroid %d not SEALED (state %d) — SEAL first", fineID, cent.state)
-		}
-		row, err := spfreshTaskClaim(tx, s, spfreshTaskSplit, fineID, owner, spfreshLeaseDeadline(), spfreshNowMs())
-		if err != nil {
-			return fmt.Errorf("spfresh split: claim task for SEALED centroid %d: %w", fineID, err)
-		}
-		if row.state != spfreshSplitTaskSealed || row.childA == 0 {
-			return fmt.Errorf("spfresh split: task row for centroid %d not SEALED with children", fineID)
-		}
-		childA, childB := row.childA, row.childB
-		parentVec, err := cent.vector()
-		if err != nil {
+		cent, parentVec, childA, childB, entries, vecs, isOver, done, err := spfreshSplitPrepare(tx, s, config, owner, cellID, fineID)
+		if err != nil || done {
 			return err
 		}
-
-		// The frozen membership, by REAL read (the load-bearing fence).
-		entries, err := spfreshLoadPostingForSplit(tx, s, fineID)
-		if err != nil {
-			return err
-		}
-		// Oversized posting: under sustained load a posting can balloon far
-		// past the 4×Lmax inline-split ceiling before its split runs (the
-		// RFC's no-chunking rule assumed writers run that ceiling inline,
-		// which needs after-commit hooks the record context doesn't have).
-		// Rewriting every entry + membership in ONE transaction then blows
-		// FDB's 10 MB limit — writes AND the per-entry read-conflict ranges
-		// (sidecar + membership point reads) count, which is why a byte
-		// estimate of the writes alone under-predicted (transaction_too_large
-		// at the 1M foreground fill, twice). Dispatch on the DESIGN ENVELOPE
-		// instead: ≤ 4×Lmax is what the config validator proves fits; bigger
-		// postings drain CHUNKED — sealing froze appends, and each chunk
-		// moves pks atomically with their membership rewrites, so
-		// updates/deletes serialize per pk exactly like the single-tx
-		// argument.
-		if len(entries) > 4*config.Lmax {
+		if isOver {
 			oversized = true
 			oversizedChildren = [2]int64{childA, childB}
 			return nil // single-tx path abandoned; drain outside
 		}
-		vecs := make([][]float64, len(entries))
-		futs := make([]fdb.FutureByteSlice, len(entries))
-		for i, e := range entries {
-			futs[i] = tx.Get(s.sidecarKey(e.pk))
-		}
-		for i, e := range entries {
-			data, gerr := futs[i].Get()
-			if gerr != nil {
-				return gerr
-			}
-			if data == nil {
-				return fmt.Errorf("spfresh split: posting %d member %v has no sidecar vector (sidecar is required for splits)", fineID, e.pk)
-			}
-			v, derr := vectorcodec.Deserialize(data)
-			if derr != nil {
-				return derr
-			}
-			vecs[i] = v
-		}
-
-		// Existing children (a chunked drain resumed under the envelope) pin the
-		// geometry their entries' codes encode: follow them, never re-center.
-		childrenExist := false
-		for _, childID := range []int64{childA, childB} {
-			if _, rerr := spfreshReadCentroidForWrite(tx, s, cellID, childID); rerr == nil {
-				childrenExist = true
-			} else if !errors.Is(rerr, errSPFreshNotFound) {
-				return rerr
-			}
-		}
-		children := []int64{childA, childB}
-		var cents [][]float64
-		var assign []int
-		if childrenExist {
-			targets, sealed, terr := spfreshSplitTargets(tx, s, cellID, childA, childB)
-			if terr != nil {
-				return terr
-			}
-			if sealed && len(entries) > 0 {
-				deferred = true
-				return spfreshTaskRelease(tx, s, spfreshTaskSplit, fineID, owner)
-			}
-			children, cents = children[:0], cents[:0]
-			for _, t := range targets {
-				children = append(children, t.fineID)
-				cents = append(cents, t.vec)
-			}
-			assign = make([]int, len(vecs))
-			for i, v := range vecs {
-				assign[i] = spfreshNearestTarget(v, targets)
-			}
-		} else {
-			// Fresh split: 2-means over the members; degenerate sizes assign
-			// everything to child A and leave child B at the parent's
-			// position, empty.
-			if len(vecs) >= 2 {
-				cents, assign = spfreshKMeans(vecs, 2, seed, 25)
-				if len(cents) < 2 {
-					cents = append(cents, parentVec)
-				}
-			} else {
-				cents = [][]float64{parentVec, parentVec}
-				assign = make([]int, len(vecs)) // all → child A
-			}
-		}
-
-		quantizer := newSPFreshQuantizer(config)
-		counts := make([]int64, len(children))
-		for i, e := range entries {
-			c := assign[i]
-			childID := children[c]
-			// Membership rewrite in-tx (REAL read: serializes with foreground
-			// writers of the same pk through the resolver).
-			mem, merr := spfreshReadMembership(tx, s, e.pk)
-			if merr != nil {
-				if errors.Is(merr, errSPFreshNotFound) {
-					// Deleted between our posting read and here is impossible in
-					// one tx (snapshot isolation); absent means the posting and
-					// membership disagree — surface it.
-					return fmt.Errorf("spfresh split: posting %d member %v has no membership row", fineID, e.pk)
-				}
-				return merr
-			}
-			mem, place, changed := spfreshMoveReplica(mem, fineID, childID)
-			if place {
-				residual := make([]float64, len(vecs[i]))
-				for d := range vecs[i] {
-					residual[d] = vecs[i][d] - cents[c][d]
-				}
-				tx.Set(s.postingKey(childID, e.pk), quantizer.Encode(residual))
-				counts[c]++
-			}
-			if changed {
-				tx.Set(s.membershipKey(e.pk), encodeMembership(mem))
-			}
-		}
-
-		for i, childID := range children {
-			if childrenExist {
-				// Resume of a partially-drained chunked split: the committed
-				// centroid rows stand (geometry pinned by their entries' codes)
-				// and the drained entries' counts must survive.
-				spfreshCounterAdd(tx, s, spfreshCounterFine, childID, counts[i])
-			} else {
-				// epoch = creation time (ms): the merge lifecycle's post-split
-				// cooldown reads it (T_cool, RFC-094 §6 — split↔merge
-				// oscillation guard).
-				spfreshSaveCentroid(tx, s, cellID, childID, encodeCentroidRow(spfreshStateActive, spfreshNowMs(), 0, 0, cents[i]))
-				spfreshCounterSet(tx, s, spfreshCounterFine, childID, counts[i])
-			}
-			// Re-trigger: under sustained write load a posting can balloon
-			// far past Lmax before its split runs, so each child may be born
-			// over Lmax itself — and split triggers otherwise file ONLY from
-			// insert probes, so once writes stop the topology would freeze
-			// with oversized postings (entries beyond the 4×Lmax read cap
-			// become invisible to queries — caught by the 100k foreground
-			// fill at recall 0.87, 187 fines where ~1100 were needed). On a
-			// chunked resume the trigger must gate on the child's TOTAL
-			// (drained + remainder, via the counter read — RYW covers the add
-			// above), not the remainder alone: a child at 0.9·Lmax drained +
-			// 0.5·Lmax remainder is over the envelope with no other trigger
-			// site left once writes stop (the chunked finalize already did
-			// this right).
-			trigger := counts[i]
-			if childrenExist {
-				count, cterr := spfreshCounterReadSnapshot(tx, s, spfreshCounterFine, childID)
-				if cterr != nil {
-					return cterr
-				}
-				trigger = count
-			}
-			if trigger > int64(config.Lmax) {
-				if _, terr := spfreshTaskSetIfAbsent(tx, s, spfreshTaskSplit, childID); terr != nil {
-					return terr
-				}
-			}
-		}
-
-		// Parent: posting cleared behind the HDR forward marker (HDR sorts
-		// before every legal pk — late readers following a stale route find
-		// the children), centroid FORWARD, advisory counter dropped.
-		pr, err := s.postingRange(fineID)
+		children, cents, assign, childrenExist, isDef, err := spfreshSplitGeometry(tx, s, cellID, fineID, owner, seed, parentVec, vecs, childA, childB, len(entries))
 		if err != nil {
 			return err
 		}
-		tx.ClearRange(pr)
-		tx.Set(s.postingHDRKey(fineID), encodePostingHDR(cellID, childA, childB))
-		spfreshSaveCentroid(tx, s, cellID, fineID, encodeCentroidRowRaw(spfreshStateForward, spfreshNowMs(), childA, childB, cent.vecBytes))
-		tx.Clear(s.counterKey(spfreshCounterFine, fineID))
-		// The cell gained a fine centroid net (+2 children, −1 parent) — but a
-		// resumed chunked split's planner already counted it when it created
-		// the children.
-		if !childrenExist {
-			spfreshCounterAdd(tx, s, spfreshCounterCell, cellID, 1)
+		if isDef {
+			deferred = true
+			return nil
 		}
-		// §6b trigger: the fine-split tx probes the cell's fine count (RYW
-		// covers our own ADD) and files the coarse split past cellMax.
-		cellCount, ccerr := spfreshCounterReadSnapshot(tx, s, spfreshCounterCell, cellID)
-		if ccerr != nil {
-			return ccerr
-		}
-		if cellCount > int64(config.CellMax) {
-			if _, terr := spfreshTaskSetIfAbsent(tx, s, spfreshTaskCSplit, cellID); terr != nil {
-				return terr
-			}
-		}
-
-		tx.Clear(s.taskKey(spfreshTaskSplit, fineID))
-		// §6 step 3 follow-up: enqueue the NPA reassignment for the
-		// neighborhood. Carries the children; the parent's posting HDR
-		// (written above, same tx) carries the cell.
-		tx.Set(s.taskKey(spfreshTaskNPA, fineID), encodeTaskRow(spfreshTaskRow{childA: childA, childB: childB}))
-		return spfreshAppendDeltas(tx, s, []spfreshDelta{
-			{op: spfreshOpAddFine, ids: []int64{cellID, childA}},
-			{op: spfreshOpAddFine, ids: []int64{cellID, childB}},
-			{op: spfreshOpForwardFine, ids: []int64{fineID, childA, childB}},
-		})
+		return spfreshSplitWriteAndRetire(tx, s, config, cellID, fineID, childA, childB, cent, entries, vecs, cents, assign, children, childrenExist)
 	})
 	if err != nil {
 		return err
@@ -378,6 +172,249 @@ func spfreshSplitFine(ctx context.Context, db *recordlayer.FDBDatabase, s *spfre
 		return nil
 	}
 	return spfreshSplitFineChunked(ctx, db, s, config, owner, cellID, fineID, oversizedChildren[0], oversizedChildren[1], seed)
+}
+
+func spfreshSplitPrepare(tx fdb.WritableTransaction, s *spfreshStorage, config SPFreshConfig, owner string, cellID, fineID int64,
+) (cent spfreshCentroidRow, parentVec []float64, childA, childB int64, entries []spfreshPostingEntry, vecs [][]float64, oversized, done bool, err error) {
+	cent, err = spfreshReadCentroidForWrite(tx, s, cellID, fineID)
+	if err != nil {
+		err = spfreshSplitGoneOr(tx, s, fineID, err)
+		return cent, nil, 0, 0, nil, nil, false, err == nil, err
+	}
+	if cent.state == spfreshStateForward {
+		return cent, nil, 0, 0, nil, nil, false, true, nil // commit_unknown retry of a committed split: no-op
+	}
+	if cent.state != spfreshStateSealed {
+		return cent, nil, 0, 0, nil, nil, false, false, fmt.Errorf("spfresh split: centroid %d not SEALED (state %d) — SEAL first", fineID, cent.state)
+	}
+	row, err := spfreshTaskClaim(tx, s, spfreshTaskSplit, fineID, owner, spfreshLeaseDeadline(), spfreshNowMs())
+	if err != nil {
+		return cent, nil, 0, 0, nil, nil, false, false, fmt.Errorf("spfresh split: claim task for SEALED centroid %d: %w", fineID, err)
+	}
+	if row.state != spfreshSplitTaskSealed || row.childA == 0 {
+		return cent, nil, 0, 0, nil, nil, false, false, fmt.Errorf("spfresh split: task row for centroid %d not SEALED with children", fineID)
+	}
+	childA, childB = row.childA, row.childB
+	parentVec, err = cent.vector()
+	if err != nil {
+		return cent, nil, 0, 0, nil, nil, false, false, err
+	}
+
+	// The frozen membership, by REAL read (the load-bearing fence).
+	entries, err = spfreshLoadPostingForSplit(tx, s, fineID)
+	if err != nil {
+		return cent, nil, 0, 0, nil, nil, false, false, err
+	}
+	// Oversized posting: under sustained load a posting can balloon far
+	// past the 4×Lmax inline-split ceiling before its split runs (the
+	// RFC's no-chunking rule assumed writers run that ceiling inline,
+	// which needs after-commit hooks the record context doesn't have).
+	// Rewriting every entry + membership in ONE transaction then blows
+	// FDB's 10 MB limit — writes AND the per-entry read-conflict ranges
+	// (sidecar + membership point reads) count, which is why a byte
+	// estimate of the writes alone under-predicted (transaction_too_large
+	// at the 1M foreground fill, twice). Dispatch on the DESIGN ENVELOPE
+	// instead: ≤ 4×Lmax is what the config validator proves fits; bigger
+	// postings drain CHUNKED — sealing froze appends, and each chunk
+	// moves pks atomically with their membership rewrites, so
+	// updates/deletes serialize per pk exactly like the single-tx
+	// argument.
+	if len(entries) > 4*config.Lmax {
+		return cent, nil, childA, childB, nil, nil, true, false, nil
+	}
+	vecs = make([][]float64, len(entries))
+	futs := make([]fdb.FutureByteSlice, len(entries))
+	for i, e := range entries {
+		futs[i] = tx.Get(s.sidecarKey(e.pk))
+	}
+	for i, e := range entries {
+		data, gerr := futs[i].Get()
+		if gerr != nil {
+			return cent, nil, 0, 0, nil, nil, false, false, gerr
+		}
+		if data == nil {
+			return cent, nil, 0, 0, nil, nil, false, false, fmt.Errorf("spfresh split: posting %d member %v has no sidecar vector (sidecar is required for splits)", fineID, e.pk)
+		}
+		v, derr := vectorcodec.Deserialize(data)
+		if derr != nil {
+			return cent, nil, 0, 0, nil, nil, false, false, derr
+		}
+		vecs[i] = v
+	}
+	return cent, parentVec, childA, childB, entries, vecs, false, false, nil
+}
+
+func spfreshSplitGeometry(tx fdb.WritableTransaction, s *spfreshStorage, cellID, fineID int64, owner string, seed int64,
+	parentVec []float64, vecs [][]float64, childA, childB int64, numEntries int,
+) (children []int64, cents [][]float64, assign []int, childrenExist, deferred bool, err error) {
+	// Existing children (a chunked drain resumed under the envelope) pin the
+	// geometry their entries' codes encode: follow them, never re-center.
+	for _, childID := range []int64{childA, childB} {
+		if _, rerr := spfreshReadCentroidForWrite(tx, s, cellID, childID); rerr == nil {
+			childrenExist = true
+		} else if !errors.Is(rerr, errSPFreshNotFound) {
+			return nil, nil, nil, false, false, rerr
+		}
+	}
+	children = []int64{childA, childB}
+	if childrenExist {
+		targets, sealed, terr := spfreshSplitTargets(tx, s, cellID, childA, childB)
+		if terr != nil {
+			return nil, nil, nil, false, false, terr
+		}
+		if sealed && numEntries > 0 {
+			return nil, nil, nil, true, true, spfreshTaskRelease(tx, s, spfreshTaskSplit, fineID, owner)
+		}
+		children, cents = children[:0], cents[:0]
+		for _, t := range targets {
+			children = append(children, t.fineID)
+			cents = append(cents, t.vec)
+		}
+		assign = make([]int, len(vecs))
+		for i, v := range vecs {
+			assign[i] = spfreshNearestTarget(v, targets)
+		}
+		return children, cents, assign, true, false, nil
+	}
+	// Fresh split: 2-means over the members; degenerate sizes assign
+	// everything to child A and leave child B at the parent's
+	// position, empty.
+	if len(vecs) >= 2 {
+		cents, assign = spfreshKMeans(vecs, 2, seed, 25)
+		if len(cents) < 2 {
+			cents = append(cents, parentVec)
+		}
+	} else {
+		cents = [][]float64{parentVec, parentVec}
+		assign = make([]int, len(vecs)) // all → child A
+	}
+	return children, cents, assign, false, false, nil
+}
+
+func spfreshSplitMoveEntries(tx fdb.WritableTransaction, s *spfreshStorage, config SPFreshConfig, fineID int64,
+	entries []spfreshPostingEntry, vecs, cents [][]float64, assign []int, children []int64,
+) ([]int64, error) {
+	quantizer := newSPFreshQuantizer(config)
+	counts := make([]int64, len(children))
+	for i, e := range entries {
+		c := assign[i]
+		childID := children[c]
+		// Membership rewrite in-tx (REAL read: serializes with foreground
+		// writers of the same pk through the resolver).
+		mem, merr := spfreshReadMembership(tx, s, e.pk)
+		if merr != nil {
+			if errors.Is(merr, errSPFreshNotFound) {
+				// Deleted between our posting read and here is impossible in
+				// one tx (snapshot isolation); absent means the posting and
+				// membership disagree — surface it.
+				return nil, fmt.Errorf("spfresh split: posting %d member %v has no membership row", fineID, e.pk)
+			}
+			return nil, merr
+		}
+		mem, place, changed := spfreshMoveReplica(mem, fineID, childID)
+		if place {
+			residual := make([]float64, len(vecs[i]))
+			for d := range vecs[i] {
+				residual[d] = vecs[i][d] - cents[c][d]
+			}
+			tx.Set(s.postingKey(childID, e.pk), quantizer.Encode(residual))
+			counts[c]++
+		}
+		if changed {
+			tx.Set(s.membershipKey(e.pk), encodeMembership(mem))
+		}
+	}
+	return counts, nil
+}
+
+func spfreshSplitWriteAndRetire(tx fdb.WritableTransaction, s *spfreshStorage, config SPFreshConfig, cellID, fineID, childA, childB int64,
+	cent spfreshCentroidRow, entries []spfreshPostingEntry, vecs, cents [][]float64, assign []int, children []int64, childrenExist bool,
+) error {
+	counts, err := spfreshSplitMoveEntries(tx, s, config, fineID, entries, vecs, cents, assign, children)
+	if err != nil {
+		return err
+	}
+
+	for i, childID := range children {
+		if childrenExist {
+			// Resume of a partially-drained chunked split: the committed
+			// centroid rows stand (geometry pinned by their entries' codes)
+			// and the drained entries' counts must survive.
+			spfreshCounterAdd(tx, s, spfreshCounterFine, childID, counts[i])
+		} else {
+			// epoch = creation time (ms): the merge lifecycle's post-split
+			// cooldown reads it (T_cool, RFC-094 §6 — split↔merge
+			// oscillation guard).
+			spfreshSaveCentroid(tx, s, cellID, childID, encodeCentroidRow(spfreshStateActive, spfreshNowMs(), 0, 0, cents[i]))
+			spfreshCounterSet(tx, s, spfreshCounterFine, childID, counts[i])
+		}
+		// Re-trigger: under sustained write load a posting can balloon
+		// far past Lmax before its split runs, so each child may be born
+		// over Lmax itself — and split triggers otherwise file ONLY from
+		// insert probes, so once writes stop the topology would freeze
+		// with oversized postings (entries beyond the 4×Lmax read cap
+		// become invisible to queries — caught by the 100k foreground
+		// fill at recall 0.87, 187 fines where ~1100 were needed). On a
+		// chunked resume the trigger must gate on the child's TOTAL
+		// (drained + remainder, via the counter read — RYW covers the add
+		// above), not the remainder alone: a child at 0.9·Lmax drained +
+		// 0.5·Lmax remainder is over the envelope with no other trigger
+		// site left once writes stop (the chunked finalize already did
+		// this right).
+		trigger := counts[i]
+		if childrenExist {
+			count, cterr := spfreshCounterReadSnapshot(tx, s, spfreshCounterFine, childID)
+			if cterr != nil {
+				return cterr
+			}
+			trigger = count
+		}
+		if trigger > int64(config.Lmax) {
+			if _, terr := spfreshTaskSetIfAbsent(tx, s, spfreshTaskSplit, childID); terr != nil {
+				return terr
+			}
+		}
+	}
+
+	// Parent: posting cleared behind the HDR forward marker (HDR sorts
+	// before every legal pk — late readers following a stale route find
+	// the children), centroid FORWARD, advisory counter dropped.
+	pr, err := s.postingRange(fineID)
+	if err != nil {
+		return err
+	}
+	tx.ClearRange(pr)
+	tx.Set(s.postingHDRKey(fineID), encodePostingHDR(cellID, childA, childB))
+	spfreshSaveCentroid(tx, s, cellID, fineID, encodeCentroidRowRaw(spfreshStateForward, spfreshNowMs(), childA, childB, cent.vecBytes))
+	tx.Clear(s.counterKey(spfreshCounterFine, fineID))
+	// The cell gained a fine centroid net (+2 children, −1 parent) — but a
+	// resumed chunked split's planner already counted it when it created
+	// the children.
+	if !childrenExist {
+		spfreshCounterAdd(tx, s, spfreshCounterCell, cellID, 1)
+	}
+	// §6b trigger: the fine-split tx probes the cell's fine count (RYW
+	// covers our own ADD) and files the coarse split past cellMax.
+	cellCount, ccerr := spfreshCounterReadSnapshot(tx, s, spfreshCounterCell, cellID)
+	if ccerr != nil {
+		return ccerr
+	}
+	if cellCount > int64(config.CellMax) {
+		if _, terr := spfreshTaskSetIfAbsent(tx, s, spfreshTaskCSplit, cellID); terr != nil {
+			return terr
+		}
+	}
+
+	tx.Clear(s.taskKey(spfreshTaskSplit, fineID))
+	// §6 step 3 follow-up: enqueue the NPA reassignment for the
+	// neighborhood. Carries the children; the parent's posting HDR
+	// (written above, same tx) carries the cell.
+	tx.Set(s.taskKey(spfreshTaskNPA, fineID), encodeTaskRow(spfreshTaskRow{childA: childA, childB: childB}))
+	return spfreshAppendDeltas(tx, s, []spfreshDelta{
+		{op: spfreshOpAddFine, ids: []int64{cellID, childA}},
+		{op: spfreshOpAddFine, ids: []int64{cellID, childB}},
+		{op: spfreshOpForwardFine, ids: []int64{fineID, childA, childB}},
+	})
 }
 
 // spfreshSplitFineChunked drains an OVERSIZED sealed posting into its two
@@ -420,7 +457,16 @@ func spfreshSplitFineChunked(ctx context.Context, db *recordlayer.FDBDatabase, s
 		return fmt.Errorf("spfresh chunked split: plan: %w", err)
 	}
 
-	// 2: drain in bounded chunks (pk-atomic moves; membership is the truth).
+	if err := spfreshChunkedSplitDrain(ctx, db, s, quantizer, owner, cellID, fineID, childA, childB, chunk); err != nil {
+		return err
+	}
+
+	return spfreshChunkedSplitFinalize(ctx, db, s, config, cellID, fineID, childA, childB)
+}
+
+// spfreshChunkedSplitDrain drains in bounded chunks (pk-atomic moves;
+// membership is the truth).
+func spfreshChunkedSplitDrain(ctx context.Context, db *recordlayer.FDBDatabase, s *spfreshStorage, quantizer *spfreshQuantizer, owner string, cellID, fineID, childA, childB int64, chunk int) error {
 	for {
 		moved, deferred := 0, false
 		err := spfreshRun(ctx, db, func(rtx *recordlayer.FDBRecordContext) error {
@@ -489,12 +535,14 @@ func spfreshSplitFineChunked(ctx context.Context, db *recordlayer.FDBDatabase, s
 			return errSPFreshSplitDeferred
 		}
 		if moved == 0 {
-			break
+			return nil
 		}
 	}
+}
 
-	// 3: finalize — REAL-read the empty parent (the straggler fence), HDR,
-	// FORWARD, counters, task, changelog, NPA.
+// spfreshChunkedSplitFinalize performs step 3: REAL-read the empty parent (the
+// straggler fence), HDR, FORWARD, counters, task, changelog, NPA.
+func spfreshChunkedSplitFinalize(ctx context.Context, db *recordlayer.FDBDatabase, s *spfreshStorage, config SPFreshConfig, cellID, fineID, childA, childB int64) error {
 	return spfreshRun(ctx, db, func(rtx *recordlayer.FDBRecordContext) error {
 		tx := rtx.Transaction()
 		cent, cerr := spfreshReadCentroidForWrite(tx, s, cellID, fineID)

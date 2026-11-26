@@ -29,15 +29,59 @@ import (
 // spfreshVersionsPerMs is FDB's commit-version advance rate (~1e6/sec).
 const spfreshVersionsPerMs = 1000
 
+type spfreshGCFineRef struct{ cellID, fineID int64 }
+
 // spfreshGCSweep purges retired topology older than horizonMs and trims the
 // changelog. Returns the number of purged rows. Safe to run concurrently with
 // everything else: purges REAL-read the row and re-verify state + age.
 func spfreshGCSweep(ctx context.Context, db *recordlayer.FDBDatabase, s *spfreshStorage, config SPFreshConfig, horizonMs int64) (int, error) {
-	// Collect candidates (snapshot scan; each purge re-verifies in its own tx).
-	type fineRef struct{ cellID, fineID int64 }
-	var fines []fineRef
+	fines, cells, err := spfreshGCCollectCandidates(ctx, db, s, spfreshNowMs(), horizonMs)
+	if err != nil {
+		return 0, err
+	}
+
+	purged := 0
+	quantizer := newSPFreshQuantizer(config)
+	// One routing cache for the whole sweep's re-homes (lazily loaded): a
+	// fullReload per residual entry inside the purge transaction was the
+	// same O(fines)-per-item shape as the NPA reload bomb — and the purge
+	// tx also REAL-reads the posting, so the reloads flirted with the 5s
+	// limit for nothing. Sweep staleness is the same tolerated staleness as
+	// the NPA round cache: spfreshRehome re-verifies every target with a
+	// REAL centroid read before writing.
+	var rehomeRouting *spfreshRoutingCache
+	for _, ref := range fines {
+		var didPurge bool
+		rehomeRouting, didPurge, err = spfreshGCPurgeFine(ctx, db, s, config, quantizer, ref, horizonMs, rehomeRouting)
+		if err != nil {
+			return purged, err
+		}
+		if didPurge {
+			purged++
+		}
+	}
+
+	for _, cellID := range cells {
+		didPurge, err := spfreshGCPurgeCell(ctx, db, s, cellID, horizonMs)
+		if err != nil {
+			return purged, err
+		}
+		if didPurge {
+			purged++
+		}
+	}
+
+	if err := spfreshGCTrimChangelog(ctx, db, s, horizonMs); err != nil {
+		return purged, err
+	}
+	return purged, nil
+}
+
+// spfreshGCCollectCandidates collects purgeable fine and cell candidates via a
+// snapshot scan; each purge re-verifies in its own tx.
+func spfreshGCCollectCandidates(ctx context.Context, db *recordlayer.FDBDatabase, s *spfreshStorage, now, horizonMs int64) ([]spfreshGCFineRef, []int64, error) {
+	var fines []spfreshGCFineRef
 	var cells []int64
-	now := spfreshNowMs()
 	err := spfreshRun(ctx, db, func(rtx *recordlayer.FDBRecordContext) error {
 		fines, cells = fines[:0], cells[:0]
 		tx := rtx.Transaction()
@@ -56,157 +100,139 @@ func spfreshGCSweep(ctx context.Context, db *recordlayer.FDBDatabase, s *spfresh
 			for _, r := range cellRows {
 				if (r.row.state == spfreshStateForward || r.row.state == spfreshStateDead) &&
 					r.row.epoch > 0 && now-r.row.epoch >= horizonMs {
-					fines = append(fines, fineRef{cellID: cellID, fineID: r.fineID})
+					fines = append(fines, spfreshGCFineRef{cellID: cellID, fineID: r.fineID})
 				}
 			}
 		}
 		return nil
 	})
-	if err != nil {
-		return 0, err
-	}
+	return fines, cells, err
+}
 
-	purged := 0
-	quantizer := newSPFreshQuantizer(config)
-	// One routing cache for the whole sweep's re-homes (lazily loaded): a
-	// fullReload per residual entry inside the purge transaction was the
-	// same O(fines)-per-item shape as the NPA reload bomb — and the purge
-	// tx also REAL-reads the posting, so the reloads flirted with the 5s
-	// limit for nothing. Sweep staleness is the same tolerated staleness as
-	// the NPA round cache: spfreshRehome re-verifies every target with a
-	// REAL centroid read before writing.
-	var rehomeRouting *spfreshRoutingCache
-	for _, ref := range fines {
-		didPurge := false
-		err := spfreshRun(ctx, db, func(rtx *recordlayer.FDBRecordContext) error {
-			didPurge = false
-			tx := rtx.Transaction()
-			cent, cerr := spfreshReadCentroidForWrite(tx, s, ref.cellID, ref.fineID)
-			if cerr != nil {
-				if errors.Is(cerr, errSPFreshNotFound) {
-					return nil // already purged
-				}
-				return cerr
+func spfreshGCPurgeFine(ctx context.Context, db *recordlayer.FDBDatabase, s *spfreshStorage, config SPFreshConfig,
+	quantizer *spfreshQuantizer, ref spfreshGCFineRef, horizonMs int64, rehomeRouting *spfreshRoutingCache,
+) (*spfreshRoutingCache, bool, error) {
+	didPurge := false
+	err := spfreshRun(ctx, db, func(rtx *recordlayer.FDBRecordContext) error {
+		didPurge = false
+		tx := rtx.Transaction()
+		cent, cerr := spfreshReadCentroidForWrite(tx, s, ref.cellID, ref.fineID)
+		if cerr != nil {
+			if errors.Is(cerr, errSPFreshNotFound) {
+				return nil // already purged
 			}
-			if cent.state != spfreshStateForward && cent.state != spfreshStateDead {
-				return nil // re-verify failed: not retired after all
-			}
-			if cent.epoch == 0 || spfreshNowMs()-cent.epoch < horizonMs {
+			return cerr
+		}
+		if cent.state != spfreshStateForward && cent.state != spfreshStateDead {
+			return nil // re-verify failed: not retired after all
+		}
+		if cent.epoch == 0 || spfreshNowMs()-cent.epoch < horizonMs {
+			return nil
+		}
+		// A SEALED split in this cell may still be draining into this row's
+		// descendants and follows its FORWARD pointers: keep it (as coarse splits do).
+		cellRows, _, _, lerr := spfreshLoadCellForWrite(tx, s, ref.cellID)
+		if lerr != nil {
+			return lerr
+		}
+		for _, r := range cellRows {
+			if r.row.state == spfreshStateSealed {
 				return nil
 			}
-			// A SEALED split in this cell may still be draining into this row's
-			// descendants and follows its FORWARD pointers: keep it (as coarse splits do).
-			cellRows, _, _, lerr := spfreshLoadCellForWrite(tx, s, ref.cellID)
-			if lerr != nil {
-				return lerr
-			}
-			for _, r := range cellRows {
-				if r.row.state == spfreshStateSealed {
-					return nil
-				}
-			}
+		}
 
-			// Residual drain: REAL posting read; re-home entries the
-			// membership still claims, clear only disclaimed orphans.
-			entries, perr := spfreshLoadPostingForSplit(tx, s, ref.fineID)
-			if perr != nil {
-				return perr
+		// Residual drain: REAL posting read; re-home entries the
+		// membership still claims, clear only disclaimed orphans.
+		entries, perr := spfreshLoadPostingForSplit(tx, s, ref.fineID)
+		if perr != nil {
+			return perr
+		}
+		for _, e := range entries {
+			mem, merr := spfreshReadMembership(tx, s, e.pk)
+			if merr != nil {
+				if errors.Is(merr, errSPFreshNotFound) {
+					continue // record deleted: the range clear below removes it
+				}
+				return merr
 			}
-			for _, e := range entries {
-				mem, merr := spfreshReadMembership(tx, s, e.pk)
-				if merr != nil {
-					if errors.Is(merr, errSPFreshNotFound) {
-						continue // record deleted: the range clear below removes it
-					}
-					return merr
-				}
-				claims := false
-				for _, id := range mem {
-					if id == ref.fineID {
-						claims = true
-					}
-				}
-				if !claims {
-					continue // orphan: cleared with the posting range below
-				}
-				if rehomeRouting == nil {
-					rehomeRouting = newSPFreshRoutingCache(0)
-					if lerr := rehomeRouting.fullReload(tx, s, s.generation); lerr != nil {
-						rehomeRouting = nil
-						return lerr
-					}
-				}
-				// Live residual: re-home to the nearest ACTIVE sibling not
-				// already in the copy-set (the merge-drain rule).
-				if rerr := spfreshRehome(tx, s, config, quantizer, rehomeRouting, e.pk, ref.fineID, mem); rerr != nil {
-					return rerr
+			claims := false
+			for _, id := range mem {
+				if id == ref.fineID {
+					claims = true
 				}
 			}
-
-			pr, rerr := s.postingRange(ref.fineID)
-			if rerr != nil {
+			if !claims {
+				continue // orphan: cleared with the posting range below
+			}
+			if rehomeRouting == nil {
+				rehomeRouting = newSPFreshRoutingCache(0)
+				if lerr := rehomeRouting.fullReload(tx, s, s.generation); lerr != nil {
+					rehomeRouting = nil
+					return lerr
+				}
+			}
+			// Live residual: re-home to the nearest ACTIVE sibling not
+			// already in the copy-set (the merge-drain rule).
+			if rerr := spfreshRehome(tx, s, config, quantizer, rehomeRouting, e.pk, ref.fineID, mem); rerr != nil {
 				return rerr
 			}
-			tx.ClearRange(pr)
-			spfreshAudit("gc-clear", ref.cellID, ref.fineID, cent.state)
-			tx.Clear(s.centroidKey(ref.cellID, ref.fineID))
-			tx.Clear(s.counterKey(spfreshCounterFine, ref.fineID))
-			didPurge = true
-			return spfreshAppendDeltas(tx, s, []spfreshDelta{
-				{op: spfreshOpDeadFine, ids: []int64{ref.fineID}},
-			})
-		})
-		if err != nil {
-			return purged, err
 		}
-		if didPurge {
-			purged++
-		}
-	}
 
-	for _, cellID := range cells {
-		didPurge := false
-		err := spfreshRun(ctx, db, func(rtx *recordlayer.FDBRecordContext) error {
-			didPurge = false
-			tx := rtx.Transaction()
-			coarse, cerr := spfreshReadCoarseForWrite(tx, s, cellID)
-			if cerr != nil {
-				if errors.Is(cerr, errSPFreshNotFound) {
-					return nil
-				}
-				return cerr
-			}
-			if coarse.state != spfreshStateForward || coarse.epoch == 0 || spfreshNowMs()-coarse.epoch < horizonMs {
+		pr, rerr := s.postingRange(ref.fineID)
+		if rerr != nil {
+			return rerr
+		}
+		tx.ClearRange(pr)
+		spfreshAudit("gc-clear", ref.cellID, ref.fineID, cent.state)
+		tx.Clear(s.centroidKey(ref.cellID, ref.fineID))
+		tx.Clear(s.counterKey(spfreshCounterFine, ref.fineID))
+		didPurge = true
+		return spfreshAppendDeltas(tx, s, []spfreshDelta{
+			{op: spfreshOpDeadFine, ids: []int64{ref.fineID}},
+		})
+	})
+	return rehomeRouting, didPurge, err
+}
+
+func spfreshGCPurgeCell(ctx context.Context, db *recordlayer.FDBDatabase, s *spfreshStorage, cellID, horizonMs int64) (bool, error) {
+	didPurge := false
+	err := spfreshRun(ctx, db, func(rtx *recordlayer.FDBRecordContext) error {
+		didPurge = false
+		tx := rtx.Transaction()
+		coarse, cerr := spfreshReadCoarseForWrite(tx, s, cellID)
+		if cerr != nil {
+			if errors.Is(cerr, errSPFreshNotFound) {
 				return nil
 			}
-			// The cell must be empty (its fine rows moved at split, its HDR is
-			// the only resident); fine rows still present mean fine GC hasn't
-			// caught up — skip this round.
-			rows, _, _, lerr := spfreshLoadCell(tx, s, cellID)
-			if lerr != nil {
-				return lerr
-			}
-			if len(rows) > 0 {
-				return nil
-			}
-			tx.Clear(s.centroidHDRKey(cellID))
-			tx.Clear(s.coarseKey(cellID))
-			didPurge = true
-			return spfreshAppendDeltas(tx, s, []spfreshDelta{
-				{op: spfreshOpDeadCell, ids: []int64{cellID}},
-			})
+			return cerr
+		}
+		if coarse.state != spfreshStateForward || coarse.epoch == 0 || spfreshNowMs()-coarse.epoch < horizonMs {
+			return nil
+		}
+		// The cell must be empty (its fine rows moved at split, its HDR is
+		// the only resident); fine rows still present mean fine GC hasn't
+		// caught up — skip this round.
+		rows, _, _, lerr := spfreshLoadCell(tx, s, cellID)
+		if lerr != nil {
+			return lerr
+		}
+		if len(rows) > 0 {
+			return nil
+		}
+		tx.Clear(s.centroidHDRKey(cellID))
+		tx.Clear(s.coarseKey(cellID))
+		didPurge = true
+		return spfreshAppendDeltas(tx, s, []spfreshDelta{
+			{op: spfreshOpDeadCell, ids: []int64{cellID}},
 		})
-		if err != nil {
-			return purged, err
-		}
-		if didPurge {
-			purged++
-		}
-	}
+	})
+	return didPurge, err
+}
 
-	// Changelog trim: clear entries older than (read version − horizon) and
-	// record the boundary in META/horizon for refresh()'s staleness check.
-	err = spfreshRun(ctx, db, func(rtx *recordlayer.FDBRecordContext) error {
+// spfreshGCTrimChangelog clears entries older than (read version − horizon) and
+// records the boundary in META/horizon for refresh()'s staleness check.
+func spfreshGCTrimChangelog(ctx context.Context, db *recordlayer.FDBDatabase, s *spfreshStorage, horizonMs int64) error {
+	return spfreshRun(ctx, db, func(rtx *recordlayer.FDBRecordContext) error {
 		tx := rtx.Transaction()
 		rv, rverr := tx.GetReadVersion().Get()
 		if rverr != nil {
@@ -239,10 +265,6 @@ func spfreshGCSweep(ctx context.Context, db *recordlayer.FDBDatabase, s *spfresh
 		tx.Set(s.metaKey(spfreshMetaHorizon), end)
 		return nil
 	})
-	if err != nil {
-		return purged, err
-	}
-	return purged, nil
 }
 
 // spfreshRehome moves a live residual copy from a retired posting to the
