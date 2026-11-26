@@ -446,12 +446,8 @@ func loadRepoBuildFiles(t *testing.T) []parsedBuildFile {
 func inRestrictedVisibilityScope(rel string) bool {
 	return strings.HasPrefix(rel, "internal/") ||
 		strings.Contains(rel, "/internal/") ||
-		strings.HasPrefix(rel, "pkg/testutil/") ||
-		strings.HasPrefix(rel, "pkg/simfdb/") ||
-		strings.HasPrefix(rel, "pkg/recordlayer/query/plan/constfoldcensus/") ||
 		strings.HasPrefix(rel, "pkg/relational/conformance/") ||
 		strings.HasPrefix(rel, "pkg/relational/sqltest/") ||
-		strings.HasPrefix(rel, "pkg/relational/txbudgetcensus/") ||
 		strings.HasPrefix(rel, "bench/") ||
 		strings.HasPrefix(rel, "tests/")
 }
@@ -463,19 +459,17 @@ var restrictedScopeRoots = []struct {
 	{"cmd/fdb/internal/", []string{"//cmd/fdb:__subpackages__"}},
 	{"internal/", []string{"//:__subpackages__"}},
 	{"internal/linters/", []string{"//:__pkg__"}},
-	{"internal/recordlayer/chaos/", []string{"//pkg/relational/core/embedded:__pkg__", "//pkg/simfdb/hunt:__pkg__"}},
+	{"internal/recordlayer/chaos/", []string{"//internal/simfdb/hunt:__pkg__", "//pkg/relational/core/embedded:__pkg__"}},
 	{"internal/recordlayer/keystoretest/", []string{"//conformance:__pkg__", "//pkg/recordlayer:__pkg__", "//pkg/relational/conformance/javacorpus:__pkg__", "//pkg/relational/sqldriver:__pkg__"}},
 	{"layers/otel/otelsql/internal/", []string{"//layers/otel/otelsql:__subpackages__"}},
 	{"pkg/internal/", []string{"//pkg:__subpackages__"}},
 	{"pkg/recordlayer/query/plan/cascades/internal/", []string{"//pkg/recordlayer/query/plan/cascades:__subpackages__"}},
 	{"tools/clientbench/internal/", []string{"//tools/clientbench:__subpackages__"}},
 	{"tools/unicode15gen/internal/", []string{"//tools/unicode15gen:__subpackages__"}},
-	{"pkg/testutil/", []string{"//pkg/recordlayer:__subpackages__", "//pkg/relational:__subpackages__"}},
-	{"pkg/simfdb/", []string{"//pkg/simfdb:__subpackages__"}},
-	{"pkg/recordlayer/query/plan/constfoldcensus/", []string{"//visibility:private"}},
+	{"internal/testinstruments/constfoldcensus/", []string{"//visibility:private"}},
 	{"pkg/relational/conformance/", []string{"//pkg/relational/conformance:__subpackages__"}},
 	{"pkg/relational/sqltest/", []string{"//pkg/relational:__subpackages__"}},
-	{"pkg/relational/txbudgetcensus/", []string{"//visibility:private"}},
+	{"internal/testinstruments/txbudgetcensus/", []string{"//visibility:private"}},
 	{"bench/", []string{"//visibility:private"}},
 	{"tests/", []string{"//visibility:private"}},
 }
@@ -695,7 +689,7 @@ func TestCorePublicPackagesRemainPublic(t *testing.T) {
 func TestVisibilityParserControls(t *testing.T) {
 	t.Parallel()
 
-	p := parseBuildFile("pkg/testutil/ex/BUILD.bazel", `
+	p := parseBuildFile("internal/testutil/ex/BUILD.bazel", `
 # //visibility:public in a comment must be ignored
 # gazelle:default_visibility //pkg/recordlayer:__subpackages__,//pkg/relational:__subpackages__
 
@@ -734,8 +728,8 @@ go_library(
 	}{
 		{[]string{"//visibility:private"}, "//pkg/a", "//pkg/a", true},
 		{[]string{"//visibility:private"}, "//pkg/b", "//pkg/a", false},
-		{[]string{"//cmd/dst-hunt:__pkg__"}, "//cmd/dst-hunt", "//pkg/simfdb/hunt", true},
-		{[]string{"//cmd/dst-hunt:__pkg__"}, "//cmd/dst-hunt/sub", "//pkg/simfdb/hunt", false},
+		{[]string{"//cmd/dst-hunt:__pkg__"}, "//cmd/dst-hunt", "//internal/simfdb/hunt", true},
+		{[]string{"//cmd/dst-hunt:__pkg__"}, "//cmd/dst-hunt/sub", "//internal/simfdb/hunt", false},
 		{[]string{"//:__subpackages__"}, "//internal/fdbgo/client", "//internal/fdbgo/diag", true},
 		{[]string{"//pkg/fdbgo:__subpackages__"}, "//pkg/recordlayer", "//internal/fdbgo/diag", false},
 		{[]string{"//internal:consumers"}, "//pkg/recordlayer/vectorindex", "//internal/unicode15", true},
@@ -759,8 +753,8 @@ go_library(
 		{"tools/unicode15gen/internal/gen/BUILD.bazel", true},
 		{"internal/recordlayer/chaos/BUILD.bazel", true},
 		{"internal/recordlayer/keystoretest/BUILD.bazel", true},
-		{"pkg/recordlayer/query/plan/constfoldcensus/BUILD.bazel", true},
-		{"pkg/relational/txbudgetcensus/BUILD.bazel", true},
+		{"internal/testinstruments/constfoldcensus/BUILD.bazel", true},
+		{"internal/testinstruments/txbudgetcensus/BUILD.bazel", true},
 		{"pkg/fdbgo/fdb/BUILD.bazel", false},
 	} {
 		if got := inRestrictedVisibilityScope(tc.rel); got != tc.want {

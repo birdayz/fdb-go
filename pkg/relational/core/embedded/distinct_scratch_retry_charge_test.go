@@ -24,10 +24,10 @@ import (
 	"fdb.dev/internal/relational/ddl"
 	"fdb.dev/internal/relational/keyspace"
 	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/simfdb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/simfdb"
 )
 
 // chaosSimBackend preserves standalone transactions for seed DML while SELECT

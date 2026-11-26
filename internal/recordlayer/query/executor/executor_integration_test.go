@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/testutil/allocs"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -21,7 +22,6 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
-	"fdb.dev/pkg/testutil/allocs"
 )
 
 var testDB *recordlayer.FDBDatabase

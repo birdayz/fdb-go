@@ -17,8 +17,8 @@ import (
 	"fdb.dev/internal/dst"
 	"fdb.dev/internal/dstwire"
 	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/simfdb"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/simfdb"
 )
 
 // injectSimFDBWithHandle is injectSimFDB plus the *simfdb.SimDB itself, so a test can place a

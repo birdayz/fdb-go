@@ -13,10 +13,10 @@ go_test(
         "//internal/fdbclient",
         "//internal/relational/keyspace",
         "//internal/relational/relapi",
+        "//internal/testutil/benchcluster",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",
         "//pkg/relational/core/embedded",
         "//pkg/relational/sqldriver",
-        "//pkg/testutil/benchcluster",
     ],
 )

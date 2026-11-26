@@ -1186,8 +1186,8 @@ go_test(
     deps = [
         "//internal/recordlayer/indexfetch",
         "//internal/recordlayer/indexpredicate",
+        "//internal/testinstruments/querycensus",
         "//pkg/fdbgo/fdb/tuple",
-        "//pkg/internal/querycensus",
         "//pkg/recordlayer/metadatapb",
         "//pkg/recordlayer/query/plan/cascades/combinatorics",
         "//pkg/recordlayer/query/plan/cascades/expressions",

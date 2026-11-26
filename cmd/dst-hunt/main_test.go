@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/simfdb/hunt"
+	"fdb.dev/internal/simfdb/hunt"
 )
 
 // TestRecorderWritesFinding proves the durable recording pipeline: a failing report becomes a

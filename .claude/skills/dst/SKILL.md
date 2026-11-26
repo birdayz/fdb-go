@@ -12,11 +12,11 @@ for the design; this skill is the *usage* manual.
 ## Honest status (read this first)
 
 **SimFDB (RFC-199 Tiers 0–2) is built.** The record/relational stack now runs over a deterministic
-in-memory FDB backend (`pkg/simfdb`) with a seeded Env (`internal/dst`: sim clock + seeded RNG + Buggify),
+in-memory FDB backend (`internal/simfdb`) with a seeded Env (`internal/dst`: sim clock + seeded RNG + Buggify),
 so a single `uint64` seed replays the **record-layer** run bit-exactly — no Docker, no cluster — and
 the fault schedule (commit_unknown/conflict/too_old) is part of that seed with **true rollback** (unlike
 chaos's double-commit fake). The brute-force loop-until-bug hunter that rides on this is
-[`pkg/simfdb/hunt`](#hunt). So:
+[`internal/simfdb/hunt`](#hunt). So:
 
 - **Seed-reproducible today, no Docker:** the **hunt** harness (`hunt.Run(seed)` over the real record
   layer + all 7 index types), plus fuzz-corpus entries (`go test -run=FuzzX/<hash>`) and binding-stress
@@ -106,7 +106,7 @@ go test ./internal/recordlayer/chaos/ -run TestMaxEverCommitUnknown -count=1 -pa
 
 ## hunt
 
-Brute-force, seed-driven bug hunter for the record layer (`pkg/simfdb/hunt/`, RFC-199 Tier 2). It drives
+Brute-force, seed-driven bug hunter for the record layer (`internal/simfdb/hunt/`, RFC-199 Tier 2). It drives
 the **same op vocabulary as chaos `RunRandom`** (save/overwrite/delete/deleteAll over the 7-index
 kitchen-sink schema: VALUE+COUNT+SUM+RANK+MAX_EVER+VERSION+COVERING) but over **SimFDB** — in-process,
 no Docker — under a **seed-derived commit-fault schedule** (Buggify fires 1021/1020/1007 with true
@@ -116,18 +116,18 @@ tool — the brute-force complement to chaos (one fixed seed, real FDB).
 
 ```sh
 # Loop-until-bug: time-budgeted parallel sweep, full 300-op profile (the overnight hunt).
-bazelisk test //pkg/simfdb/hunt:hunt_test --test_arg=-test.run=TestBruteHunt \
+bazelisk test //internal/simfdb/hunt:hunt_test --test_arg=-test.run=TestBruteHunt \
   --test_env=HUNT_SECONDS=3600 --test_env=HUNT_WORKERS=8 \
   --test_timeout=4000 --test_output=streamed --nocache_test_results
 #   HUNT_SEED_START=N shards disjoint seed space across machines. First failing seed → full reproducer.
 
 # Coverage-guided fuzzer (libFuzzer mutates the seed; crashers saved to testdata/fuzz):
-bazelisk test //pkg/simfdb/hunt:hunt_test --test_arg=-test.fuzz=^FuzzHunt$ \
+bazelisk test //internal/simfdb/hunt:hunt_test --test_arg=-test.fuzz=^FuzzHunt$ \
   --test_arg=-test.fuzztime=120s --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache \
   --sandbox_writable_path=/tmp/fuzz-cache
 
 # Replay ONE suspect seed with per-op verify (pins the exact failing op):
-bazelisk test //pkg/simfdb/hunt:hunt_test --test_arg=-test.run=TestHuntSeed \
+bazelisk test //internal/simfdb/hunt:hunt_test --test_arg=-test.run=TestHuntSeed \
   --test_env=HUNT_SEED=1099511627776 --test_arg=-test.v --nocache_test_results
 ```
 
@@ -156,7 +156,7 @@ bazelisk test //pkg/simfdb/hunt:hunt_test --test_arg=-test.run=TestHuntSeed \
 - **Workloads (add a surface over time).** A `Workload` (interface in `hunt.go`: `Name()` + `Run(seed,
   cfg) *Report`) is the extension point — implement one, drop it in a `Config`, and the whole loop /
   fault schedule / shrink / recording works unchanged. Two exist: the default **record-layer** workload
-  (`recordWorkload`, chaos vocab + `chaos.Verify`) and **`sqlhunt.SQLWorkload`** (`pkg/simfdb/hunt/sqlhunt`)
+  (`recordWorkload`, chaos vocab + `chaos.Verify`) and **`sqlhunt.SQLWorkload`** (`internal/simfdb/hunt/sqlhunt`)
   which drives the full parser→Cascades→executor stack over SimFDB via `sqldriver.RegisterBackend` +
   `sql.Open("fdbsql", …cluster_file=<key>)`, runs idempotent DML (absolute `UPDATE`+`DELETE`) under the
   fault schedule, and compares the table to a Go row-model. To add one: new package, implement `Workload`,
@@ -171,7 +171,7 @@ bazelisk test //pkg/simfdb/hunt:hunt_test --test_arg=-test.run=TestHuntSeed \
 
 ## interleave (concurrent-transaction SSI driver)
 
-Concurrent-open-transaction driver (`pkg/simfdb/hunt/interleave/`, RFC-199 Tier 2, a `hunt.Workload`).
+Concurrent-open-transaction driver (`internal/simfdb/hunt/interleave/`, RFC-199 Tier 2, a `hunt.Workload`).
 Every other hunt workload is single-writer, so SimFDB's SSI resolver never resolved a real conflict —
 `1020` never fired. This one holds N transactions open, interleaves **RMW-increment** (`Get`+`Set`, a
 read conflict) and **atomic-add** (`Add`, no read conflict) ops through one deterministic goroutine, and
@@ -179,7 +179,7 @@ commits through the serialized resolver. That makes `not_committed(1020)` fire f
 2,000 pure-RMW seeds**, and **zero** on the pure-add profile (the "why atomic ops exist" contrast).
 
 ```sh
-bazelisk test //pkg/simfdb/hunt/interleave:interleave_test --test_output=errors
+bazelisk test //internal/simfdb/hunt/interleave:interleave_test --test_output=errors
 # TestConflictsFire logs the live 1020 count; TestClean sweeps every profile × 3000 seeds.
 # Runs inside the overnight sweep too: dst-hunt -profiles interleave
 ```
@@ -210,13 +210,13 @@ bazelisk test //pkg/simfdb/hunt/interleave:interleave_test --test_output=errors
 The interleave driver only makes *point-width* conflict ranges, so the resolver's arithmetic over
 genuine **spans** (`rangesOverlap` on wide ranges, the GetRange read-conflict extent, ClearRange write
 conflicts, the `keyAfter` boundary between adjacent keys) went untested. This driver
-(`pkg/simfdb/hunt/rangeconflict/`, RFC-199 Tier 2, a `hunt.Workload`) interleaves point AND range ops
+(`internal/simfdb/hunt/rangeconflict/`, RFC-199 Tier 2, a `hunt.Workload`) interleaves point AND range ops
 — `GetRange` (read conflict over a span), `ClearRange` (write conflict over a span), point Get/Set/
 Clear — across open transactions and commits through the serialized resolver. **9,238 real `1020`s +
 30,417 range ops across 3,000 hot seeds**, verdict model in lockstep.
 
 ```sh
-bazelisk test //pkg/simfdb/hunt/rangeconflict:rangeconflict_test --test_output=errors
+bazelisk test //internal/simfdb/hunt/rangeconflict:rangeconflict_test --test_output=errors
 # dst-hunt -profiles rangeconflict
 ```
 
@@ -238,7 +238,7 @@ bazelisk test //pkg/simfdb/hunt/rangeconflict:rangeconflict_test --test_output=e
 
 ## continuation (cursor-resume replay driver)
 
-Continuation-under-fault replay driver (`pkg/simfdb/hunt/continuation/`, RFC-199 Tier 2, a
+Continuation-under-fault replay driver (`internal/simfdb/hunt/continuation/`, RFC-199 Tier 2, a
 `hunt.Workload`). A scan that hits a row/byte/time limit mints a **continuation token** and the
 caller resumes in a fresh transaction from those bytes — every byte is a place a bug hides (page-
 boundary off-by-one, plan-hash-in-token, resume skip/dup, version-path-dependence). The record layer
@@ -258,7 +258,7 @@ reflects the true outcome: `1020` rolled back → tail unchanged, `1021` applied
 proves the fault path is genuinely exercised).
 
 ```sh
-bazelisk test //pkg/simfdb/hunt/continuation:continuation_test --test_output=errors
+bazelisk test //internal/simfdb/hunt/continuation:continuation_test --test_output=errors
 # in the overnight sweep: dst-hunt -profiles continuation
 ```
 
@@ -274,7 +274,7 @@ bazelisk test //pkg/simfdb/hunt/continuation:continuation_test --test_output=err
 ## sqlpage (SQL-query pagination oracle)
 
 Goes a layer above the raw-scan `continuation` driver: it paginates whole SQL QUERIES
-(`pkg/simfdb/hunt/sqlpage/`, RFC-199 Tier 2, a `hunt.Workload`), so the **executor's cursor tree** —
+(`internal/simfdb/hunt/sqlpage/`, RFC-199 Tier 2, a `hunt.Workload`), so the **executor's cursor tree** —
 filter/sort/GROUP BY/join — and its per-operator continuation logic is what's under test. It runs each
 query on one pinned connection at the default execution scanned-rows limit (no pagination = reference)
 and again at a tiny limit (forcing the executor to exhaust its budget and resume through internal
@@ -282,7 +282,7 @@ continuations over and over), and asserts the two results match (multiset, or or
 ORDER BY). Metamorphic — the engine judges itself.
 
 ```sh
-bazelisk test //pkg/simfdb/hunt/sqlpage:sqlpage_test --test_output=errors
+bazelisk test //internal/simfdb/hunt/sqlpage:sqlpage_test --test_output=errors
 # dst-hunt -profiles sqlpage   (SQL runs are ~1-2/sec/core — far slower than the raw drivers)
 ```
 
@@ -312,12 +312,12 @@ bazelisk test //pkg/simfdb/hunt/sqlpage:sqlpage_test --test_output=errors
 
 Differentials FoundationDB's **ten atomic mutation types** (Add / And / Or / Xor / Max / Min /
 ByteMax / ByteMin / AppendIfFits / CompareAndClear) end-to-end through the SimFDB backend against an
-**independent Go reference model** (`pkg/simfdb/hunt/atomicops/`, RFC-199 Tier 2, a `hunt.Workload`).
+**independent Go reference model** (`internal/simfdb/hunt/atomicops/`, RFC-199 Tier 2, a `hunt.Workload`).
 The `interleave` driver only ever fires atomic-**add**; every other op — and every width / endianness /
 missing-key edge — was otherwise unprobed by a hunt.
 
 ```sh
-bazelisk test //pkg/simfdb/hunt/atomicops:atomicops_test --test_output=errors
+bazelisk test //internal/simfdb/hunt/atomicops:atomicops_test --test_output=errors
 # dst-hunt -profiles atomic-ops     (raw-KV, ~30k execs/sec/core under fuzz)
 ```
 
@@ -348,7 +348,7 @@ bazelisk test //pkg/simfdb/hunt/atomicops:atomicops_test --test_output=errors
 
 ## golden (characterization gate)
 
-Behavior lock for the SQL engine (`pkg/simfdb/hunt/golden/`, RFC-199 Tier 2 oracle). For a curated
+Behavior lock for the SQL engine (`internal/simfdb/hunt/golden/`, RFC-199 Tier 2 oracle). For a curated
 corpus of (schema, seeded data, queries) it captures the engine's **`EXPLAIN` plan + result rows** over
 SimFDB into a committed baseline (`testdata/*.golden`) and diffs a fresh capture every run. Catches
 **CHANGED, not WRONG** — a silent plan/result regression (right rows, wrong/slower plan — the PR #201
@@ -359,7 +359,7 @@ across 160+ fresh processes, `-race`, and every `GOMAXPROCS`.
 ```sh
 just golden           # check current behavior vs the committed baseline (also runs in `just test`)
 just golden-update    # after an INTENTIONAL engine change: regenerate, then review the diff
-git diff pkg/simfdb/hunt/golden/testdata/   # THE review artifact
+git diff internal/simfdb/hunt/golden/testdata/   # THE review artifact
 ```
 
 - **Reviewing a golden diff (author + `bruh-code-review`):** a **result-row** change is loud → almost
@@ -572,7 +572,7 @@ axis). Match the pin to the tool:
 - **hunt:** first `hunt.Shrink(S, cfg)` to the minimal reproducer, then pin the ROOT cause — a hunt
   failure is a record-layer bug, so the regression is a focused chaos/FDB test (or a `hunt.Run(S)`
   assertion) on the exact maintainer/op, not the raw seed. If the fix is a SimFDB fidelity gap, pin it
-  in `pkg/simfdb` (see `TestNewSelectsAPIVersion`).
+  in `internal/simfdb` (see `TestNewSelectsAPIVersion`).
 - **chaos:** add a `NewScenario(t, …, WithSeed(S))` or `RandomConfig{Seed:S}` test at the failing seed
   (and, for a fault bug, `InjectOnce(FaultX)`), so the exact violation is a permanent test.
 - **stress / SQL-visible:** add a **yamsql scenario** with a `plan_contains:`/`EXPLAIN` assertion (prove
@@ -594,8 +594,8 @@ above.
 |---|---|---|
 | **−1** rr + Delve replay | reverse-debug a *captured* real-FDB flake | ⚠️ **setup** — `rr` not installed; `--backend=rr` |
 | **0** Clock + seeded RNG + Buggify | byte-reproducible persisted state; deterministic `CURRENT_*`; fault points | ✅ **Available** (`internal/dst`) |
-| **1** SimFDB (in-mem MVCC backend) | **single-seed bit-exact replay, no Docker**; true rollback; SSI-conflict + idempotency bug hunting; the conflict-outcome differential as its oracle | ✅ **Available** (`pkg/simfdb`) |
-| **2** workload drivers + replay | seed-reproducible record workloads (**[hunt](#hunt)**: brute-force loop-until-bug + shrink); SQL workloads (`sqlhunt`); metamorphic + golden oracles; **[interleave](#interleave-concurrent-transaction-ssi-driver)** + **[rangeconflict](#rangeconflict-range-aware-ssi-driver)** SSI drivers; **[continuation](#continuation-cursor-resume-replay-driver)** cursor-resume replay driver | ✅ **Available** (`pkg/simfdb/hunt` + `sqlhunt`/`metamorphic`/`golden`/`interleave` [+ fault mode]/`rangeconflict`/`continuation`/`sqlpage`) — continuation-under-injected-fault next |
+| **1** SimFDB (in-mem MVCC backend) | **single-seed bit-exact replay, no Docker**; true rollback; SSI-conflict + idempotency bug hunting; the conflict-outcome differential as its oracle | ✅ **Available** (`internal/simfdb`) |
+| **2** workload drivers + replay | seed-reproducible record workloads (**[hunt](#hunt)**: brute-force loop-until-bug + shrink); SQL workloads (`sqlhunt`); metamorphic + golden oracles; **[interleave](#interleave-concurrent-transaction-ssi-driver)** + **[rangeconflict](#rangeconflict-range-aware-ssi-driver)** SSI drivers; **[continuation](#continuation-cursor-resume-replay-driver)** cursor-resume replay driver | ✅ **Available** (`internal/simfdb/hunt` + `sqlhunt`/`metamorphic`/`golden`/`interleave` [+ fault mode]/`rangeconflict`/`continuation`/`sqlpage`) — continuation-under-injected-fault next |
 | **3** client sim (Track B) | `synctest`-driven client concurrency + simulated server processes | ⏳ **separate RFC** (not full DST) |
 
 The fast/reproducible inner loop for the record layer is now **hunt** (in-memory, seeded, true-rollback
@@ -619,7 +619,7 @@ handed to a background hunter.
    inconsistent but misses a bug both paths share) beats golden (catches CHANGED only). Prefer a model
    when the correct answer is computable from the seed; it catches bugs a metamorphic check can't. Keep
    the model *simpler* than the engine (point-keys vs byte-ranges) — the representation gap is its teeth.
-3. **Implement as a `hunt.Workload`** in `pkg/simfdb/hunt/<name>/`: `Name()` + `Run(seed, hunt.Config)
+3. **Implement as a `hunt.Workload`** in `internal/simfdb/hunt/<name>/`: `Name()` + `Run(seed, hunt.Config)
    *hunt.Report`. Own your knobs on the struct (ignore the record-oriented `hunt.Config` fields), build
    the env with `hunt.NewSimEnv(seed, faultProb)`, run **fault-free** unless commit-fault injection is
    itself what you're testing (injected faults confound a serializability/exactness oracle — say so in
@@ -632,7 +632,7 @@ handed to a background hunter.
    in-suite seed band small (≈10–15 s total — siblings target that); volume is the hunter's job, not
    `just test`'s.
 5. **Wire `Profiles()`** into `cmd/dst-hunt/main.go`'s `profiles` slice so it joins the overnight sweep.
-6. **Ship:** `go vet` → `gofumpt -w` (nogo enforces it) → `just gazelle` → `bazelisk test //pkg/simfdb/hunt/<name>:...` → commit (the pre-commit runs the full `just generate && lint && build && test`; no `--no-verify`, ever).
+6. **Ship:** `go vet` → `gofumpt -w` (nogo enforces it) → `just gazelle` → `bazelisk test //internal/simfdb/hunt/<name>:...` → commit (the pre-commit runs the full `just generate && lint && build && test`; no `--no-verify`, ever).
 7. **Dispatch a background hunter** (general-purpose subagent, `run_in_background`, **`isolation:
    worktree`**): give it (a) a *gated* white-box brute `_test.go` (env-var guarded like `TestBruteHunt`)
    sweeping WIDER configs than the shipped profiles across millions of seeds for a wall-clock budget,
@@ -643,7 +643,7 @@ handed to a background hunter.
    hunters.** The intent: a hunter that writes its gated `_test.go` / probe binary (`cmd/mmprobe`, a
    `scratch-mm/` dir) into the *shared* worktree makes your next commit's pre-commit `gazelle`/`gofumpt`/`lint`
    choke on files it's about to delete, and the commit fails until the hunter finishes. BUT a hunter that
-   needs the DST packages (`pkg/simfdb/hunt/*`, `metamorphic`, `sqlpage`) often finds its fresh isolated
+   needs the DST packages (`internal/simfdb/hunt/*`, `metamorphic`, `sqlpage`) often finds its fresh isolated
    worktree was forked off a branch that LACKS those packages, so it `EnterWorktree`s back into the shared
    `rfc179-dst` dir and pollutes it anyway (observed repeatedly). Defenses: (a) expect leaked scratch —
    before committing, `rm -rf cmd/mmprobe scratch-mm && git status` and clean any stray gated `_test.go`;

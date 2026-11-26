@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"fdb.dev/pkg/internal/querycensus"
+	"fdb.dev/internal/testinstruments/querycensus"
 )
 
 // assertUnresolvedResultTypeCensus gates RFC-213's reached-consumers floor over

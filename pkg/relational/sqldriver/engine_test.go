@@ -16,10 +16,10 @@ import (
 	"fdb.dev/internal/dst"
 	"fdb.dev/internal/dstwire"
 	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/simfdb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/simfdb"
 )
 
 func newEngineSimDB(seed uint64) *recordlayer.FDBDatabase {

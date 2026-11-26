@@ -29,13 +29,13 @@ import (
 	"syscall"
 	"time"
 
-	"fdb.dev/pkg/simfdb/hunt"
-	"fdb.dev/pkg/simfdb/hunt/atomicops"
-	"fdb.dev/pkg/simfdb/hunt/continuation"
-	"fdb.dev/pkg/simfdb/hunt/interleave"
-	"fdb.dev/pkg/simfdb/hunt/rangeconflict"
-	"fdb.dev/pkg/simfdb/hunt/sqlhunt"
-	"fdb.dev/pkg/simfdb/hunt/sqlpage"
+	"fdb.dev/internal/simfdb/hunt"
+	"fdb.dev/internal/simfdb/hunt/atomicops"
+	"fdb.dev/internal/simfdb/hunt/continuation"
+	"fdb.dev/internal/simfdb/hunt/interleave"
+	"fdb.dev/internal/simfdb/hunt/rangeconflict"
+	"fdb.dev/internal/simfdb/hunt/sqlhunt"
+	"fdb.dev/internal/simfdb/hunt/sqlpage"
 )
 
 func main() {
@@ -281,7 +281,7 @@ func (r *recorder) finding(p hunt.Profile, seed uint64, cfg hunt.Config, rep *hu
 		FailedAtOp: rep.Ops, FaultsFired: rep.FaultsFired,
 		ShrunkNumOps: shrunkOps, FaultDependent: faultDep,
 		Err: rep.Err, Violations: rep.Violations,
-		Reproduce: fmt.Sprintf("HUNT_SEED=%d bazelisk test //pkg/simfdb/hunt:hunt_test --test_arg=-test.run=TestHuntSeed --test_env=HUNT_SEED=%d --nocache_test_results", seed, seed),
+		Reproduce: fmt.Sprintf("HUNT_SEED=%d bazelisk test //internal/simfdb/hunt:hunt_test --test_arg=-test.run=TestHuntSeed --test_env=HUNT_SEED=%d --nocache_test_results", seed, seed),
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()

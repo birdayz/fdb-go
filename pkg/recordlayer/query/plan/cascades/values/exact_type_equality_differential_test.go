@@ -3,7 +3,7 @@ package values
 import (
 	"testing"
 
-	"fdb.dev/pkg/testutil/allocs"
+	"fdb.dev/internal/testutil/allocs"
 )
 
 // The exact channel answers "are these two flowed types equal" from immutable

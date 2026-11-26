@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"fdb.dev/internal/recordlayer/vectorcodec"
-	"fdb.dev/pkg/testutil/allocs"
+	"fdb.dev/internal/testutil/allocs"
 )
 
 // TestVectorDistanceFromBytes_MatchesDeserialize asserts the zero-alloc

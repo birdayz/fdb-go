@@ -102,6 +102,7 @@ go_test(
         "//internal/relational/metadata",
         "//internal/relational/relapi",
         "//internal/relational/simgate",
+        "//internal/simfdb",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
@@ -111,7 +112,6 @@ go_test(
         "//pkg/recordlayer/rlmetrics",
         "//pkg/relational/core/embedded",
         "//pkg/relational/sqltest/testkit",
-        "//pkg/simfdb",
         "@com_github_google_uuid//:uuid",
         "@org_golang_google_protobuf//proto",
     ],
@@ -139,11 +139,11 @@ go_test(
         "//internal/relational/fleet",
         "//internal/relational/keyspace",
         "//internal/relational/relapi",
+        "//internal/simfdb",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",
         "//pkg/relational/core/embedded",
-        "//pkg/simfdb",
         "@org_golang_google_protobuf//proto",
     ],
 )
@@ -160,13 +160,13 @@ go_test(
         "//internal/relational/connknob",
         "//internal/relational/keyspace",
         "//internal/relational/relapi",
+        "//internal/simfdb",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
         "//pkg/recordlayer/metadatapb",
         "//pkg/relational/core/embedded",
-        "//pkg/simfdb",
     ],
 )
 
@@ -180,10 +180,10 @@ go_test(
         "//internal/dst",
         "//internal/dstwire",
         "//internal/relational/relapi",
+        "//internal/simfdb",
         "//pkg/fdbgo/fdb",
         "//pkg/recordlayer",
         "//pkg/relational/core/embedded",
-        "//pkg/simfdb",
     ],
 )
 
@@ -195,7 +195,7 @@ filegroup(
     name = "tx_budget_census_corpus",
     srcs = glob(["*_test.go"]),
     visibility = [
+        "//internal/testinstruments/txbudgetcensus:__pkg__",
         "//pkg/relational/sqltest/guard:__pkg__",
-        "//pkg/relational/txbudgetcensus:__pkg__",
     ],
 )

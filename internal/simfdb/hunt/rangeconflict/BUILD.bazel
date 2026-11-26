@@ -1,0 +1,29 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+package(default_visibility = ["//internal/simfdb:__subpackages__"])
+
+go_library(
+    name = "rangeconflict",
+    srcs = ["rangeconflict.go"],
+    importpath = "fdb.dev/internal/simfdb/hunt/rangeconflict",
+    visibility = ["//cmd/dst-hunt:__pkg__"],
+    deps = [
+        "//internal/simfdb",
+        "//internal/simfdb/hunt",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+    ],
+)
+
+go_test(
+    name = "rangeconflict_test",
+    srcs = ["rangeconflict_test.go"],
+    embed = [":rangeconflict"],
+    deps = [
+        "//internal/simfdb",
+        "//internal/simfdb/hunt",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+    ],
+)

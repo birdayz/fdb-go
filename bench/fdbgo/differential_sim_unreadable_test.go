@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	"fdb.dev/internal/dst"
+	"fdb.dev/internal/simfdb"
 	gofdb "fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/simfdb"
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
 )
 

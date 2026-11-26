@@ -12,9 +12,9 @@ import (
 	"fdb.dev/internal/dstwire"
 	"fdb.dev/internal/relational/keyspace"
 	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/simfdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/simfdb"
 )
 
 func TestSchemaSubspace_EmptyPath(t *testing.T) {

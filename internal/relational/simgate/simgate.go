@@ -6,8 +6,8 @@ package simgate
 import (
 	"sync"
 
+	"fdb.dev/internal/simfdb"
 	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/simfdb"
 )
 
 // Call selects the call PanicOnce or BlockNextIn arms; only PanicOnce takes

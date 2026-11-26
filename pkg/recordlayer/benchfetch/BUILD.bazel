@@ -13,11 +13,11 @@ go_test(
     ],
     deps = [
         "//gen/demopb",
+        "//internal/testutil/benchcluster",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
-        "//pkg/testutil/benchcluster",
         "@org_golang_google_protobuf//proto",
     ],
 )

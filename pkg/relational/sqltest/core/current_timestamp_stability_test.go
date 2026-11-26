@@ -31,9 +31,9 @@ import (
 	"fdb.dev/internal/dst"
 	"fdb.dev/internal/dstwire"
 	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/simfdb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/sqldriver"
-	"fdb.dev/pkg/simfdb"
 )
 
 // minStraddleExecs is the sample floor the boundary-straddle detector needs:

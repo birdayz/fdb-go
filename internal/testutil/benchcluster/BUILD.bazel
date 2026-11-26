@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+package(default_visibility = ["//:__subpackages__"])
+
+go_library(
+    name = "benchcluster",
+    testonly = True,
+    srcs = ["benchcluster.go"],
+    importpath = "fdb.dev/internal/testutil/benchcluster",
+    visibility = [
+        "//pkg/recordlayer:__subpackages__",
+        "//pkg/relational:__subpackages__",
+    ],
+    deps = ["//pkg/testcontainers/foundationdb"],
+)
+
+go_test(
+    name = "benchcluster_test",
+    srcs = ["benchcluster_test.go"],
+    embed = [":benchcluster"],
+)

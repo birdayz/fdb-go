@@ -18,7 +18,7 @@ Needed for parity (3 parts):
 3. Window of pre-opened inner cursors: recordlayer FlatMapPipelined (IN-join) and executor
    flat_map_cursor.go (nested loop). Only the head is advanced; continuations unchanged.
 Rejected: concurrent inner OnNext (ExecuteState/ScanLimiterState/buffers not goroutine-safe;
-pkg/simfdb simTxn not goroutine-safe; breaks DST determinism; executor zero-goroutine invariant).
+internal/simfdb simTxn not goroutine-safe; breaks DST determinism; executor zero-goroutine invariant).
 Findings so far:
 - keyValueCursor.initIterator (key_value_cursor.go:819-930) depends only on construction-time state
   (range, continuation, scanProperties, recordsRead=0), so building the iterator at construction is

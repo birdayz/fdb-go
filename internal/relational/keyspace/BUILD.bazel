@@ -30,8 +30,8 @@ go_test(
         "//internal/dst",
         "//internal/dstwire",
         "//internal/relational/relapi",
+        "//internal/simfdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",
-        "//pkg/simfdb",
     ],
 )

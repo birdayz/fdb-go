@@ -1,0 +1,46 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+package(default_visibility = ["//internal/simfdb:__subpackages__"])
+
+go_library(
+    name = "sqlpage",
+    srcs = ["sqlpage.go"],
+    importpath = "fdb.dev/internal/simfdb/hunt/sqlpage",
+    visibility = ["//cmd/dst-hunt:__pkg__"],
+    deps = [
+        "//internal/dst",
+        "//internal/dstwire",
+        "//internal/relational/relapi",
+        "//internal/simfdb",
+        "//internal/simfdb/hunt",
+        "//pkg/recordlayer",
+        "//pkg/relational/core/embedded",
+        "//pkg/relational/sqldriver",
+    ],
+)
+
+go_test(
+    name = "sqlpage_test",
+    # size="large" => 900s. TestClean drives 15 seeds across 2 row-count profiles, each
+    # seed running the whole query matrix twice (paged vs unpaged) through the full SQL
+    # stack over SimFDB — CPU-bound, no containers. It finishes in ~38s solo but starved
+    # past the default medium 300s when the full suite scheduled it alongside the
+    # container-heavy targets. Right-size to the repo's heavy-test convention (same
+    # rationale as the chaos, sqldriver and conformance targets) rather than cut seeds:
+    # the seed count IS the coverage this oracle exists for.
+    size = "large",
+    srcs = [
+        "distinct_continuation_test.go",
+        "domain_registration_test.go",
+        "injoin_continuation_test.go",
+        "limited_join_continuation_test.go",
+        "sqlpage_test.go",
+        "unionall_continuation_test.go",
+    ],
+    embed = [":sqlpage"],
+    tags = ["resources:cpu:3"],
+    deps = [
+        "//internal/relational/keyspace",
+        "//internal/relational/relapi",
+    ],
+)

@@ -1,10 +1,10 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
-# gazelle:default_visibility //pkg/relational/core/embedded:__pkg__,//pkg/simfdb/hunt:__pkg__
+# gazelle:default_visibility //internal/simfdb/hunt:__pkg__,//pkg/relational/core/embedded:__pkg__
 
 package(default_visibility = [
+    "//internal/simfdb/hunt:__pkg__",
     "//pkg/relational/core/embedded:__pkg__",
-    "//pkg/simfdb/hunt:__pkg__",
 ])
 
 go_library(
@@ -31,8 +31,8 @@ go_library(
     ],
     importpath = "fdb.dev/internal/recordlayer/chaos",
     visibility = [
+        "//internal/simfdb/hunt:__pkg__",
         "//pkg/relational/core/embedded:__pkg__",
-        "//pkg/simfdb/hunt:__pkg__",
     ],
     deps = [
         "//gen/demopb",
@@ -86,12 +86,12 @@ go_test(
         "//internal/dst",
         "//internal/dstwire",
         "//internal/recordlayer/vectorcodec",
+        "//internal/simfdb",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
         "//pkg/recordlayer/vectorindex",
-        "//pkg/simfdb",
         "//pkg/testcontainers/foundationdb",
         "@org_golang_google_protobuf//proto",
     ],

@@ -1,0 +1,638 @@
+package golden
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// corpus is the curated set of characterization scenarios. Data is literal (not random) so the
+// baseline is stable and human-reviewable. Queries span the read surface: point/range filters,
+// aggregates, GROUP BY, ORDER BY, LIMIT, IN, NULL semantics, DISTINCT, index-eligible predicates,
+// and boolean/string columns. Add scenarios/queries here, then `just golden-update` to record them.
+func corpus() []Scenario {
+	orders := Scenario{
+		Name: "orders",
+		Seed: 1,
+		Tables: []string{
+			"CREATE TABLE t (id BIGINT, cat BIGINT, val BIGINT, name STRING, flag BOOLEAN, PRIMARY KEY (id))",
+			"CREATE INDEX idx_cat ON t(cat)",
+			"CREATE INDEX idx_val ON t(val)",
+		},
+		Data: []string{
+			"INSERT INTO t (id, cat, val, name, flag) VALUES (1, 1, 100, 'a', true)",
+			"INSERT INTO t (id, cat, val, name, flag) VALUES (2, 1, 200, 'b', false)",
+			"INSERT INTO t (id, cat, val, name, flag) VALUES (3, 2, 150, 'c', true)",
+			"INSERT INTO t (id, cat, val, name, flag) VALUES (4, 2, 150, 'd', false)",
+			"INSERT INTO t (id, cat, val, name, flag) VALUES (5, 3, NULL, 'e', true)",
+			"INSERT INTO t (id, cat, val, name, flag) VALUES (6, 3, 300, NULL, false)",
+			"INSERT INTO t (id, cat, val, name, flag) VALUES (7, 1, 50, 'g', true)",
+			"INSERT INTO t (id, cat, val, name, flag) VALUES (8, 2, 250, 'h', NULL)",
+		},
+		Queries: []string{
+			"SELECT id, cat, val, name, flag FROM t ORDER BY id",
+			"SELECT COUNT(*) FROM t",
+			"SELECT COUNT(val), COUNT(name), COUNT(flag) FROM t",
+			"SELECT MIN(val), MAX(val), SUM(val) FROM t",
+			"SELECT cat, COUNT(*), SUM(val) FROM t GROUP BY cat ORDER BY cat",
+			"SELECT id FROM t WHERE cat = 2 ORDER BY id",
+			"SELECT id, val FROM t WHERE val > 150 ORDER BY id",
+			"SELECT id FROM t WHERE val IS NULL ORDER BY id",
+			"SELECT id FROM t WHERE val IS NOT NULL AND val <= 150 ORDER BY id",
+			"SELECT id FROM t WHERE cat IN (1, 3) ORDER BY id",
+			"SELECT id, val FROM t ORDER BY val, id LIMIT 4",
+			"SELECT DISTINCT cat FROM t ORDER BY cat",
+			"SELECT id FROM t WHERE flag = true ORDER BY id",
+			"SELECT id, name FROM t WHERE name IS NULL ORDER BY id",
+		},
+	}
+	// joins: two tables + a secondary index on the FK, so the planner has a real join-order /
+	// join-method choice, plus grouped aggregation over the join.
+	joins := Scenario{
+		Name: "joins",
+		Seed: 2,
+		Tables: []string{
+			"CREATE TABLE cust (cid BIGINT, region BIGINT, PRIMARY KEY (cid))",
+			"CREATE TABLE ord (oid BIGINT, cid BIGINT, amt BIGINT, PRIMARY KEY (oid))",
+			"CREATE INDEX ord_cid ON ord(cid)",
+		},
+		Data: []string{
+			"INSERT INTO cust (cid, region) VALUES (1, 10)",
+			"INSERT INTO cust (cid, region) VALUES (2, 20)",
+			"INSERT INTO cust (cid, region) VALUES (3, 10)",
+			"INSERT INTO ord (oid, cid, amt) VALUES (100, 1, 50)",
+			"INSERT INTO ord (oid, cid, amt) VALUES (101, 1, 70)",
+			"INSERT INTO ord (oid, cid, amt) VALUES (102, 2, 30)",
+			"INSERT INTO ord (oid, cid, amt) VALUES (103, 3, 90)",
+		},
+		Queries: []string{
+			"SELECT c.cid, o.oid, o.amt FROM cust c JOIN ord o ON c.cid = o.cid ORDER BY c.cid, o.oid",
+			"SELECT c.region, SUM(o.amt) FROM cust c JOIN ord o ON c.cid = o.cid GROUP BY c.region ORDER BY c.region",
+			"SELECT o.oid FROM ord o JOIN cust c ON o.cid = c.cid WHERE c.region = 10 ORDER BY o.oid",
+			"SELECT COUNT(*) FROM cust c JOIN ord o ON c.cid = o.cid",
+		},
+	}
+
+	// multikey: a composite primary key (region, id) — locks composite key encoding and
+	// prefix-range planning (WHERE region = ? [AND id > ?]).
+	multikey := Scenario{
+		Name: "multikey",
+		Seed: 3,
+		Tables: []string{
+			"CREATE TABLE t (region BIGINT, id BIGINT, v BIGINT, PRIMARY KEY (region, id))",
+		},
+		Data: []string{
+			"INSERT INTO t (region, id, v) VALUES (1, 1, 100)",
+			"INSERT INTO t (region, id, v) VALUES (1, 2, 200)",
+			"INSERT INTO t (region, id, v) VALUES (1, 3, 300)",
+			"INSERT INTO t (region, id, v) VALUES (2, 1, 400)",
+			"INSERT INTO t (region, id, v) VALUES (2, 2, 500)",
+			"INSERT INTO t (region, id, v) VALUES (3, 1, 600)",
+		},
+		Queries: []string{
+			"SELECT region, id, v FROM t ORDER BY region, id",
+			"SELECT id, v FROM t WHERE region = 1 ORDER BY id",
+			"SELECT v FROM t WHERE region = 2 AND id = 2",
+			"SELECT region, id FROM t WHERE region = 2 AND id > 1 ORDER BY id",
+			"SELECT region, COUNT(*), SUM(v) FROM t GROUP BY region ORDER BY region",
+		},
+	}
+
+	// aggidx: aggregate indexes (SUM/COUNT grouped) — the planner should answer the matching
+	// grouped aggregate straight from the index (an AggregateIndex scan), a shape the golden
+	// locks so a cost-model change that stops using the index shows up as a plan diff.
+	aggidx := Scenario{
+		Name: "aggidx",
+		Seed: 4,
+		Tables: []string{
+			"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			"CREATE INDEX sum_by_g AS SELECT SUM(v) FROM t GROUP BY g",
+			"CREATE INDEX cntv_by_g AS SELECT COUNT(v) FROM t GROUP BY g",
+			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM t GROUP BY g",
+		},
+		Data: []string{
+			"INSERT INTO t (id, g, v) VALUES (1, 1, 10)",
+			"INSERT INTO t (id, g, v) VALUES (2, 1, 20)",
+			"INSERT INTO t (id, g, v) VALUES (3, 2, 30)",
+			"INSERT INTO t (id, g, v) VALUES (4, 2, 40)",
+			"INSERT INTO t (id, g, v) VALUES (5, 3, 50)",
+			"INSERT INTO t (id, g, v) VALUES (6, 1, 60)",
+			"INSERT INTO t (id, g, v) VALUES (7, 4, NULL)", // g=4 is an ALL-NULL group: the atomic SUM_LONG
+			"INSERT INTO t (id, g, v) VALUES (8, 4, NULL)", // mutation skips NULL so SUM DROPS g=4 (Java parity),
+			// but COUNT(*) counts rows regardless of NULL v so it KEEPS [4,2]. The golden locks that contrast
+			// (SUM has no g=4 row; COUNT shows [4,2]) — the SUM side is the positive check that the agg-7
+			// retraction reasoning holds, and it completes the null-group trio: SUM drops, COUNT keeps,
+			// MIN/MAX keeps-with-NULL (setops).
+		},
+		Queries: []string{
+			"SELECT g, SUM(v) FROM t GROUP BY g ORDER BY g",
+			"SELECT g, COUNT(*) FROM t GROUP BY g ORDER BY g",
+			"SELECT SUM(v) FROM t",
+			"SELECT MIN(v), MAX(v) FROM t",
+		},
+	}
+
+	// setops captures the query shapes the RFC-199 sqlpage/metamorphic findings touched — multi-value
+	// IN (InJoin over a concat), UNION ALL (RecordQueryUnionPlan over the same concat), and grouped
+	// MIN/MAX (permuted_min/max after the #474 fix). The MIN/MAX PLAN string is invariant across the
+	// ever→permuted change (both render AggregateIndex(MAX|MIN,…) — the operator is AggMax/AggMin, not
+	// the index type), so cat=4 is an ALL-NULL group: the permuted maintainer keeps it with a NULL
+	// extremum ([4,NULL]), whereas the old ever-index dropped it entirely. That row in the golden ROWS
+	// is the real regression sentinel — revert to the ever-index and this baseline loses [4,NULL].
+	setops := Scenario{
+		Name: "setops",
+		Seed: 5,
+		Tables: []string{
+			"CREATE TABLE t (id BIGINT, cat BIGINT, v BIGINT, PRIMARY KEY (id))",
+			"CREATE INDEX cat_idx ON t (cat)",
+			"CREATE INDEX max_by_cat AS SELECT MAX(v) FROM t GROUP BY cat",
+			"CREATE INDEX min_by_cat AS SELECT MIN(v) FROM t GROUP BY cat",
+		},
+		Data: []string{
+			"INSERT INTO t (id, cat, v) VALUES (1, 1, 10)",
+			"INSERT INTO t (id, cat, v) VALUES (2, 1, 20)",
+			"INSERT INTO t (id, cat, v) VALUES (3, 2, 30)",
+			"INSERT INTO t (id, cat, v) VALUES (4, 2, 40)",
+			"INSERT INTO t (id, cat, v) VALUES (5, 3, 50)",
+			"INSERT INTO t (id, cat, v) VALUES (6, 4, NULL)", // cat=4 is an ALL-NULL group: the permuted
+			"INSERT INTO t (id, cat, v) VALUES (7, 4, NULL)", // MIN/MAX keeps it as [4,NULL]; ever dropped it
+		},
+		Queries: []string{
+			"SELECT id FROM t WHERE cat IN (1, 2) ORDER BY id",
+			"SELECT cat, MAX(v) FROM t GROUP BY cat ORDER BY cat",
+			"SELECT cat, MIN(v) FROM t GROUP BY cat ORDER BY cat",
+		},
+	}
+
+	// subquery: correlated + non-correlated scalar subqueries, EXISTS, and HAVING — the executor's
+	// FlatMap / scalar-subquery-cursor / streaming-aggregate paths, pinned so a plan or result change
+	// in any of them surfaces as a reviewable golden diff.
+	subquery := Scenario{
+		Name: "subquery",
+		Seed: 6,
+		Tables: []string{
+			"CREATE TABLE cust (cid BIGINT, region BIGINT, PRIMARY KEY (cid))",
+			"CREATE TABLE ord (oid BIGINT, cid BIGINT, amt BIGINT, PRIMARY KEY (oid))",
+			"CREATE INDEX ord_cid ON ord(cid)",
+		},
+		Data: []string{
+			"INSERT INTO cust (cid, region) VALUES (1, 10)",
+			"INSERT INTO cust (cid, region) VALUES (2, 20)",
+			"INSERT INTO cust (cid, region) VALUES (3, 10)",
+			"INSERT INTO ord (oid, cid, amt) VALUES (100, 1, 50)",
+			"INSERT INTO ord (oid, cid, amt) VALUES (101, 1, 70)",
+			"INSERT INTO ord (oid, cid, amt) VALUES (102, 2, 30)",
+			"INSERT INTO ord (oid, cid, amt) VALUES (103, 3, 90)",
+		},
+		Queries: []string{
+			"SELECT c.cid, (SELECT COUNT(*) FROM ord o WHERE o.cid = c.cid) FROM cust c ORDER BY c.cid",
+			"SELECT c.cid FROM cust c WHERE EXISTS (SELECT 1 FROM ord o WHERE o.cid = c.cid) ORDER BY c.cid",
+			"SELECT oid FROM ord WHERE amt > (SELECT MIN(amt) FROM ord) ORDER BY oid",
+			"SELECT c.region, COUNT(*) FROM cust c JOIN ord o ON c.cid = o.cid GROUP BY c.region HAVING COUNT(*) > 1 ORDER BY c.region",
+		},
+	}
+
+	// unionq: UNION ALL over a table declared with quoted lower-case column names. One leg plans as a
+	// bare scan and the other as a projection, which is the shape whose leg names the implementation
+	// rule and the union executors used to re-derive through a case fold on one path and exactly on
+	// the other (RFC-242). Every mixed shape here failed to plan before that; the baseline pins the
+	// plan (a scan leg beside a projection leg, no Map between) and the rows of each.
+	unionq := Scenario{
+		Name: "unionq",
+		Seed: 7,
+		Tables: []string{
+			`CREATE TABLE t ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))`,
+		},
+		Data: []string{
+			`INSERT INTO t ("id", "k") VALUES (1, 10)`,
+			`INSERT INTO t ("id", "k") VALUES (2, 20)`,
+			`INSERT INTO t ("id", "k") VALUES (3, 30)`,
+		},
+		Queries: []string{
+			`SELECT * FROM t UNION ALL SELECT "id", "k" FROM t`,
+			`SELECT "id", "k" FROM t UNION ALL SELECT * FROM t`,
+			`SELECT * FROM t WHERE "k" > 10 UNION ALL SELECT "id", "k" FROM t`,
+			`SELECT * FROM t UNION ALL SELECT "id", "k" FROM t WHERE "k" > 10`,
+			`SELECT * FROM t UNION ALL SELECT * FROM t`,
+			`SELECT "id" AS w, "k" AS x FROM t UNION ALL SELECT * FROM t`,
+		},
+	}
+
+	// unionjoinleg: a UNION of grouped-aggregate branches as a JOIN LEG, over the operand forms a
+	// since-deleted translator gate refused as "not normalizable" (qualified operand, constant
+	// operand, group-only). The gate's premise was the executor's position-remap; RFC-242 deleted
+	// both. Pinned so the rows stay correct without either.
+	unionjoinleg := Scenario{
+		Name: "unionjoinleg",
+		Seed: 8,
+		Tables: []string{
+			"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM ga GROUP BY g",
+			"CREATE INDEX sum_by_g AS SELECT SUM(v) FROM ga GROUP BY g",
+			"CREATE INDEX cntv_by_g AS SELECT COUNT(v) FROM ga GROUP BY g",
+			"CREATE TABLE gb (id BIGINT, h BIGINT, v BIGINT, PRIMARY KEY (id))",
+			"CREATE INDEX cnt_by_h AS SELECT COUNT(*) FROM gb GROUP BY h",
+			"CREATE INDEX sum_by_h AS SELECT SUM(v) FROM gb GROUP BY h",
+			"CREATE INDEX cntv_by_h AS SELECT COUNT(v) FROM gb GROUP BY h",
+			"CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))",
+		},
+		Data: []string{
+			"INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)",
+			"INSERT INTO gb VALUES (10, 100, 1), (20, 300, 2)",
+			"INSERT INTO c VALUES (100, 1), (200, 2), (300, 3)",
+		},
+		Queries: []string{
+			"WITH u AS (SELECT g, SUM(ga.v) AS s FROM ga GROUP BY g UNION ALL SELECT h, SUM(gb.v) AS s2 FROM gb GROUP BY h) SELECT c.w, u.s FROM u, c WHERE u.g = c.id ORDER BY c.w, u.s",
+			"WITH u AS (SELECT g, COUNT(1) AS n FROM ga GROUP BY g UNION ALL SELECT h, COUNT(1) AS m FROM gb GROUP BY h) SELECT c.w, u.n FROM u, c WHERE u.g = c.id ORDER BY c.w, u.n",
+			"WITH u AS (SELECT g FROM ga GROUP BY g UNION ALL SELECT h FROM gb GROUP BY h) SELECT c.w FROM u, c WHERE u.g = c.id ORDER BY c.w",
+			"WITH u AS (SELECT g, SUM(v) AS s FROM ga GROUP BY g UNION ALL SELECT h, SUM(v) AS s2 FROM gb GROUP BY h) SELECT c.w, u.s FROM u, c WHERE u.g = c.id ORDER BY c.w, u.s",
+		},
+	}
+
+	// cteagg: a non-recursive CTE whose body carries an EXPRESSION aggregate, read as a join leg and
+	// on its own. The CTE column-source builder used to type the aggregate from its argument's
+	// catalog column and publish UNKNOWN for an expression argument, so the join-leg read found no
+	// column order; it now publishes the body's exact row first, as the derived-table path always
+	// did (RFC-242, adjacent finding). Baseline pins plan and rows for both forms.
+	cteagg := Scenario{
+		Name: "cteagg",
+		Seed: 9,
+		Tables: []string{
+			"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			"CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))",
+		},
+		Data: []string{
+			"INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)",
+			"INSERT INTO c VALUES (100, 1), (200, 2)",
+		},
+		Queries: []string{
+			"WITH u AS (SELECT g, SUM(v * 2) AS s FROM ga GROUP BY g) SELECT c.w, u.s FROM u, c WHERE u.g = c.id ORDER BY c.w",
+			"SELECT c.w, u.s FROM (SELECT g, SUM(v * 2) AS s FROM ga GROUP BY g) u, c WHERE u.g = c.id ORDER BY c.w",
+			"WITH u AS (SELECT g, SUM(v) AS s FROM ga GROUP BY g) SELECT c.w, u.s FROM u, c WHERE u.g = c.id ORDER BY c.w",
+		},
+	}
+
+	// ctenames: the row a CTE publishes to its enclosing query is the row its body emits under
+	// its SQL names — the same row the derived-table spelling publishes. A grouping key spelled
+	// with its table qualifier is output under its bare name, and a join-bodied CTE reads
+	// exactly as its derived-table twin (RFC-242 § Fix F). Baseline pins plans and rows for both
+	// forms; the repeated-name reads that answer 42702 are pinned on real FDB
+	// (cte_published_row_names.yaml) — a golden query must plan.
+	ctenames := Scenario{
+		Name: "ctenames",
+		Seed: 10,
+		Tables: []string{
+			"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			"CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))",
+		},
+		Data: []string{
+			"INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)",
+			"INSERT INTO c VALUES (100, 1), (200, 2)",
+		},
+		Queries: []string{
+			"WITH u AS (SELECT ga.g, c.w FROM ga, c WHERE ga.g = c.id) SELECT u.g, u.w FROM u ORDER BY u.g",
+			"WITH u AS (SELECT ga.g, SUM(v) AS s FROM ga GROUP BY ga.g) SELECT u.g, u.s FROM u ORDER BY u.g",
+			"SELECT u.g, u.s FROM (SELECT ga.g, SUM(v) AS s FROM ga GROUP BY ga.g) u ORDER BY u.g",
+			"WITH u AS (SELECT ga.g, c.w, SUM(v) AS s FROM ga, c WHERE ga.g = c.id GROUP BY ga.g, c.w) SELECT u.g, u.w, u.s FROM u ORDER BY u.g",
+			// Reads bound to the CTE's quantified object over a body that repeats
+			// a bare leaf: the scope states the row the plan flows as its flowed
+			// layout, so a WHERE, an aggregate key and a sort key over the unique
+			// column answer in both spellings.
+			"WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w FROM u WHERE u.w = 1",
+			"SELECT u.w, COUNT(*) FROM (SELECT ga.g, c.id AS g, c.w FROM ga, c) u GROUP BY u.w ORDER BY u.w",
+			"WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w FROM u ORDER BY u.w",
+			"WITH u AS (SELECT g, SUM(v) AS g, COUNT(*) AS n FROM ga GROUP BY g) SELECT u.n, COUNT(*) FROM u GROUP BY u.n ORDER BY u.n",
+		},
+	}
+
+	// repnames: a repeated output name is reported as spelled, once per column, and every slot
+	// carries its own value. The result-set label followed the frozen output schema's
+	// name-addressability suffix ([A A_2]), and a derived leg's ordinal layout stated its names
+	// verbatim while the emitted row carried the suffix, so `SELECT *` over such a leg beside
+	// another table read the first G twice (RFC-242, second adjacent finding). Baseline pins
+	// labels, plans and rows, the repeated-name leg first and second, both spellings.
+	repnames := Scenario{
+		Name: "repnames",
+		Seed: 11,
+		Tables: []string{
+			"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			"CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))",
+		},
+		Data: []string{
+			"INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)",
+			"INSERT INTO c VALUES (100, 1), (200, 2)",
+		},
+		Queries: []string{
+			"SELECT g AS a, g AS a FROM ga ORDER BY id",
+			"SELECT id, g AS id FROM ga ORDER BY v",
+			"SELECT * FROM (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u",
+			"SELECT * FROM (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u, c WHERE c.id = 100",
+			"WITH u AS (SELECT g, SUM(v) AS g FROM ga GROUP BY g) SELECT * FROM u, c WHERE c.id = 100",
+			"SELECT * FROM c, (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u WHERE c.id = 100",
+			"SELECT * FROM (SELECT g, v AS g FROM ga) u, c WHERE c.id = 100",
+			"SELECT * FROM (SELECT g, SUM(v) AS s FROM ga GROUP BY g) u, c WHERE c.id = 100",
+		},
+	}
+
+	return []Scenario{orders, joins, multikey, aggidx, setops, subquery, unionq, unionjoinleg, cteagg, ctenames, repnames}
+}
+
+// TestGolden captures each scenario over SimFDB and diffs it against the committed baseline in
+// testdata/. A mismatch fails with a reviewable diff. `just golden-update` regenerates the baselines
+// (review the diff before committing). The capture is asserted deterministic first — a golden is
+// only meaningful if the same scenario yields identical bytes every run.
+//
+// RFC-249 REFRESH (a conjunction binds one range per column). One PLAN line
+// in orders moved and zero ROWS lines: `val IS NOT NULL AND val <= 150 ORDER BY
+// id` was `InMemorySort(Fetch(PredicatesFilter(IndexScan(IDX_VAL, [<>] COVERING),
+// [1 preds])))` — one bound in the scan, the other a residual re-checked over the
+// covering entry, then a fetch — and is now `InMemorySort(IndexScan(IDX_VAL,
+// [<>]))` with BOTH comparisons in the one scan range and no residual. The
+// bare IndexScan is record-resolving (class B above), so no partial record
+// escapes; the row block is byte-identical including order.
+//
+// WHY THESE BASELINES MOVED (RFC-232, exact physical row owners). The reviewed
+// refresh changes 34 PLAN lines across all six scenarios and zero ROWS, column
+// metadata, or datum lines. Three explain changes expose information the
+// physical Values now genuinely carry:
+//
+//   - projection and aggregate-output fields show their exact tagged current
+//     carrier (`_current.ID#0`, `_current.SUM(V)#1`);
+//   - join projections show ordinals in the materialized joined row, not an
+//     ambiguous per-leg ordinal (`OID#2` rather than the old `O.OID#0`);
+//   - enforced sort and streaming-aggregate keys retain their resolved source
+//     or current root (`T.ID#0`, `C.REGION#1`, `_current.REGION#1`).
+//
+// The correlated EXISTS stanza also gains an InMemorySort for its explicit
+// `ORDER BY C.CID`: the selected FlatMap has no proved matching provided
+// ordering across the exact physical boundary, so retaining the enforcement is
+// the fail-closed plan. The row block proves the requested order is unchanged.
+//
+// The audit initially found identical nested Project(Project(...)) shapes over
+// aggregate-index results. Those were NOT accepted into the baseline. Both
+// projection implementation lanes now reuse an already-published physical
+// projection only after proving exact positional identity, canonical result
+// type, output names, aliases, and alias provenance. Reordered, narrowed,
+// renamed, foreign-root, and scalar-QOV controls all retain their wrapper.
+//
+// HISTORICAL RFC-220 REFRESH (coveringness as a plan type). Six stanzas changed
+// across setops/joins/orders; aggidx/multikey/subquery were untouched then.
+//
+// The decisive check is that EVERY changed line is a `PLAN:` line: zero ROWS
+// lines differ, in count, in value, or in ORDER. These goldens capture results
+// as well as plans, so a semantics change would have shown up as a row diff and
+// did not. That is a stronger statement than plan_shape.golden can make, and it
+// is the reason this file moved without a per-row argument.
+//
+// The plan movements were classified by the same tool and the same wrong-rows
+// checks used on plan_shape.golden, over these files adapted into its stanza
+// format, rather than by eye:
+//
+//	1 A  — an index scan gains COVERING with its enclosing Fetch intact.
+//	3 B  — a Fetch wrapper removed from above a NON-covering scan. Safe because
+//	       a bare IndexScan is itself record-resolving (executor.go
+//	       executeIndexScan), so no partial record escapes.
+//	0 A! / 0 B! — no stanza gains COVERING without an enclosing Fetch, and no
+//	       Fetch is removed from above a COVERING scan. Those are the two
+//	       wrong-rows shapes, and neither occurs.
+//	2 D  — residual, given individual verdicts below.
+//
+// The two residuals are setops#0 and orders#9, the same shape both times:
+//
+//	InMemorySort([ID ASC], Fetch(InJoin(IndexScan(<cat index>, [=]), binding ASC)))
+//	  ->  InUnion(IndexScan(<cat index>, [=]), bindings=1, ASC)
+//
+// Both indexes are single-column on `cat`, so their entries are (cat, id) with
+// the primary key as suffix: under a `cat` EQUALITY each leg is already id
+// ordered, and merging the legs on one binding ascending yields global id order.
+// The ORDER BY is therefore satisfied by the merge and the whole-result
+// in-memory sort is eliminated — a strict improvement. The Fetch drop is the
+// class-B argument above; the projection is `id`, which the entry carries.
+//
+// That ordering claim is not merely argued: the ROWS blocks for both stanzas are
+// byte-identical to the previous baseline INCLUDING their order ([1][2][3][4]
+// and [1][2][5][6][7]), so the merge demonstrably produced ascending id without
+// the sort.
+//
+// RFC-257 WS-F 4.3 item 2 moved both stanzas back to the sorted InJoin, rows
+// unchanged: a relational table's entry is (cat, record type, id), and Java
+// builds no in-union ordered by an id it reaches only past that record-type
+// coordinate.
+func TestGolden(t *testing.T) {
+	t.Parallel()
+	update := os.Getenv("GOLDEN_UPDATE") != ""
+	dir, err := goldenDir(update, os.Getenv("BUILD_WORKSPACE_DIRECTORY"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range corpus() {
+		s := s
+		t.Run(s.Name, func(t *testing.T) {
+			t.Parallel()
+			got, err := Capture(s)
+			if err != nil {
+				t.Fatalf("capture: %v", err)
+			}
+			// Determinism: the baseline is meaningless if capture varies run-to-run.
+			if again, err := Capture(s); err != nil {
+				t.Fatalf("recapture: %v", err)
+			} else if again != got {
+				t.Fatalf("NONDETERMINISTIC capture for %q:\n%s", s.Name, firstDiff(got, again))
+			}
+
+			path := filepath.Join(dir, s.Name+".golden")
+			if update {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				t.Logf("updated %s (%d bytes)", path, len(got))
+				return
+			}
+			want, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read golden %s (run `just golden-update` to create): %v", path, err)
+			}
+			if got != string(want) {
+				t.Fatalf("GOLDEN MISMATCH for %q — behavior changed (result and/or plan). "+
+					"If intended, run `just golden-update` and review the diff:\n%s", s.Name, firstDiff(string(want), got))
+			}
+		})
+	}
+}
+
+// goldenPkg is this package's directory relative to the workspace root.
+const goldenPkg = "internal/simfdb/hunt/golden"
+
+// goldenDir is where baselines are read, or written under GOLDEN_UPDATE. An update
+// writes into the source tree, which only `bazel run` names (BUILD_WORKSPACE_DIRECTORY);
+// `bazel test` runs in a sandbox whose writes are discarded.
+func goldenDir(update bool, workspace string) (string, error) {
+	switch {
+	case !update:
+		return "testdata", nil
+	case workspace == "":
+		return "", errors.New("GOLDEN_UPDATE writes the source tree: run it through `just golden-update` " +
+			"(bazel run), which sets BUILD_WORKSPACE_DIRECTORY")
+	default:
+		return filepath.Join(workspace, filepath.FromSlash(goldenPkg), "testdata"), nil
+	}
+}
+
+func TestGoldenDir(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		update    bool
+		workspace string
+		want      string
+		wantErr   bool
+	}{
+		{update: false, workspace: "", want: "testdata"},
+		{update: false, workspace: "/ws", want: "testdata"},
+		{update: true, workspace: "/ws", want: "/ws/internal/simfdb/hunt/golden/testdata"},
+		{update: true, workspace: "", wantErr: true},
+	} {
+		got, err := goldenDir(tc.update, tc.workspace)
+		if got != tc.want || (err != nil) != tc.wantErr {
+			t.Errorf("goldenDir(%t, %q) = (%q, %v), want (%q, error %t)", tc.update, tc.workspace, got, err, tc.want, tc.wantErr)
+		}
+	}
+}
+
+// firstDiff renders an LCS line diff (baseline "-" vs current "+"), so an inserted/removed line
+// doesn't smear every following line into a spurious mismatch (a positional diff's flaw). The
+// authoritative review artifact is still `git diff testdata/*.golden` after `just golden-update`; this
+// is the in-test convenience. Golden files are small, so the O(n·m) table is fine.
+func firstDiff(want, got string) string {
+	a := strings.Split(want, "\n")
+	bb := strings.Split(got, "\n")
+	la, lb := len(a), len(bb)
+	lcs := make([][]int, la+1)
+	for i := range lcs {
+		lcs[i] = make([]int, lb+1)
+	}
+	for i := la - 1; i >= 0; i-- {
+		for j := lb - 1; j >= 0; j-- {
+			if a[i] == bb[j] {
+				lcs[i][j] = lcs[i+1][j+1] + 1
+			} else if lcs[i+1][j] >= lcs[i][j+1] {
+				lcs[i][j] = lcs[i+1][j]
+			} else {
+				lcs[i][j] = lcs[i][j+1]
+			}
+		}
+	}
+	var b strings.Builder
+	const capLines = 60
+	i, j, shown := 0, 0, 0
+	for i < la && j < lb && shown < capLines {
+		switch {
+		case a[i] == bb[j]:
+			i, j = i+1, j+1
+		case lcs[i+1][j] >= lcs[i][j+1]:
+			fmt.Fprintf(&b, "  - %s\n", a[i])
+			i, shown = i+1, shown+1
+		default:
+			fmt.Fprintf(&b, "  + %s\n", bb[j])
+			j, shown = j+1, shown+1
+		}
+	}
+	for ; i < la && shown < capLines; i, shown = i+1, shown+1 {
+		fmt.Fprintf(&b, "  - %s\n", a[i])
+	}
+	for ; j < lb && shown < capLines; j, shown = j+1, shown+1 {
+		fmt.Fprintf(&b, "  + %s\n", bb[j])
+	}
+	if shown == 0 {
+		return "  (no line-level difference found)"
+	}
+	return b.String()
+}
+
+// TestCaptureRefusesToBakeAnErrorIntoABaseline pins that a scenario whose query does not run is
+// a capture FAILURE, not baseline content.
+//
+// Capture used to write "PLAN-ERR: ..." / "ROWS-ERR: ..." into the text and return it as a
+// successful capture. GOLDEN_UPDATE=1 then recorded the error message as the baseline, and the
+// entry passed forever by reproducing its own breakage — a characterization harness certifying
+// that a query still fails the same way, green on every CI summary.
+//
+// Both surfaces are checked separately: EXPLAIN can fail where the query itself would not (an
+// unplannable shape), and a query can fail after EXPLAIN succeeded (an executor error). A guard
+// on only one of them still lets the other bake in.
+//
+// So each case declares the surface it is supposed to exercise, and the test ASSERTS it. Without
+// that, "both surfaces are checked" is a claim about inputs nobody re-checks: this table once held
+// three cases described as covering both, and all three failed at EXPLAIN — 42703 (unknown
+// column), 42F01 (unknown table) and 42804 (incompatible comparison operands, which the planner
+// rejects rather than the executor). The rows guard had ZERO cases and deleting it would not have
+// turned anything red. The surface assertion is what makes a case silently migrating across the
+// boundary — a semantic check moving into the planner, say — show up as a red test instead of as
+// lost coverage.
+func TestCaptureRefusesToBakeAnErrorIntoABaseline(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		query   string
+		surface CaptureSurface
+	}{
+		// ---- plan surface: rejected before anything executes.
+		// A column that does not exist.
+		{"unknown column", "SELECT nosuchcolumn FROM t", SurfacePlan},
+		// A table that does not exist.
+		{"unknown table", "SELECT * FROM nosuchtable", SurfacePlan},
+		// Comparing a BIGINT column against a string literal: the planner rejects the operand
+		// types, so this never reaches the executor.
+		{"bad literal", "SELECT id FROM t WHERE id = 'not-a-number'", SurfacePlan},
+
+		// ---- rows surface: plans fine, fails while producing rows.
+		// Division by zero on the first row. Written against a COLUMN (id - 1 with id = 1) rather
+		// than the constant `id / 0`, so constant folding cannot move the failure into the planner
+		// and quietly return this case to the plan surface.
+		{"divide by zero", "SELECT id / (id - 1) FROM t", SurfaceRows},
+		// A cast that is well-typed but fails on the actual data.
+		{"failing cast", "SELECT CAST(name AS BIGINT) FROM t", SurfaceRows},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out, err := Capture(Scenario{
+				Name:   "err-" + tc.name,
+				Seed:   99,
+				Tables: []string{"CREATE TABLE t (id BIGINT, name STRING, PRIMARY KEY (id))"},
+				Data:   []string{"INSERT INTO t (id, name) VALUES (1, 'x')"},
+				// A good query first, so the failure is not the very first thing captured and
+				// the guard cannot pass by accident of ordering.
+				Queries: []string{"SELECT id FROM t ORDER BY id", tc.query},
+			})
+			if err == nil {
+				t.Fatalf("Capture returned no error for a failing query; a baseline recorded "+
+					"from this would pass forever by reproducing the breakage. Captured:\n%s", out)
+			}
+			if out != "" {
+				t.Fatalf("Capture returned text alongside its error; GOLDEN_UPDATE=1 must have "+
+					"nothing to write. Got:\n%s", out)
+			}
+			var ce *CaptureError
+			if !errors.As(err, &ce) {
+				t.Fatalf("Capture error is not a *CaptureError, so no test can tell which guard "+
+					"produced it: %v", err)
+			}
+			if ce.Surface != tc.surface {
+				t.Fatalf("failed on the %s surface, want %s. This case no longer exercises the "+
+					"guard it was added for; the %s guard may now have no case at all. Error: %v",
+					ce.Surface, tc.surface, tc.surface, err)
+			}
+			for _, marker := range []string{"PLAN-ERR", "ROWS-ERR"} {
+				if strings.Contains(err.Error(), marker) {
+					t.Fatalf("the error still carries the %s baseline marker: %v", marker, err)
+				}
+			}
+		})
+	}
+}

@@ -101,7 +101,7 @@ jobs:
           docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable: every FDB test suite would fail"; exit 1; }
 
       # `--define gotags=fdbdocker` turns the SimFDB differential's missing-container
-      # skip into a FAILURE (pkg/simfdb/differential_docker_required.go). The Docker
+      # skip into a FAILURE (internal/simfdb/differential_docker_required.go). The Docker
       # preflight above proves the daemon answers when the job starts; the tag makes
       # the differential's build itself demand a container, independent of the CI
       # variable foundationdb.SkipWithoutDocker reads (.bazelrc forwards it under

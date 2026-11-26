@@ -1,0 +1,32 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+package(default_visibility = ["//internal/simfdb:__subpackages__"])
+
+go_library(
+    name = "metamorphic",
+    srcs = [
+        "corpus.go",
+        "metamorphic.go",
+    ],
+    importpath = "fdb.dev/internal/simfdb/hunt/metamorphic",
+    visibility = ["//cmd/dst-generate:__pkg__"],
+    deps = [
+        "//internal/dst",
+        "//internal/dstwire",
+        "//internal/relational/relapi",
+        "//internal/simfdb",
+        "//pkg/recordlayer",
+        "//pkg/relational/sqldriver",
+    ],
+)
+
+go_test(
+    name = "metamorphic_test",
+    srcs = [
+        "domain_registration_test.go",
+        "metamorphic_test.go",
+    ],
+    data = glob(["testdata/**"]),
+    embed = [":metamorphic"],
+    deps = ["//internal/relational/keyspace"],
+)

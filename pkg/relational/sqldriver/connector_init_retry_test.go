@@ -12,8 +12,8 @@ import (
 	"fdb.dev/internal/dstwire"
 	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/internal/relational/simgate"
+	"fdb.dev/internal/simfdb"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/simfdb"
 )
 
 func simBackend(seed uint64) (*recordlayer.FDBDatabase, *simgate.Backend) {

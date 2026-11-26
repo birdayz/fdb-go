@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"fdb.dev/pkg/testutil/allocs"
+	"fdb.dev/internal/testutil/allocs"
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"

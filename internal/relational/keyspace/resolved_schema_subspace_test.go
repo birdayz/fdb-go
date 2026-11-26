@@ -8,9 +8,9 @@ import (
 	"fdb.dev/internal/dst"
 	"fdb.dev/internal/dstwire"
 	"fdb.dev/internal/relational/keyspace"
+	"fdb.dev/internal/simfdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/simfdb"
 )
 
 // TestResolvedSchemaSubspace is the no-I/O lookup the SQL layer's store

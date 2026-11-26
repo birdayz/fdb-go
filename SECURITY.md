@@ -46,7 +46,7 @@ Older minors are best-effort until `v1`. Security fixes land on the latest suppo
 `MODULE.bazel`; report any known-vulnerable dependency you spot.
 
 The scan excludes non-shipped test, simulation, conformance, and
-tooling/linter entrypoints: `pkg/testcontainers`, `pkg/testutil/benchcluster`,
+tooling/linter entrypoints: `pkg/testcontainers`,
 `pkg/relational/sqltest`, `internal/linters`, `internal/simfdb`,
 `internal/testutil`, `internal/testinstruments`, `internal/dst`,
 `internal/relational/sqltest`, `internal/relational/conformance`,

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/internal/testutil/benchcluster"
 	"fdb.dev/pkg/relational/sqldriver"
-	"fdb.dev/pkg/testutil/benchcluster"
 )
 
 // TestFDB_BenchmarkDatabasePathIsValid creates and drops an /FRL database

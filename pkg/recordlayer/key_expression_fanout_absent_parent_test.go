@@ -13,10 +13,10 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/internal/dst"
+	"fdb.dev/internal/simfdb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/simfdb"
 )
 
 // absentParentFanOutFile is Rec{id, p: P{a, tags, n}, tags, ps: repeated P}: a

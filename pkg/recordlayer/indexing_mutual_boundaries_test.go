@@ -10,10 +10,10 @@ import (
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/internal/dst"
+	"fdb.dev/internal/simfdb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/simfdb"
 	"google.golang.org/protobuf/proto"
 )
 

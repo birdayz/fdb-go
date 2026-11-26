@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"fdb.dev/pkg/internal/querycensus"
+	"fdb.dev/internal/testinstruments/querycensus"
 )
 
 // assertDottedWitnessAttributionCensus gates the dotted-witness attribution

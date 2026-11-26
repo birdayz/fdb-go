@@ -155,7 +155,6 @@ var (
 		"github.com/onsi/gomega",
 		"github.com/stretchr/testify",
 		"go.uber.org/mock",
-		"fdb.dev/pkg/simfdb",
 		"fdb.dev/internal/simfdb",
 		"fdb.dev/internal/linters",
 		"fdb.dev/pkg/dst",

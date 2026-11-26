@@ -74,13 +74,13 @@ import (
 	relkeyspace "fdb.dev/internal/relational/keyspace"
 	"fdb.dev/internal/relational/metadata"
 	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/simfdb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/simfdb"
 )
 
 // pageRetryRows is the seeded row count, several times pageRetryScanLimit: with

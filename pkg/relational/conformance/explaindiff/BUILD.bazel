@@ -50,7 +50,7 @@ go_test(
     deps = [
         "//internal/relational/keyspace",
         "//internal/relational/relapi",
-        "//pkg/internal/querycensus",
+        "//internal/testinstruments/querycensus",
         "//pkg/recordlayer/query/plan/cascades",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/conformance/yamsql",
