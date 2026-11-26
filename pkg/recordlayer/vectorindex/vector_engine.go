@@ -13,10 +13,13 @@ import (
 type VectorEngineKind int
 
 const (
+	// VectorEngineHNSW selects the HNSW vector index engine.
 	VectorEngineHNSW VectorEngineKind = iota
+	// VectorEngineGuardiann selects the GuardiANN (IVF-based) vector index engine.
 	VectorEngineGuardiann
 )
 
+// String returns the canonical option name of the vector engine kind.
 func (k VectorEngineKind) String() string {
 	if k == VectorEngineGuardiann {
 		return "GUARDIANN"

@@ -38,7 +38,10 @@ type VectorIndexClusterTooLargeError struct {
 	Cause   error
 }
 
+// Error returns the error message.
 func (e *VectorIndexClusterTooLargeError) Error() string { return e.Message }
+
+// Unwrap returns the underlying cause, if any.
 func (e *VectorIndexClusterTooLargeError) Unwrap() error { return e.Cause }
 
 // NegativeTaskCountError is VectorIndexTaskCounts.NegativeTaskCountException.
@@ -47,12 +50,15 @@ type NegativeTaskCountError struct {
 	Count  int64
 }
 
+// JavaRecordCoreException marks VectorIndexClusterTooLargeError as a Java RecordCoreException.
 func (*VectorIndexClusterTooLargeError) JavaRecordCoreException() {}
 
+// Error returns the formatted negative task count error message.
 func (e *NegativeTaskCountError) Error() string {
 	return fmt.Sprintf("vector index deferred-task count is negative: %d for %v", e.Count, e.Prefix)
 }
 
+// JavaRecordCoreException marks NegativeTaskCountError as a Java RecordCoreException.
 func (*NegativeTaskCountError) JavaRecordCoreException() {}
 
 // vectorTaskCounts is VectorIndexTaskCounts: per-partition counts of queued
@@ -232,6 +238,7 @@ type VectorCapabilityError struct {
 	Reason    string
 }
 
+// Error returns the formatted capability error message.
 func (e *VectorCapabilityError) Error() string {
 	return fmt.Sprintf("vector index %q (%s): %s refused: %s = %d %s",
 		e.IndexName, e.Engine, e.Operation, e.Option, e.Value, e.Reason)

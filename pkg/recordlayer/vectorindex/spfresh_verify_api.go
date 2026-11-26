@@ -93,6 +93,7 @@ type SPFreshIntegrityViolation struct {
 	Kind string
 }
 
+// String formats the integrity violation for human-readable diagnostics.
 func (v SPFreshIntegrityViolation) String() string {
 	return fmt.Sprintf("%s pk=%v fine=%d", v.Kind, v.PrimaryKey, v.FineID)
 }
@@ -155,8 +156,6 @@ func spfreshStateName(st byte) string {
 // Violations beyond a small cap are counted but not individually recorded
 // (BadTargets / MembershipWithoutEntry stay exact; Violations is truncated).
 func SPFreshCheckIntegrity(rtx *recordlayer.FDBRecordContext, store *recordlayer.FDBRecordStore, indexName string, sample int) (SPFreshIntegrityReport, error) {
-	const maxRecordedViolations = 64
-
 	report := SPFreshIntegrityReport{TargetStates: map[string]int{}}
 	idx := store.GetMetaData().GetIndex(indexName)
 	if idx == nil {
@@ -181,19 +180,44 @@ func SPFreshCheckIntegrity(rtx *recordlayer.FDBRecordContext, store *recordlayer
 	}
 	s := newSPFreshStorage(store.IndexSubspace(idx), gen)
 
+	fineState, err := spfreshCheckFineStatesAndPostings(tx, s, config.Lmax, &report)
+	if err != nil {
+		return report, err
+	}
+
+	pks, err := spfreshScanMembershipPKs(tx, s)
+	if err != nil {
+		return report, err
+	}
+	report.Members = len(pks)
+
+	if err := spfreshCheckSampledMemberships(tx, s, pks, sample, fineState, &report); err != nil {
+		return report, err
+	}
+	return report, nil
+}
+
+func spfreshRecordIntegrityViolation(report *SPFreshIntegrityReport, v SPFreshIntegrityViolation) {
+	const maxRecordedViolations = 64
+	if len(report.Violations) < maxRecordedViolations {
+		report.Violations = append(report.Violations, v)
+	}
+}
+
+func spfreshCheckFineStatesAndPostings(tx fdb.ReadTransaction, s *spfreshStorage, lmax int, report *SPFreshIntegrityReport) (map[int64]byte, error) {
 	// Map every fineID to its centroid lifecycle state. A target absent from
 	// this map points at a centroid in no cell (orphaned membership). For
 	// ACTIVE fines, also tally posting size against the LIRE bounds.
 	ids, _, lerr := spfreshLoadAllCoarse(tx, s)
 	if lerr != nil {
-		return report, fmt.Errorf("spfresh integrity: load coarse: %w", lerr)
+		return nil, fmt.Errorf("spfresh integrity: load coarse: %w", lerr)
 	}
-	hardCap := 4*config.Lmax + 2 // read just past the envelope so >4Lmax is detectable
+	hardCap := 4*lmax + 2 // read just past the envelope so >4Lmax is detectable
 	fineState := map[int64]byte{}
 	for _, cellID := range ids {
 		rows, _, _, cerr := spfreshLoadCell(tx, s, cellID)
 		if cerr != nil {
-			return report, fmt.Errorf("spfresh integrity: load cell %d: %w", cellID, cerr)
+			return nil, fmt.Errorf("spfresh integrity: load cell %d: %w", cellID, cerr)
 		}
 		for _, r := range rows {
 			fineState[r.fineID] = r.row.state
@@ -203,32 +227,33 @@ func SPFreshCheckIntegrity(rtx *recordlayer.FDBRecordContext, store *recordlayer
 			report.ActiveFines++
 			entries, _, _, _, perr := spfreshLoadPostingSnapshot(tx, s, r.fineID, hardCap)
 			if perr != nil {
-				return report, fmt.Errorf("spfresh integrity: load posting (fine=%d): %w", r.fineID, perr)
+				return nil, fmt.Errorf("spfresh integrity: load posting (fine=%d): %w", r.fineID, perr)
 			}
 			n := len(entries)
 			if n > report.MaxPostingLen {
 				report.MaxPostingLen = n
 			}
-			if n > config.Lmax {
+			if n > lmax {
 				report.Oversized++
 			}
-			if n > 4*config.Lmax {
+			if n > 4*lmax {
 				report.OversizedHard++
-				if len(report.Violations) < maxRecordedViolations {
-					report.Violations = append(report.Violations, SPFreshIntegrityViolation{FineID: r.fineID, Kind: "posting_over_4lmax"})
-				}
+				spfreshRecordIntegrityViolation(report, SPFreshIntegrityViolation{FineID: r.fineID, Kind: "posting_over_4lmax"})
 			}
 		}
 	}
+	return fineState, nil
+}
 
+func spfreshScanMembershipPKs(tx fdb.ReadTransaction, s *spfreshStorage) ([]tuple.Tuple, error) {
 	// Collect membership pks (keys only), then sample evenly by stride.
 	r, rerr := fdb.PrefixRange(s.membership.Bytes())
 	if rerr != nil {
-		return report, fmt.Errorf("spfresh integrity: membership range: %w", rerr)
+		return nil, fmt.Errorf("spfresh integrity: membership range: %w", rerr)
 	}
 	kvs, gerr := tx.Snapshot().GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
 	if gerr != nil {
-		return report, fmt.Errorf("spfresh integrity: membership scan: %w", gerr)
+		return nil, fmt.Errorf("spfresh integrity: membership scan: %w", gerr)
 	}
 	var pks []tuple.Tuple
 	for _, kv := range kvs {
@@ -236,7 +261,10 @@ func SPFreshCheckIntegrity(rtx *recordlayer.FDBRecordContext, store *recordlayer
 			pks = append(pks, pk)
 		}
 	}
-	report.Members = len(pks)
+	return pks, nil
+}
+
+func spfreshCheckSampledMemberships(tx fdb.WritableTransaction, s *spfreshStorage, pks []tuple.Tuple, sample int, fineState map[int64]byte, report *SPFreshIntegrityReport) error {
 	if sample <= 0 {
 		sample = 1
 	}
@@ -247,12 +275,6 @@ func SPFreshCheckIntegrity(rtx *recordlayer.FDBRecordContext, store *recordlayer
 	step := (len(pks) + sample - 1) / sample
 	if step < 1 {
 		step = 1
-	}
-
-	record := func(v SPFreshIntegrityViolation) {
-		if len(report.Violations) < maxRecordedViolations {
-			report.Violations = append(report.Violations, v)
-		}
 	}
 
 	for i := 0; i < len(pks); i += step {
@@ -267,41 +289,48 @@ func SPFreshCheckIntegrity(rtx *recordlayer.FDBRecordContext, store *recordlayer
 			// A real read failure (e.g. transaction_too_old on a large scan)
 			// must surface, not be silently dropped from the sample — otherwise
 			// the report is computed over an incomplete set and reads as clean.
-			return report, fmt.Errorf("spfresh integrity: read membership (pk %v): %w", pk, merr)
+			return fmt.Errorf("spfresh integrity: read membership (pk %v): %w", pk, merr)
 		}
 		report.Sampled++
-		allPresent := true
-		for _, fineID := range mem {
-			data, perr := tx.Snapshot().Get(s.postingKey(fineID, pk)).Get()
-			if perr != nil {
-				return report, fmt.Errorf("spfresh integrity: read posting (fine=%d): %w", fineID, perr)
-			}
-			if data == nil {
-				allPresent = false
-				record(SPFreshIntegrityViolation{PrimaryKey: pk, FineID: fineID, Kind: "missing_posting"})
-			}
-			st, known := fineState[fineID]
-			if !known {
-				report.TargetStates["absent"]++
-				report.BadTargets++
-				record(SPFreshIntegrityViolation{PrimaryKey: pk, FineID: fineID, Kind: "absent_target"})
-				continue
-			}
-			report.TargetStates[spfreshStateName(st)]++
-			switch st {
-			case spfreshStateForward:
-				report.BadTargets++
-				record(SPFreshIntegrityViolation{PrimaryKey: pk, FineID: fineID, Kind: "forward_target"})
-			case spfreshStateDead:
-				report.BadTargets++
-				record(SPFreshIntegrityViolation{PrimaryKey: pk, FineID: fineID, Kind: "dead_target"})
-			}
-		}
-		if allPresent {
-			report.OK++
-		} else {
-			report.MembershipWithoutEntry++
+		if err := spfreshCheckMembershipTargets(tx, s, pk, mem, fineState, report); err != nil {
+			return err
 		}
 	}
-	return report, nil
+	return nil
+}
+
+func spfreshCheckMembershipTargets(tx fdb.ReadTransaction, s *spfreshStorage, pk tuple.Tuple, mem []int64, fineState map[int64]byte, report *SPFreshIntegrityReport) error {
+	allPresent := true
+	for _, fineID := range mem {
+		data, perr := tx.Snapshot().Get(s.postingKey(fineID, pk)).Get()
+		if perr != nil {
+			return fmt.Errorf("spfresh integrity: read posting (fine=%d): %w", fineID, perr)
+		}
+		if data == nil {
+			allPresent = false
+			spfreshRecordIntegrityViolation(report, SPFreshIntegrityViolation{PrimaryKey: pk, FineID: fineID, Kind: "missing_posting"})
+		}
+		st, known := fineState[fineID]
+		if !known {
+			report.TargetStates["absent"]++
+			report.BadTargets++
+			spfreshRecordIntegrityViolation(report, SPFreshIntegrityViolation{PrimaryKey: pk, FineID: fineID, Kind: "absent_target"})
+			continue
+		}
+		report.TargetStates[spfreshStateName(st)]++
+		switch st {
+		case spfreshStateForward:
+			report.BadTargets++
+			spfreshRecordIntegrityViolation(report, SPFreshIntegrityViolation{PrimaryKey: pk, FineID: fineID, Kind: "forward_target"})
+		case spfreshStateDead:
+			report.BadTargets++
+			spfreshRecordIntegrityViolation(report, SPFreshIntegrityViolation{PrimaryKey: pk, FineID: fineID, Kind: "dead_target"})
+		}
+	}
+	if allPresent {
+		report.OK++
+	} else {
+		report.MembershipWithoutEntry++
+	}
+	return nil
 }
