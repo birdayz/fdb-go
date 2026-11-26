@@ -323,7 +323,7 @@ var _ = Describe("HNSW Graph Direct", func() {
 			Metric:         VectorMetricEuclidean,
 		}
 		storage := newHNSWStorage(ss, config)
-		return NewHNSWGraph(storage, config)
+		return newHNSWGraph(storage, config)
 	}
 
 	// Java's no-op quantizer stores a vector at its own precision, so a HALF
@@ -382,7 +382,7 @@ var _ = Describe("HNSW Graph Direct", func() {
 		// (>> MMax0 reachable); the LAST node's layer-0 degree (no later reverse edges) must
 		// be M=4, not MMax0=8 (the pre-fix Go value). Revert-proof: restore maxConn → 8.
 		config := HNSWConfig{NumDimensions: 4, M: 4, MMax: 4, MMax0: 8, EfConstruction: 100, Metric: VectorMetricEuclideanSquare}
-		graph := NewHNSWGraph(newHNSWStorage(specSubspace().Sub("hnsw-newnode-degree"), config), config)
+		graph := newHNSWGraph(newHNSWStorage(specSubspace().Sub("hnsw-newnode-degree"), config), config)
 		rng := rand.New(rand.NewSource(7))
 		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
@@ -610,7 +610,7 @@ var _ = Describe("HNSW Graph Direct", func() {
 			Metric:         VectorMetricEuclidean,
 		}
 		storage := newHNSWStorage(ss, config)
-		graph := NewHNSWGraph(storage, config)
+		graph := newHNSWGraph(storage, config)
 
 		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
@@ -731,7 +731,7 @@ var _ = Describe("HNSW Graph Direct", func() {
 		// that omits EfRepair used to carry 0 into the delete-repair sample rate
 		// (efRepair - |primary|)/numCandidates, going negative the moment any primary
 		// neighbor exists — every secondary repair candidate was silently dropped and
-		// deletes under-repaired the graph. NewHNSWGraph must normalize 0 → 64.
+		// deletes under-repaired the graph. newHNSWGraph must normalize 0 → 64.
 		//
 		// Topology: D→[P1,P2], P1→[D,S1], P2→[D,S2]. The repair candidate set must be
 		// {P1,P2,S1,S2} (primaries + sampled secondaries). With the bug it was {P1,P2}.
@@ -746,8 +746,8 @@ var _ = Describe("HNSW Graph Direct", func() {
 			// EfRepair deliberately omitted (zero value) — the case under test.
 		}
 		storage := newHNSWStorage(ss, config)
-		graph := NewHNSWGraph(storage, config)
-		Expect(graph.config.EfRepair).To(Equal(64), "NewHNSWGraph must normalize EfRepair=0 to Java's default 64")
+		graph := newHNSWGraph(storage, config)
+		Expect(graph.config.EfRepair).To(Equal(64), "newHNSWGraph must normalize EfRepair=0 to Java's default 64")
 
 		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
@@ -1041,7 +1041,7 @@ var _ = Describe("HNSW Inlining Storage", func() {
 			UseInlining:    true,
 		}
 		storage := newHNSWStorage(ss, config)
-		return NewHNSWGraph(storage, config)
+		return newHNSWGraph(storage, config)
 	}
 
 	It("insert single node, search returns it (inlining)", func() {
@@ -1123,7 +1123,7 @@ var _ = Describe("HNSW Inlining Storage", func() {
 		// Fresh graph on the SAME subspace → cold cache → reads from committed FDB, exercising
 		// the (sentinel-less) lonely-entry descent end to end.
 		config := graph.config
-		coldGraph := NewHNSWGraph(newHNSWStorage(specSubspace().Sub("hnsw-inlining"), config), config)
+		coldGraph := newHNSWGraph(newHNSWStorage(specSubspace().Sub("hnsw-inlining"), config), config)
 		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			results, serr := coldGraph.Search(rtx.Transaction(), []float64{7.0, 14.0}, 1, 100)
 			Expect(serr).NotTo(HaveOccurred())
@@ -1168,7 +1168,7 @@ var _ = Describe("HNSW Inlining Storage", func() {
 
 		// Tx 1: first node becomes the entry point, lonely (no neighbors → no KVs) at
 		// every inlining layer it occupies.
-		warmGraph := NewHNSWGraph(newHNSWStorage(ss, config), config)
+		warmGraph := newHNSWGraph(newHNSWStorage(ss, config), config)
 		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			return nil, warmGraph.Insert(rtx.Transaction(), pks[0], []float64{1, 1})
 		})
@@ -1176,7 +1176,7 @@ var _ = Describe("HNSW Inlining Storage", func() {
 
 		// Tx 2, COLD cache (fresh storage): the second insert reaches the lonely layer,
 		// selects the entry as its neighbor, and must add the reverse edge — not fail.
-		coldGraph := NewHNSWGraph(newHNSWStorage(ss, config), config)
+		coldGraph := newHNSWGraph(newHNSWStorage(ss, config), config)
 		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
 			Expect(coldGraph.Insert(tx, pks[1], []float64{2, 2})).To(Succeed(),
@@ -1239,7 +1239,7 @@ var _ = Describe("HNSW Inlining Storage", func() {
 
 		// Warm: two nodes both reaching layer 1 — the second insert connects them there,
 		// so layer 1 is a CONNECTED inlining layer (real edge KVs exist).
-		warmGraph := NewHNSWGraph(newHNSWStorage(ss, config), config)
+		warmGraph := newHNSWGraph(newHNSWStorage(ss, config), config)
 		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
 			Expect(warmGraph.Insert(tx, pks[0], []float64{1, 1})).To(Succeed())
@@ -1250,7 +1250,7 @@ var _ = Describe("HNSW Inlining Storage", func() {
 
 		// Cold: the third insert reaches layer 1, selects both, and must be able to
 		// resolve every neighbor vector when writing the reverse edges.
-		coldGraph := NewHNSWGraph(newHNSWStorage(ss, config), config)
+		coldGraph := newHNSWGraph(newHNSWStorage(ss, config), config)
 		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
 			Expect(coldGraph.Insert(tx, pks[2], []float64{3, 3})).To(Succeed(),
@@ -1533,7 +1533,7 @@ var _ = Describe("HNSW with RaBitQ", func() {
 			Quantizer:      rabitq.NewQuantizer(rabitq.MetricEuclidean, numExBits),
 		}
 		storage := newHNSWStorage(ss, config)
-		return NewHNSWGraph(storage, config)
+		return newHNSWGraph(storage, config)
 	}
 
 	It("RaBitQ centroid bootstrap establishes a centroid after StatsThreshold inserts (Java parity)", func() {
@@ -1551,7 +1551,7 @@ var _ = Describe("HNSW with RaBitQ", func() {
 			StatsThreshold:               10,  // establish the centroid once 10 accumulate
 		}
 		storage := newHNSWStorage(specSubspace().Sub("hnsw-rabitq-bootstrap"), config)
-		graph := NewHNSWGraph(storage, config)
+		graph := newHNSWGraph(storage, config)
 		rng := rand.New(rand.NewSource(11))
 
 		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -1663,7 +1663,7 @@ var _ = Describe("HNSW with RaBitQ", func() {
 			StatsThreshold:               8,
 		}
 		storage := newHNSWStorage(specSubspace().Sub("hnsw-rabitq-storefmt"), config)
-		graph := NewHNSWGraph(storage, config)
+		graph := newHNSWGraph(storage, config)
 		rng := rand.New(rand.NewSource(7))
 
 		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -1761,7 +1761,7 @@ var _ = Describe("HNSW with RaBitQ", func() {
 		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
 			for _, pk := range []int64{1, 2} {
-				graph := NewHNSWGraph(newHNSWStorage(ss, config), config)
+				graph := newHNSWGraph(newHNSWStorage(ss, config), config)
 				Expect(graph.Insert(tx, tuple.Tuple{pk}, vectors[pk])).To(Succeed())
 			}
 			storage := newHNSWStorage(ss, config)
@@ -1773,7 +1773,7 @@ var _ = Describe("HNSW with RaBitQ", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(raw).To(Equal(serializeVector(vectors[pk])), "both data nodes must have been inserted pre-centroid")
 			}
-			graph := NewHNSWGraph(storage, config)
+			graph := newHNSWGraph(storage, config)
 			Expect(graph.Delete(tx, before.pk)).To(Succeed())
 			return nil, nil
 		})
@@ -1788,7 +1788,7 @@ var _ = Describe("HNSW with RaBitQ", func() {
 			Expect(after.hasTransform()).To(BeTrue())
 			Expect(after.pk).To(Equal(tuple.Tuple{int64(2)}))
 			raw := serializeVector(vectors[2])
-			graph := NewHNSWGraph(storage, config)
+			graph := newHNSWGraph(storage, config)
 			want := serializeVector(graph.buildTransform(after).apply(vectors[2]))
 			Expect(want).NotTo(Equal(raw), "a fixed-point vector would make this coordinate regression vacuous")
 
@@ -1950,7 +1950,7 @@ var _ = Describe("HNSW with RaBitQ", func() {
 			StatsThreshold:               15, // centroid establishes around the 15th insert
 		}
 		storage := newHNSWStorage(specSubspace().Sub("hnsw-rabitq-mixed-recall"), config)
-		graph := NewHNSWGraph(storage, config)
+		graph := newHNSWGraph(storage, config)
 		rng := rand.New(rand.NewSource(2026))
 
 		const n = 80
@@ -2050,7 +2050,7 @@ var _ = Describe("HNSW with RaBitQ", func() {
 			_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				tx := rtx.Transaction()
 				storage := newHNSWStorage(ss, config)
-				graph := NewHNSWGraph(storage, config)
+				graph := newHNSWGraph(storage, config)
 				// Rotation of zero is zero, so the translation independently
 				// determines the expected transformed vector exactly.
 				graph.opXform = newHNSWTransform(42, current, 4, false)
@@ -2222,7 +2222,7 @@ var _ = Describe("HNSW with RaBitQ", func() {
 				StatsThreshold:               11,
 			}
 			storage := newHNSWStorage(specSubspace().Sub("hnsw-rabitq-bits9", int64(metric)), config)
-			graph := NewHNSWGraph(storage, config)
+			graph := newHNSWGraph(storage, config)
 			rng := rand.New(rand.NewSource(3))
 			vec := func() []float64 {
 				v := make([]float64, dims)
@@ -2285,7 +2285,7 @@ var _ = Describe("HNSW with RaBitQ", func() {
 			MaintainStatsProbability:     0,
 			StatsThreshold:               1 << 20,
 		}
-		graph := NewHNSWGraph(newHNSWStorage(ss, config), config)
+		graph := newHNSWGraph(newHNSWStorage(ss, config), config)
 		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
 			for i := 0; i < 12; i++ {
@@ -3405,7 +3405,7 @@ var _ = Describe("HNSW Search Quality", func() {
 			Metric:         VectorMetricEuclidean,
 		}
 		storage := newHNSWStorage(ss, config)
-		graph := NewHNSWGraph(storage, config)
+		graph := newHNSWGraph(storage, config)
 
 		const numVectors = 100
 		const dims = 8
@@ -3498,7 +3498,7 @@ var _ = Describe("HNSW High-Dimensional Vectors", func() {
 			Metric:         VectorMetricEuclidean,
 		}
 		storage := newHNSWStorage(ss, config)
-		graph := NewHNSWGraph(storage, config)
+		graph := newHNSWGraph(storage, config)
 
 		const numVectors = 50
 		const dims = 128
@@ -4184,7 +4184,7 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 		}
 		ss := specSubspace().Sub("hnsw-heuristic-unit")
 		storage := newHNSWStorage(ss, config)
-		graph := NewHNSWGraph(storage, config)
+		graph := newHNSWGraph(storage, config)
 
 		// Query at origin (0,0). Distances are true L2 (sqrt), matching euclideanDistance —
 		// the candidate query-distance and the heuristic's internal pairwise distance must
@@ -4225,7 +4225,7 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 		}
 		ss := specSubspace().Sub("hnsw-keep-pruned-unit")
 		storage := newHNSWStorage(ss, config)
-		graph := NewHNSWGraph(storage, config)
+		graph := newHNSWGraph(storage, config)
 
 		// Query at origin. All candidates are on the X axis (same direction).
 		// Heuristic will pick only the closest, prune the rest.
@@ -4258,7 +4258,7 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 		}
 		ss := specSubspace().Sub("hnsw-cosine-no-heuristic")
 		storage := newHNSWStorage(ss, config)
-		graph := NewHNSWGraph(storage, config)
+		graph := newHNSWGraph(storage, config)
 
 		// With cosine metric, selectNeighbors should do simple sort-and-truncate,
 		// NOT the diversity heuristic.
@@ -4287,7 +4287,7 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 			ExtendCandidates: true,
 		}
 		storage := newHNSWStorage(ss, config)
-		graph := NewHNSWGraph(storage, config)
+		graph := newHNSWGraph(storage, config)
 
 		const numVectors = 50
 		const dims = 8
@@ -4341,7 +4341,7 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 			KeepPrunedConnections: true,
 		}
 		storage := newHNSWStorage(ss, config)
-		graph := NewHNSWGraph(storage, config)
+		graph := newHNSWGraph(storage, config)
 
 		const numVectors = 30
 		const dims = 8
@@ -4393,7 +4393,7 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 			KeepPrunedConnections: true,
 		}
 		storage := newHNSWStorage(ss, config)
-		graph := NewHNSWGraph(storage, config)
+		graph := newHNSWGraph(storage, config)
 
 		const numVectors = 60
 		const dims = 8
@@ -4480,7 +4480,7 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 			KeepPrunedConnections: true,
 		}
 		storage := newHNSWStorage(ss, config)
-		graph := NewHNSWGraph(storage, config)
+		graph := newHNSWGraph(storage, config)
 
 		const numVectors = 20
 		const dims = 4
@@ -4946,7 +4946,7 @@ var _ = Describe("HNSW Pipelined Multi-Layer Deletion", func() {
 			Metric:         VectorMetricEuclidean,
 		}
 		storage := newHNSWStorage(ss, config)
-		return NewHNSWGraph(storage, config)
+		return newHNSWGraph(storage, config)
 	}
 
 	It("delete works correctly with pipelined reads", func() {
@@ -5098,7 +5098,7 @@ var _ = Describe("HNSW returned vectors", func() {
 			storage.saveAccessInfo(tx, &hnswAccessInfo{pk: pk, vectorBytes: encoded, rotatorSeed: 42, centroid: []float64{-0.25, 0.5, -0.75}})
 			storage.saveNodeLayer(tx, 0, pk, encoded, nil)
 			for _, include := range []bool{true, false} {
-				graph := NewHNSWGraph(storage, cfg)
+				graph := newHNSWGraph(storage, cfg)
 				results, err := graph.searchWithVectors(tx, []float64{1.5, 2.5, 3.5}, 1, 10, include)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(results).To(HaveLen(1))

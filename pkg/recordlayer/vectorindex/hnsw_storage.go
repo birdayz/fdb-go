@@ -88,14 +88,14 @@ func (s *hnswStorage) getKey(tx fdb.ReadTransaction, key fdb.Key) ([]byte, error
 // HnswVectorIndexEngine OnRead / OnWrite listeners record: nodes read and
 // written, and their key-value bytes, split by layer 0 and the layers above.
 var (
-	CountVectorNodeReads       = recordlayer.Event{Name: "vector_node_reads", Title: "intermediate nodes read", Kind: recordlayer.KindCount}
-	CountVectorNodeReadBytes   = recordlayer.Event{Name: "vector_node_read_bytes", Title: "intermediate node bytes read", Kind: recordlayer.KindSize}
-	CountVectorNode0Reads      = recordlayer.Event{Name: "vector_node0_reads", Title: "intermediate nodes read", Kind: recordlayer.KindCount}
-	CountVectorNode0ReadBytes  = recordlayer.Event{Name: "vector_node0_read_bytes", Title: "intermediate node bytes read", Kind: recordlayer.KindSize}
-	CountVectorNodeWrites      = recordlayer.Event{Name: "vector_node_writes", Title: "intermediate nodes written", Kind: recordlayer.KindCount}
-	CountVectorNodeWriteBytes  = recordlayer.Event{Name: "vector_node_write_bytes", Title: "intermediate node bytes written", Kind: recordlayer.KindSize}
-	CountVectorNode0Writes     = recordlayer.Event{Name: "vector_node0_writes", Title: "intermediate nodes written", Kind: recordlayer.KindCount}
-	CountVectorNode0WriteBytes = recordlayer.Event{Name: "vector_node0_write_bytes", Title: "intermediate node bytes written", Kind: recordlayer.KindSize}
+	countVectorNodeReads       = recordlayer.Event{Name: "vector_node_reads", Title: "intermediate nodes read", Kind: recordlayer.KindCount}
+	countVectorNodeReadBytes   = recordlayer.Event{Name: "vector_node_read_bytes", Title: "intermediate node bytes read", Kind: recordlayer.KindSize}
+	countVectorNode0Reads      = recordlayer.Event{Name: "vector_node0_reads", Title: "intermediate nodes read", Kind: recordlayer.KindCount}
+	countVectorNode0ReadBytes  = recordlayer.Event{Name: "vector_node0_read_bytes", Title: "intermediate node bytes read", Kind: recordlayer.KindSize}
+	countVectorNodeWrites      = recordlayer.Event{Name: "vector_node_writes", Title: "intermediate nodes written", Kind: recordlayer.KindCount}
+	countVectorNodeWriteBytes  = recordlayer.Event{Name: "vector_node_write_bytes", Title: "intermediate node bytes written", Kind: recordlayer.KindSize}
+	countVectorNode0Writes     = recordlayer.Event{Name: "vector_node0_writes", Title: "intermediate nodes written", Kind: recordlayer.KindCount}
+	countVectorNode0WriteBytes = recordlayer.Event{Name: "vector_node0_write_bytes", Title: "intermediate node bytes written", Kind: recordlayer.KindSize}
 )
 
 // recordKeyValueRead is OnRead.onKeyValueRead: the generic index-load counters
@@ -108,9 +108,9 @@ func (s *hnswStorage) recordKeyValueRead(layer int, key, value []byte) {
 	s.timer.Increment(recordlayer.CountLoadIndexKey)
 	s.timer.IncrementBy(recordlayer.CountLoadIndexKeyBytes, int64(len(key)))
 	s.timer.IncrementBy(recordlayer.CountLoadIndexValueBytes, int64(len(value)))
-	bytes := CountVectorNodeReadBytes
+	bytes := countVectorNodeReadBytes
 	if layer == 0 {
-		bytes = CountVectorNode0ReadBytes
+		bytes = countVectorNode0ReadBytes
 	}
 	s.timer.IncrementBy(bytes, int64(len(key)+len(value)))
 }
@@ -118,9 +118,9 @@ func (s *hnswStorage) recordKeyValueRead(layer int, key, value []byte) {
 // recordNodeRead is OnRead.onNodeRead.
 func (s *hnswStorage) recordNodeRead(layer int) {
 	if layer == 0 {
-		s.timer.Increment(CountVectorNode0Reads)
+		s.timer.Increment(countVectorNode0Reads)
 	} else {
-		s.timer.Increment(CountVectorNodeReads)
+		s.timer.Increment(countVectorNodeReads)
 	}
 }
 
@@ -132,9 +132,9 @@ func (s *hnswStorage) recordKeyValueWritten(layer int, key, value []byte) {
 	s.timer.Increment(recordlayer.CountSaveIndexKey)
 	s.timer.IncrementBy(recordlayer.CountSaveIndexKeyBytes, int64(len(key)))
 	s.timer.IncrementBy(recordlayer.CountSaveIndexValueBytes, int64(len(value)))
-	bytes := CountVectorNodeWriteBytes
+	bytes := countVectorNodeWriteBytes
 	if layer == 0 {
-		bytes = CountVectorNode0WriteBytes
+		bytes = countVectorNode0WriteBytes
 	}
 	s.timer.IncrementBy(bytes, int64(len(key)+len(value)))
 }
@@ -142,9 +142,9 @@ func (s *hnswStorage) recordKeyValueWritten(layer int, key, value []byte) {
 // recordNodeWritten is OnWrite.onNodeWritten.
 func (s *hnswStorage) recordNodeWritten(layer int) {
 	if layer == 0 {
-		s.timer.Increment(CountVectorNode0Writes)
+		s.timer.Increment(countVectorNode0Writes)
 	} else {
-		s.timer.Increment(CountVectorNodeWrites)
+		s.timer.Increment(countVectorNodeWrites)
 	}
 }
 

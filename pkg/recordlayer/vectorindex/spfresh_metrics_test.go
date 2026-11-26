@@ -45,11 +45,11 @@ var _ = Describe("SPFresh StoreTimer instrumentation", func() {
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(timer.GetCount(EventSPFreshInsert)).To(Equal(int64(10)))
-		Expect(timer.GetCount(CountSPFreshInsertFenceReads)).To(BeNumerically(">=", 10),
+		Expect(timer.GetCount(eventSPFreshInsert)).To(Equal(int64(10)))
+		Expect(timer.GetCount(countSPFreshInsertFenceReads)).To(BeNumerically(">=", 10),
 			"every insert REAL-reads at least its nearest candidate")
-		Expect(timer.GetCount(CountSPFreshInsertReplicas)).To(BeNumerically(">=", 10))
-		Expect(timer.GetTimeNanos(EventSPFreshInsert)).To(BeNumerically(">", 0))
+		Expect(timer.GetCount(countSPFreshInsertReplicas)).To(BeNumerically(">=", 10))
+		Expect(timer.GetTimeNanos(eventSPFreshInsert)).To(BeNumerically(">", 0))
 
 		// SEARCH through the maintainer with the timer on the context: the
 		// search event and the probe/scan/rerank decomposition move.
@@ -83,10 +83,10 @@ var _ = Describe("SPFresh StoreTimer instrumentation", func() {
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(timer.GetCount(EventSPFreshSearch)).To(Equal(int64(1)))
-		Expect(timer.GetCount(CountSPFreshPostingsProbed)).To(BeNumerically(">", 0))
-		Expect(timer.GetCount(CountSPFreshEntriesScanned)).To(BeNumerically(">", 0))
-		Expect(timer.GetCount(CountSPFreshRerankReads)).To(BeNumerically(">", 0))
+		Expect(timer.GetCount(eventSPFreshSearch)).To(Equal(int64(1)))
+		Expect(timer.GetCount(countSPFreshPostingsProbed)).To(BeNumerically(">", 0))
+		Expect(timer.GetCount(countSPFreshEntriesScanned)).To(BeNumerically(">", 0))
+		Expect(timer.GetCount(countSPFreshRerankReads)).To(BeNumerically(">", 0))
 
 		// MAINTENANCE through the sweeper's Timer option: balloon a posting
 		// so a real split cascade runs, then assert per-kind action counters
@@ -106,7 +106,7 @@ var _ = Describe("SPFresh StoreTimer instrumentation", func() {
 		Expect(total).To(BeNumerically(">", 0))
 		perKind := mtimer.GetCount(CountSPFreshSplits) + mtimer.GetCount(CountSPFreshMerges) +
 			mtimer.GetCount(CountSPFreshCSplits) + mtimer.GetCount(CountSPFreshNPAs) +
-			mtimer.GetCount(CountSPFreshZombieCleans) + mtimer.GetCount(CountSPFreshCSplitDefers)
+			mtimer.GetCount(CountSPFreshZombieCleans) + mtimer.GetCount(countSPFreshCSplitDefers)
 		Expect(perKind).To(Equal(int64(total)),
 			"per-kind counters must decompose exactly the sweep's action count")
 	})
@@ -143,6 +143,6 @@ var _ = Describe("SPFresh StoreTimer instrumentation", func() {
 		Expect(timer.GetCount(CountSPFreshMerges)).To(BeZero(), "a cleanup clear is not a merge")
 		Expect(timer.GetCount(CountSPFreshCSplits)).To(BeZero(), "a defer-bump is not a coarse split")
 		Expect(timer.GetCount(CountSPFreshZombieCleans)).To(Equal(int64(1)))
-		Expect(timer.GetCount(CountSPFreshCSplitDefers)).To(Equal(int64(1)))
+		Expect(timer.GetCount(countSPFreshCSplitDefers)).To(Equal(int64(1)))
 	})
 })

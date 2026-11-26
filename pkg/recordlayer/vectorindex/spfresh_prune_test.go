@@ -330,11 +330,11 @@ var _ = Describe("SPFresh resumable search (RFC-156 Phase A)", func() {
 		batchRes, batchTimer := runSearch(storage, config, query, k, tuneBatch)
 
 		// The widening path must actually have pruned AND widened (non-vacuous).
-		Expect(widenTimer.GetCount(CountSPFreshPostingsPruned)).To(BeNumerically(">", 0),
+		Expect(widenTimer.GetCount(countSPFreshPostingsPruned)).To(BeNumerically(">", 0),
 			"near-zero ε must prune the far clusters")
-		Expect(widenTimer.GetCount(CountSPFreshStarvationWiden)).To(Equal(int64(1)),
+		Expect(widenTimer.GetCount(countSPFreshStarvationWiden)).To(Equal(int64(1)),
 			"the starved probe set must widen into the pruned tail exactly once")
-		Expect(batchTimer.GetCount(CountSPFreshPostingsPruned)).To(Equal(int64(0)),
+		Expect(batchTimer.GetCount(countSPFreshPostingsPruned)).To(Equal(int64(0)),
 			"ε disabled must prune nothing")
 
 		// Identical pk order AND distances: starvation widen ≡ batch prune.

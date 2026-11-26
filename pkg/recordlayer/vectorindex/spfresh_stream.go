@@ -66,7 +66,7 @@ import (
 // Honest truncation: when the budget cap (max cells probed / max candidates) is
 // hit before the consumer is satisfied, the cursor returns
 // NoNextReason.ScanLimitReached + a positional continuation (NOT SourceExhausted)
-// and fires CountSPFreshFilteredTruncated. "Only N rows match" instead surfaces
+// and fires countSPFreshFilteredTruncated. "Only N rows match" instead surfaces
 // SourceExhausted with exactly those N — two distinct outcomes, never a silent
 // < k.
 //
@@ -231,7 +231,7 @@ func (f *spfreshFrontier) streamWidenBatch() error {
 		return nil
 	}
 
-	s.timer.Increment(CountSPFreshStreamWiden)
+	s.timer.Increment(countSPFreshStreamWiden)
 	if err := f.scoreCells(batch); err != nil {
 		return err
 	}
@@ -384,7 +384,7 @@ func (f *spfreshFrontier) streamRebuildFinalized() error {
 			need = append(need, span)
 		}
 		if len(need) > 0 {
-			s.timer.IncrementBy(CountSPFreshRerankReads, int64(len(need)))
+			s.timer.IncrementBy(countSPFreshRerankReads, int64(len(need)))
 			futures := make([]fdb.FutureByteSlice, len(need))
 			for i, span := range need {
 				futures[i] = f.tx.Snapshot().Get(s.storage.sidecarKeyFromSpan(span))
@@ -552,12 +552,12 @@ func (c *spfreshStreamCursor) terminalExhausted() (recordlayer.RecordCursorResul
 
 // terminalTruncated: the budget cap was hit before the consumer was satisfied.
 // ScanLimitReached + a positional continuation (resumable, more may exist) and
-// the CountSPFreshFilteredTruncated signal — never a silent < k.
+// the countSPFreshFilteredTruncated signal — never a silent < k.
 func (c *spfreshStreamCursor) terminalTruncated() (recordlayer.RecordCursorResult[*recordlayer.IndexEntry], error) {
 	if err := c.refileCapped(); err != nil {
 		return recordlayer.RecordCursorResult[*recordlayer.IndexEntry]{}, err
 	}
-	c.f.s.timer.Increment(CountSPFreshFilteredTruncated)
+	c.f.s.timer.Increment(countSPFreshFilteredTruncated)
 	return recordlayer.NewResultNoNext[*recordlayer.IndexEntry](
 		recordlayer.ScanLimitReached, recordlayer.NewBytesContinuation(recordlayer.ListCursorContinuation(c.pos)),
 	), nil

@@ -238,7 +238,7 @@ func (m *vectorIndexMaintainer) withPrefixWriteLock(prefix tuple.Tuple, fn func(
 	m.Store().AcquireWriteLock(lockKey)
 	defer m.Store().ReleaseWriteLock(lockKey)
 	storage := m.getStorageForPrefix(prefix)
-	return fn(NewHNSWGraph(storage, m.hnswConfig))
+	return fn(newHNSWGraph(storage, m.hnswConfig))
 }
 
 // tupleToVector converts tuple elements to a float64 vector, for the Go-only
@@ -315,14 +315,6 @@ func (m *vectorIndexMaintainer) Scan(
 	return recordlayer.NewErrorCursor[*recordlayer.IndexEntry](fmt.Errorf("VECTOR index %q does not support TupleRange scan; use ScanVectorIndex with BY_DISTANCE", m.Index().Name))
 }
 
-// VectorScanBounds carries the parameters for a BY_DISTANCE kNN scan.
-// Matches Java's VectorIndexScanBounds (query vector, k limit, efSearch, options).
-type VectorScanBounds struct {
-	QueryVector []float64 // The query vector for similarity search.
-	K           int       // Number of nearest neighbors to return.
-	EfSearch    int       // Search exploration factor (0 = auto from K).
-}
-
 // ScanByDistance performs a kNN search and returns results as a cursor of IndexEntry.
 // Each IndexEntry has Key = primaryKey and Value = tuple{distance}.
 // Matches Java's VectorIndexMaintainer.scan(VectorIndexScanBounds, ...) which
@@ -335,7 +327,7 @@ func (m *vectorIndexMaintainer) ScanByDistance(
 	continuation []byte,
 	scanProperties recordlayer.ScanProperties,
 ) recordlayer.RecordCursor[*recordlayer.IndexEntry] {
-	// Extract VectorScanBounds from TupleRange.
+	// Extract BY_DISTANCE scan parameters from TupleRange.
 	// Convention: Low = tuple{queryVectorBytes, prefix...} (serialized vector as []byte, followed by optional prefix elements),
 	//             High = tuple{k, efSearch} (int64 values).
 	if scanRange.Low == nil || len(scanRange.Low) < 1 {
@@ -467,7 +459,7 @@ func (m *vectorIndexMaintainer) searchOnePartition(readTx fdb.ReadTransaction, p
 			m.Index().Name, m.hnswConfig.NumDimensions, len(queryVector))
 	}
 	storage := m.getStorageForPrefix(prefix)
-	graph := NewHNSWGraph(storage, m.hnswConfig)
+	graph := newHNSWGraph(storage, m.hnswConfig)
 
 	includeVectors := m.hnswConfig.Quantizer == nil
 	if opts.ReturnVectors != nil {
@@ -998,7 +990,7 @@ func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []floa
 			"use SearchVectorIndexWithPrefix to provide a prefix", m.Index().Name, m.root.SplitPoint())
 	}
 	storage := m.getStorageForPrefix(prefix)
-	graph := NewHNSWGraph(storage, m.hnswConfig)
+	graph := newHNSWGraph(storage, m.hnswConfig)
 
 	results, err := graph.Search(m.Transaction().Snapshot(), queryVector, k, recordlayer.HNSWEfSearch(positiveEfSearch(efSearch), k))
 	if err != nil {

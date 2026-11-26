@@ -44,9 +44,9 @@ var _ = Describe("Vector index store timer counters", func() {
 				_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(10 * id)), Quantity: proto.Int32(1)}, "price"))
 				Expect(err).NotTo(HaveOccurred())
 			}
-			Expect(timer.GetCount(CountVectorTaskEnqueued)).To(BeNumerically(">", 0), "a cluster past its maximum enqueues a split")
-			Expect(timer.GetCount(CountVectorTaskExecuted)).To(BeNumerically(">", 0), "in-transaction maintenance executes it")
-			before := timer.GetCount(CountVectorVectorReads)
+			Expect(timer.GetCount(countVectorTaskEnqueued)).To(BeNumerically(">", 0), "a cluster past its maximum enqueues a split")
+			Expect(timer.GetCount(countVectorTaskExecuted)).To(BeNumerically(">", 0), "in-transaction maintenance executes it")
+			before := timer.GetCount(countVectorVectorReads)
 			cursor := store.ScanVectorIndexWithOptions(vecIdx, tuple.Tuple{int64(1)}, []float64{15}, 3, recordlayer.VectorIndexScanOptions{}, nil, recordlayer.ForwardScan())
 			for {
 				r, err := cursor.OnNext(ctx)
@@ -55,7 +55,7 @@ var _ = Describe("Vector index store timer counters", func() {
 					break
 				}
 			}
-			Expect(timer.GetCount(CountVectorVectorReads)).To(BeNumerically(">", before), "a search reads references")
+			Expect(timer.GetCount(countVectorVectorReads)).To(BeNumerically(">", before), "a search reads references")
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -82,9 +82,9 @@ var _ = Describe("Vector index store timer counters", func() {
 				_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(10 * id)), Quantity: proto.Int32(1)}, "price"))
 				Expect(err).NotTo(HaveOccurred())
 			}
-			Expect(timer.GetCount(CountVectorNode0Writes)).To(BeNumerically(">=", 4), "each insert writes its layer-0 node")
-			Expect(timer.GetCount(CountVectorNode0WriteBytes)).To(BeNumerically(">", 0))
-			Expect(timer.GetCount(recordlayer.CountSaveIndexKey)).To(BeNumerically(">=", timer.GetCount(CountVectorNode0Writes)))
+			Expect(timer.GetCount(countVectorNode0Writes)).To(BeNumerically(">=", 4), "each insert writes its layer-0 node")
+			Expect(timer.GetCount(countVectorNode0WriteBytes)).To(BeNumerically(">", 0))
+			Expect(timer.GetCount(recordlayer.CountSaveIndexKey)).To(BeNumerically(">=", timer.GetCount(countVectorNode0Writes)))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -101,8 +101,8 @@ var _ = Describe("Vector index store timer counters", func() {
 					break
 				}
 			}
-			Expect(readTimer.GetCount(CountVectorNode0Reads)).To(BeNumerically(">", 0), "a search reads layer-0 nodes")
-			Expect(readTimer.GetCount(recordlayer.CountLoadIndexKey)).To(BeNumerically(">=", readTimer.GetCount(CountVectorNode0Reads)))
+			Expect(readTimer.GetCount(countVectorNode0Reads)).To(BeNumerically(">", 0), "a search reads layer-0 nodes")
+			Expect(readTimer.GetCount(recordlayer.CountLoadIndexKey)).To(BeNumerically(">=", readTimer.GetCount(countVectorNode0Reads)))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

@@ -1099,7 +1099,7 @@ var _ = Describe("SPFresh chunked oversized split", func() {
 			timer := recordlayer.NewStoreTimer()
 			_, err = spfreshRebalanceOnce(ctx, sharedDB, storage, config, "reb", 3, 0, timer)
 			Expect(err).NotTo(HaveOccurred(), "a deferral is a benign skip")
-			Expect(timer.GetCount(CountSPFreshSplitDefers)).To(Equal(int64(1)))
+			Expect(timer.GetCount(countSPFreshSplitDefers)).To(Equal(int64(1)))
 			_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				tx := rtx.Transaction()
 				row, rerr := spfreshReadCentroidForWrite(tx, storage, cellID, fineID)

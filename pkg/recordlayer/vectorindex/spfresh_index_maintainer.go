@@ -782,7 +782,7 @@ func (m *spfreshIndexMaintainer) spfreshFileSplitsForCapped(storage *spfreshStor
 			return terr
 		}
 		if filed {
-			m.timer.Increment(CountSPFreshReadPathSplitFiles)
+			m.timer.Increment(countSPFreshReadPathSplitFiles)
 		}
 	}
 	return nil

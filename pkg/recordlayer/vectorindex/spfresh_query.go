@@ -164,7 +164,7 @@ type spfreshFrontier struct {
 	// last w traversed estimates → M_q^s is its median; smallestQueue keeps the
 	// E=k smallest estimates → R_q is its max (the current k-th best). Phase 2
 	// ⟺ M_q^s > R_q: the recently-traversed cells no longer beat the running
-	// k-th best. These are PHASE-A TELEMETRY ONLY (CountSPFreshPhase2Reached) —
+	// k-th best. These are PHASE-A TELEMETRY ONLY (countSPFreshPhase2Reached) —
 	// neither the one-shot wrapper nor the Phase C streaming cursor early-stops on
 	// phase2: the wrapper always scans its full conditional horizon, and the
 	// streaming cursor terminates on the emission barrier + budget/exhaustion (see
@@ -291,8 +291,8 @@ func (s *spfreshSearcher) searchInit(tx fdb.ReadTransaction, query []float64) (*
 	// pruned tail is admitted by widening below if the probed set starves the
 	// re-rank budget (RFC-094 §4 adaptive widening).
 	probe, pruned := spfreshPruneRouted(routed, s.epsilon)
-	s.timer.IncrementBy(CountSPFreshPostingsProbed, int64(len(probe)))
-	s.timer.IncrementBy(CountSPFreshPostingsPruned, int64(len(pruned)))
+	s.timer.IncrementBy(countSPFreshPostingsProbed, int64(len(probe)))
+	s.timer.IncrementBy(countSPFreshPostingsPruned, int64(len(pruned)))
 	f.pruned = pruned
 
 	// One parallel burst over the probe set (all range reads issued before any
@@ -348,7 +348,7 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 	if k <= 0 {
 		return nil, nil
 	}
-	defer s.timer.RecordSince(EventSPFreshSearch, time.Now())
+	defer s.timer.RecordSince(eventSPFreshSearch, time.Now())
 	f, err := s.searchInit(tx, query)
 	if err != nil {
 		return nil, err
@@ -389,7 +389,7 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 // emits exact-distance-ordered results gated by the relaxed-monotonicity EMISSION
 // BARRIER (B = nextCentroidDist − maxResidual; see spfresh_stream.go), holding
 // candidates ≥ B and flushing all at B=+inf on budget/exhaustion — there is no
-// phase2-driven early stop anywhere. CountSPFreshPhase2Reached remains a pure
+// phase2-driven early stop anywhere. countSPFreshPhase2Reached remains a pure
 // observability counter.
 func (f *spfreshFrontier) advance(demand int) error {
 	s := f.s
@@ -424,7 +424,7 @@ func (f *spfreshFrontier) advance(demand int) error {
 	// gated by the emission barrier — not by phase2); Phase A scans the full horizon
 	// up front to guarantee wrapper parity (invariant 4).
 	if f.tailPos < len(f.pruned) && len(f.best) < cTop {
-		s.timer.Increment(CountSPFreshStarvationWiden)
+		s.timer.Increment(countSPFreshStarvationWiden)
 		if err := f.scoreCells(f.pruned[f.tailPos:]); err != nil {
 			return err
 		}
@@ -479,9 +479,9 @@ func (f *spfreshFrontier) scoreCells(cells []spfreshRouted) error {
 		if kerr != nil {
 			return fmt.Errorf("spfresh search: posting %d: %w", ft.routed.fineID, kerr)
 		}
-		s.timer.IncrementBy(CountSPFreshEntriesScanned, int64(len(kvs)))
+		s.timer.IncrementBy(countSPFreshEntriesScanned, int64(len(kvs)))
 		if len(kvs) == limit {
-			s.timer.Increment(CountSPFreshCappedPostingReads)
+			s.timer.Increment(countSPFreshCappedPostingReads)
 			s.capped = append(s.capped, ft.routed)
 		}
 		for d := range f.query {
@@ -544,7 +544,7 @@ func (f *spfreshFrontier) scoreCells(cells []spfreshRouted) error {
 // next cache refresh).
 func (f *spfreshFrontier) resolveForwardPostings() error {
 	s := f.s
-	s.timer.IncrementBy(CountSPFreshForwardFollows, int64(len(f.forwards)))
+	s.timer.IncrementBy(countSPFreshForwardFollows, int64(len(f.forwards)))
 	if len(f.forwards) == 0 {
 		return nil
 	}
@@ -570,7 +570,7 @@ func (f *spfreshFrontier) resolveForwardPostings() error {
 			return fmt.Errorf("spfresh search: forwarded posting %d: %w", ft.routed.fineID, kerr)
 		}
 		if len(kvs) == limit {
-			s.timer.Increment(CountSPFreshCappedPostingReads)
+			s.timer.Increment(countSPFreshCappedPostingReads)
 			s.capped = append(s.capped, ft.routed)
 		}
 		for d := range f.query {
@@ -636,7 +636,7 @@ func (f *spfreshFrontier) finalize() error {
 	// disabled the estimates stand (the maintainer's record-read fallback
 	// arrives with the maintainer slice).
 	if s.config.Sidecar && !s.noRerank {
-		s.timer.IncrementBy(CountSPFreshRerankReads, int64(len(hits)))
+		s.timer.IncrementBy(countSPFreshRerankReads, int64(len(hits)))
 		futures := make([]fdb.FutureByteSlice, len(hits))
 		for i, h := range hits {
 			futures[i] = f.tx.Get(s.storage.sidecarKeyFromSpan(h.span))
@@ -692,7 +692,7 @@ func (f *spfreshFrontier) observe(est float64) {
 
 // refreshPhase2 latches Phase 2 (VBASE Eq. 3: M_q^s > R_q) once both queues are
 // full — the median of recently-traversed estimates exceeds the current k-th
-// best. TELEMETRY ONLY (CountSPFreshPhase2Reached): nothing consults f.phase2 as
+// best. TELEMETRY ONLY (countSPFreshPhase2Reached): nothing consults f.phase2 as
 // a stop signal. The one-shot wrapper always scans its full conditional horizon;
 // the Phase C streaming cursor terminates on the relaxed-monotonicity EMISSION
 // BARRIER plus the budget/exhaustion caps (spfresh_stream.go), NOT on phase2.
@@ -702,7 +702,7 @@ func (f *spfreshFrontier) refreshPhase2() {
 	}
 	if f.recent.median() > f.smallest.rq() {
 		f.phase2 = true
-		f.s.timer.Increment(CountSPFreshPhase2Reached)
+		f.s.timer.Increment(countSPFreshPhase2Reached)
 	}
 }
 
