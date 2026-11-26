@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/rlcollections"
+
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
@@ -34,8 +36,8 @@ func TestTextLogicalBoundsComeFromTupleEndpoints(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			splitter := newTextSubspaceSplitterForRange(ss, 1, tc.range_)
-			if splitter.logicalBounds != tc.want {
-				t.Fatalf("logical bounds=%v, want %v", splitter.logicalBounds, tc.want)
+			if rlcollections.TextSubspaceSplitterLogicalBounds(splitter) != tc.want {
+				t.Fatalf("logical bounds=%v, want %v", rlcollections.TextSubspaceSplitterLogicalBounds(splitter), tc.want)
 			}
 			switch tc.name {
 			case "exclusive string", "exclusive zero", "exclusive 255":
@@ -60,7 +62,7 @@ func TestTextLogicalBoundsDistinguishGroupedStringPrefixes(t *testing.T) {
 		{"suffix prefix", TupleRangePrefixString("m").Prepend(tuple.Tuple{"g", "tok"}), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := newTextSubspaceSplitterForRange(ss, 2, tc.range_).logicalBounds; got != tc.want {
+			if got := rlcollections.TextSubspaceSplitterLogicalBounds(newTextSubspaceSplitterForRange(ss, 2, tc.range_)); got != tc.want {
 				t.Fatalf("logical bounds=%v, want %v", got, tc.want)
 			}
 		})

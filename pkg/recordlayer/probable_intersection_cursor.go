@@ -12,6 +12,7 @@ import (
 	"fmt"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/recordlayer/rlcollections"
 	"fdb.dev/internal/recordlayer/textcmp"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
@@ -27,7 +28,7 @@ const (
 // and a run-local exact set, as Java ProbableIntersectionCursorState does.
 type probableChild[T any] struct {
 	*mergeChildState[T]
-	bloom          *guavaBloomFilter
+	bloom          *rlcollections.GuavaBloomFilter
 	seen           map[string]struct{}
 	packedKey      string
 	firstIteration bool
@@ -36,8 +37,8 @@ type probableChild[T any] struct {
 // consume is ProbableIntersectionCursorState.consume
 // (ProbableIntersectionCursorState.java:78-83).
 func (s *probableChild[T]) consumeKey() error {
-	if err := s.bloom.put(s.comparisonKey); err != nil {
-		return err
+	if err := s.bloom.Put(s.comparisonKey); err != nil {
+		return translateBloomError(err)
 	}
 	s.seen[s.packedKey] = struct{}{}
 	s.consume()
@@ -53,7 +54,8 @@ func (s *probableChild[T]) mightContain(key tuple.Tuple, packed string) (bool, e
 	if s.firstIteration {
 		return false, nil
 	}
-	return s.bloom.mightContain(key)
+	ok, err := s.bloom.MightContain(key)
+	return ok, translateBloomError(err)
 }
 
 func (s *probableChild[T]) isDefiniteDuplicate() bool {
@@ -77,16 +79,16 @@ func ProbableIntersection[T any](compKeyFunc ComparisonKeyFunc[T], fns []CursorF
 		return nil, err
 	}
 	// Validate every filter before opening any factory-owned child resources.
-	blooms := make([]*guavaBloomFilter, len(states))
+	blooms := make([]*rlcollections.GuavaBloomFilter, len(states))
 	for i, st := range states {
-		var bloom *guavaBloomFilter
+		var bloom *rlcollections.GuavaBloomFilter
 		if st.bloom == nil {
-			bloom, err = newGuavaBloomFilter(expectedResults, falsePositivePercentage)
+			bloom, err = rlcollections.NewGuavaBloomFilter(expectedResults, falsePositivePercentage)
 		} else {
-			bloom, err = readGuavaBloomFilter(st.bloom)
+			bloom, err = rlcollections.ReadGuavaBloomFilter(st.bloom)
 		}
 		if err != nil {
-			return nil, err
+			return nil, translateBloomError(err)
 		}
 		blooms[i] = bloom
 	}
@@ -125,10 +127,10 @@ func (c *probableIntersectionCursor[T]) OnNext(ctx context.Context) (RecordCurso
 			if !child.hasResult {
 				continue
 			}
-			packed, err := packBloomTuple(child.comparisonKey)
+			packed, err := rlcollections.PackBloomTuple(child.comparisonKey)
 			if err != nil {
 				return RecordCursorResult[T]{}, &RecordCoreArgumentError{
-					Message: fmt.Sprintf("probable intersection child %d comparison key", i), Cause: err,
+					Message: fmt.Sprintf("probable intersection child %d comparison key", i), Cause: translateBloomError(err),
 				}
 			}
 			child.packedKey = string(packed)
@@ -217,7 +219,7 @@ func (c *probableIntersectionCursor[T]) continuation() (RecordCursorContinuation
 				state.Continuation = b
 			}
 		}
-		state.BloomFilter = child.bloom.writeTo()
+		state.BloomFilter = child.bloom.WriteTo()
 		cont.ChildState = append(cont.ChildState, state)
 	}
 	data, err := cont.MarshalVT()
@@ -283,4 +285,17 @@ func decodeProbableIntersectionContinuation(data []byte, n int) ([]probableChild
 		}
 	}
 	return out, nil
+}
+
+func translateBloomError(err error) error {
+	if err == nil {
+		return nil
+	}
+	switch e := err.(type) {
+	case *rlcollections.BloomCoreError:
+		return &RecordCoreError{Message: e.Message, Cause: translateBloomError(e.Cause)}
+	case *rlcollections.BloomArgumentError:
+		return &RecordCoreArgumentError{Message: e.Message}
+	}
+	return err
 }

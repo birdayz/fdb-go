@@ -7,13 +7,14 @@ import (
 	"fmt"
 	"sort"
 
+	"fdb.dev/internal/recordlayer/rlcollections"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("rankedSet (skip-list)", func() {
+var _ = Describe("RankedSet (skip-list)", func() {
 	ctx := context.Background()
 
 	// runInTx is a helper that runs a function in a single FDB transaction.
@@ -25,51 +26,11 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		Expect(err).NotTo(HaveOccurred())
 	}
 
-	Describe("newRankedSet and config", func() {
-		It("defaults NLevels to 6 when zero", func() {
-			sub := specSubspace().Sub("cfg-zero")
-			rs := newRankedSet(sub, rankedSetConfig{})
-			Expect(rs.config.NLevels).To(Equal(rankedSetDefaultLevels))
-			Expect(rs.config.HashFunction).NotTo(BeNil())
-		})
-
-		It("defaults NLevels to 6 when negative", func() {
-			sub := specSubspace().Sub("cfg-neg")
-			rs := newRankedSet(sub, rankedSetConfig{NLevels: -5})
-			Expect(rs.config.NLevels).To(Equal(rankedSetDefaultLevels))
-		})
-
-		It("clamps NLevels to max 8", func() {
-			sub := specSubspace().Sub("cfg-big")
-			rs := newRankedSet(sub, rankedSetConfig{NLevels: 100})
-			Expect(rs.config.NLevels).To(Equal(rankedSetMaxLevels))
-		})
-
-		It("respects explicit NLevels within bounds", func() {
-			sub := specSubspace().Sub("cfg-explicit")
-			rs := newRankedSet(sub, rankedSetConfig{NLevels: 3})
-			Expect(rs.config.NLevels).To(Equal(3))
-		})
-
-		It("uses jdkArrayHash by default", func() {
-			sub := specSubspace().Sub("cfg-hash")
-			rs := newRankedSet(sub, rankedSetConfig{})
-			// Verify hash function is set (compare known value)
-			Expect(rs.config.HashFunction([]byte("test"))).To(Equal(jdkArrayHash([]byte("test"))))
-		})
-
-		It("uses custom hash function when provided", func() {
-			sub := specSubspace().Sub("cfg-crc")
-			rs := newRankedSet(sub, rankedSetConfig{HashFunction: pureHash(crcHash)})
-			Expect(rs.config.HashFunction([]byte("test"))).To(Equal(crcHash([]byte("test"))))
-		})
-	})
-
 	Describe("Init and InitNeeded", func() {
 		It("reports init needed on fresh subspace", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("init-needed")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 
 				needed, err := rs.InitNeeded(tx)
 				Expect(err).NotTo(HaveOccurred())
@@ -80,7 +41,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("reports init not needed after Init", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("init-done")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 
 				Expect(rs.Init(tx)).To(Succeed())
 
@@ -93,7 +54,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("Init is idempotent", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("init-idempotent")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 
 				Expect(rs.Init(tx)).To(Succeed())
 
@@ -118,7 +79,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("init-sentinels")
 				nLevels := 4
-				rs := newRankedSet(sub, rankedSetConfig{NLevels: nLevels})
+				rs := rlcollections.NewRankedSet(sub, rlcollections.RankedSetConfig{NLevels: nLevels})
 
 				Expect(rs.Init(tx)).To(Succeed())
 
@@ -128,9 +89,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 					v, err := tx.Get(k).Get()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(v).NotTo(BeNil(), "sentinel missing at level %d", level)
-					val, err2 := rsDecodeLong(v)
-					Expect(err2).NotTo(HaveOccurred())
-					Expect(val).To(Equal(int64(0)), "sentinel count at level %d", level)
+					Expect(v).To(Equal(make([]byte, 8)), "sentinel count at level %d", level)
 				}
 			})
 		})
@@ -140,13 +99,13 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("rejects empty key", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("add-empty")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				_, err := rs.Add(tx, []byte{})
 				Expect(err).To(HaveOccurred())
 
-				var emptyKeyErr *rankedSetEmptyKeyError
+				var emptyKeyErr *rlcollections.RankedSetEmptyKeyError
 				Expect(errors.As(err, &emptyKeyErr)).To(BeTrue())
 			})
 		})
@@ -154,13 +113,13 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("rejects nil key", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("add-nil")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				_, err := rs.Add(tx, nil)
 				Expect(err).To(HaveOccurred())
 
-				var emptyKeyErr *rankedSetEmptyKeyError
+				var emptyKeyErr *rlcollections.RankedSetEmptyKeyError
 				Expect(errors.As(err, &emptyKeyErr)).To(BeTrue())
 			})
 		})
@@ -168,7 +127,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("returns true on first add, false on duplicate without CountDuplicates", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("add-dup-no-count")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				added, err := rs.Add(tx, []byte("key"))
@@ -189,7 +148,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("handles a single byte key", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("add-single-byte")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				added, err := rs.Add(tx, []byte{0x01})
@@ -205,7 +164,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("handles long keys", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("add-long-key")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				// 500-byte key (well within FDB limits)
@@ -231,7 +190,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("adds elements in reverse sorted order and maintains correct ranks", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("add-reverse")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				// Insert z, y, x, ..., a (reverse order)
@@ -261,7 +220,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("adds binary keys and maintains byte ordering", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("add-binary")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				// Keys with high byte values (0x80+) to exercise signed/unsigned handling
@@ -297,11 +256,11 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("rejects empty key", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("rm-empty")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				_, err := rs.Remove(tx, []byte{})
-				var emptyKeyErr *rankedSetEmptyKeyError
+				var emptyKeyErr *rlcollections.RankedSetEmptyKeyError
 				Expect(errors.As(err, &emptyKeyErr)).To(BeTrue())
 			})
 		})
@@ -309,7 +268,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("returns false for removing from empty set", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("rm-empty-set")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				removed, err := rs.Remove(tx, []byte("nope"))
@@ -321,7 +280,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("removes the only element leaving an empty set", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("rm-last")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				_, err := rs.Add(tx, []byte("only"))
@@ -349,7 +308,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("removes first element and shifts ranks", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("rm-first")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				for _, k := range []string{"a", "b", "c"} {
@@ -379,7 +338,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("removes last element and preserves others", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("rm-last-of-three")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				for _, k := range []string{"a", "b", "c"} {
@@ -409,7 +368,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("removes all elements one by one", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("rm-all")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				keys := []string{"a", "b", "c", "d", "e"}
@@ -437,7 +396,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("can re-add after remove", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("rm-readd")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				_, err := rs.Add(tx, []byte("key"))
@@ -462,10 +421,10 @@ var _ = Describe("rankedSet (skip-list)", func() {
 	})
 
 	Describe("CountDuplicates", func() {
-		newDupSet := func(tx fdb.WritableTransaction, name string) *rankedSet {
+		newDupSet := func(tx fdb.WritableTransaction, name string) *rlcollections.RankedSet {
 			sub := specSubspace().Sub(name)
-			rs := newRankedSet(sub, rankedSetConfig{
-				NLevels:         rankedSetDefaultLevels,
+			rs := rlcollections.NewRankedSet(sub, rlcollections.RankedSetConfig{
+				NLevels:         rlcollections.RankedSetDefaultLevels,
 				CountDuplicates: true,
 			})
 			Expect(rs.Init(tx)).To(Succeed())
@@ -614,11 +573,11 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("rejects empty key", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("rank-empty")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				_, err := rs.Rank(tx, []byte{}, false)
-				var emptyKeyErr *rankedSetEmptyKeyError
+				var emptyKeyErr *rlcollections.RankedSetEmptyKeyError
 				Expect(errors.As(err, &emptyKeyErr)).To(BeTrue())
 			})
 		})
@@ -626,7 +585,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("returns insertion-point rank for non-existent key with nullIfMissing=false", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("rank-insertion")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				for _, k := range []string{"b", "d", "f"} {
@@ -659,7 +618,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("returns nil for non-existent key with nullIfMissing=true", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("rank-null")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				_, err := rs.Add(tx, []byte("a"))
@@ -674,7 +633,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("returns correct rank for existing key with nullIfMissing=true", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("rank-exists-null")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				for _, k := range []string{"a", "b", "c"} {
@@ -692,7 +651,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("rank is consistent with GetNth for many elements", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("rank-consistency")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				n := 100
@@ -720,7 +679,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("returns nil for negative rank", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("nth-neg")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				_, err := rs.Add(tx, []byte("a"))
@@ -739,7 +698,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("returns nil for rank beyond size", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("nth-oob")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				_, err := rs.Add(tx, []byte("only"))
@@ -758,7 +717,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("returns nil on empty set", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("nth-empty")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				nth, err := rs.GetNth(tx, 0)
@@ -770,7 +729,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("correct after interleaved adds and removes", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("nth-interleave")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				// Add a, b, c, d, e
@@ -818,11 +777,11 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("rejects empty key", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("contains-empty")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				_, err := rs.Contains(tx, []byte{})
-				var emptyKeyErr *rankedSetEmptyKeyError
+				var emptyKeyErr *rlcollections.RankedSetEmptyKeyError
 				Expect(errors.As(err, &emptyKeyErr)).To(BeTrue())
 			})
 		})
@@ -830,7 +789,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("returns false for absent key, true for present", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("contains-basic")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				has, err := rs.Contains(tx, []byte("nope"))
@@ -849,7 +808,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("returns false after key is removed", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("contains-after-rm")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				_, err := rs.Add(tx, []byte("gone"))
@@ -869,11 +828,11 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("rejects empty key", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("count-empty")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				_, err := rs.Count(tx, []byte{})
-				var emptyKeyErr *rankedSetEmptyKeyError
+				var emptyKeyErr *rlcollections.RankedSetEmptyKeyError
 				Expect(errors.As(err, &emptyKeyErr)).To(BeTrue())
 			})
 		})
@@ -881,7 +840,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("returns 0 for absent key", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("count-absent")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				c, err := rs.Count(tx, []byte("nope"))
@@ -893,7 +852,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("returns 1 for present key without CountDuplicates", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("count-nodup")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				_, err := rs.Add(tx, []byte("k"))
@@ -912,8 +871,8 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("returns duplicate count with CountDuplicates", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("count-dup")
-				rs := newRankedSet(sub, rankedSetConfig{
-					NLevels:         rankedSetDefaultLevels,
+				rs := rlcollections.NewRankedSet(sub, rlcollections.RankedSetConfig{
+					NLevels:         rlcollections.RankedSetDefaultLevels,
 					CountDuplicates: true,
 				})
 				Expect(rs.Init(tx)).To(Succeed())
@@ -934,7 +893,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("returns 0 for empty set", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("size-empty")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				size, err := rs.Size(tx)
@@ -946,8 +905,8 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("accounts for duplicates when CountDuplicates is on", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("size-dup")
-				rs := newRankedSet(sub, rankedSetConfig{
-					NLevels:         rankedSetDefaultLevels,
+				rs := rlcollections.NewRankedSet(sub, rlcollections.RankedSetConfig{
+					NLevels:         rlcollections.RankedSetDefaultLevels,
 					CountDuplicates: true,
 				})
 				Expect(rs.Init(tx)).To(Succeed())
@@ -971,7 +930,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("correct after add-remove-add cycle", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("size-cycle")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				for _, k := range []string{"a", "b", "c"} {
@@ -1004,7 +963,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("resets everything and allows re-use", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("clear-reuse")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				for _, k := range []string{"a", "b", "c"} {
@@ -1036,50 +995,21 @@ var _ = Describe("rankedSet (skip-list)", func() {
 	})
 
 	Describe("Hash functions", func() {
-		It("jdkArrayHash matches known Java values", func() {
-			// Java: Arrays.hashCode(new byte[]{}) = 1
-			Expect(jdkArrayHash([]byte{})).To(Equal(int32(1)))
-
-			// Java: Arrays.hashCode(new byte[]{0}) = 31
-			Expect(jdkArrayHash([]byte{0})).To(Equal(int32(31)))
-
-			// Java: Arrays.hashCode(new byte[]{1}) = 32
-			Expect(jdkArrayHash([]byte{1})).To(Equal(int32(32)))
-
-			// Java: Arrays.hashCode(new byte[]{1, 2}) = 31*32 + 2 = 994
-			Expect(jdkArrayHash([]byte{1, 2})).To(Equal(int32(994)))
-
-			// Java: Arrays.hashCode(new byte[]{(byte)0xFF}) = 31*1 + (-1) = 30
-			// 0xFF as signed byte = -1
-			Expect(jdkArrayHash([]byte{0xFF})).To(Equal(int32(30)))
-		})
-
-		It("crcHash produces consistent results", func() {
-			// Same input -> same output
-			h1 := crcHash([]byte("test"))
-			h2 := crcHash([]byte("test"))
-			Expect(h1).To(Equal(h2))
-
-			// Different inputs -> different outputs (not guaranteed but very likely)
-			h3 := crcHash([]byte("other"))
-			Expect(h3).NotTo(Equal(h1))
-		})
-
 		It("JDK and CRC hashes produce different level distributions", func() {
 			// Just verify both hash functions produce valid level decisions
 			// by running the add path with each
 			runInTx(func(tx fdb.WritableTransaction) {
 				subJDK := specSubspace().Sub("hash-jdk")
-				rsJDK := newRankedSet(subJDK, rankedSetConfig{
-					HashFunction: pureHash(jdkArrayHash),
-					NLevels:      rankedSetDefaultLevels,
+				rsJDK := rlcollections.NewRankedSet(subJDK, rlcollections.RankedSetConfig{
+					HashFunction: rlcollections.PureHash(rlcollections.JDKArrayHash),
+					NLevels:      rlcollections.RankedSetDefaultLevels,
 				})
 				Expect(rsJDK.Init(tx)).To(Succeed())
 
 				subCRC := specSubspace().Sub("hash-crc")
-				rsCRC := newRankedSet(subCRC, rankedSetConfig{
-					HashFunction: pureHash(crcHash),
-					NLevels:      rankedSetDefaultLevels,
+				rsCRC := rlcollections.NewRankedSet(subCRC, rlcollections.RankedSetConfig{
+					HashFunction: rlcollections.PureHash(rlcollections.CRCHash),
+					NLevels:      rlcollections.RankedSetDefaultLevels,
 				})
 				Expect(rsCRC.Init(tx)).To(Succeed())
 
@@ -1092,7 +1022,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 				}
 
 				// Both should have 30 elements, and rank/getNth consistency
-				for _, rs := range []*rankedSet{rsJDK, rsCRC} {
+				for _, rs := range []*rlcollections.RankedSet{rsJDK, rsCRC} {
 					size, err := rs.Size(tx)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(size).To(Equal(int64(30)))
@@ -1115,7 +1045,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("works with minimum NLevels=2", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("levels-2")
-				rs := newRankedSet(sub, rankedSetConfig{NLevels: 2})
+				rs := rlcollections.NewRankedSet(sub, rlcollections.RankedSetConfig{NLevels: 2})
 				Expect(rs.Init(tx)).To(Succeed())
 
 				for i := range 20 {
@@ -1141,7 +1071,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("works with maximum NLevels=8", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("levels-8")
-				rs := newRankedSet(sub, rankedSetConfig{NLevels: 8})
+				rs := rlcollections.NewRankedSet(sub, rlcollections.RankedSetConfig{NLevels: 8})
 				Expect(rs.Init(tx)).To(Succeed())
 
 				for i := range 20 {
@@ -1164,65 +1094,11 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		})
 	})
 
-	Describe("rsEncodeLong and rsDecodeLong", func() {
-		It("round-trips zero", func() {
-			encoded := rsEncodeLong(0)
-			Expect(encoded).To(HaveLen(8))
-			val, err := rsDecodeLong(encoded)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(val).To(Equal(int64(0)))
-		})
-
-		It("round-trips positive values", func() {
-			for _, v := range []int64{1, 127, 128, 255, 256, 65535, 1<<31 - 1, 1<<63 - 1} {
-				encoded := rsEncodeLong(v)
-				val, err := rsDecodeLong(encoded)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(val).To(Equal(v), "round-trip of %d", v)
-			}
-		})
-
-		It("round-trips negative values", func() {
-			for _, v := range []int64{-1, -128, -256, -1 << 31, -1 << 63} {
-				encoded := rsEncodeLong(v)
-				val, err := rsDecodeLong(encoded)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(val).To(Equal(v), "round-trip of %d", v)
-			}
-		})
-
-		It("returns 0 for nil input", func() {
-			val, err := rsDecodeLong(nil)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(val).To(Equal(int64(0)))
-		})
-
-		It("returns error for short non-nil input", func() {
-			_, err := rsDecodeLong([]byte{1})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("corrupted count value"))
-
-			_, err = rsDecodeLong([]byte{1, 2, 3, 4, 5, 6, 7})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("expected 8 bytes, got 7"))
-		})
-
-		It("is little-endian (matches Java encodeLong)", func() {
-			// 1 as little-endian int64
-			encoded := rsEncodeLong(1)
-			Expect(encoded).To(Equal([]byte{1, 0, 0, 0, 0, 0, 0, 0}))
-
-			// 256 as little-endian int64
-			encoded = rsEncodeLong(256)
-			Expect(encoded).To(Equal([]byte{0, 1, 0, 0, 0, 0, 0, 0}))
-		})
-	})
-
 	Describe("stress: add-remove-verify cycle", func() {
 		It("maintains consistency through 200 operations", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("stress")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				// Track what we expect to be in the set
@@ -1298,8 +1174,8 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("maintains correct size and ranks through dup adds and removes", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("stress-dup")
-				rs := newRankedSet(sub, rankedSetConfig{
-					NLevels:         rankedSetDefaultLevels,
+				rs := rlcollections.NewRankedSet(sub, rlcollections.RankedSetConfig{
+					NLevels:         rlcollections.RankedSetDefaultLevels,
 					CountDuplicates: true,
 				})
 				Expect(rs.Init(tx)).To(Succeed())
@@ -1367,7 +1243,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 			// Transaction 1: add elements
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				sub := ks.Sub("persist")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				tx := rtx.Transaction()
 				Expect(rs.Init(tx)).To(Succeed())
 
@@ -1382,7 +1258,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 			// Transaction 2: read back
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				sub := ks.Sub("persist")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				tx := rtx.Transaction()
 
 				needed, err := rs.InitNeeded(tx)
@@ -1408,7 +1284,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 			// Transaction 3: remove and verify
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				sub := ks.Sub("persist")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				tx := rtx.Transaction()
 
 				removed, err := rs.Remove(tx, []byte("y"))
@@ -1429,7 +1305,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("handles negative, zero, and large int64 tuple keys", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("tuple-int")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				values := []int64{-1000, -1, 0, 1, 42, 999, 1 << 50}
@@ -1462,7 +1338,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("handles string tuple keys", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("tuple-str")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				strings := []string{"banana", "apple", "cherry", "date"}
@@ -1490,7 +1366,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("handles composite tuple keys (group + score)", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				sub := specSubspace().Sub("tuple-composite")
-				rs := newRankedSet(sub, defaultRankedSetConfig)
+				rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
 				type entry struct {

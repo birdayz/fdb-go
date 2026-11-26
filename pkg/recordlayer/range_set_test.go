@@ -584,7 +584,8 @@ var _ = Describe("RangeSet", func() {
 
 	Describe("wire format", func() {
 		It("stores key as tuple-packed bytes and value as raw bytes", func() {
-			rs := newRangeSet()
+			ss := specSubspace().Sub("rs-wire")
+			rs := NewRangeSet(ss)
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				begin := []byte{0x10}
 				end := []byte{0x50}
@@ -592,7 +593,7 @@ var _ = Describe("RangeSet", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Read raw FDB data to verify wire format
-				ssBegin, ssEnd := rs.subspace.FDBRangeKeys()
+				ssBegin, ssEnd := ss.FDBRangeKeys()
 				kvs, err := rtx.Transaction().GetRange(
 					fdb.KeyRange{Begin: ssBegin, End: ssEnd},
 					fdb.RangeOptions{},
@@ -601,7 +602,7 @@ var _ = Describe("RangeSet", func() {
 				Expect(kvs).To(HaveLen(1))
 
 				// Key should be tuple-unpacked to the begin bytes
-				unpacked, err := rs.subspace.Unpack(kvs[0].Key)
+				unpacked, err := ss.Unpack(kvs[0].Key)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(unpacked[0].([]byte)).To(Equal(begin))
 

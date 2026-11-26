@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 
+	"fdb.dev/internal/recordlayer/rlcollections"
 	"fdb.dev/internal/recordlayer/tuplefast"
 
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -394,6 +395,10 @@ func (m *textIndexMaintainer) updateOneKey(record *FDBStoredRecord[proto.Message
 		m.tx.AddWriteConflictRange(indexRange)
 	}
 
+	return m.applyTokenUpdates(remove, groupingKey, groupedKey, groupingPrefix, positionMap)
+}
+
+func (m *textIndexMaintainer) applyTokenUpdates(remove bool, groupingKey, groupedKey tuple.Tuple, groupingPrefix []byte, positionMap map[string][]int) error {
 	// Overlap independent token-map reads up to TEXT_INDEX_UPDATE depth; apply writes/conflicts
 	// on this goroutine in issue order and return the first failure (TextIndexMaintainer.java:337-353).
 	pipelineSize := m.pipelineSize
@@ -409,7 +414,7 @@ func (m *textIndexMaintainer) updateOneKey(record *FDBStoredRecord[proto.Message
 	completeOldest := func() error {
 		op := &pending[0]
 		if op.rem != nil {
-			if _, _, err := op.rem.finish(); err != nil {
+			if _, _, err := op.rem.Finish(); err != nil {
 				tok := op.token
 				pending = pending[1:]
 				return fmt.Errorf("text index remove token %q: %w", tok, err)
@@ -417,7 +422,7 @@ func (m *textIndexMaintainer) updateOneKey(record *FDBStoredRecord[proto.Message
 			pending = pending[1:]
 			return nil
 		}
-		if _, _, err := op.put.finish(); err != nil {
+		if _, _, err := op.put.Finish(); err != nil {
 			tok := op.token
 			pending = pending[1:]
 			return fmt.Errorf("text index put token %q: %w", tok, err)
@@ -448,7 +453,7 @@ func (m *textIndexMaintainer) updateOneKey(record *FDBStoredRecord[proto.Message
 			mapSubspace := m.indexSubspace.Sub(subspaceElements...)
 			pending = append(pending, pendingTokenOp{
 				token: token,
-				rem:   m.bunchedMap.startRemove(m.tx, mapSubspace, remGroupedKey),
+				rem:   rlcollections.StartRemove(m.bunchedMap, m.tx, mapSubspace, remGroupedKey),
 			})
 		}
 	} else {
@@ -484,7 +489,7 @@ func (m *textIndexMaintainer) updateOneKey(record *FDBStoredRecord[proto.Message
 			}
 			pending = append(pending, pendingTokenOp{
 				token: token,
-				put:   m.bunchedMap.startPutPrepacked(m.tx, subspaceKey, keyBytes, keyBytesAfter, value),
+				put:   rlcollections.StartPutPrepacked(m.bunchedMap, m.tx, subspaceKey, keyBytes, keyBytesAfter, value),
 			})
 		}
 	}
@@ -593,7 +598,7 @@ func (m *textIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 		}
 		m.tx.ClearRange(r)
 	} else {
-		sub := m.indexSubspace.Sub(tupleToTupleElements(prefix)...)
+		sub := m.indexSubspace.Sub(rlcollections.TupleToElements(prefix)...)
 		r, err := fdb.PrefixRange(sub.Bytes())
 		if err != nil {
 			return fmt.Errorf("text index deleteWhere: %w", err)

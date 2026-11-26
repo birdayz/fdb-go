@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"fdb.dev/internal/dst"
+	"fdb.dev/internal/recordlayer/rlcollections"
 	"fdb.dev/internal/recordlayer/rtree"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 )
@@ -95,8 +96,8 @@ func TestMurmur3HashMatchesGuava(t *testing.T) {
 		// Bytes above 0x7f: Guava's tail reads them unsigned.
 		string([]byte{0xff, 0x80, 0x00, 0x7f, 0x01}): -1131820900,
 	} {
-		if got := murmur3Hash([]byte(in)); got != want {
-			t.Errorf("murmur3Hash(%q) = %d; Guava gives %d", in, got, want)
+		if got := rlcollections.Murmur3Hash([]byte(in)); got != want {
+			t.Errorf("rlcollections.Murmur3Hash(%q) = %d; Guava gives %d", in, got, want)
 		}
 	}
 }
@@ -146,9 +147,9 @@ func TestRankedSetConfigParsesAsJavaDoes(t *testing.T) {
 		if config.HashFunctionName != c.hash || config.NLevels != c.levels || config.CountDuplicates != c.dups {
 			t.Errorf("%s: got hash %s levels %d dups %t, want %s %d %t", c.name, config.HashFunctionName, config.NLevels, config.CountDuplicates, c.hash, c.levels, c.dups)
 		}
-		if c.hash != rankedSetHashRandom {
+		if c.hash != rlcollections.RankedSetHashRandom {
 			got, errGot := config.HashFunction([]byte("probe"))
-			want, errWant := rankedSetHashFunctions[c.hash]([]byte("probe"))
+			want, errWant := rlcollections.RankedSetHashFunctions[c.hash]([]byte("probe"))
 			if errGot != nil || errWant != nil || got != want {
 				t.Errorf("%s: the config's function is not %s's", c.name, c.hash)
 			}
@@ -274,16 +275,16 @@ func TestRankedSetHashFunctionsAreJavas(t *testing.T) {
 	t.Parallel()
 	in := []byte("hello")
 	for name, want := range map[string]int32{
-		rankedSetHashJDK:     127791473,
-		rankedSetHashCRC:     907060870,
-		rankedSetHashMurmur3: 613153351,
+		rlcollections.RankedSetHashJDK:     127791473,
+		rlcollections.RankedSetHashCRC:     907060870,
+		rlcollections.RankedSetHashMurmur3: 613153351,
 	} {
-		if got, err := rankedSetHashFunctions[name](in); err != nil || got != want {
+		if got, err := rlcollections.RankedSetHashFunctions[name](in); err != nil || got != want {
 			t.Errorf("%s(%q) = %d, %v; Java gives %d", name, in, got, err, want)
 		}
 	}
 	// RANDOM draws a new int per call whatever the key.
-	random, draws := rankedSetHashFunctions[rankedSetHashRandom], map[int32]bool{}
+	random, draws := rlcollections.RankedSetHashFunctions[rlcollections.RankedSetHashRandom], map[int32]bool{}
 	for range 16 {
 		h, err := random(in)
 		if err != nil {
@@ -294,8 +295,8 @@ func TestRankedSetHashFunctionsAreJavas(t *testing.T) {
 	if len(draws) < 2 {
 		t.Error("RANDOM gave one value for 16 calls")
 	}
-	if len(rankedSetHashFunctions) != 4 {
-		t.Errorf("%d hash functions; Java knows four", len(rankedSetHashFunctions))
+	if len(rlcollections.RankedSetHashFunctions) != 4 {
+		t.Errorf("%d hash functions; Java knows four", len(rlcollections.RankedSetHashFunctions))
 	}
 }
 
@@ -309,7 +310,7 @@ func TestRandomRankHashReplaysUnderASeededEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, b := config.withEnv(simEnv(dst.NewSim(42))), config.withEnv(simEnv(dst.NewSim(42)))
+	a, b := rankedSetWithEnv(config, simEnv(dst.NewSim(42))), rankedSetWithEnv(config, simEnv(dst.NewSim(42)))
 	for i := range 16 {
 		x, errX := a.HashFunction(nil)
 		y, errY := b.HashFunction(nil)
@@ -318,7 +319,7 @@ func TestRandomRankHashReplaysUnderASeededEnv(t *testing.T) {
 		}
 	}
 	// A pure hash is left as it is.
-	jdk := defaultRankedSetConfig.withEnv(simEnv(dst.NewSim(42)))
+	jdk := rankedSetWithEnv(rlcollections.DefaultRankedSetConfig, simEnv(dst.NewSim(42)))
 	if h, err := jdk.HashFunction([]byte("hello")); err != nil || h != 127791473 {
 		t.Error("withEnv changed the JDK hash")
 	}
@@ -339,7 +340,7 @@ func TestRandomRankHashFailsTheWriteOnAFailedRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := &Env{Random: failingRandomness{}}
-	rs := newRankedSet(subspace.FromBytes([]byte("rs")), config.withEnv(env))
+	rs := rlcollections.NewRankedSet(subspace.FromBytes([]byte("rs")), rankedSetWithEnv(config, env))
 	// A nil transaction: the draw comes before the first read or write, so an
 	// Add that goes on past a failed draw reaches the transaction and panics.
 	// That is reported as this test's failure, not left to end the binary.

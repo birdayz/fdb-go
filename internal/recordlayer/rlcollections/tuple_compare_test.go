@@ -1,4 +1,4 @@
-package recordlayer
+package rlcollections
 
 import (
 	"bytes"

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/recordlayer/rlcollections"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
@@ -56,7 +57,7 @@ var _ = Describe("Rank-valued scans", func() {
 						maintainer, err := store.getIndexMaintainer(index)
 						Expect(err).NotTo(HaveOccurred())
 						rank := maintainer.(*rankIndexMaintainer)
-						rs := newRankedSet(rank.secondarySubspace, rank.rankedSetConfig)
+						rs := rlcollections.NewRankedSet(rank.secondarySubspace, rank.rankedSetConfig)
 						removed, err := rs.Remove(rtx.Transaction(), tuple.Tuple{int64(100)}.Pack())
 						Expect(err).NotTo(HaveOccurred())
 						Expect(removed).To(BeTrue())
@@ -90,7 +91,7 @@ var _ = Describe("Rank-valued scans", func() {
 					maintainer, err := other.getIndexMaintainer(index)
 					Expect(err).NotTo(HaveOccurred())
 					rank := maintainer.(*rankIndexMaintainer)
-					rs := newRankedSet(rank.secondarySubspace, rank.rankedSetConfig)
+					rs := rlcollections.NewRankedSet(rank.secondarySubspace, rank.rankedSetConfig)
 					var removed bool
 					if missing {
 						// The missing score's point read must not conflict with an
@@ -187,7 +188,7 @@ var _ = Describe("Rank-valued scans", func() {
 			Expect(raw[0].Value).To(BeEmpty())
 			// Leave the B-tree entry intact while removing its secondary score.
 			// Java's nullIfMissing lookup represents this as tuple(null).
-			rs := newRankedSet(rank.secondarySubspace, rank.rankedSetConfig)
+			rs := rlcollections.NewRankedSet(rank.secondarySubspace, rank.rankedSetConfig)
 			removed, err := rs.Remove(rtx.Transaction(), tuple.Tuple{int64(100)}.Pack())
 			Expect(err).NotTo(HaveOccurred())
 			Expect(removed).To(BeTrue())
@@ -243,7 +244,7 @@ var _ = Describe("Rank-valued scans", func() {
 					maintainer, err := store.getIndexMaintainer(index)
 					Expect(err).NotTo(HaveOccurred())
 					rankMaintainer := maintainer.(*rankIndexMaintainer)
-					rs := newRankedSet(rankMaintainer.secondarySubspace.Sub(int64(0)), rankMaintainer.rankedSetConfig)
+					rs := rlcollections.NewRankedSet(rankMaintainer.secondarySubspace.Sub(int64(0)), rankMaintainer.rankedSetConfig)
 					count, err := rs.Count(rtx.Transaction(), tuple.Tuple{int64(100), int64(1)}.Pack())
 					Expect(err).NotTo(HaveOccurred())
 					expectedCount := int64(1)
@@ -261,7 +262,7 @@ var _ = Describe("Rank-valued scans", func() {
 					Expect(err).NotTo(HaveOccurred())
 					rankMaintainer := maintainer.(*rankIndexMaintainer)
 					Expect(rankMaintainer.rankedSetConfig.CountDuplicates).To(Equal(duplicates))
-					rs := newRankedSet(rankMaintainer.secondarySubspace.Sub(int64(0)), rankMaintainer.rankedSetConfig)
+					rs := rlcollections.NewRankedSet(rankMaintainer.secondarySubspace.Sub(int64(0)), rankMaintainer.rankedSetConfig)
 					count, err := rs.Count(rtx.Transaction(), tuple.Tuple{int64(100), int64(1)}.Pack())
 					Expect(err).NotTo(HaveOccurred())
 					expectedCount := int64(1)

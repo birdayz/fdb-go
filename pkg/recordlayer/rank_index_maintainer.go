@@ -8,7 +8,9 @@ package recordlayer
 
 import (
 	"fmt"
+	"io"
 
+	"fdb.dev/internal/recordlayer/rlcollections"
 	"fdb.dev/internal/recordlayer/tuplefast"
 
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -32,7 +34,7 @@ type RankQuerier interface {
 type rankIndexMaintainer struct {
 	StandardIndexMaintainer                   // embedded — primary B-tree operations
 	secondarySubspace       subspace.Subspace // ranked sets per group
-	rankedSetConfig         rankedSetConfig
+	rankedSetConfig         rlcollections.RankedSetConfig
 }
 
 // Index option keys for RANK indexes.
@@ -56,7 +58,7 @@ func newRankIndexMaintainer(
 	return &rankIndexMaintainer{
 		StandardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
 		secondarySubspace:       secondarySubspace,
-		rankedSetConfig:         config.withEnv(store.Env()),
+		rankedSetConfig:         rankedSetWithEnv(config, store.Env()),
 	}, nil
 }
 
@@ -66,22 +68,22 @@ func newRankIndexMaintainer(
 // Integer.parseInt and RankedSet.ConfigBuilder.setNLevels's range, and
 // count-duplicates by Boolean.parseBoolean. Java raises the refusals when a
 // maintainer is made and when the option check reads the config; so does Go.
-func parseRankedSetConfig(index *Index) (rankedSetConfig, error) {
-	config := defaultRankedSetConfig
+func parseRankedSetConfig(index *Index) (rlcollections.RankedSetConfig, error) {
+	config := rlcollections.DefaultRankedSetConfig
 	if v, ok := index.Options[IndexOptionRankHashFunction]; ok {
-		fn, found := rankedSetHashFunctions[v]
+		fn, found := rlcollections.RankedSetHashFunctions[v]
 		if !found {
-			return rankedSetConfig{}, &RecordCoreArgumentError{Message: "hash function not found: " + v}
+			return rlcollections.RankedSetConfig{}, &RecordCoreArgumentError{Message: "hash function not found: " + v}
 		}
 		config.HashFunction, config.HashFunctionName = fn, v
 	}
 	if v, ok := index.Options[IndexOptionRankNLevels]; ok {
 		n, err := JavaParseInt(v)
 		if err != nil {
-			return rankedSetConfig{}, err
+			return rlcollections.RankedSetConfig{}, err
 		}
-		if n < 2 || n > rankedSetMaxLevels {
-			return rankedSetConfig{}, &IllegalArgumentError{Message: fmt.Sprintf("levels must be between 2 and %d", rankedSetMaxLevels)}
+		if n < 2 || n > rlcollections.RankedSetMaxLevels {
+			return rlcollections.RankedSetConfig{}, &IllegalArgumentError{Message: fmt.Sprintf("levels must be between 2 and %d", rlcollections.RankedSetMaxLevels)}
 		}
 		config.NLevels = int(n)
 	}
@@ -89,6 +91,14 @@ func parseRankedSetConfig(index *Index) (rankedSetConfig, error) {
 		config.CountDuplicates = javaParseBoolean(v)
 	}
 	return config, nil
+}
+
+func rankedSetWithEnv(c rlcollections.RankedSetConfig, env *Env) rlcollections.RankedSetConfig {
+	var r io.Reader
+	if env != nil && env.Random != nil {
+		r = env.Random
+	}
+	return c.WithRandomReader(r)
 }
 
 // DeleteWhere clears both the primary B-tree and secondary ranked set entries
@@ -243,7 +253,7 @@ func (m *rankIndexMaintainer) updateRankedSet(entry EvaluatedIndexEntry, remove 
 		scoreKey = entry.key
 	}
 
-	rankedSet := newRankedSet(rankSubspace, m.rankedSetConfig)
+	rankedSet := rlcollections.NewRankedSet(rankSubspace, m.rankedSetConfig)
 	score := scoreKey.Pack()
 
 	// Init if needed — use snapshot check to avoid conflicts with atomic mutations.
@@ -351,7 +361,17 @@ func (m *rankIndexMaintainer) rankRangeToScoreRange(rankRange TupleRange) (*Tupl
 		return &result, nil
 	}
 
-	rankedSet := newRankedSet(rankSubspace, m.rankedSetConfig)
+	return m.lookupScoreRangeBounds(rankSubspace, prefix, lowRank, highRank, startFromBeginning, lowEndpoint, highEndpoint)
+}
+
+func (m *rankIndexMaintainer) lookupScoreRangeBounds(
+	rankSubspace subspace.Subspace,
+	prefix tuple.Tuple,
+	lowRank, highRank *int64,
+	startFromBeginning bool,
+	lowEndpoint, highEndpoint EndpointType,
+) (*TupleRange, error) {
+	rankedSet := rlcollections.NewRankedSet(rankSubspace, m.rankedSetConfig)
 
 	// Init if needed.
 	needed, err := rankedSet.InitNeeded(m.tx.Snapshot())
@@ -422,7 +442,6 @@ func (m *rankIndexMaintainer) rankRangeToScoreRange(rankRange TupleRange) (*Tupl
 	if prefix != nil {
 		scoreRange = scoreRange.Prepend(prefix)
 	}
-
 	return &scoreRange, nil
 }
 
@@ -451,7 +470,7 @@ func (m *rankIndexMaintainer) RankForScore(groupAndScore tuple.Tuple, nullIfMiss
 		scoreTuple = groupAndScore
 	}
 
-	rankedSet := newRankedSet(rankSubspace, m.rankedSetConfig)
+	rankedSet := rlcollections.NewRankedSet(rankSubspace, m.rankedSetConfig)
 	rankedSet.PreloadForLookup(m.tx.Snapshot())
 	return rankedSet.Rank(m.tx, scoreTuple.Pack(), nullIfMissing)
 }
@@ -480,7 +499,7 @@ func (m *rankIndexMaintainer) ScoreForRank(groupAndRank tuple.Tuple) (tuple.Tupl
 		return nil, err
 	}
 
-	rankedSet := newRankedSet(rankSubspace, m.rankedSetConfig)
+	rankedSet := rlcollections.NewRankedSet(rankSubspace, m.rankedSetConfig)
 	rankedSet.PreloadForLookup(m.tx.Snapshot())
 	scoreBytes, err := rankedSet.GetNth(m.tx, *rank)
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 
+	"fdb.dev/internal/recordlayer/rlcollections"
 	"fdb.dev/internal/recordlayer/tuplefast"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -569,7 +570,7 @@ func evaluateRankAggregate(
 		}
 		rankSubspace = rankSubspace.Sub(elems...)
 	}
-	rankedSet := newRankedSet(rankSubspace, rm.rankedSetConfig)
+	rankedSet := rlcollections.NewRankedSet(rankSubspace, rm.rankedSetConfig)
 
 	// Init if needed.
 	needed, err := rankedSet.InitNeeded(rm.tx.Snapshot())

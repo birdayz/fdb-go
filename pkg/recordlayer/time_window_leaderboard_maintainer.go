@@ -14,6 +14,7 @@ import (
 	"math"
 	"sort"
 
+	"fdb.dev/internal/recordlayer/rlcollections"
 	"fdb.dev/internal/recordlayer/tuplefast"
 
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -31,7 +32,7 @@ import (
 type timeWindowLeaderboardIndexMaintainer struct {
 	StandardIndexMaintainer
 	secondarySubspace subspace.Subspace
-	rankedSetConfig   rankedSetConfig
+	rankedSetConfig   rlcollections.RankedSetConfig
 }
 
 func newTimeWindowLeaderboardIndexMaintainer(
@@ -49,7 +50,7 @@ func newTimeWindowLeaderboardIndexMaintainer(
 	return &timeWindowLeaderboardIndexMaintainer{
 		StandardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
 		secondarySubspace:       secondarySubspace,
-		rankedSetConfig:         config.withEnv(store.Env()),
+		rankedSetConfig:         rankedSetWithEnv(config, store.Env()),
 	}, nil
 }
 
@@ -191,10 +192,10 @@ func (m *timeWindowLeaderboardIndexMaintainer) updateRankedSet(
 	entry EvaluatedIndexEntry,
 	scoreKey tuple.Tuple,
 	remove bool,
-	config rankedSetConfig,
+	config rlcollections.RankedSetConfig,
 ) error {
 	rankSubspace := m.secondarySubspace.Sub(leaderboardGroupKey...)
-	rankedSet := newRankedSet(rankSubspace, config)
+	rankedSet := rlcollections.NewRankedSet(rankSubspace, config)
 	score := scoreKey.Pack()
 
 	needed, err := rankedSet.InitNeeded(m.tx.Snapshot())
@@ -594,7 +595,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) rankRangeToScoreRange(
 	if lb.NLevels > 0 {
 		config.NLevels = lb.NLevels
 	}
-	rankedSet := newRankedSet(rankSubspace, config)
+	rankedSet := rlcollections.NewRankedSet(rankSubspace, config)
 
 	needed, err := rankedSet.InitNeeded(m.tx.Snapshot())
 	if err != nil {
@@ -730,7 +731,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) PerformWindowUpdate(update *TimeW
 
 	nlevels := update.NLevels
 	if nlevels <= 0 {
-		nlevels = defaultRankedSetConfig.NLevels
+		nlevels = rlcollections.DefaultRankedSetConfig.NLevels
 	}
 
 	// Create all-time leaderboard if requested.
@@ -932,7 +933,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) timeWindowRankAndEntry(
 		config.NLevels = lb.NLevels
 	}
 	rankSubspace := m.secondarySubspace.Sub(leaderboardGroupKey...)
-	rankedSet := newRankedSet(rankSubspace, config)
+	rankedSet := rlcollections.NewRankedSet(rankSubspace, config)
 	rankedSet.PreloadForLookup(m.tx.Snapshot())
 
 	// Rank lookup uses the negated scoreKey (as stored in the ranked set).
@@ -1079,7 +1080,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) EvaluateTimeWindowAggregate(
 		config.NLevels = lb.NLevels
 	}
 	rankSubspace := m.secondarySubspace.Sub(leaderboardGroupKey...)
-	rankedSet := newRankedSet(rankSubspace, config)
+	rankedSet := rlcollections.NewRankedSet(rankSubspace, config)
 	rankedSet.PreloadForLookup(m.tx.Snapshot())
 
 	switch fn.Name {

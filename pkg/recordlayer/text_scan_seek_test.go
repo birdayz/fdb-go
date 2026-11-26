@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/recordlayer/rlcollections"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -88,7 +89,7 @@ var _ = Describe("TEXT leapfrog seek", func() {
 							it.Next()
 						}
 						kvsBefore := kvs
-						it.seekTo(tuple.Tuple{target})
+						rlcollections.SeekBunchedMapMultiIterator(it, tuple.Tuple{target})
 
 						// The reference: the first streamed entry at or past the
 						// target, and the continuation after the one before it.
@@ -150,7 +151,7 @@ var _ = Describe("TEXT leapfrog seek", func() {
 				it := newBunchedMapMultiIterator(tx, parent, splitter, begin, end, nil, 0, true, TextIndexBunchedSerializerInstance())
 				Expect(it.HasNext()).To(BeTrue())
 				Expect(it.Next().Key).To(Equal(tuple.Tuple{int64(99)}))
-				it.seekTo(tuple.Tuple{target})
+				rlcollections.SeekBunchedMapMultiIterator(it, tuple.Tuple{target})
 				Expect(it.HasNext()).To(BeTrue(), "target=%d", target)
 				Expect(it.Next().Key).To(Equal(tuple.Tuple{target}))
 				cont := it.GetContinuation()
@@ -219,7 +220,7 @@ var _ = Describe("TEXT leapfrog seek", func() {
 			it.Next() // key 0, first bunch
 			before := kvs
 			// 151 is not a key; the bunch keyed 120 holds 120..177, and 153 follows.
-			it.seekTo(tuple.Tuple{int64(151)})
+			rlcollections.SeekBunchedMapMultiIterator(it, tuple.Tuple{int64(151)})
 			Expect(it.HasNext()).To(BeTrue())
 			Expect(it.GetContinuation()).To(Equal(append(tuple.Tuple{"tok"}.Pack(), tuple.Tuple{int64(150)}.Pack()...)))
 			Expect(it.Next().Key).To(Equal(tuple.Tuple{int64(153)}))
