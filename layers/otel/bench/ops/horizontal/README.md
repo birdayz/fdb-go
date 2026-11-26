@@ -49,11 +49,11 @@ points this way: `tools/benchcampaign/multinode/BUILD.bazel` only exports them t
 this package). So every module in this directory, and those four, must stay
 importable until the imports are cut.
 
-**The Kubernetes driver script is not in this repository.** The reference run's
-copy lives outside it (`/var/tmp/fdb-perf-scaling.v4O6xf/k8s_operator_scaling.py`
-on the machine that ran it). There is no committed, reviewed way to rerun the
-Kubernetes benchmark from a fresh clone yet, and this README does not provide
-one. Importing the modules here has no cloud effects.
+**The Kubernetes benchmark tool is [../k8s](../k8s/README.md).** It provisions the lease, brings up the stack described
+above, runs the load generators against a fresh cluster per run, verifies, and tears down by label; its README is the
+runbook and `docs/benchmarks/otel-ingest-k8s-lean-campaigns.md` holds the results measured with it. It does not import the
+modules in this directory. The reference run's own driver (`k8s_operator_scaling.py`, which does import them) is still not
+in the repository. Importing the modules here has no cloud effects.
 
 ## Tests
 

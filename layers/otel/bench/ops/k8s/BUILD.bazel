@@ -1,0 +1,8 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+sh_test(
+    name = "k8s_bench_test",
+    srcs = ["test.sh"],
+    args = ["test_k8s_bench"],
+    data = glob(["*.py"]),
+)
