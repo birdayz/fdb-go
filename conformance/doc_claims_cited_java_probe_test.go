@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/conformance/javacorpus"
-	"fdb.dev/pkg/relational/conformance/plandiff/seedcorpus"
+	"fdb.dev/internal/relational/conformance/javacorpus"
+	"fdb.dev/internal/relational/conformance/plandiff/seedcorpus"
 )
 
 // docCitation is a backticked lowercase name in a document; a DSN key is not a

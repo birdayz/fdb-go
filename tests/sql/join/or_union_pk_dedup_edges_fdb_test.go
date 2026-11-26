@@ -32,7 +32,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // mmOrEdgeFixture is a driver row plus a probed table with four indexed

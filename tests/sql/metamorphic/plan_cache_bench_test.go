@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // benchSeq provides unique database paths across benchmark invocations

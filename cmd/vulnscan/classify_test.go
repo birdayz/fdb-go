@@ -339,8 +339,6 @@ func TestExcludedTestInfraPackages(t *testing.T) {
 	for _, pkg := range []string{
 		"fdb.dev/pkg/testcontainers",
 		"fdb.dev/pkg/testcontainers/foundationdb",
-		"fdb.dev/pkg/relational/sqltest",
-		"fdb.dev/pkg/relational/sqltest/testkit",
 		"fdb.dev/internal/linters",
 		"fdb.dev/internal/linters/archdeps",
 		"fdb.dev/internal/simfdb",
@@ -389,7 +387,6 @@ func TestExcludedTestInfraPackages(t *testing.T) {
 		"fdb.dev/cmd/fdb",
 		"fdb.dev/cmd/fdb/internal/cmd",
 		"fdb.dev/pkg/testcontainers_extra",
-		"fdb.dev/pkg/relational/sqltest_extra",
 		"fdb.dev/internal/linters_extra",
 		"fdb.dev/internal/dst_extra",
 		"fdb.dev/internal/simfdb_extra",
@@ -419,7 +416,6 @@ func TestScanIncludesLibraryAndReleasedCLIEntrypoints(t *testing.T) {
 	}
 	output := "\n fdb.dev/pkg/recordlayer \n" +
 		"fdb.dev/pkg/testcontainers/foundationdb\n" +
-		"fdb.dev/pkg/relational/sqltest/testkit\n" +
 		"fdb.dev/internal/unicode15\n" +
 		"fdb.dev/internal/recordlayer/query/executor\n" +
 		"fdb.dev/internal/fdbgo/client\n" +
@@ -444,7 +440,7 @@ func TestScanIncludesLibraryAndReleasedCLIEntrypoints(t *testing.T) {
 	for _, output := range []string{
 		"",
 		" \n\t",
-		"fdb.dev/pkg/testcontainers\nfdb.dev/pkg/relational/sqltest\nfdb.dev/internal/linters/archdeps\nfdb.dev/internal/simfdb",
+		"fdb.dev/pkg/testcontainers\nfdb.dev/internal/relational/sqltest\nfdb.dev/internal/linters/archdeps\nfdb.dev/internal/simfdb",
 	} {
 		if pkgs := filterPackages(output); len(pkgs) != 0 {
 			t.Errorf("empty/excluded population %q produced %v", output, pkgs)

@@ -636,7 +636,7 @@ to MODULE.bazel; README contradiction check). The doc-drift portion of this item
 `FEATURE_MATRIX.md` is generated from the yamsql corpus (one row per scenario: name, #cases, and the
 scenario's own leading-comment description, grouped by feature area) via
 `cmd/gen-feature-matrix` / `just feature-matrix`, and **cannot rot**: `TestFeatureMatrixUpToDate`
-(`pkg/relational/conformance/yamsql`) regenerates and fails the build on drift (red→green proven).
+(`internal/relational/conformance/yamsql`) regenerates and fails the build on drift (red→green proven).
 README links it. **P1.7 is now fully closed.**
 
 ### [~] P1.8 — CI reproducibility / supply chain · M — implementation landed; RFC-108 still DRAFT

@@ -20,8 +20,8 @@ import (
 	"strings"
 	"time"
 
+	"fdb.dev/internal/relational/conformance/rowdiff"
 	"fdb.dev/internal/relational/relapi"
-	"fdb.dev/pkg/relational/conformance/rowdiff"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 
 	"fdb.dev/pkg/relational/sqldriver"

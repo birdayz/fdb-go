@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // RFC-210 §5.1 clause 4: a SPARSE (WHERE-filtered) UNIQUE index proves NOTHING

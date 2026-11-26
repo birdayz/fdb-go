@@ -1,0 +1,125 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+package(default_visibility = ["//:__subpackages__"])
+
+go_library(
+    name = "factory",
+    srcs = [
+        "batch.go",
+        "candidate.go",
+        "execute.go",
+        "featurevector.go",
+        "inapplicable.go",
+        "nested.go",
+        "pr_summary.go",
+        "sweep.go",
+    ],
+    importpath = "fdb.dev/internal/relational/conformance/factory",
+    visibility = [
+        "//:__subpackages__",
+        "//cmd/factory-migrate:__pkg__",
+        "//cmd/factory-plan-census:__pkg__",
+        "//cmd/factory-rebless:__pkg__",
+        "//cmd/factory-rebless-plan-shapes:__pkg__",
+        "//cmd/factory-run:__pkg__",
+    ],
+    deps = [
+        "//internal/relational/conformance/explaindiff",
+        "//internal/relational/conformance/factorycorpus",
+        "//internal/relational/conformance/rowdiff",
+        "//internal/relational/conformance/yamsql",
+        "//internal/relational/relapi",
+        "//pkg/recordlayer/query/plan/cascades/predicates",
+        "//pkg/relational/core/embedded",
+    ],
+)
+
+go_test(
+    name = "factory_test",
+    # keep: re-plans every committed scenario's four renderings and re-marshals
+    # every family file, which scales with corpus size and runs ~10x slower in
+    # the race lane (the canonicality walk alone measured 228s under -race at
+    # 5000 scenarios). Eternal is headroom for corpus growth, not present need.
+    timeout = "eternal",
+    srcs = [
+        "collision_test.go",
+        "corpus_shared_test.go",
+        "determinism_test.go",
+        "domain_registration_test.go",
+        "eligibility_census_test.go",
+        "excluded_shape_hunt_fdb_test.go",
+        "explain_alias_fdb_test.go",
+        "export_test.go",
+        "in_collapse_arity_test.go",
+        "inapplicable_test.go",
+        "nest_tag_test.go",
+        "nested_axis_classify_test.go",
+        "nested_axis_fdb_test.go",
+        "nested_corpus_collision_fdb_test.go",
+        "nested_outer_multileg_fdb_test.go",
+        "oracle_detectors_test.go",
+        "pin_conn_borrow_fdb_test.go",
+        "pipeline_test.go",
+        "plan_diversity_hunt_fdb_test.go",
+        "pr_summary_test.go",
+        "predicate_equivalence_fdb_test.go",
+        "qov_binding_shape_test.go",
+        "rewrite_soundness_test.go",
+        "rule_inventory_test.go",
+        "second_plan_fdb_test.go",
+        "sweep_derivation_test.go",
+        "tlp_render_test.go",
+        "unstable_subset_test.go",
+    ],
+    # keep: the determinism gate regenerates every COMMITTED file from its seed,
+    # so it needs the corpus the sibling package owns.
+    data = ["//internal/relational/conformance/factorycorpus:testdata"],
+    embed = [":factory"],
+    # keep: the hunts read their seed range, worker count and wall-clock budget
+    # from the environment, and Bazel does NOT pass the ambient environment into
+    # a test. Without declaring them here, every `HUNT_BUDGET=… bazelisk test`
+    # instruction in those files is silently ignored and the hunt runs its
+    # 25-to-40-seed default — a green that answers a question nobody asked.
+    #
+    # Declared empty so the default still applies when the operator passes
+    # nothing; `--test_env=NAME=value` then overrides. gazelle preserves this
+    # block because of the `keep` directive above.
+    env = {
+        "HUNT_BUDGET": "",
+        "HUNT_SEED_START": "",
+        "HUNT_SEEDS": "",
+        "HUNT_WORKERS": "",
+        "EXCL_SEED_START": "",
+        "EXCL_SEEDS": "",
+        "EXCL_WORKERS": "",
+        "FULL_SEED_START": "",
+        "FULL_SEEDS": "",
+        "FULL_WORKERS": "",
+        "NEST_SEED_START": "",
+        "NEST_SEEDS": "",
+        "NEST_WORKERS": "",
+        "EQUIV_SEED_START": "",
+        "EQUIV_SEEDS": "",
+        "EQUIV_WORKERS": "",
+    },
+    # Measured on the 7.6 GB CI runner, run alone: 4.9-5.0 GB above a baseline
+    # that includes the Bazel server (6.2-6.5 GB used at peak), with headroom.
+    tags = [
+        "resources:cpu:8",
+        "resources:memory:5500",
+        "test-full",
+    ],
+    deps = [
+        "//internal/relational/conformance/explaindiff",
+        "//internal/relational/conformance/factorycorpus",
+        "//internal/relational/conformance/rowdiff",
+        "//internal/relational/conformance/yamsql",
+        "//internal/relational/keyspace",
+        "//internal/relational/relapi",
+        "//pkg/recordlayer/query/plan/cascades",
+        "//pkg/recordlayer/query/plan/cascades/predicates",
+        "//pkg/relational/core/embedded",
+        "//pkg/relational/sqldriver",
+        "//pkg/testcontainers/foundationdb",
+    ],
+)

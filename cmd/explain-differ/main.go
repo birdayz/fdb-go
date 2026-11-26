@@ -25,11 +25,11 @@ import (
 	"log"
 	"os"
 
+	"fdb.dev/internal/relational/conformance/explaindiff"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
-	"fdb.dev/pkg/relational/conformance/explaindiff"
 )
 
-const defaultCorpus = "pkg/relational/conformance/yamsql/testdata"
+const defaultCorpus = "internal/relational/conformance/yamsql/testdata"
 
 func main() {
 	log.SetFlags(0)

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"testing"
 
-	"fdb.dev/pkg/relational/conformance/plandiff"
+	"fdb.dev/internal/relational/conformance/plandiff"
 )
 
 // TestIsTransientFDBError pins which Java-side errors the corpus runner re-runs

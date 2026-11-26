@@ -107,7 +107,7 @@ func TestEvaluate_CachedResultsAreNotMeasurements(t *testing.T) {
 }
 
 // A target that is big but healthy must warn, not fail. Measured on master,
-// //pkg/relational/conformance/rowdiff runs 659s of a 900s budget — 73%, every
+// //internal/relational/conformance/rowdiff runs 659s of a 900s budget — 73%, every
 // run, passing. A gate that failed there would block PRs that changed nothing,
 // which is the disease this whole change is treating. //pkg/a:a_test at 78%
 // stands in for it: over the warn line, under the fail line, exit 0.

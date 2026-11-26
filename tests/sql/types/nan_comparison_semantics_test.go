@@ -33,7 +33,7 @@ import (
 	"sort"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 func TestFDB_NaNComparisonSemantics(t *testing.T) {

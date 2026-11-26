@@ -20,12 +20,12 @@ import (
 
 	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/internal/relational/catalog"
+	"fdb.dev/internal/relational/conformance/plandiff"
 	"fdb.dev/internal/relational/metadata"
 	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/conformance/plandiff"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"

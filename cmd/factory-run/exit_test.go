@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/conformance/factory"
+	"fdb.dev/internal/relational/conformance/factory"
 )
 
 // healthyManifest is a run that should exit 0: it committed something and its

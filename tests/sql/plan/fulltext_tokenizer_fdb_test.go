@@ -12,12 +12,12 @@ import (
 	"fdb.dev/internal/recordlayer/query/executor"
 	"fdb.dev/internal/relational/ddl"
 	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/sqltest/testkit"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // Version 0 indexes the first word and version 1 the last, in both modes, so

@@ -28,7 +28,7 @@ go_test(
         "domain_registration_test.go",
         "full_corpus_fdb_test.go",
     ],
-    data = ["//pkg/relational/conformance/factorycorpus:testdata"],
+    data = ["//internal/relational/conformance/factorycorpus:testdata"],
     # keep: Bazel (rules_go) shards by TOP-LEVEL TEST FUNCTION, and the corpus
     # runs as one function per shard (TestFDB_FactoryCorpusFull0..7, each over a
     # disjoint, size-balanced set of corpus files). Must equal fullShards in
@@ -42,9 +42,9 @@ go_test(
     deps = [
         "//internal/dst",
         "//internal/dstwire",
+        "//internal/relational/conformance/factorycorpus",
         "//internal/relational/keyspace",
         "//internal/simfdb",
         "//pkg/recordlayer",
-        "//pkg/relational/conformance/factorycorpus",
     ],
 )

@@ -23,7 +23,7 @@ import (
 // instrument for that claim — not a one-off check that landed with the flip.
 //
 // So it is counted, on the real corpus, by
-// pkg/relational/conformance/explaindiff's ordering-census test — which is where
+// internal/relational/conformance/explaindiff's ordering-census test — which is where
 // the count has to live, because the corpus harness imports this package and a
 // test inside it could not import the harness back.
 //

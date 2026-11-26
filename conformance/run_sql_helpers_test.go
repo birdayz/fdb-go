@@ -26,9 +26,9 @@ import (
 
 	"fdb.dev/internal/fdbgo/transport"
 	"fdb.dev/internal/fdbwire"
+	"fdb.dev/internal/relational/conformance/plandiff"
 	"fdb.dev/internal/relational/relapi"
 	gofdb "fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/relational/conformance/plandiff"
 )
 
 // seedCorpusParallelism is the number of (fresh Java server + Go runner) workers

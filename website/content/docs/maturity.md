@@ -44,7 +44,7 @@ Three suites compare against external references:
   compare pure Go with `libfdb_c` against the same FoundationDB cluster.
 - [Record Layer conformance](https://github.com/birdayz/fdb-go/tree/master/conformance)
   exercises shared record-store data with Java.
-- [SQL conformance](https://github.com/birdayz/fdb-go/tree/master/pkg/relational/conformance)
+- [SQL conformance](https://github.com/birdayz/fdb-go/tree/master/internal/relational/conformance)
   compares query behavior with the Java relational engine.
 
 A passing case establishes the tested scope, not universal parity. Check the

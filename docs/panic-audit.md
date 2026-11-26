@@ -86,7 +86,7 @@ allowlist (file → permitted AST count). Keep the two in sync.
 | `pkg/recordlayer/merge_cursor.go` | 1 | `tuple.Pack()` on user-derived comparison keys → cursor error |
 | `pkg/recordlayer/query/plan/cascades/values/required_bindings.go` | 1 | RFC-232 binding admission: a hostile implementation of the open `Value` interface → typed `LayoutForeignValue` error |
 | `cmd/fdb-stacktester/directory_ops.go` | 1 | binding-tester harness binary (cgo-dependent build) |
-| `pkg/relational/conformance/explaindiff/explaindiff.go` | 1 | RFC-183 EXPLAIN-differ: a planner panic on one corpus query → `<PLAN-PANIC: …>` marker, so the corpus-wide dump completes instead of aborting. Surfaced, not swallowed: `TestNoPlanPanics` fails on any marker. |
+| `internal/relational/conformance/explaindiff/explaindiff.go` | 1 | RFC-183 EXPLAIN-differ: a planner panic on one corpus query → `<PLAN-PANIC: …>` marker, so the corpus-wide dump completes instead of aborting. Surfaced, not swallowed: `TestNoPlanPanics` fails on any marker. |
 | `cmd/dst-hunt/main.go` | 1 | RFC-199 DST overnight hunter: a panicking seed → recorded finding, sweep continues (never aborts an unattended run). Surfaced on the finding, never swallowed. |
 | `pkg/testcontainers/foundationdb/docker.go` | 1 | FDB testcontainer Docker probe: testcontainers' Docker-host discovery panics on a machine without Docker → `*DockerUnavailableError`, so a suite skips only when the daemon is absent. A non-error panic, or one naming any other failure, stays an ordinary error. |
 | `internal/unicode15/text/internal/language/language.go` | 5 | Frozen x/text locale component parsers: malformed input → existing syntax error, preserving RFC-265 key behavior. |

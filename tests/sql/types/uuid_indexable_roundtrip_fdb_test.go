@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // Distinct, clearly byte-ordered UUIDs: u1 < u2 < u3 (unsigned big-endian, the

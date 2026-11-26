@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // A negative zero is not the additive identity for +0. Java seeds SUM/AVG

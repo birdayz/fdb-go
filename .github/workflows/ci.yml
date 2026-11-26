@@ -563,8 +563,8 @@ jobs:
         # race-instrumented they'd dominate PR latency (RFC-107 §3). A data race in
         # either corrupts a SHARED FDB cluster, so keep it gating.
         #
-        # That exclusion is why REL_SCOPE subtracts //pkg/relational/conformance/...
-        # rather than being a plain //pkg/relational/... wildcard. The rule was
+        # Conformance lives under //internal/relational/conformance/... and is
+        # subtracted from REL_SCOPE (which spans //pkg/relational/... and //internal/relational/...). The rule was
         # written for //pkg/fdbgo/...; the relational wildcard quietly acquired the
         # same class as directories were added under it, and nobody ever expanded
         # the scope "with measured numbers" the way RFC-107 §3 requires — the
@@ -573,7 +573,7 @@ jobs:
         # //tests/relational/factorycorpus/full (since moved outside //pkg/relational/...)
         # runs 5000 scenarios in 1328s and was the heaviest target in the lane, while
         # //pkg/relational/sqldriver takes 277s and
-        # //pkg/relational/conformance/plandiff takes 31s. Co-scheduled four at a
+        # //internal/relational/conformance/plandiff takes 31s. Co-scheduled four at a
         # time on a 4-vCPU / 7.6 GB box those numbers stop meaning anything: on
         # PR #577's run plandiff — a 31s target — hit its 900s timeout, and
         # sqldriver hit its own, while the corpus target ran 1830s. Nothing had
@@ -606,7 +606,7 @@ jobs:
           echo "RACE_JOB_START=$(date -u +%FT%TZ)" >> "$GITHUB_ENV"
           bazelisk shutdown
           RACE_BASE="$HOME/.cache/bazel/_race_output_base"
-          REL_SCOPE="//pkg/relational/... //internal/relational/... -//pkg/relational/conformance/..."
+          REL_SCOPE="//pkg/relational/... //internal/relational/... -//internal/relational/conformance/..."
           CLIENT_SCOPE="//internal/fdbgo/client/... //internal/fdbgo/transport/... //pkg/fdbgo/fdb/... //tests/fdbgo/rywlocal/..."
           CASCADES_SCOPE="//pkg/recordlayer/query/plan/cascades/..."
           # No-op guard PER SCOPE: count each gate independently. Counting the
@@ -663,10 +663,9 @@ jobs:
               query --config=ci "tests($(qexpr "${s#*:}"))" --output=xml --xml:default_values \
               > ".bazel-targets.race-$name.xml"
           done
-          # `--` before the scope is load-bearing, not style: Bazel rejects a
-          # negative target pattern that appears before the end-of-options marker
-          # ("Invalid options syntax: -//pkg/..."), so REL_SCOPE's exclusion needs
-          # it. Passing it for every scope keeps the three invocations identical.
+          # `--` before the scope keeps options separated from target patterns
+          # (required whenever any scope carries a `-//...` exclusion) and keeps
+          # all three invocations identical.
           $RACE --build_event_json_file=.bazel-bep.race-cascades.jsonl -- $CASCADES_SCOPE
           $RACE --build_event_json_file=.bazel-bep.race-rel.jsonl -- $REL_SCOPE
           # One target at a time, kept on purpose even though .bazelrc now schedules
@@ -729,7 +728,7 @@ jobs:
         #
         # Two lines, deliberately: warn at 70%, fail at 90%. One line low enough to
         # give notice would sit on top of targets that are big but healthy —
-        # //pkg/relational/conformance/rowdiff runs 659s of its 900s budget on
+        # //internal/relational/conformance/rowdiff runs 659s of its 900s budget on
         # master, passing every time — and failing there would block PRs that
         # changed nothing, which is the disease, not the cure. One line high enough
         # to avoid that gives no notice at all. So the warning is the early signal

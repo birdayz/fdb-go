@@ -6,10 +6,10 @@ go_library(
     importpath = "fdb.dev/cmd/factory-rebless",
     visibility = ["//visibility:private"],
     deps = [
-        "//pkg/relational/conformance/explaindiff",
-        "//pkg/relational/conformance/factory",
-        "//pkg/relational/conformance/factorycorpus",
-        "//pkg/relational/conformance/yamsql",
+        "//internal/relational/conformance/explaindiff",
+        "//internal/relational/conformance/factory",
+        "//internal/relational/conformance/factorycorpus",
+        "//internal/relational/conformance/yamsql",
         "//pkg/relational/core/embedded",
     ],
 )
@@ -27,7 +27,7 @@ go_test(
     # a synthetic one cannot be used, because the tool regenerates each
     # scenario's candidate from its header recipe and verifies the whole
     # reproduction recipe against it.
-    data = ["//pkg/relational/conformance/factorycorpus:testdata"],
+    data = ["//internal/relational/conformance/factorycorpus:testdata"],
     embed = [":factory-rebless_lib"],
-    deps = ["//pkg/relational/conformance/factorycorpus"],
+    deps = ["//internal/relational/conformance/factorycorpus"],
 )

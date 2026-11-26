@@ -33,7 +33,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 func mmSparseFixture(t *testing.T, ctx context.Context, dbPath, prefix string) *testkit.Twin {

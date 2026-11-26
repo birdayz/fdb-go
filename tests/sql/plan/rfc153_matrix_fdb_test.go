@@ -17,7 +17,7 @@ import (
 	"sort"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // rfc153Canon renders a scanned (a.id, c.id) pair to a stable canonical string

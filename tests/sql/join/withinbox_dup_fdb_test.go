@@ -6,7 +6,7 @@ import (
 	"sort"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 
 	"fdb.dev/internal/recordlayer/query/executor"
 	"fdb.dev/internal/relational/metadata"

@@ -1,7 +1,7 @@
 package sqltest
 
 // RFC-182 P1 smoke: the generative row-soundness differential harness
-// (pkg/relational/conformance/rowdiff) against the suite's shared FDB
+// (internal/relational/conformance/rowdiff) against the suite's shared FDB
 // container. Two layers:
 //   - directed template seeds — the deterministic per-family coverage gate
 //     (a red template means the family became unreachable, never a flake);
@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 
-	"fdb.dev/pkg/relational/conformance/rowdiff"
+	"fdb.dev/internal/relational/conformance/rowdiff"
 )
 
 const rowdiffSmokeSeeds = 25

@@ -2,7 +2,7 @@
 
 <!-- GENERATED FILE — DO NOT EDIT BY HAND.
      Regenerate with `just feature-matrix` (or `go run ./cmd/gen-feature-matrix`).
-     Source: pkg/relational/conformance/yamsql/testdata/*.yaml — the cross-engine
+     Source: internal/relational/conformance/yamsql/testdata/*.yaml — the cross-engine
      conformance corpus. A drift guard (TestFeatureMatrixUpToDate) fails CI if this
      file is stale. -->
 

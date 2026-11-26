@@ -7,11 +7,11 @@ import (
 	"log"
 	"os"
 
-	"fdb.dev/pkg/relational/conformance/yamsql"
+	"fdb.dev/internal/relational/conformance/yamsql"
 )
 
 func main() {
-	testdata := flag.String("testdata", "pkg/relational/conformance/yamsql/testdata", "directory of *.yaml conformance scenarios")
+	testdata := flag.String("testdata", "internal/relational/conformance/yamsql/testdata", "directory of *.yaml conformance scenarios")
 	out := flag.String("out", "FEATURE_MATRIX.md", "output markdown path")
 	flag.Parse()
 

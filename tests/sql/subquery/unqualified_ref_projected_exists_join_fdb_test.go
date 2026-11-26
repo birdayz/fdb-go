@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // TestFDB_UnqualifiedRefBesideAProjectedExistsOverAJoin locates a live
@@ -278,7 +278,7 @@ func TestFDB_UnqualifiedRefBesideAProjectedExistsOverAJoin(t *testing.T) {
 	// ONE IS PINNED; THE OTHER IS BLOCKED, AND THE BLOCK IS NAMED.
 	//
 	// The CTE failure and BOTH controls live in
-	// `pkg/relational/conformance/yamsql/testdata/projected_exists_over_a_derived_source.yaml`
+	// `internal/relational/conformance/yamsql/testdata/projected_exists_over_a_derived_source.yaml`
 	// — it fails with a SQLSTATE (42703), which that runner can match.
 	//
 	// The DERIVED-TABLE failure is NOT pinned anywhere, and not for want of

@@ -868,7 +868,7 @@ record-count key, because the stored template bytes must match Java's
 index, explicitly — `CREATE INDEX <n> AS SELECT COUNT(*) FROM t GROUP BY g`
 (`pkg/relational/core/parser/grammar/RelationalParser.g4:172` →
 `pkg/relational/core/metadata/builder.go:1177`), pinned e2e by
-`pkg/relational/conformance/yamsql/testdata/aggregate_index_count_star.yaml:13`.
+`internal/relational/conformance/yamsql/testdata/aggregate_index_count_star.yaml:13`.
 
 Relational primary keys are record-type-prefixed unless the template declares `INTERMINGLE TABLES`
 (`builder.go:1232`, conditional at `:1239-1240`, mode threaded from `:128` into `buildPrimaryKeyExpression` at `:552`), which satisfies
@@ -1011,7 +1011,7 @@ These are the dangerous entries, because nothing tells the tenant.
   (`pkg/relational/core/parser/grammar/RelationalParser.g4:141-142`) and are not in
   `keywordsCanBeId`, so a tenant gets **`42601` syntax error** with a caret under the word — not a
   "feature unsupported" message. Java has no exact-decimal type either
-  (`pkg/relational/conformance/yamsql/ansi_roster.go:32`). Pinned:
+  (`internal/relational/conformance/yamsql/ansi_roster.go:32`). Pinned:
   `pkg/relational/core/parser/decimal_type_rejected_test.go`.
 
   **Money must use a scaled-integer convention**: store minor units in `BIGINT` and scale in the
@@ -1036,17 +1036,17 @@ before writing the query.
 | Shape | SQLSTATE | Pin |
 |---|---|---|
 | derived table with a JOIN body | `0AF00` | `pkg/relational/sqldriver/explain_unplannable_fdb_test.go:77-80` |
-| `EXISTS` inside an `OR` | `0A000` | `pkg/relational/conformance/yamsql/testdata/exists_with_or.yaml:36-45` |
+| `EXISTS` inside an `OR` | `0A000` | `internal/relational/conformance/yamsql/testdata/exists_with_or.yaml:36-45` |
 | correlated scalar subquery inside `EXISTS` | `0A000` | `pkg/relational/sqldriver/exists_semantics_probe_test.go:153-159` |
-| scalar subquery over a `FROM`-less `SELECT` | `0AF00` | `pkg/relational/conformance/yamsql/testdata/scalar_subquery_java.yaml:47-51` |
-| correlated `EXISTS` over `GROUP BY` **with `HAVING`** | `0AF00` | `pkg/relational/conformance/yamsql/testdata/exists_with_aggregate.yaml:12-28` |
+| scalar subquery over a `FROM`-less `SELECT` | `0AF00` | `internal/relational/conformance/yamsql/testdata/scalar_subquery_java.yaml:47-51` |
+| correlated `EXISTS` over `GROUP BY` **with `HAVING`** | `0AF00` | `internal/relational/conformance/yamsql/testdata/exists_with_aggregate.yaml:12-28` |
 | `x IN (SELECT …)`, every position | `0AF00` | `pkg/relational/core/embedded/eval_predicate_map.go:145-152` |
-| `COUNT(DISTINCT …)` | `0AF00` | `pkg/relational/conformance/yamsql/testdata/count_distinct.yaml:14-18` |
+| `COUNT(DISTINCT …)` | `0AF00` | `internal/relational/conformance/yamsql/testdata/count_distinct.yaml:14-18` |
 | `UNION` / `EXCEPT DISTINCT` (only `UNION ALL` is supported) | `0AF00` | `pkg/relational/core/embedded/logical_predicate.go:6296` |
 | `EXCEPT` / `INTERSECT` (absent from the grammar) | `42601` | `pkg/relational/sqldriver/intersect_except_probe_test.go:43-46` |
-| `NULLIF` | `0AF00` | `pkg/relational/conformance/yamsql/testdata/coalesce_nullif.yaml:26-28` |
+| `NULLIF` | `0AF00` | `internal/relational/conformance/yamsql/testdata/coalesce_nullif.yaml:26-28` |
 | foreign keys / `CHECK` / column defaults (absent from the grammar) | `42601` | `pkg/relational/core/parser/grammar/RelationalParser.g4:154-156` |
-| window functions (except vector K-NN `ROW_NUMBER() OVER (…)` in `QUALIFY`) | `0AF00` | `pkg/relational/conformance/yamsql/testdata/window_function_probes.yaml:15-22` |
+| window functions (except vector K-NN `ROW_NUMBER() OVER (…)` in `QUALIFY`) | `0AF00` | `internal/relational/conformance/yamsql/testdata/window_function_probes.yaml:15-22` |
 | `ALTER` anything | `42601` | see §7 |
 
 Two narrowings worth knowing, both **refuting** the corresponding watch-list phrasing:
@@ -1081,7 +1081,7 @@ Two narrowings worth knowing, both **refuting** the corresponding watch-list phr
 `UPPER`, `LOWER`, `SUBSTRING`, `TRIM`, `CONCAT`, `REPLACE`, `POSITION`, `REVERSE`, the `*_LENGTH`
 family and the `L/RTRIM` pair all work here
 (`pkg/recordlayer/query/plan/cascades/values/scalar_function_catalog.go:363-370`, rows pinned in
-`pkg/relational/conformance/yamsql/testdata/string_functions.yaml`, real-FDB at
+`internal/relational/conformance/yamsql/testdata/string_functions.yaml`, real-FDB at
 `pkg/relational/sqldriver/embedded_fdb_test.go:3866`). **This refutes the "unsupported on both
 engines" claim for string functions** — Java's `BuiltInFunction` registry has no entries and rejects
 the call form.

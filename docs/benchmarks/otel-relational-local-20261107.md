@@ -202,7 +202,7 @@ Found by profiling the comparison; each is general, not OTel-specific.
   (round 2): 0.63 ms on a pinned connection and 1.04 ms pooled.
 - Joins (trace to logs today, metrics later) plan as index nested loops with one
   sequential probe per outer row (`FlatMap` + `IndexScan(LOGS_TRACE, [=, =])`,
-  pinned in `pkg/relational/sqltest/otel`). Pipelined probes and the metrics
+  pinned in `tests/sql/otel`). Pipelined probes and the metrics
   tables (template v2: exemplar trace_id fan-out and (service, time) indexes)
   are listed in `TODO.md`, "OTel relational prototype findings".
 

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/relational/conformance/rowdiff"
+	"fdb.dev/internal/relational/conformance/rowdiff"
 )
 
 // TestRowdiffSweepStopsWhenTheClusterDies drives every arm of the sweep's

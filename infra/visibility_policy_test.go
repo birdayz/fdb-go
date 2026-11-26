@@ -446,8 +446,6 @@ func loadRepoBuildFiles(t *testing.T) []parsedBuildFile {
 func inRestrictedVisibilityScope(rel string) bool {
 	return strings.HasPrefix(rel, "internal/") ||
 		strings.Contains(rel, "/internal/") ||
-		strings.HasPrefix(rel, "pkg/relational/conformance/") ||
-		strings.HasPrefix(rel, "pkg/relational/sqltest/") ||
 		strings.HasPrefix(rel, "bench/") ||
 		strings.HasPrefix(rel, "tests/")
 }
@@ -460,15 +458,13 @@ var restrictedScopeRoots = []struct {
 	{"internal/", []string{"//:__subpackages__"}},
 	{"internal/linters/", []string{"//:__pkg__"}},
 	{"internal/recordlayer/chaos/", []string{"//internal/simfdb/hunt:__pkg__", "//pkg/relational/core/embedded:__pkg__"}},
-	{"internal/recordlayer/keystoretest/", []string{"//conformance:__pkg__", "//pkg/recordlayer:__pkg__", "//pkg/relational/conformance/javacorpus:__pkg__", "//pkg/relational/sqldriver:__pkg__"}},
+	{"internal/recordlayer/keystoretest/", []string{"//conformance:__pkg__", "//internal/relational/conformance/javacorpus:__pkg__", "//pkg/recordlayer:__pkg__", "//pkg/relational/sqldriver:__pkg__"}},
 	{"layers/otel/otelsql/internal/", []string{"//layers/otel/otelsql:__subpackages__"}},
 	{"pkg/internal/", []string{"//pkg:__subpackages__"}},
 	{"pkg/recordlayer/query/plan/cascades/internal/", []string{"//pkg/recordlayer/query/plan/cascades:__subpackages__"}},
 	{"tools/clientbench/internal/", []string{"//tools/clientbench:__subpackages__"}},
 	{"tools/unicode15gen/internal/", []string{"//tools/unicode15gen:__subpackages__"}},
 	{"internal/testinstruments/constfoldcensus/", []string{"//visibility:private"}},
-	{"pkg/relational/conformance/", []string{"//pkg/relational/conformance:__subpackages__"}},
-	{"pkg/relational/sqltest/", []string{"//pkg/relational:__subpackages__"}},
 	{"internal/testinstruments/txbudgetcensus/", []string{"//visibility:private"}},
 	{"bench/", []string{"//visibility:private"}},
 	{"tests/", []string{"//visibility:private"}},

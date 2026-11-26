@@ -8,10 +8,10 @@ import (
 	"testing"
 
 	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/sqltest/testkit"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // EXISTS stops the SQL cost proof before the leaf's createsDuplicates guard;

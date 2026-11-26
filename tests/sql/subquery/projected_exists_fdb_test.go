@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // TestFDB_ProjectedExists ports Java 4.12's exists-in-select.yamsql scenarios

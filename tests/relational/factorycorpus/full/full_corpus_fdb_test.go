@@ -17,16 +17,16 @@ import (
 
 	"fdb.dev/internal/dst"
 	"fdb.dev/internal/dstwire"
+	"fdb.dev/internal/relational/conformance/factorycorpus"
 	"fdb.dev/internal/simfdb"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/conformance/factorycorpus"
 )
 
 // corpusDir is the committed factory corpus's testdata. The corpus lives
-// under pkg/relational/conformance/factorycorpus, with the loader and the
+// under internal/relational/conformance/factorycorpus, with the loader and the
 // census, because it is the corpus package's content — this package is only
 // a second execution target over it.
-const corpusDir = "../../../../pkg/relational/conformance/factorycorpus/testdata"
+const corpusDir = "../../../../internal/relational/conformance/factorycorpus/testdata"
 
 var simBackend *recordlayer.FDBDatabase
 

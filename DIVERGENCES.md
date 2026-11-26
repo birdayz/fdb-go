@@ -679,7 +679,7 @@ not, mixed with non-IN plans), `TestCostModel_UnsargedInPlansRankedByRealRungs`,
 `TestCostModel_SargedInPlanBeatsUnsargedThroughFullChain`, `TestCompareInPlan_SargedBeatsUnsarged`,
 and `TestOptimizeGroup_InPlanWinnerIsInsertionOrderIndependent` (all 24 insertion orders of a
 four-member group elect the same winner, through the real `OptimizeGroupTask`), plus the SQL-level
-corpus file `pkg/relational/conformance/yamsql/testdata/in_plan_winner_stability.yaml`, which reaches
+corpus file `internal/relational/conformance/yamsql/testdata/in_plan_winner_stability.yaml`, which reaches
 the both-IN arm from SQL deliberately rather than incidentally.
 
 **Reachability and impact are measured, not assumed.** Byte-identical plans on their own are evidence
@@ -4627,7 +4627,7 @@ column. Every shape is measured in `conformance/ws_f_table_qualifier_conformance
 - A GROUP BY over a derived table (`SELECT d.f, COUNT(*) FROM (SELECT f FROM w WHERE id = 1) AS d
   GROUP BY d.f`) or over a struct column (`GROUP BY ss.ss`): the target cannot plan it (0AF00). Go
   answers, a read-side reach the target lacks. Derived-table grouping is also covered by
-  `pkg/relational/conformance/yamsql/testdata/group_by_derived_expr.yaml`.
+  `internal/relational/conformance/yamsql/testdata/group_by_derived_expr.yaml`.
 - An explicit JOIN whose right side is a correlated array (`FROM w JOIN w.arr AS v ON p`) is, in
   both engines, the comma form `FROM w, w.arr AS v WHERE p` (aligned in WS-J v29). Where it still
   differs, it is pinned with both answers in `declared` in

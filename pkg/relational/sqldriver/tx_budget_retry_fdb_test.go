@@ -40,7 +40,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 
 	"fdb.dev/internal/dst"
 	"fdb.dev/internal/relational/relapi"

@@ -6,10 +6,10 @@ go_library(
     importpath = "fdb.dev/cmd/factory-migrate",
     visibility = ["//visibility:private"],
     deps = [
+        "//internal/relational/conformance/factory",
+        "//internal/relational/conformance/factorycorpus",
+        "//internal/relational/conformance/yamsql",
         "//internal/relational/relapi",
-        "//pkg/relational/conformance/factory",
-        "//pkg/relational/conformance/factorycorpus",
-        "//pkg/relational/conformance/yamsql",
         "//pkg/relational/sqldriver",
         "//pkg/testcontainers/foundationdb",
     ],

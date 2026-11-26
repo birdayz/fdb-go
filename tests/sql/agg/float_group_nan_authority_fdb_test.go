@@ -43,7 +43,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // groupNaNSeed writes the ladder. Two DISTINCT NaN payloads are the point: a

@@ -19,7 +19,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 func TestFDB_AggregateIndexMinMax_NullGroupAndCurrentExtremum(t *testing.T) {

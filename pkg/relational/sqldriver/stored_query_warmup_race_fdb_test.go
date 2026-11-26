@@ -11,8 +11,8 @@ import (
 	"sync"
 	"testing"
 
+	"fdb.dev/internal/relational/sqltest/testkit"
 	"fdb.dev/pkg/relational/sqldriver"
-	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestStoredQueryWarmUpConcurrentWithFirstConnect(t *testing.T) {

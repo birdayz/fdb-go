@@ -40,9 +40,9 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 
-	"fdb.dev/pkg/relational/conformance/coveringleaf"
+	"fdb.dev/internal/relational/conformance/coveringleaf"
 )
 
 func TestFDB_CoveringLeafKeepsColumnTypeMetadata(t *testing.T) {

@@ -9,9 +9,9 @@ import (
 	"testing"
 
 	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/sqltest/testkit"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // capHitDB creates an isolated db+schema whose ORDERS table carries the same

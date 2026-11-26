@@ -18,10 +18,10 @@ import (
 	"time"
 
 	"fdb.dev/internal/relational/connknob"
+	"fdb.dev/internal/relational/sqltest/testkit"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/sqldriver"
-	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // srEngine builds an explicit *sqldriver.Engine over a record-layer database

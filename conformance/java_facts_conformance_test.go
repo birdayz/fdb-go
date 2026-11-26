@@ -36,8 +36,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"fdb.dev/pkg/relational/conformance/plandiff"
-	"fdb.dev/pkg/relational/conformance/yamsql"
+	"fdb.dev/internal/relational/conformance/plandiff"
+	"fdb.dev/internal/relational/conformance/yamsql"
 )
 
 func ansiCaseKey(c yamsql.AnsiTaggedCase) string {
@@ -54,7 +54,7 @@ func loadAnsiCasesForJavaCheck() []yamsql.AnsiTaggedCase {
 	if err != nil {
 		return nil
 	}
-	sentinel, err := r.Rlocation("_main/pkg/relational/conformance/yamsql/testdata/avg.yaml")
+	sentinel, err := r.Rlocation("_main/internal/relational/conformance/yamsql/testdata/avg.yaml")
 	if err != nil {
 		return nil
 	}

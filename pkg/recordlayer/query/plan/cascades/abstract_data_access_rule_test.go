@@ -1365,7 +1365,7 @@ func TestSatisfiesRequestedOrdering_DoesNotCollapseBakedOrdinals(t *testing.T) {
 //
 // The cost of declining is measured, not assumed: over the whole corpus, neither
 // comparator ever sees a FieldValue pair with a non-stating operand
-// (pkg/relational/conformance/explaindiff's ordering-census test asserts that
+// (internal/relational/conformance/explaindiff's ordering-census test asserts that
 // residual is ZERO). If it ever stops being zero, the fix is at the producer that
 // minted the key without its layout — not here.
 func TestSatisfiesRequestedOrdering_DeclinesAValueWithoutColumnIdentity(t *testing.T) {

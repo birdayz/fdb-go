@@ -1,0 +1,116 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+package(default_visibility = ["//:__subpackages__"])
+
+# keep: the ANSI-tagged yamsql corpus, exported so the cross-engine Java?-fact
+# verification (//conformance:java_facts_conformance_test) can stage it into
+# runfiles and walk the `ansi:`/`ansi_gap:` tags. (The yamsql_test below globs the
+# same files directly via `data`.)
+filegroup(
+    name = "testdata",
+    srcs = glob(["testdata/**"]),
+    visibility = [
+        "//:__subpackages__",
+        "//conformance:__subpackages__",
+    ],
+)
+
+go_library(
+    name = "yamsql",
+    srcs = [
+        "ansi_roster.go",
+        "ansiledger.go",
+        "coverage.go",
+        "diff.go",
+        "exact.go",
+        "featurematrix.go",
+        "runner.go",
+        "yamsql.go",
+    ],
+    importpath = "fdb.dev/internal/relational/conformance/yamsql",
+    visibility = [
+        "//:__subpackages__",
+        "//cmd/factory-migrate:__pkg__",
+        "//cmd/factory-rebless:__pkg__",
+        "//cmd/factory-run:__pkg__",
+        "//cmd/gen-feature-matrix:__pkg__",
+        "//cmd/gen-sql-coverage:__pkg__",
+        "//conformance:__subpackages__",
+    ],
+    deps = [
+        "//internal/relational/relapi",
+        "//pkg/relational/core/embedded",
+        "@in_gopkg_yaml_v3//:yaml_v3",
+    ],
+)
+
+go_test(
+    name = "yamsql_test",
+    # timeout="long" => 900s. This target is in the CI race job's //pkg/relational/... scope.
+    # Measured: 15s race-instrumented solo on a 24-thread box, but it TIMED OUT at 315s on
+    # the CI runner, which is memory-capped (--local_resources=memory=HOST_RAM*0.6 on a
+    # 7.6 GB box), simultaneously hosting FDB testcontainers, and running 4 test actions at
+    # once. Same >20x contention factor the sqldriver target already documents (~25s local,
+    # ~65s solo CI, starved past 300s contended).
+    #
+    # This is the worst kind of red: the race gate went red reporting ZERO data races, so it
+    # reads as a concurrency bug and is actually a clock. Right-sized to the convention the
+    # rowdiff, sqldriver, chaos, conformance and plandiff targets already carry rather than
+    # cutting scenarios — a race gate that cannot finish is not a race gate.
+    timeout = "long",
+    srcs = [
+        "ansiledger_internal_test.go",
+        "ansiledger_test.go",
+        "cast_boundary_fdb_test.go",
+        "coverage_internal_test.go",
+        "coverage_test.go",
+        "diff_struct_test.go",
+        "domain_registration_test.go",
+        "exact_runner_test.go",
+        "exact_test.go",
+        "featurematrix_test.go",
+        "load_strict_test.go",
+        "mod_float_zero_test.go",
+        "plan_cache_binding_shapes_fdb_test.go",
+        "runner_connection_options_test.go",
+        "runner_report_test.go",
+        "runner_test.go",
+        "scalar_signed_zero_test.go",
+        "semantic_envelope_test.go",
+        "semantic_fdb_test.go",
+        "semantic_witness_test.go",
+        "system_cast_fdb_test.go",
+        "yamsql_test.go",
+    ],
+    data = glob(["testdata/**"]) + [
+        # keep: staged into runfiles so TestFeatureMatrixUpToDate can read the
+        # committed matrix and walk up to the repo root under Bazel.
+        "//:FEATURE_MATRIX.md",
+        # keep: staged so TestSQLCoverageUpToDate / TestAnsiLedgerUpToDate
+        # (RFC-165 Ledgers B/A) read the committed reports under Bazel. Without
+        # this the guards pass vacuously under `bazel test` while only `go test`
+        # catches drift.
+        "//:SQL_COVERAGE.md",
+        "//:SQL_ANSI_CONFORMANCE.md",
+        "//:MODULE.bazel",
+    ],
+    embed = [":yamsql"],
+    tags = [
+        "resources:cpu:5",
+        "resources:memory:700",
+    ],
+    deps = [
+        "//internal/relational/conformance/plandiff",
+        "//internal/relational/keyspace",
+        "//internal/relational/relapi",
+        "//internal/relational/rowstruct",
+        "//internal/relational/sqltest/testkit",
+        "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/relational/core/parser",
+        "//pkg/relational/core/parser/gen",
+        "//pkg/relational/sqldriver",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_antlr4_go_antlr_v4//:antlr",
+        "@in_gopkg_yaml_v3//:yaml_v3",
+    ],
+)

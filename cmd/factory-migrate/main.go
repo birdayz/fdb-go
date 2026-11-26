@@ -10,9 +10,9 @@
 // same seed plus same oracle output must mean the same rows.
 //
 //	bazelisk run //cmd/factory-migrate -- \
-//	  -old pkg/relational/conformance/factorycorpus/testdata \
-//	  -out pkg/relational/conformance/factorycorpus/testdata.new \
-//	  -census pkg/relational/conformance/factorycorpus/census_baseline.json
+//	  -old internal/relational/conformance/factorycorpus/testdata \
+//	  -out internal/relational/conformance/factorycorpus/testdata.new \
+//	  -census internal/relational/conformance/factorycorpus/census_baseline.json
 //
 // Exit codes: 0 = every scenario re-emitted and verified; 1 = a verification
 // mismatch (details on stderr); 2 = infra failure.
@@ -33,10 +33,10 @@ import (
 	"strings"
 	"time"
 
+	"fdb.dev/internal/relational/conformance/factory"
+	"fdb.dev/internal/relational/conformance/factorycorpus"
+	"fdb.dev/internal/relational/conformance/yamsql"
 	"fdb.dev/internal/relational/relapi"
-	"fdb.dev/pkg/relational/conformance/factory"
-	"fdb.dev/pkg/relational/conformance/factorycorpus"
-	"fdb.dev/pkg/relational/conformance/yamsql"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 
 	"fdb.dev/pkg/relational/sqldriver"
@@ -50,7 +50,7 @@ const (
 
 func main() {
 	var oldDir, outDir, censusPath string
-	flag.StringVar(&oldDir, "old", "pkg/relational/conformance/factorycorpus/testdata", "directory holding the v1 fc_*.yaml corpus")
+	flag.StringVar(&oldDir, "old", "internal/relational/conformance/factorycorpus/testdata", "directory holding the v1 fc_*.yaml corpus")
 	flag.StringVar(&outDir, "out", "", "directory the .yamsql family files are written into (must not equal -old)")
 	flag.StringVar(&censusPath, "census", "", "path the regenerated census baseline is written to")
 	flag.Parse()

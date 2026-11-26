@@ -7,12 +7,12 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/conformance/factorycorpus"
+	"fdb.dev/internal/relational/conformance/factorycorpus"
 )
 
 // corpusSrc is the committed corpus, reached from this package's directory.
 // Declared as a Bazel data dep so the files exist in the runfiles tree.
-const corpusSrc = "../../pkg/relational/conformance/factorycorpus/testdata"
+const corpusSrc = "../../internal/relational/conformance/factorycorpus/testdata"
 
 // The two family files these tests build fixtures from. Both are among the
 // smallest in the corpus, and `earlyFile` sorts BEFORE `lateFile`, which is

@@ -14,8 +14,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"fdb.dev/internal/relational/conformance/plandiff"
 	"fdb.dev/internal/relational/relapi"
-	"fdb.dev/pkg/relational/conformance/plandiff"
 )
 
 // wsgOutcome is an answer by SQLSTATE or by rows, so the two engines' error

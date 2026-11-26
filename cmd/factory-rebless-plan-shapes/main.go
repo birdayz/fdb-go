@@ -9,8 +9,8 @@
 // is a bug report, not a re-bless.
 //
 //	go run ./cmd/factory-rebless-plan-shapes \
-//	  -corpus pkg/relational/conformance/factorycorpus/testdata \
-//	  -census pkg/relational/conformance/factorycorpus/census_baseline.json
+//	  -corpus internal/relational/conformance/factorycorpus/testdata \
+//	  -census internal/relational/conformance/factorycorpus/census_baseline.json
 //
 // Exit codes: 0 = nothing moved or everything moved cleanly; 1 = a scenario
 // changed in a way a re-bless may not absorb; 2 = infra failure.
@@ -26,9 +26,9 @@ import (
 	"path/filepath"
 	"sort"
 
-	"fdb.dev/pkg/relational/conformance/explaindiff"
-	"fdb.dev/pkg/relational/conformance/factory"
-	"fdb.dev/pkg/relational/conformance/factorycorpus"
+	"fdb.dev/internal/relational/conformance/explaindiff"
+	"fdb.dev/internal/relational/conformance/factory"
+	"fdb.dev/internal/relational/conformance/factorycorpus"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 

@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 func TestFDB_InOverIntersection_ResidualApplied(t *testing.T) {

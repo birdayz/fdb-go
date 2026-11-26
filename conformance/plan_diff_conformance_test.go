@@ -39,7 +39,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/pkg/relational/conformance/plandiff"
+	"fdb.dev/internal/relational/conformance/plandiff"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"

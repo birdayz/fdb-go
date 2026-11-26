@@ -20,8 +20,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"fdb.dev/internal/relational/conformance/plandiff"
 	"fdb.dev/internal/relational/relapi"
-	"fdb.dev/pkg/relational/conformance/plandiff"
 )
 
 var _ = Describe("SelectWherePrecedenceJavaProbe", func() {

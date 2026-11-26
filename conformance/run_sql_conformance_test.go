@@ -33,8 +33,8 @@ import (
 	"strings"
 	"sync"
 
-	"fdb.dev/pkg/relational/conformance/plandiff"
-	"fdb.dev/pkg/relational/conformance/plandiff/seedcorpus"
+	"fdb.dev/internal/relational/conformance/plandiff"
+	"fdb.dev/internal/relational/conformance/plandiff/seedcorpus"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"fdb.dev/internal/relational/relapi"
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // ?transaction_timeout= bounds the connection's transactions on a real

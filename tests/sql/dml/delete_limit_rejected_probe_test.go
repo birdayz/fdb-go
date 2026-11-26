@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 func TestFDB_DeleteLimitRejectedProbe(t *testing.T) {

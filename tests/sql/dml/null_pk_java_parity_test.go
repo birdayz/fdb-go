@@ -44,7 +44,7 @@ import (
 	"database/sql"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 
 	"fdb.dev/internal/relational/relapi"
 )

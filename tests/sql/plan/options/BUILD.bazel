@@ -18,11 +18,11 @@ go_test(
     deps = [
         "//internal/fdbclient",
         "//internal/relational/relapi",
+        "//internal/relational/sqltest/testkit",
         "//pkg/fdbgo/fdb",
         "//pkg/recordlayer",
         "//pkg/relational/core/embedded",
         "//pkg/relational/sqldriver",
-        "//pkg/relational/sqltest/testkit",
     ],
 )
 

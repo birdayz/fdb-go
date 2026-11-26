@@ -6,9 +6,9 @@ go_library(
     importpath = "fdb.dev/cmd/factory-rebless-plan-shapes",
     visibility = ["//visibility:private"],
     deps = [
-        "//pkg/relational/conformance/explaindiff",
-        "//pkg/relational/conformance/factory",
-        "//pkg/relational/conformance/factorycorpus",
+        "//internal/relational/conformance/explaindiff",
+        "//internal/relational/conformance/factory",
+        "//internal/relational/conformance/factorycorpus",
         "//pkg/relational/core/embedded",
     ],
 )
@@ -24,7 +24,7 @@ go_test(
     srcs = ["recipe_lookup_test.go"],
     embed = [":factory-rebless-plan-shapes_lib"],
     deps = [
-        "//pkg/relational/conformance/factory",
-        "//pkg/relational/conformance/factorycorpus",
+        "//internal/relational/conformance/factory",
+        "//internal/relational/conformance/factorycorpus",
     ],
 )

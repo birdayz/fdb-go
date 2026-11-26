@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/conformance/coveringleaf"
+	"fdb.dev/internal/relational/conformance/coveringleaf"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 

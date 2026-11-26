@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/conformance/plandiff"
+	"fdb.dev/internal/relational/conformance/plandiff"
 )
 
 // TestDivergenceHolds pins divergenceHolds — the RFC-082 regression-lock

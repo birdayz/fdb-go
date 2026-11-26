@@ -32,7 +32,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // aggFloatGroup is one row of `SELECT d, SUM(a) ... GROUP BY d`.

@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/internal/relational/sqltest/testkit"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // A schema template Java's PlanGenerator refuses renders the exception's own

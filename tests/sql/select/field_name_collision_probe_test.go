@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/sqltest/testkit"
+	"fdb.dev/internal/relational/sqltest/testkit"
 )
 
 // CAN TWO COLUMN NAMES THAT COLLIDE UNDER ESCAPING RETURN EACH OTHER'S VALUES?
