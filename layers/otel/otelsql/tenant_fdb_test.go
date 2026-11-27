@@ -51,7 +51,7 @@ func TestFDB_EnsureTenant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(raw.Close)
+	t.Cleanup(func() { _ = raw.Close() })
 	db := recordlayer.NewFDBDatabase(raw)
 	keyspace.RegisterDomainIfNotExists("OTELT")
 	cat, err := catalog.NewRecordLayerStoreCatalog(keyspace.New(subspace.Sub()).CatalogSubspace())

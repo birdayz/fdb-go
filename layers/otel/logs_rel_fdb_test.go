@@ -50,7 +50,7 @@ func newLRHarness(t *testing.T) (*qrHarness, fdb.Database) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(raw.Close)
+	t.Cleanup(func() { _ = raw.Close() })
 	return &qrHarness{db: recordlayer.NewFDBDatabase(raw), setup: setup, keys: map[string]*memoryContinuationKeys{}}, raw
 }
 

@@ -56,7 +56,7 @@ func TestPersistedUnicode15(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(db.Close)
+	t.Cleanup(func() { _ = db.Close() })
 	t.Run("invalid_proto2_utf8_is_not_persistable", func(t *testing.T) {
 		md, _, err := metadata(spec{name: "invalid"})
 		if err != nil {

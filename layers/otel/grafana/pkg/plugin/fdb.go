@@ -78,7 +78,7 @@ func openFDB(ctx context.Context, s *Settings, inst backend.DataSourceInstanceSe
 		raw.Close()
 		return nil, err
 	}
-	return &fdbHandle{db: recordlayer.NewFDBDatabase(raw), close: raw.Close}, nil
+	return &fdbHandle{db: recordlayer.NewFDBDatabase(raw), close: func() { _ = raw.Close() }}, nil
 }
 
 // buildTLSConfig returns the explicit TLS configuration of tlsMode config, or

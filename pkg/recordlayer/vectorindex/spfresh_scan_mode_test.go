@@ -100,7 +100,7 @@ func TestFDB_SPFreshScanModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(rawDB.Close)
+	t.Cleanup(func() { _ = rawDB.Close() })
 	db := recordlayer.NewFDBDatabase(rawDB)
 
 	for _, kind := range []string{"spfresh_sample", "spfresh_assignment"} {

@@ -164,7 +164,7 @@ func TestTxnLimitRealFDB(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(raw.Close)
+		t.Cleanup(func() { _ = raw.Close() })
 		return ctx, recordlayer.NewFDBDatabase(raw), subspace.Sub("otel_txn_limit", freshRun(t))
 	}
 	t.Run("limit_bounds_concurrency", func(t *testing.T) { t.Parallel(); testTxnLimitBound(t, fixture) })

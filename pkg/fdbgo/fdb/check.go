@@ -1,7 +1,10 @@
 package fdb
 
+import "io"
+
 // Compile-time interface checks.
 var (
+	_ io.Closer           = Database{}
 	_ Transactor          = Database{}
 	_ Transactor          = Transaction{}
 	_ BackendDatabase     = Database{}
@@ -21,4 +24,9 @@ var (
 	_ Range                      = KeyRange{}
 	_ Range                      = SelectorRange{}
 	_ Selectable                 = KeySelector{}
+	_ Future[[]byte]             = FutureByteSlice(nil)
+	_ Future[Key]                = FutureKey(nil)
+	_ Future[int64]              = FutureInt64(nil)
+	_ Future[[]Key]              = FutureKeyArray(nil)
+	_ Future[[]string]           = FutureStringSlice(nil)
 )

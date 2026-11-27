@@ -72,7 +72,7 @@ func rdDB(t *testing.T, ctx context.Context, cluster string) *recordlayer.FDBDat
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(raw.Close)
+	t.Cleanup(func() { _ = raw.Close() })
 	return recordlayer.NewFDBDatabase(raw)
 }
 

@@ -19,5 +19,5 @@ func openCluster(clusterFile string, timeoutMillis int64) (placementprobe.Cluste
 	if err != nil {
 		return nil, nil, err
 	}
-	return placementprobe.GoCluster{DB: db, TimeoutMillis: timeoutMillis, MaxAttempts: 10}, db.Close, nil
+	return placementprobe.GoCluster{DB: db, TimeoutMillis: timeoutMillis, MaxAttempts: 10}, func() { _ = db.Close() }, nil
 }

@@ -195,7 +195,7 @@ func mdShardSetup(t *testing.T, ctx context.Context) mdShardEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(backend.Close)
+	t.Cleanup(func() { _ = backend.Close() })
 	goDB, err := fdbclient.OpenDatabase(ctx, clusterFile, fdbclient.WithAPIVersion(730))
 	if err != nil {
 		t.Fatal(err)

@@ -260,8 +260,9 @@ func (db *SimDB) LocalityGetBoundaryKeys(_ fdb.ExactRange, _ int, _ int64) ([]fd
 }
 
 // Close releases the store. The sim holds no OS resources, so this only marks the db closed.
-func (db *SimDB) Close() {
+func (db *SimDB) Close() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	db.closed = true
+	return nil
 }

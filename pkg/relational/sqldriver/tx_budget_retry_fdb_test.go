@@ -64,7 +64,7 @@ func openLateClockDB(t *testing.T, clk dst.Clock, dbPath, tmpl string) *sql.DB {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	t.Cleanup(rawDB.Close)
+	t.Cleanup(func() { _ = rawDB.Close() })
 	env := &recordlayer.Env{Clock: clk}
 	rlDB := recordlayer.NewFDBDatabase(rawDB).SetEnv(env)
 	eng, err := sqldriver.NewEngine(sqldriver.EngineConfig{

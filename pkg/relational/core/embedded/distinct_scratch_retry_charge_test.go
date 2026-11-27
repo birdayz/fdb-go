@@ -46,7 +46,7 @@ func (b *chaosSimBackend) LocalityGetBoundaryKeys(r fdb.ExactRange, limit int, r
 	return b.standalone.LocalityGetBoundaryKeys(r, limit, readVersion)
 }
 
-func (b *chaosSimBackend) Close() { b.standalone.Close() }
+func (b *chaosSimBackend) Close() error { return b.standalone.Close() }
 
 // newChaosSimConnection is newSimConnection with the fault-injecting transactor
 // in the middle, and the returned FaultConfig is live: mutating its Rates after

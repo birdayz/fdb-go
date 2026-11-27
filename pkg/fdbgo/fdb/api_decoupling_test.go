@@ -337,6 +337,23 @@ func TestPublicAPINoClientLeakage(t *testing.T) {
 		"WithTracingSampleRate":          WithTracingSampleRate,
 		"WithTracer":                     WithTracer,
 		"WithLogger":                     WithLogger,
+		"Config":                         Config{},
+		"Open":                           Open,
+		"Transact":                       Transact[int],
+		"ReadTransact":                   ReadTransact[int],
+		"FutureOf":                       FutureOf[int],
+		"ReadyFuture":                    ReadyFuture[int],
+		"MapFuture":                      MapFuture[int, string],
+		"Priority":                       PriorityDefault,
+		"AccessMode":                     AccessNormal,
+		"LockMode":                       LockNormal,
+		"GRVCacheMode":                   GRVCacheDefault,
+		"TxConfig":                       TxConfig{},
+		"ApplyTxConfig":                  ApplyTxConfig,
+		"Error":                          Error{},
+		"ErrorCode":                      ErrorCode,
+		"IsRetryableError":               IsRetryableError,
+		"IsMaybeCommitted":               IsMaybeCommitted,
 	}
 	for name, sym := range publicSymbols {
 		checkType(name, reflect.TypeOf(sym))
@@ -352,6 +369,8 @@ func TestPublicAPINoClientLeakage(t *testing.T) {
 		"MappedRangeIterator":   reflect.TypeOf((*MappedRangeIterator)(nil)).Elem(),
 		"MappedRangeReader":     reflect.TypeOf((*MappedRangeReader)(nil)).Elem(),
 		"MappedRangeSkipReader": reflect.TypeOf((*MappedRangeSkipReader)(nil)).Elem(),
+		"RawFuture":             reflect.TypeOf((*RawFuture)(nil)).Elem(),
+		"Future":                reflect.TypeOf((*Future[int])(nil)).Elem(),
 	}
 	for name, typ := range interfaceTypes {
 		checkType(name, typ)

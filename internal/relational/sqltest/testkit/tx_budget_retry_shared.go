@@ -198,7 +198,7 @@ func SpikedEngine(t *testing.T, lateBy time.Duration) (*sqldriver.Engine, *lateC
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	t.Cleanup(rawDB.Close)
+	t.Cleanup(func() { _ = rawDB.Close() })
 	clk := NewLateClock(lateBy)
 	rlDB := recordlayer.NewFDBDatabase(rawDB).SetEnv(&recordlayer.Env{Clock: clk})
 	eng, err := sqldriver.NewEngine(sqldriver.EngineConfig{

@@ -62,7 +62,7 @@ func newQRHarness(t *testing.T) *qrHarness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(raw.Close)
+	t.Cleanup(func() { _ = raw.Close() })
 	return &qrHarness{cluster: cluster, raw: raw, db: recordlayer.NewFDBDatabase(raw), setup: setup, keys: map[string]*memoryContinuationKeys{}}
 }
 

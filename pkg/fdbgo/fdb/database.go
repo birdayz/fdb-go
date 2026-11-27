@@ -261,6 +261,9 @@ func WithTracingSampleRate(rate float64) Option {
 	}
 }
 
+// Tracer is an OpenTelemetry tracer used by [WithTracer] and [Config.Tracer].
+type Tracer = oteltrace.Tracer
+
 // WithTracer sets the application-owned OpenTelemetry tracer for client spans.
 // WithTracingSampleRate gates sampling before the provider's sampler; nil
 // disables export without constructing OTel contexts or spans. Managed Transact
@@ -356,6 +359,9 @@ const defaultBootstrapTimeout = 60 * time.Second
 // context.Background()) is bounded by defaultBootstrapTimeout so bootstrap can
 // never hang forever. The returned cancel must always be called.
 func bootstrapContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if _, ok := ctx.Deadline(); ok {
 		return ctx, func() {}
 	}
@@ -376,22 +382,29 @@ func bootstrapContext(ctx context.Context) (context.Context, context.CancelFunc)
 // libfdb_c. See the package doc at fdb.dev/pkg/fdbgo/fdb. Use OpenDatabaseFromConfig to
 // pass a context for bootstrap itself.
 func OpenDatabase(clusterFile string, opts ...Option) (Database, error) {
+	return openDatabaseWithContext(context.Background(), clusterFile, opts...)
+}
+
+// openDatabaseWithContext opens a Database using clusterFile and bounds the
+// initial coordinator bootstrap with ctx (or defaultBootstrapTimeout if ctx has
+// no deadline). The returned Database uses context.Background() for ongoing
+// operations.
+func openDatabaseWithContext(ctx context.Context, clusterFile string, opts ...Option) (Database, error) {
 	if apiVersion.Load() == 0 {
 		return Database{}, Error{Code: 2200} // api_version_unset
 	}
 	// Bound bootstrap only. The database's long-lived context must NOT be the
 	// bootstrap context (which we cancel after connect).
-	bootstrapCtx, bootstrapCancel := bootstrapContext(context.Background())
+	bootstrapCtx, bootstrapCancel := bootstrapContext(ctx)
 	defer bootstrapCancel()
 	// Thread the selected API version into the client (RFC-149); the unset check
 	// above guarantees it is non-zero, so the client's mandatory-set gate passes.
 	db, err := client.OpenDatabase(bootstrapCtx, clusterFile, toClientOptions(opts, int(apiVersion.Load()))...)
 	if err != nil {
-		return Database{}, err
+		return Database{}, convertError(err)
 	}
 	// Long-lived context for the database — not the bootstrap timeout.
-	ctx := context.Background()
-	return Database{d: &internalDB{inner: db, ctx: ctx}}, nil
+	return Database{d: &internalDB{inner: db, ctx: context.Background()}}, nil
 }
 
 // OpenWithConnectionString opens a connection using a cluster connection string
@@ -419,7 +432,7 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 	// above guarantees it is non-zero, so the client's mandatory-set gate passes.
 	db, err := client.OpenDatabaseFromConfig(bootstrapCtx, toClientClusterFile(cf), toClientOptions(opts, int(apiVersion.Load()))...)
 	if err != nil {
-		return Database{}, err
+		return Database{}, convertError(err)
 	}
 	return Database{d: &internalDB{inner: db, ctx: context.Background()}}, nil
 }
@@ -435,11 +448,6 @@ func WrapDatabase(db *client.Database) Database {
 // Explicit *Ctx calls override ctx; cancellation does not end an already-dispatched commit's wait.
 func WrapDatabaseContext(ctx context.Context, db *client.Database) Database {
 	return Database{d: &internalDB{inner: db, ctx: ctx}}
-}
-
-// Open opens a database. The dbName parameter is ignored (legacy API compatibility).
-func Open(clusterFile string, _ []byte) (Database, error) {
-	return OpenDatabase(clusterFile)
 }
 
 // MustOpen opens a database or panics. The dbName parameter is ignored.
@@ -574,11 +582,12 @@ func (db Database) Metrics() MetricsSnapshot {
 	return fromClientMetricsSnapshot(db.d.inner.Metrics())
 }
 
-// Close closes the database connection.
-func (db Database) Close() {
+// Close closes the database connection, satisfying [io.Closer].
+func (db Database) Close() error {
 	if db.d != nil && db.d.inner != nil {
-		db.d.inner.Close()
+		return db.d.inner.Close()
 	}
+	return nil
 }
 
 // CreateTransaction copies database option defaults; reads inherit context.Background() for ordinarily

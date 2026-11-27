@@ -1,6 +1,11 @@
 package fdb
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+
+	"fdb.dev/internal/fdbwire"
+)
 
 // Error represents a low-level error returned by FoundationDB.
 // Compare the Code field against FDB error codes, pass to
@@ -24,6 +29,14 @@ func (e Error) Error() string {
 // wire-side FDBError.Retryable in internal/fdbwire.
 func (e Error) Retryable() bool {
 	return IsRetryable(e.Code)
+}
+
+// IsMaybeCommitted reports whether this error belongs to FoundationDB's
+// FDB_ERROR_PREDICATE_MAYBE_COMMITTED set (commit_unknown_result 1021 and
+// cluster_version_changed 1039). When true, the transaction's mutations may
+// already be durable on the cluster, so callers must only retry idempotent work.
+func (e Error) IsMaybeCommitted() bool {
+	return e.Code == 1021 || e.Code == 1039
 }
 
 // errNotSupported is returned by stubs for operations not yet implemented
@@ -453,6 +466,52 @@ func IsRetryable(code int) bool {
 		return true
 	}
 	return false
+}
+
+// ErrorCode extracts the FoundationDB error code from err, inspecting value
+// [Error], pointer [*Error], internal wire FDB errors, and any wrapped error
+// chain via [errors.As]. Returns (0, false) when err is nil or carries no
+// FoundationDB error.
+func ErrorCode(err error) (int, bool) {
+	if err == nil {
+		return 0, false
+	}
+	var fe Error
+	if errors.As(err, &fe) {
+		return fe.Code, true
+	}
+	var pfe *Error
+	if errors.As(err, &pfe) && pfe != nil {
+		return pfe.Code, true
+	}
+	var we *wire.FDBError
+	if errors.As(err, &we) && we != nil {
+		return we.Code, true
+	}
+	return 0, false
+}
+
+// IsRetryableError reports whether err carries a FoundationDB error whose code
+// satisfies [IsRetryable]. It inspects value [Error], pointer [*Error], and
+// wrapped error chains via [ErrorCode].
+func IsRetryableError(err error) bool {
+	code, ok := ErrorCode(err)
+	if !ok {
+		return false
+	}
+	return IsRetryable(code)
+}
+
+// IsMaybeCommitted reports whether err carries a FoundationDB error in
+// FDB_ERROR_PREDICATE_MAYBE_COMMITTED (commit_unknown_result 1021 or
+// cluster_version_changed 1039), inspecting value [Error], pointer [*Error],
+// and wrapped error chains via [ErrorCode].
+func IsMaybeCommitted(err error) bool {
+	code, ok := ErrorCode(err)
+	if !ok {
+		return false
+	}
+	return Error{Code: code}.IsMaybeCommitted()
 }
 
 // IsOnErrorRetryable reports whether fdb_transaction_on_error retries `code` (i.e. resets
