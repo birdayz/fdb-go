@@ -961,34 +961,3 @@ func decodeSlidingWindowLong(b []byte) (int64, error) {
 	}
 	return v, nil
 }
-
-// SlidingWindowCorruptionError reports sliding-window bookkeeping that cannot
-// be true of any consistent window — a missing boundary pointer where the count
-// says there must be one, or a boundary entry key shorter than the window key.
-//
-// Matches Java's RecordCoreException with INDEX_NAME log info; it is a distinct
-// Go type so callers can tell corrupt bookkeeping apart from an ordinary
-// read failure.
-type SlidingWindowCorruptionError struct {
-	IndexName string
-	Message   string
-}
-
-func (e *SlidingWindowCorruptionError) Error() string {
-	return fmt.Sprintf("sliding window index %q: %s", e.IndexName, e.Message)
-}
-
-func (*SlidingWindowCorruptionError) JavaRecordCoreException() {}
-
-// SlidingWindowDeleteWhereError reports a deleteRecordsWhere the sliding window
-// cannot serve. Matches Java's Query.InvalidExpressionException
-// ("deleteRecordsWhere not supported by index X") raised when canDeleteWhere
-// returns false.
-type SlidingWindowDeleteWhereError struct {
-	IndexName string
-	Message   string
-}
-
-func (e *SlidingWindowDeleteWhereError) Error() string {
-	return fmt.Sprintf("deleteRecordsWhere not supported by index %q: %s", e.IndexName, e.Message)
-}

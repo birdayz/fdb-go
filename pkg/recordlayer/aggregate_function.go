@@ -104,26 +104,6 @@ func (store *FDBRecordStore) EvaluateAggregateFunction(
 	return evaluateAggregate(ctx, fn, maintainer, scanRange, isolationLevel)
 }
 
-// AggregateFunctionNotSupportedError is Java's AggregateFunctionNotSupportedException
-// (thrown by FDBRecordStore.evaluateAggregateFunction, FDBRecordStore.java:2409-2412)
-// — no readable, queryable index over the requested record types can evaluate the
-// function.
-//
-// It is a distinct type because callers branch on it: Java's
-// IndexBuildState.loadIndexBuildStateAsync catches exactly this exception to report
-// "total unknown" and lets every other failure propagate
-// (IndexBuildState.java:76-82).
-type AggregateFunctionNotSupportedError struct {
-	Function string
-	Operand  string
-}
-
-func (e *AggregateFunctionNotSupportedError) Error() string {
-	return fmt.Sprintf("Aggregate function requires appropriate index: function=%s, operand=%s", e.Function, e.Operand)
-}
-
-func (*AggregateFunctionNotSupportedError) JavaRecordCoreException() {}
-
 // indexesForRecordTypes returns the indexes that apply to EXACTLY the given record
 // types, no more, no less. Port of Java's IndexFunctionHelper.indexesForRecordTypes
 // (IndexFunctionHelper.java:178-189):

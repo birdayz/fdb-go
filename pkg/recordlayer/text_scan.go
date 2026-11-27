@@ -603,17 +603,6 @@ type TextQuery struct {
 	KeepDuplicates bool
 }
 
-// TextQueryPlanError reports that an index cannot satisfy a text query,
-// where Java's planText returns no plan for the index.
-type TextQueryPlanError struct {
-	IndexName string
-	Reason    string
-}
-
-func (e *TextQueryPlanError) Error() string {
-	return fmt.Sprintf("text index %q cannot satisfy the query: %s", e.IndexName, e.Reason)
-}
-
 // TextQueryPlan wraps a text scan with type filtering, strict ALL_PREFIXES rechecks
 // and primary-key deduplication where required.
 type TextQueryPlan struct {

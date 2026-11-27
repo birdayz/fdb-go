@@ -305,32 +305,3 @@ func (d *FDBDatabase) readTransactAttempt(ctx context.Context, call AttemptCall,
 type SPFreshSealedPosting struct {
 	CellID, PostingID, Epoch int64
 }
-
-// SPFreshSplitWindowError is the retryable conflict an SPFresh foreground
-// write raises when every posting its routing reaches is SEALED by a split in
-// progress. It wraps not_committed (1020), so every owner and the SQL mapping
-// read it as a retryable conflict, but the attempt loop retries it without
-// counting an attempt: the write re-runs until the split publishes (RFC-094
-// §6), bounded by the caller's context.
-type SPFreshSplitWindowError struct {
-	Sealed []SPFreshSealedPosting
-}
-
-func (e *SPFreshSplitWindowError) Error() string {
-	return fmt.Sprintf("SPFresh write met only sealed postings %v: %v", e.Sealed, e.Unwrap())
-}
-
-func (e *SPFreshSplitWindowError) Unwrap() error { return fdb.Error{Code: 1020} }
-
-// SPFreshStalledSealError fails a call whose SPFresh write met the same sealed
-// postings on spfreshStalledSealBound consecutive retries under a simulated
-// environment, where no second actor can take the stalled lease over. It is
-// not retriable, so a simulation that stalls a seal fails instead of hanging.
-type SPFreshStalledSealError struct {
-	Sealed  []SPFreshSealedPosting
-	Retries int
-}
-
-func (e *SPFreshStalledSealError) Error() string {
-	return fmt.Sprintf("SPFresh write stalled: postings %v stayed sealed across %d retries", e.Sealed, e.Retries)
-}

@@ -12,18 +12,11 @@ import (
 	"time"
 )
 
-// RunnerClosedError corresponds to FDBDatabaseRunner.RunnerClosed.
-type RunnerClosedError struct{}
-
-func (*RunnerClosedError) Error() string { return "runner is closed" }
-
 // iterationQuota belongs to one transaction, including a failed attempt.
 type iterationQuota struct {
 	scanned, deleted int
 	hasMore          bool
 }
-
-func (*RunnerClosedError) JavaRecordCoreException() {}
 
 // throttledRetryingIterator ports Java's ThrottledRetryingIterator. It is the
 // sole retry owner: OpenContext must not be replaced with the retrying DB.Run.

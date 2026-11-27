@@ -4548,7 +4548,7 @@ what Go writes, and in both a Java reader reads what Go writes:
   written, and Java reads them. `TestTransformedSerializer_WriteValidation`
   (`pkg/recordlayer/transformed_record_serializer_test.go:691`) pins Go's answer and, mutated to
   Java's key number 0, reddens with Java's error. Both validations are otherwise Java's: a
-  `RecordSerializationValidationError` (`pkg/recordlayer/errors.go:409`; Java's
+  `RecordSerializationValidationError` (`pkg/recordlayer/errors_serialization.go:116`; Java's
   `RecordSerializationValidationException`, not a `RecordSerializationException`) naming the record
   type and primary key. The encryption one catches only a cipher failure, so a key manager's own
   refusal propagates as it is.

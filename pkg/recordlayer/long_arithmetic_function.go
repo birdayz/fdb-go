@@ -178,24 +178,6 @@ func applyUnary(name string, op func(int64) (int64, error), arg any) (any, error
 	return result, nil
 }
 
-// KeyExpressionInvalidResultError is Java's KeyExpression.InvalidResultException
-// as Key.Evaluated.getObject raises it for an argument of the wrong class. The
-// fields are the exception's addLogInfo keys ("index", expected_type,
-// actual_type).
-type KeyExpressionInvalidResultError struct {
-	Function     string
-	Index        int
-	ExpectedType string
-	ActualType   string
-}
-
-func (e *KeyExpressionInvalidResultError) Error() string {
-	return fmt.Sprintf("Invalid type in value: function %s argument %d expected %s, got %s",
-		e.Function, e.Index, e.ExpectedType, e.ActualType)
-}
-
-func (*KeyExpressionInvalidResultError) JavaRecordCoreException() {}
-
 // javaTupleValueClassName is a tuple value's Java class name after toTupleAppropriateValue
 // (Key.java:553-561); a Go-only carrier keeps its Go type name.
 func javaTupleValueClassName(v any) string {

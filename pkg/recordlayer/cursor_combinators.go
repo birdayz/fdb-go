@@ -233,17 +233,6 @@ func OrElseWithContinuation[T any](
 	return c
 }
 
-// UnknownOrElseCursorStateError is returned when an OrElse continuation carries a
-// state value outside the known OrElseContinuation_State range. Matches Java's
-// OrElseCursor.UnknownOrElseCursorStateException.
-type UnknownOrElseCursorStateError struct{}
-
-func (e *UnknownOrElseCursorStateError) Error() string {
-	return "unknown state for OrElseCursor"
-}
-
-func (*UnknownOrElseCursorStateError) JavaRecordCoreException() {}
-
 type orElseCursor[T any] struct {
 	primary            RecordCursor[T]
 	alternativeFactory CursorFactory[T]

@@ -348,18 +348,6 @@ func (rc *FDBRecordContext) CheckTransactionSize() error {
 	return nil
 }
 
-// TransactionSizeExceededError is returned when the approximate transaction
-// size exceeds the configured error threshold. Callers should commit the
-// current transaction and start a new one.
-type TransactionSizeExceededError struct {
-	CurrentBytes int64
-	LimitBytes   int64
-}
-
-func (e *TransactionSizeExceededError) Error() string {
-	return fmt.Sprintf("transaction size %d bytes exceeds limit %d bytes", e.CurrentBytes, e.LimitBytes)
-}
-
 // Commit runs pre-commit checks, flushes pending version mutations, commits the
 // transaction, and runs post-commit callbacks. All explicit commit APIs share
 // this lifecycle, matching Java's FDBRecordContext.commitAsync().

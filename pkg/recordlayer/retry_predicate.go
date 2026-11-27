@@ -15,20 +15,6 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb"
 )
 
-// RecordCoreRetriableTransactionError is Java's
-// RecordCoreRetriableTransactionException: a failure the transaction runner
-// retries like a retryable FDB error.
-type RecordCoreRetriableTransactionError struct {
-	Message string
-	Cause   error
-}
-
-func (e *RecordCoreRetriableTransactionError) Error() string { return e.Message }
-
-func (e *RecordCoreRetriableTransactionError) Unwrap() error { return e.Cause }
-
-func (*RecordCoreRetriableTransactionError) JavaRecordCoreException() {}
-
 // IsRetriable reports whether FDBDatabase.Run would retry an attempt that
 // failed with err (isRetriableAnyCause).
 func IsRetriable(err error) bool { return isRetriableAnyCause(err) }

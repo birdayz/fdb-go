@@ -11,26 +11,12 @@ package recordlayer
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 )
-
-// TimeLimitExceededError is returned when the OnlineIndexer's overall time limit is exceeded.
-// Matches Java's com.apple.foundationdb.record.provider.foundationdb.IndexingBase.TimeLimitException.
-type TimeLimitExceededError struct {
-	TimeLimit time.Duration
-	Elapsed   time.Duration
-}
-
-func (e *TimeLimitExceededError) Error() string {
-	return fmt.Sprintf("online indexer time limit exceeded: limit=%v, elapsed=%v", e.TimeLimit, e.Elapsed)
-}
-
-func (*TimeLimitExceededError) JavaRecordCoreException() {}
 
 // shouldLessenWork returns true if the error is a transient FDB error indicating
 // the transaction did too much work (too large, timed out, conflicted, etc.).

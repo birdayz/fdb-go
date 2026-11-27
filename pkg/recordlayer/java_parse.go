@@ -58,39 +58,6 @@ func convertJavaNumError(err error) error {
 	return err
 }
 
-// NumberFormatError is Java's NumberFormatException, raised by
-// Integer.parseInt on an index option that is not a decimal int. Java's class
-// extends IllegalArgumentException, so errors.As matches it as an
-// *IllegalArgumentError too.
-type NumberFormatError struct {
-	// Input is the value Integer.parseInt or Double.parseDouble refused
-	// (Double.parseDouble's trimmed).
-	Input string
-	// Text, when set, is the exception's own message instead of
-	// forInputString's: Double.parseDouble's "empty String" for a value that
-	// trims to nothing and "multiple points" for a second decimal point in the
-	// significand (FloatingDecimal.readJavaFormatString).
-	Text string
-}
-
-// Error is NumberFormatException.forInputString's text for radix 10, or Text.
-func (e *NumberFormatError) Error() string {
-	if e.Text != "" {
-		return e.Text
-	}
-	return `For input string: "` + e.Input + `"`
-}
-
-// As lets errors.As match a NumberFormatError as the IllegalArgumentError
-// its Java class extends.
-func (e *NumberFormatError) As(target any) bool {
-	if t, ok := target.(**IllegalArgumentError); ok {
-		*t = &IllegalArgumentError{Message: e.Error()}
-		return true
-	}
-	return false
-}
-
 // JavaParseInt is Java's Integer.parseInt(s) (radix 10): an optional leading
 // '+' or '-', then one or more decimal digits, within int32. A digit is what
 // Character.digit(char, 10) accepts, any Unicode decimal digit (general

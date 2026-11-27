@@ -73,16 +73,6 @@ const (
 	MaxRecordContextTagLen = 16
 )
 
-// TagValidationError reports a tag set rejected by the record layer's limits.
-// Java throws IllegalArgumentException with these exact messages.
-type TagValidationError struct {
-	Message string
-	// Tag is the offending tag for a length violation, empty for a count violation.
-	Tag string
-}
-
-func (e *TagValidationError) Error() string { return e.Message }
-
 // ValidateTags applies Java's setTags checks in Java's order — the COUNT first,
 // then each tag's length (FDBRecordContextConfig.java:662-669). The order is
 // observable: an over-long tag in an over-large set reports the count error.

@@ -7,12 +7,7 @@
 
 package recordlayer
 
-import (
-	"fmt"
-	"strings"
-
-	"fdb.dev/pkg/fdbgo/fdb/tuple"
-)
+import "fdb.dev/pkg/fdbgo/fdb/tuple"
 
 // RankScanBounds selects score or rank bounds and optionally returns each entry's
 // absolute rank in its value. Matches Java's RankScanBounds.
@@ -21,76 +16,6 @@ type RankScanBounds struct {
 	RankRange          TupleRange
 	IncludeRankAsValue bool
 }
-
-// RecordCoreArgumentError reports an invalid argument with its context.
-// Matches Java's RecordCoreArgumentException; the fields are the log keys the
-// raising sites attach (SCAN_TYPE, INDEX_NAME, SUBSPACE_KEY).
-type RecordCoreArgumentError struct {
-	Message   string
-	ScanType  IndexScanType
-	IndexName string
-	// SubspaceKey is the offending subspace key of a subspace-key refusal
-	// (Index.normalizeSubspaceKey, FormerIndex's constructor;
-	// LogMessageKeys.SUBSPACE_KEY), and HasSubspaceKey says the site attached
-	// one: the offending key is often nil, so nil cannot mean "not attached".
-	SubspaceKey    any
-	HasSubspaceKey bool
-	// Key and Subspace are the raw bytes attached by SplitHelper.unpackKey.
-	Key      []byte
-	Subspace []byte
-	// Plan is the refused plan's class name (LogMessageKeys.PLAN).
-	Plan string
-	// ClientKnobName, ClientKnobValue and Expected are a refused client knob's
-	// log keys (CLIENT_KNOB_NAME, CLIENT_KNOB_VALUE, EXPECTED).
-	ClientKnobName  string
-	ClientKnobValue string
-	Expected        string
-	// Cause is the exception Java's constructor chains (the key store's
-	// IOException / GeneralSecurityException in KeyStoreSerializationKeyManager).
-	Cause error
-}
-
-// Unwrap exposes the chained cause to errors.Is / errors.As.
-func (e *RecordCoreArgumentError) Unwrap() error { return e.Cause }
-
-// Error renders the message and, in parentheses, only the fields its site set.
-func (e *RecordCoreArgumentError) Error() string {
-	var fields []string
-	if e.ScanType != "" {
-		fields = append(fields, "scanType="+string(e.ScanType))
-	}
-	if e.IndexName != "" {
-		fields = append(fields, fmt.Sprintf("index=%q", e.IndexName))
-	}
-	if e.HasSubspaceKey {
-		fields = append(fields, fmt.Sprintf("subspace_key=%v", e.SubspaceKey))
-	}
-	if e.Key != nil {
-		fields = append(fields, fmt.Sprintf("key=%x", e.Key))
-	}
-	if e.Subspace != nil {
-		fields = append(fields, fmt.Sprintf("subspace=%x", e.Subspace))
-	}
-	if e.Plan != "" {
-		fields = append(fields, "plan="+e.Plan)
-	}
-	if e.ClientKnobName != "" {
-		fields = append(fields, fmt.Sprintf("client_knob_name=%q", e.ClientKnobName))
-	}
-	if e.Expected != "" {
-		fields = append(fields, fmt.Sprintf("client_knob_value=%q", e.ClientKnobValue), "expected="+e.Expected)
-	}
-	msg := e.Message
-	if len(fields) > 0 {
-		msg += " (" + strings.Join(fields, ", ") + ")"
-	}
-	if e.Cause != nil {
-		msg += ": " + e.Cause.Error()
-	}
-	return msg
-}
-
-func (*RecordCoreArgumentError) JavaRecordCoreException() {}
 
 // NewRankScanBounds accepts only BY_VALUE and BY_RANK, even without rank values.
 func NewRankScanBounds(scanType IndexScanType, rankRange TupleRange, includeRankAsValue bool) (RankScanBounds, error) {

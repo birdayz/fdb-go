@@ -164,15 +164,6 @@ func (b *MetaDataEvolutionValidatorBuilder) Build() *MetaDataEvolutionValidator 
 	return &v
 }
 
-// MetaDataEvolutionError describes a schema evolution violation.
-type MetaDataEvolutionError struct {
-	Message string
-}
-
-func (e *MetaDataEvolutionError) Error() string {
-	return e.Message
-}
-
 // Validate checks that evolving from oldMetaData to newMetaData is safe.
 // Returns nil if the evolution is valid, or an error describing the violation.
 // Matches Java's MetaDataEvolutionValidator.validate().

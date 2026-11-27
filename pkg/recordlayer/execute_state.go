@@ -4,8 +4,6 @@
 
 package recordlayer
 
-import "fmt"
-
 // ExecuteState holds the mutable, statement-scoped counters for a single
 // statement execution. It mirrors Java's
 // com.apple.foundationdb.record.ExecuteState (ExecuteState.java:44-47): the
@@ -204,25 +202,6 @@ func (s *ExecuteState) ResetRecursionLevel(id any) {
 		return
 	}
 	delete(s.recursionLevels, id)
-}
-
-// MemoryLimitExceededError is returned when a statement's accounted in-memory
-// buffering exceeds the statement-wide memory byte budget (RFC-130). It is a
-// per-statement resource-limit error in the same family as the scan/byte/time
-// limits — the relational layer maps it to SQLSTATE 54F01
-// (ErrCodeExecutionLimitReached), matching Java's reuse of that SQLSTATE for
-// resource limits (there is no memory-specific SQLSTATE in Java either).
-type MemoryLimitExceededError struct {
-	// Used is the running memory total (in bytes) at the point the budget
-	// was breached — i.e. the would-be total INCLUDING the charge that
-	// tripped it.
-	Used int64
-	// Limit is the configured statement-wide memory byte budget.
-	Limit int64
-}
-
-func (e *MemoryLimitExceededError) Error() string {
-	return fmt.Sprintf("statement memory budget exceeded: %d bytes buffered exceeds limit %d bytes", e.Used, e.Limit)
 }
 
 // SnapshotRecursionLevels copies the recursion-level counts so a caller that is

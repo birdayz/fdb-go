@@ -16,16 +16,6 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 )
 
-// LegacyKeySpacePrefixError refuses a silent switch from an earlier Go path.
-type LegacyKeySpacePrefixError struct {
-	LegacyPrefix []byte
-	FlatPrefix   []byte
-}
-
-func (e *LegacyKeySpacePrefixError) Error() string {
-	return fmt.Sprintf("legacy nested KeySpace prefix %x still contains data; explicit legacy access or cutover to %x required", e.LegacyPrefix, e.FlatPrefix)
-}
-
 func (b *StoreBuilder) checkLegacyKeySpacePrefix() error {
 	guarded, ok := b.subspace.(interface{ LegacyKeySpaceSubspace() subspace.Subspace })
 	if !ok {

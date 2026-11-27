@@ -307,23 +307,6 @@ func (d *FDBDatabase) OpenRecordContext(ctx context.Context) (*FDBRecordContext,
 	return d.NewRecordContextIn(ctx, tx), nil
 }
 
-// BackendCapabilityError is returned when an operation is not supported on the
-// configured fdb backend. The libfdb_c escape hatch (RFC-109) drives the
-// Run / RunRead gold path, standalone transactions (CreateWritableTransaction —
-// used by the FDBDatabaseRunner and SQL BeginTx), and LocalityGetBoundaryKeys
-// (online MUTUAL indexing) all through backend interfaces, so those work on
-// libfdb_c. Only the pure-Go-typed CreateTransaction (which returns the concrete
-// fdb.Transaction) is pure-Go-only in v1; it — and any operation a custom
-// transactor genuinely can't provide — fail fast with this error.
-type BackendCapabilityError struct {
-	Op string // the unavailable operation, e.g. "CreateTransaction"
-}
-
-func (e *BackendCapabilityError) Error() string {
-	return fmt.Sprintf("recordlayer: %s is not supported on this fdb backend "+
-		"(pure-Go-only; the libfdb_c escape hatch covers the Run/RunRead path)", e.Op)
-}
-
 // CreateTransaction creates a new transaction without retry logic.
 // This is primarily used for testing scenarios where manual transaction control is needed,
 // such as testing isolation levels with concurrent transactions.

@@ -20,26 +20,6 @@ import (
 	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
-// RecordCountKeySizeMismatchError is Java's
-// recordCoreException("key and value are not the same size") thrown by
-// getSnapshotRecordCount (FDBRecordStore.java:2295-2297) when the evaluated value
-// has a different number of columns than the key expression it is supposed to be a
-// value of.
-//
-// It is a typed error rather than a plain message because the two sizes are the
-// whole diagnosis: the caller either passed a value for a different count key or
-// truncated one, and the alternative to failing is answering from a slot nothing
-// ever writes — a confident, wrong 0.
-type RecordCountKeySizeMismatchError struct {
-	KeyColumnSize int
-	ValueSize     int
-}
-
-func (e *RecordCountKeySizeMismatchError) Error() string {
-	return fmt.Sprintf("key and value are not the same size: keyColumnSize=%d, valueSize=%d",
-		e.KeyColumnSize, e.ValueSize)
-}
-
 // Little-endian int64 constants for atomic ADD mutations.
 // Must match Java's FDBRecordStore constants exactly.
 var (

@@ -205,40 +205,6 @@ func cleanupAllHeartbeats(tx fdb.WritableTransaction, storeSubspace subspace.Sub
 	tx.ClearRange(fdb.KeyRange{Begin: begin, End: end})
 }
 
-// SynchronizedSessionLockedError is returned when a non-mutual indexer detects
-// an active heartbeat from another indexer process.
-// Matches Java's SynchronizedSessionLockedException, with its log keys
-// (indexing/IndexingHeartbeat.java:111-115): INDEXER_ID (IndexerID, the refused
-// indexer's own identity), EXISTING_INDEXER_ID, AGE_MILLISECONDS and
-// TIME_LIMIT_MILLIS. ExistingInfo, the holder's heartbeat info, is a Go
-// addition: Java's exception carries no info key.
-type SynchronizedSessionLockedError struct {
-	IndexerID         uuid.UUID
-	ExistingIndexerID string
-	ExistingInfo      string
-	HeartbeatAgeMs    int64
-	LeaseLengthMs     int64
-}
-
-func (e *SynchronizedSessionLockedError) Error() string {
-	return fmt.Sprintf(
-		"index build session locked by another indexer (id=%s, info=%s, age=%dms, lease=%dms)",
-		e.ExistingIndexerID, e.ExistingInfo, e.HeartbeatAgeMs, e.LeaseLengthMs,
-	)
-}
-
-// IndexingHeartbeatKeyError rejects legacy or malformed heartbeat keys before
-// admitting UUID-only builders. Old Go builders must be stopped and fenced before
-// administrative cleanup; automatically expiring these keys cannot establish that.
-type IndexingHeartbeatKeyError struct {
-	IndexName string
-	Key       []byte
-}
-
-func (e *IndexingHeartbeatKeyError) Error() string {
-	return fmt.Sprintf("incompatible indexing heartbeat key %x for index %q: fence legacy builders and clean heartbeat keys before starting UUID-only builders", e.Key, e.IndexName)
-}
-
 // heartbeatIndexerID is Java's heartbeatKeyToIndexerId,
 // indexHeartbeatSubspace(store, index).unpack(key).getUUID(0)
 // (IndexingHeartbeat.java:201-203): the key's FIRST element must be a UUID and any

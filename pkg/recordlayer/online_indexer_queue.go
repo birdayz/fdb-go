@@ -10,53 +10,13 @@ package recordlayer
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 
 	"fdb.dev/pkg/recordlayer/metadatapb"
 )
-
-// IndexingValidationError matches Java's IndexingBase.ValidationException: a
-// session precondition failed. It carries the log keys Java attaches at each
-// throw site: the primary index (and, for "Index state is not as expected", its
-// last-modified version), a disagreeing follower, and a BY_INDEX build's
-// source index. The build catcher falls back from a BY_INDEX build on it.
-type IndexingValidationError struct {
-	Message          string
-	IndexName        string
-	IndexVersion     int
-	IndexState       IndexState
-	TargetIndexName  string
-	TargetIndexState IndexState
-	SourceIndexName  string
-	// IndexerID is Java's INDEXER_ID log key, which the source-index validations
-	// carry (validateOrThrowEx, IndexingBase.java:1171-1174); the state checks do
-	// not (:203-207, :237-241), and leave it nil.
-	IndexerID uuid.UUID
-}
-
-func (e *IndexingValidationError) Error() string { return e.Message }
-
-// UnexpectedReadableError matches Java's IndexingBase.UnexpectedReadableException:
-// a build transaction found some (AllReadable false) or all of its targets
-// already published, typically by a mutual peer. Under a mutual policy the
-// build catcher treats the second as success and falls back to a records scan
-// on the first; any other build returns it.
-type UnexpectedReadableError struct {
-	AllReadable bool
-	Message     string
-	IndexNames  []string
-	IndexStates []IndexState
-}
-
-func (*IndexingValidationError) JavaRecordCoreException() {}
-
-func (e *UnexpectedReadableError) Error() string { return e.Message }
 
 // shouldUsePendingWriteQueue is a fresh-build decision only. Continuing builds
 // recover their queue targets from persisted state, not today's request policy.
@@ -70,8 +30,6 @@ func (oi *OnlineIndexer) shouldUsePendingWriteQueue(store *FDBRecordStore, index
 	}
 	return maintainer.IsPendingWriteQueueAllowed() && countVersionColumns(index.RootExpression) == 0 && store.GetFormatVersion() >= formatVersionPendingWrites, nil
 }
-
-func (*UnexpectedReadableError) JavaRecordCoreException() {}
 
 // checkOpenHeartbeats is the session's open-time preflight. It runs before the
 // store's metadata reconciliation, which can rebuild or disable indexes and so
@@ -563,18 +521,6 @@ func (oi *OnlineIndexer) validateBuildTarget(store *FDBRecordStore, index *Index
 		return oi.renewSessionHeartbeat(store, index, heartbeat)
 	}
 	return nil
-}
-
-// IndexRangeClaimLostError prevents committing staged index writes when a
-// target's range was already claimed. It is a failed batch, not successful
-// progress or a reason to commit and jump to another fragment.
-type IndexRangeClaimLostError struct {
-	IndexName  string
-	Begin, End []byte
-}
-
-func (e *IndexRangeClaimLostError) Error() string {
-	return fmt.Sprintf("index %q build range [%x,%x) was already claimed", e.IndexName, e.Begin, e.End)
 }
 
 func insertIndexBuildRange(ranges *IndexingRangeSet, tx fdb.WritableTransaction, index *Index, begin, end []byte) error {
