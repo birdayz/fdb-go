@@ -120,71 +120,18 @@ func RunCaseWithOpener(ctx context.Context, setupDB *sql.DB, dbPath string, open
 
 func runCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, openDB func(schema string) (*sql.DB, error), c *Case, id string, scanLimit int) *SeedResult {
 	res := &SeedResult{Seed: c.Seed, Histogram: map[string]int{}}
-
-	schemaName := id
-	tmplName := id + "t"
 	ddl := c.DDL()
 
-	for _, stmt := range []string{
-		fmt.Sprintf("CREATE SCHEMA TEMPLATE %s %s", tmplName, ddl),
-		fmt.Sprintf("CREATE SCHEMA %s/%s WITH TEMPLATE %s", dbPath, schemaName, tmplName),
-	} {
-		if _, err := setupDB.ExecContext(ctx, stmt); err != nil {
-			res.Kind = OutcomeInfra
-			res.InfraErr = fmt.Errorf("setup %q: %w", stmt, err)
-			return res
-		}
-	}
-
-	var db *sql.DB
-	var err error
-	if openDB != nil {
-		db, err = openDB(strings.ToUpper(schemaName))
-	} else {
-		db, err = sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s&max_total_task_count=150000", strings.ToUpper(dbPath), clusterFile, strings.ToUpper(schemaName)))
-	}
-	if err != nil {
+	qdbs, closeDB, infraErr := setupCaseQueries(ctx, setupDB, dbPath, clusterFile, openDB, ddl, id, scanLimit)
+	if infraErr != nil {
 		res.Kind = OutcomeInfra
-		res.InfraErr = fmt.Errorf("open: %w", err)
+		res.InfraErr = infraErr
 		return res
 	}
-	defer db.Close()
-
-	// Paging mode: pin connections and give each a scanned-rows limit, so
-	// every query below internally pages (a NEW Execute per page). The pooled
-	// DB would hand out fresh unconfigured connections. Statements run on
-	// up to execWorkers connections at once (see executeConcurrently).
-	qdbs := make([]execQuerier, execWorkers)
-	for i := range qdbs {
-		qdbs[i] = db
-	}
-	if scanLimit > 0 {
-		for i := range qdbs {
-			conn, cerr := db.Conn(ctx)
-			if cerr != nil {
-				res.Kind = OutcomeInfra
-				res.InfraErr = fmt.Errorf("pin conn: %w", cerr)
-				return res
-			}
-			defer conn.Close()
-			if rerr := conn.Raw(func(dc any) error {
-				ec, ok := dc.(*embedded.EmbeddedConnection)
-				if !ok {
-					return fmt.Errorf("driver conn is %T, want *embedded.EmbeddedConnection", dc)
-				}
-				return ec.SetOption(api.OptExecutionScannedRowsLimit, scanLimit)
-			}); rerr != nil {
-				res.Kind = OutcomeInfra
-				res.InfraErr = fmt.Errorf("set scan limit: %w", rerr)
-				return res
-			}
-			qdbs[i] = conn
-		}
-	}
-	qdb := qdbs[0]
+	defer closeDB()
 
 	insertSQL := c.InsertSQL()
-	if err := loadFixture(ctx, qdb, insertSQL); err != nil {
+	if err := loadFixture(ctx, qdbs[0], insertSQL); err != nil {
 		res.Kind = OutcomeInfra
 		res.InfraErr = fmt.Errorf("insert: %w", err)
 		return res
@@ -210,108 +157,182 @@ func runCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, o
 			sqlText := c.SQL(q, projection)
 			n++
 
-			// Plan-family telemetry from the TYPED plan tree (never EXPLAIN
-			// text), via the embedded planner over the same DDL. Classified
-			// per projection VARIANT: projection changes the winner even for
-			// an identical WHERE (a star variant can fetch where the narrow
-			// variant is covering), so star-only classification under-reports
-			// executed families.
-			if plan, planErr := typed[n].await(); planErr == nil {
-				for _, fam := range classifyPlan(plan) {
-					res.Histogram[fam]++
-				}
-				// Cost/ordering axis (RFC-182 / RFC-184 W1): the same typed plan
-				// that feeds the family histogram is checked against invariants a
-				// correct plan can never violate. A violation is a finding — the
-				// row diff is blind to a plan that returns the right rows the
-				// wrong way, which is exactly where the ordinal-binding bugs
-				// lived. checkPlanCost is the spurious-sort (COST) invariant;
-				// checkPlanOrdering is the redundant-sort (ORDERING) invariant —
-				// a sort over an input a scan already orders.
-				for _, v := range checkPlanCost(plan, q) {
-					res.Mismatches = append(res.Mismatches, &Mismatch{
-						Seed: c.Seed, DDL: ddl, InsertSQL: insertSQL, SQL: sqlText,
-						Detail: "cost/ordering: " + v,
-					})
-				}
-				for _, v := range checkPlanOrdering(plan, q) {
-					res.Mismatches = append(res.Mismatches, &Mismatch{
-						Seed: c.Seed, DDL: ddl, InsertSQL: insertSQL, SQL: sqlText,
-						Detail: "ordering: " + v,
-					})
-				}
-			} else {
-				res.Histogram["plan-error"]++
-				if len(res.PlanErrors) < maxPlanErrorSamples {
-					res.PlanErrors = append(res.PlanErrors, fmt.Sprintf("%s: %v", sqlText, planErr))
-				}
-			}
+			recordTypedPlanChecks(res, typed[n], c.Seed, ddl, insertSQL, sqlText, q)
 
-			engineRows, cols, err := engine[n].await()
-			if err != nil {
-				// RFC-182 §4: INFRA must never masquerade as a soundness
-				// finding. A context/transport failure aborts the seed as
-				// INFRA; every OTHER engine error stays a finding — P1
-				// generates only supported shapes (§3), and widening the
-				// INFRA class would open a suppression hole.
-				if isInfraError(err) {
-					res.InfraErr = fmt.Errorf("query %q: %w", sqlText, err)
-					return finalizeResult(res)
-				}
-				// An int64 SUM overflow: 22003 is the CORRECT engine outcome
-				// for this data, so verify the oracle agrees it overflows
-				// rather than counting the error as a divergence. If the
-				// oracle does NOT overflow, the 22003 stays a finding.
-				if strings.Contains(err.Error(), "22003") {
-					if oracle, oErr := OracleRows(c, q, projection); oErr == nil && AggResultOverflows(oracle) {
-						continue
-					}
-				}
-				// Under a deliberately tiny paging limit (scanLimit>0), a
-				// scanned-records-limit error (54F01) is a RESOURCE limit, not a
-				// soundness divergence: a high-scan query — e.g. a self-join
-				// whose single inner probe scans more rows than the per-page
-				// limit — legitimately cannot complete and cannot checkpoint
-				// mid-probe. Verified sound at a larger limit (seed 700032's
-				// self-joins match the Oracle at scanLimit=200). Record it (never
-				// silent) and skip — the query is INCONCLUSIVE for soundness
-				// under this limit, not wrong. In un-paged mode (scanLimit==0) a
-				// 54F01 stays a finding.
-				if scanLimit > 0 && strings.Contains(err.Error(), "54F01") {
-					res.Declines = append(res.Declines,
-						fmt.Sprintf("scan-limited @%d (resource limit, not a divergence): %s", scanLimit, sqlText))
-					continue
-				}
-				if gap := matchKnownGap(sqlText, err); gap != nil {
-					// DECLINE, not a finding: a documented limitation with a
-					// live pin. Recorded (never silent) so the rate stays
-					// visible and a growing bucket is noticed.
-					res.Declines = append(res.Declines,
-						fmt.Sprintf("%s [pin: %s]: %s", gap.name, gap.pin, sqlText))
-					continue
-				}
-				res.Mismatches = append(res.Mismatches, &Mismatch{
-					Seed: c.Seed, DDL: ddl, InsertSQL: insertSQL, SQL: sqlText,
-					Detail: fmt.Sprintf("engine error: %v", err),
-				})
-				continue
-			}
-			oracle, err := OracleRows(c, q, projection)
-			if err != nil {
-				res.InfraErr = fmt.Errorf("oracle: %w", err)
+			if infraErr := checkEngineOutcome(res, c, q, projection, ddl, insertSQL, sqlText, scanLimit, engine[n]); infraErr != nil {
+				res.InfraErr = infraErr
 				return finalizeResult(res)
-			}
-			res.Executed++
-			if detail := diffRows(engineRows, cols, oracle, q); detail != "" {
-				res.Mismatches = append(res.Mismatches, &Mismatch{
-					Seed: c.Seed, DDL: ddl, InsertSQL: insertSQL, SQL: sqlText,
-					EngineRows: engineRows, OracleRows: oracle, Detail: detail,
-				})
 			}
 		}
 	}
 
 	return finalizeResult(res)
+}
+
+func setupCaseQueries(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, openDB func(schema string) (*sql.DB, error), ddl, id string, scanLimit int) ([]execQuerier, func(), error) {
+	schemaName := id
+	tmplName := id + "t"
+
+	for _, stmt := range []string{
+		fmt.Sprintf("CREATE SCHEMA TEMPLATE %s %s", tmplName, ddl),
+		fmt.Sprintf("CREATE SCHEMA %s/%s WITH TEMPLATE %s", dbPath, schemaName, tmplName),
+	} {
+		if _, err := setupDB.ExecContext(ctx, stmt); err != nil {
+			return nil, nil, fmt.Errorf("setup %q: %w", stmt, err)
+		}
+	}
+
+	var db *sql.DB
+	var err error
+	if openDB != nil {
+		db, err = openDB(strings.ToUpper(schemaName))
+	} else {
+		db, err = sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s&max_total_task_count=150000", strings.ToUpper(dbPath), clusterFile, strings.ToUpper(schemaName)))
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("open: %w", err)
+	}
+
+	var conns []*sql.Conn
+	closeAll := func() {
+		for i := len(conns) - 1; i >= 0; i-- {
+			conns[i].Close()
+		}
+		db.Close()
+	}
+
+	// Paging mode: pin connections and give each a scanned-rows limit, so
+	// every query below internally pages (a NEW Execute per page). The pooled
+	// DB would hand out fresh unconfigured connections. Statements run on
+	// up to execWorkers connections at once (see executeConcurrently).
+	qdbs := make([]execQuerier, execWorkers)
+	for i := range qdbs {
+		qdbs[i] = db
+	}
+	if scanLimit > 0 {
+		for i := range qdbs {
+			conn, cerr := db.Conn(ctx)
+			if cerr != nil {
+				closeAll()
+				return nil, nil, fmt.Errorf("pin conn: %w", cerr)
+			}
+			conns = append(conns, conn)
+			if rerr := conn.Raw(func(dc any) error {
+				ec, ok := dc.(*embedded.EmbeddedConnection)
+				if !ok {
+					return fmt.Errorf("driver conn is %T, want *embedded.EmbeddedConnection", dc)
+				}
+				return ec.SetOption(api.OptExecutionScannedRowsLimit, scanLimit)
+			}); rerr != nil {
+				closeAll()
+				return nil, nil, fmt.Errorf("set scan limit: %w", rerr)
+			}
+			qdbs[i] = conn
+		}
+	}
+	return qdbs, closeAll, nil
+}
+
+func recordTypedPlanChecks(res *SeedResult, tp *typedPlan, seed uint64, ddl, insertSQL, sqlText string, q Query) {
+	// Plan-family telemetry from the TYPED plan tree (never EXPLAIN
+	// text), via the embedded planner over the same DDL. Classified
+	// per projection VARIANT: projection changes the winner even for
+	// an identical WHERE (a star variant can fetch where the narrow
+	// variant is covering), so star-only classification under-reports
+	// executed families.
+	if plan, planErr := tp.await(); planErr == nil {
+		for _, fam := range classifyPlan(plan) {
+			res.Histogram[fam]++
+		}
+		// Cost/ordering axis (RFC-182 / RFC-184 W1): the same typed plan
+		// that feeds the family histogram is checked against invariants a
+		// correct plan can never violate. A violation is a finding — the
+		// row diff is blind to a plan that returns the right rows the
+		// wrong way, which is exactly where the ordinal-binding bugs
+		// lived. checkPlanCost is the spurious-sort (COST) invariant;
+		// checkPlanOrdering is the redundant-sort (ORDERING) invariant —
+		// a sort over an input a scan already orders.
+		for _, v := range checkPlanCost(plan, q) {
+			res.Mismatches = append(res.Mismatches, &Mismatch{
+				Seed: seed, DDL: ddl, InsertSQL: insertSQL, SQL: sqlText,
+				Detail: "cost/ordering: " + v,
+			})
+		}
+		for _, v := range checkPlanOrdering(plan, q) {
+			res.Mismatches = append(res.Mismatches, &Mismatch{
+				Seed: seed, DDL: ddl, InsertSQL: insertSQL, SQL: sqlText,
+				Detail: "ordering: " + v,
+			})
+		}
+	} else {
+		res.Histogram["plan-error"]++
+		if len(res.PlanErrors) < maxPlanErrorSamples {
+			res.PlanErrors = append(res.PlanErrors, fmt.Sprintf("%s: %v", sqlText, planErr))
+		}
+	}
+}
+
+func checkEngineOutcome(res *SeedResult, c *Case, q Query, projection []string, ddl, insertSQL, sqlText string, scanLimit int, er *engineResult) error {
+	engineRows, cols, err := er.await()
+	if err != nil {
+		// RFC-182 §4: INFRA must never masquerade as a soundness
+		// finding. A context/transport failure aborts the seed as
+		// INFRA; every OTHER engine error stays a finding — P1
+		// generates only supported shapes (§3), and widening the
+		// INFRA class would open a suppression hole.
+		if isInfraError(err) {
+			return fmt.Errorf("query %q: %w", sqlText, err)
+		}
+		// An int64 SUM overflow: 22003 is the CORRECT engine outcome
+		// for this data, so verify the oracle agrees it overflows
+		// rather than counting the error as a divergence. If the
+		// oracle does NOT overflow, the 22003 stays a finding.
+		if strings.Contains(err.Error(), "22003") {
+			if oracle, oErr := OracleRows(c, q, projection); oErr == nil && AggResultOverflows(oracle) {
+				return nil
+			}
+		}
+		// Under a deliberately tiny paging limit (scanLimit>0), a
+		// scanned-records-limit error (54F01) is a RESOURCE limit, not a
+		// soundness divergence: a high-scan query — e.g. a self-join
+		// whose single inner probe scans more rows than the per-page
+		// limit — legitimately cannot complete and cannot checkpoint
+		// mid-probe. Verified sound at a larger limit (seed 700032's
+		// self-joins match the Oracle at scanLimit=200). Record it (never
+		// silent) and skip — the query is INCONCLUSIVE for soundness
+		// under this limit, not wrong. In un-paged mode (scanLimit==0) a
+		// 54F01 stays a finding.
+		if scanLimit > 0 && strings.Contains(err.Error(), "54F01") {
+			res.Declines = append(res.Declines,
+				fmt.Sprintf("scan-limited @%d (resource limit, not a divergence): %s", scanLimit, sqlText))
+			return nil
+		}
+		if gap := matchKnownGap(sqlText, err); gap != nil {
+			// DECLINE, not a finding: a documented limitation with a
+			// live pin. Recorded (never silent) so the rate stays
+			// visible and a growing bucket is noticed.
+			res.Declines = append(res.Declines,
+				fmt.Sprintf("%s [pin: %s]: %s", gap.name, gap.pin, sqlText))
+			return nil
+		}
+		res.Mismatches = append(res.Mismatches, &Mismatch{
+			Seed: c.Seed, DDL: ddl, InsertSQL: insertSQL, SQL: sqlText,
+			Detail: fmt.Sprintf("engine error: %v", err),
+		})
+		return nil
+	}
+	oracle, err := OracleRows(c, q, projection)
+	if err != nil {
+		return fmt.Errorf("oracle: %w", err)
+	}
+	res.Executed++
+	if detail := diffRows(engineRows, cols, oracle, q); detail != "" {
+		res.Mismatches = append(res.Mismatches, &Mismatch{
+			Seed: c.Seed, DDL: ddl, InsertSQL: insertSQL, SQL: sqlText,
+			EngineRows: engineRows, OracleRows: oracle, Detail: detail,
+		})
+	}
+	return nil
 }
 
 // typedPlan is one statement's in-memory physical plan, filled by a worker.

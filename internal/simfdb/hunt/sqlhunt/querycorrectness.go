@@ -252,40 +252,48 @@ func qcVerify(ctx context.Context, db *sql.DB, model map[int64]qcRow, rng *rand.
 	k := rng.IntN(6) + 1
 
 	var viol []string
-	add := func(f string, a ...any) {
-		if len(viol) < 10 {
-			viol = append(viol, fmt.Sprintf(f, a...))
-		}
-	}
+	qcVerifyCounts(ctx, db, model, &viol, x, y, c)
+	qcVerifyAggs(ctx, db, model, &viol, c)
+	qcVerifyOrdered(ctx, db, model, &viol, x, c, k)
+	return viol
+}
 
-	// scalar reads an integer scalar aggregate that is never NULL here (COUNT).
-	scalar := func(q string, args ...any) (int64, bool) {
-		var v int64
-		if err := db.QueryRowContext(ctx, q, args...).Scan(&v); err != nil {
-			add("%s : query error %v", q, err)
-			return 0, false
-		}
-		return v, true
+func qcAddViolation(viol *[]string, f string, a ...any) {
+	if len(*viol) < 10 {
+		*viol = append(*viol, fmt.Sprintf(f, a...))
 	}
-	// nullScalar reads an aggregate that is NULL over the empty input set (SUM/MIN/MAX).
-	nullScalar := func(q string, args ...any) (sql.NullInt64, bool) {
-		var v sql.NullInt64
-		if err := db.QueryRowContext(ctx, q, args...).Scan(&v); err != nil {
-			add("%s : query error %v", q, err)
-			return v, false
-		}
-		return v, true
-	}
+}
 
+// qcQueryScalar reads an integer scalar aggregate that is never NULL here (COUNT).
+func qcQueryScalar(ctx context.Context, db *sql.DB, viol *[]string, q string, args ...any) (int64, bool) {
+	var v int64
+	if err := db.QueryRowContext(ctx, q, args...).Scan(&v); err != nil {
+		qcAddViolation(viol, "%s : query error %v", q, err)
+		return 0, false
+	}
+	return v, true
+}
+
+// qcQueryNullScalar reads an aggregate that is NULL over the empty input set (SUM/MIN/MAX).
+func qcQueryNullScalar(ctx context.Context, db *sql.DB, viol *[]string, q string, args ...any) (sql.NullInt64, bool) {
+	var v sql.NullInt64
+	if err := db.QueryRowContext(ctx, q, args...).Scan(&v); err != nil {
+		qcAddViolation(viol, "%s : query error %v", q, err)
+		return v, false
+	}
+	return v, true
+}
+
+func qcVerifyCounts(ctx context.Context, db *sql.DB, model map[int64]qcRow, viol *[]string, x, y, c int64) {
 	// --- 1. COUNT(*) ---
-	if g, ok := scalar("SELECT COUNT(*) FROM t"); ok {
+	if g, ok := qcQueryScalar(ctx, db, viol, "SELECT COUNT(*) FROM t"); ok {
 		if m := int64(len(model)); g != m {
-			add("SELECT COUNT(*) FROM t : store=%d model=%d", g, m)
+			qcAddViolation(viol, "SELECT COUNT(*) FROM t : store=%d model=%d", g, m)
 		}
 	}
 
 	// --- 2. COUNT(*) WHERE val > X ---
-	if g, ok := scalar("SELECT COUNT(*) FROM t WHERE val > ?", x); ok {
+	if g, ok := qcQueryScalar(ctx, db, viol, "SELECT COUNT(*) FROM t WHERE val > ?", x); ok {
 		var m int64
 		for _, row := range model {
 			if row.val > x {
@@ -293,12 +301,12 @@ func qcVerify(ctx context.Context, db *sql.DB, model map[int64]qcRow, rng *rand.
 			}
 		}
 		if g != m {
-			add("SELECT COUNT(*) WHERE val>%d : store=%d model=%d", x, g, m)
+			qcAddViolation(viol, "SELECT COUNT(*) WHERE val>%d : store=%d model=%d", x, g, m)
 		}
 	}
 
 	// --- 3. COUNT(*) WHERE cat = C AND val <= Y ---
-	if g, ok := scalar("SELECT COUNT(*) FROM t WHERE cat = ? AND val <= ?", c, y); ok {
+	if g, ok := qcQueryScalar(ctx, db, viol, "SELECT COUNT(*) FROM t WHERE cat = ? AND val <= ?", c, y); ok {
 		var m int64
 		for _, row := range model {
 			if row.cat == c && row.val <= y {
@@ -306,12 +314,14 @@ func qcVerify(ctx context.Context, db *sql.DB, model map[int64]qcRow, rng *rand.
 			}
 		}
 		if g != m {
-			add("SELECT COUNT(*) WHERE cat=%d AND val<=%d : store=%d model=%d", c, y, g, m)
+			qcAddViolation(viol, "SELECT COUNT(*) WHERE cat=%d AND val<=%d : store=%d model=%d", c, y, g, m)
 		}
 	}
+}
 
+func qcVerifyAggs(ctx context.Context, db *sql.DB, model map[int64]qcRow, viol *[]string, c int64) {
 	// --- 4. SUM(val) WHERE cat = C (NULL over empty) ---
-	if g, ok := nullScalar("SELECT SUM(val) FROM t WHERE cat = ?", c); ok {
+	if g, ok := qcQueryNullScalar(ctx, db, viol, "SELECT SUM(val) FROM t WHERE cat = ?", c); ok {
 		var sum int64
 		var any bool
 		for _, row := range model {
@@ -321,32 +331,34 @@ func qcVerify(ctx context.Context, db *sql.DB, model map[int64]qcRow, rng *rand.
 			}
 		}
 		if !qcNullEq(g, sum, any) {
-			add("SELECT SUM(val) WHERE cat=%d : store=%s model=%s", c, qcNullStr(g), qcExpStr(sum, any))
+			qcAddViolation(viol, "SELECT SUM(val) WHERE cat=%d : store=%s model=%s", c, qcNullStr(g), qcExpStr(sum, any))
 		}
 	}
 
 	// --- 5. MIN(val) (NULL over empty) ---
-	if g, ok := nullScalar("SELECT MIN(val) FROM t"); ok {
+	if g, ok := qcQueryNullScalar(ctx, db, viol, "SELECT MIN(val) FROM t"); ok {
 		mn, any := qcMinMax(model, true)
 		if !qcNullEq(g, mn, any) {
-			add("SELECT MIN(val) : store=%s model=%s", qcNullStr(g), qcExpStr(mn, any))
+			qcAddViolation(viol, "SELECT MIN(val) : store=%s model=%s", qcNullStr(g), qcExpStr(mn, any))
 		}
 	}
 
 	// --- 6. MAX(val) (NULL over empty) ---
-	if g, ok := nullScalar("SELECT MAX(val) FROM t"); ok {
+	if g, ok := qcQueryNullScalar(ctx, db, viol, "SELECT MAX(val) FROM t"); ok {
 		mx, any := qcMinMax(model, false)
 		if !qcNullEq(g, mx, any) {
-			add("SELECT MAX(val) : store=%s model=%s", qcNullStr(g), qcExpStr(mx, any))
+			qcAddViolation(viol, "SELECT MAX(val) : store=%s model=%s", qcNullStr(g), qcExpStr(mx, any))
 		}
 	}
+}
 
+func qcVerifyOrdered(ctx context.Context, db *sql.DB, model map[int64]qcRow, viol *[]string, x, c int64, k int) {
 	// --- 7. id WHERE cat = C AND val > X ORDER BY id ---
 	{
 		q := "SELECT id FROM t WHERE cat = ? AND val > ? ORDER BY id"
 		gotIDs, qerr := qcQueryIDs(ctx, db, q, c, x)
 		if qerr != nil {
-			add("%s : query error %v", q, qerr)
+			qcAddViolation(viol, "%s : query error %v", q, qerr)
 		} else {
 			var want []int64
 			for id, row := range model {
@@ -356,7 +368,7 @@ func qcVerify(ctx context.Context, db *sql.DB, model map[int64]qcRow, rng *rand.
 			}
 			sort.Slice(want, func(i, j int) bool { return want[i] < want[j] })
 			if !qcEqIDs(gotIDs, want) {
-				add("SELECT id WHERE cat=%d AND val>%d ORDER BY id : store=%v model=%v", c, x, gotIDs, want)
+				qcAddViolation(viol, "SELECT id WHERE cat=%d AND val>%d ORDER BY id : store=%v model=%v", c, x, gotIDs, want)
 			}
 		}
 	}
@@ -366,19 +378,17 @@ func qcVerify(ctx context.Context, db *sql.DB, model map[int64]qcRow, rng *rand.
 		q := "SELECT id, val FROM t ORDER BY val, id LIMIT ?"
 		gotPairs, qerr := qcQueryPairs(ctx, db, q, k)
 		if qerr != nil {
-			add("%s : query error %v", q, qerr)
+			qcAddViolation(viol, "%s : query error %v", q, qerr)
 		} else {
 			want := qcOrderedPairs(model)
 			if len(want) > k {
 				want = want[:k]
 			}
 			if !qcEqPairs(gotPairs, want) {
-				add("SELECT id,val ORDER BY val,id LIMIT %d : store=%v model=%v", k, gotPairs, want)
+				qcAddViolation(viol, "SELECT id,val ORDER BY val,id LIMIT %d : store=%v model=%v", k, gotPairs, want)
 			}
 		}
 	}
-
-	return viol
 }
 
 // qcPair is one (id, val) row for ORDER BY comparison.

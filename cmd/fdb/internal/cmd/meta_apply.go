@@ -32,16 +32,7 @@ import (
 // against. The interactive prompt therefore cannot become a TOCTOU
 // window for a concurrent evolver.
 func newMetaApplyCmd() *cobra.Command {
-	var (
-		contextName         string
-		clusterFile         string
-		file                string
-		storeKeyspace       string
-		forceInitial        bool
-		yes                 bool
-		allowIndexRebuilds  bool
-		allowUnsplitToSplit bool
-	)
+	var opts metaApplyOptions
 	c := &cobra.Command{
 		Use:   "apply --file <new.pb>",
 		Short: "Validate and persist metadata into an FDBMetaDataStore (write)",
@@ -71,114 +62,154 @@ func newMetaApplyCmd() *cobra.Command {
 			"(no old metadata to validate against).",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if file == "" {
-				return fmt.Errorf("missing required flag --file (the new MetaData.pb to apply)")
-			}
-			f := storeAddressFlags{contextName: contextName, clusterFile: clusterFile}
-			target, err := f.resolve()
-			if err != nil {
-				return err
-			}
-			ksPath := storeKeyspace
-			if ksPath == "" {
-				ksPath = target.cfgCtx.GetMetadata().GetMetaStoreKeyspace()
-			}
-			if ksPath == "" {
-				return fmt.Errorf("no FDBMetaDataStore to apply to: the context has no `meta_store_keyspace` and --meta-store-keyspace was not given. Path A setups (meta_file) keep metadata outside FDB — see the operator guide's Path A → Path B migration section")
-			}
-			ss, err := parseKeyspacePath(ksPath)
-			if err != nil {
-				return err
-			}
-			if err := guardNotCatalog(ss); err != nil {
-				return err
-			}
-
-			newMeta, err := (&meta.FileSource{Path: file}).Load(cmd.Context())
-			if err != nil {
-				return fmt.Errorf("load --file: %w", err)
-			}
-			newProto, err := newMeta.ToProto()
-			if err != nil {
-				return fmt.Errorf("serialize new metadata: %w", err)
-			}
-
-			db, err := openDatabase(target.clusterFile())
-			if err != nil {
-				return err
-			}
-			rec := recordlayer.NewFDBDatabase(db)
-			validator := recordlayer.NewMetaDataEvolutionValidator().
-				SetAllowIndexRebuilds(allowIndexRebuilds).
-				SetAllowUnsplitToSplit(allowUnsplitToSplit).
-				Build()
-			metaStore := recordlayer.NewFDBMetaDataStore(ss)
-			metaStore.SetEvolutionValidator(validator)
-
-			// Preview pass: load current metadata and validate against it
-			// so the operator sees a validation failure BEFORE the
-			// confirmation prompt. Not authoritative — the save
-			// transaction below re-runs everything.
-			result, err := rec.Run(cmd.Context(), func(rtx *recordlayer.FDBRecordContext) (any, error) {
-				return metaStore.LoadRecordMetaDataProto(rtx.Transaction())
-			})
-			if err != nil {
-				return fmt.Errorf("read current metadata from %s: %w", ksPath, err)
-			}
-			oldProto, _ := result.(*metadatapb.MetaData)
-			switch {
-			case oldProto != nil && proto.Equal(oldProto, newProto):
-				fmt.Fprintf(cmd.OutOrStdout(), "metadata version %d already current at %s — nothing to do\n", newMeta.Version(), ksPath)
-				return nil
-			case oldProto == nil && !forceInitial:
-				return fmt.Errorf("no metadata stored at %s — pass --force-initial for the first write into an empty store", ksPath)
-			case oldProto != nil:
-				oldMeta, err := recordlayer.RecordMetaDataFromProto(oldProto)
-				if err != nil {
-					return fmt.Errorf("current metadata at %s does not build: %w", ksPath, err)
-				}
-				if newProto.GetVersion() <= oldProto.GetVersion() {
-					return fmt.Errorf("incompatible evolution — refusing to apply: %w", &recordlayer.MetaDataVersionMustIncreaseError{
-						OldVersion: oldProto.GetVersion(),
-						NewVersion: newProto.GetVersion(),
-					})
-				}
-				if err := validator.Validate(oldMeta, newMeta); err != nil {
-					return fmt.Errorf("incompatible evolution — refusing to apply: %w", err)
-				}
-			}
-
-			action := fmt.Sprintf("apply metadata version %d from %s to %s", newMeta.Version(), file, ksPath)
-			if oldProto != nil {
-				action = fmt.Sprintf("apply metadata %s (version %d → %d)", ksPath, oldProto.GetVersion(), newMeta.Version())
-			}
-			if err := confirmWrite(cmd, yes, action); err != nil {
-				return err
-			}
-
-			outcomeAny, err := rec.Run(cmd.Context(), func(rtx *recordlayer.FDBRecordContext) (any, error) {
-				return metaApplySave(rtx, metaStore, oldProto, newProto)
-			})
-			if err != nil {
-				return fmt.Errorf("save metadata: %w", err)
-			}
-			if outcome, _ := outcomeAny.(metaApplyOutcome); outcome == metaApplyAlreadyCurrent {
-				fmt.Fprintf(cmd.OutOrStdout(), "metadata version %d already current at %s — nothing to do\n", newMeta.Version(), ksPath)
-				return nil
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "applied metadata version %d to %s\n", newMeta.Version(), ksPath)
-			return nil
+			return runMetaApply(cmd, opts)
 		},
 	}
-	c.Flags().StringVar(&contextName, "context", "", "context name to use")
-	c.Flags().StringVar(&clusterFile, "cluster-file", "", "FDB cluster file; overrides the context's cluster_file")
-	c.Flags().StringVar(&file, "file", "", "new MetaData.pb to validate and persist (required)")
-	c.Flags().StringVar(&storeKeyspace, "meta-store-keyspace", "", "FDBMetaDataStore keyspace path; overrides the context's meta_store_keyspace")
-	c.Flags().BoolVar(&forceInitial, "force-initial", false, "allow the first write into an empty metadata store")
-	c.Flags().BoolVar(&yes, "yes", false, "skip the interactive confirmation")
-	c.Flags().BoolVar(&allowIndexRebuilds, "allow-index-rebuilds", false, "permit changes that force index rebuilds (validator knob)")
-	c.Flags().BoolVar(&allowUnsplitToSplit, "allow-unsplit-to-split", false, "permit the unsplit→split format migration (validator knob)")
+	c.Flags().StringVar(&opts.contextName, "context", "", "context name to use")
+	c.Flags().StringVar(&opts.clusterFile, "cluster-file", "", "FDB cluster file; overrides the context's cluster_file")
+	c.Flags().StringVar(&opts.file, "file", "", "new MetaData.pb to validate and persist (required)")
+	c.Flags().StringVar(&opts.storeKeyspace, "meta-store-keyspace", "", "FDBMetaDataStore keyspace path; overrides the context's meta_store_keyspace")
+	c.Flags().BoolVar(&opts.forceInitial, "force-initial", false, "allow the first write into an empty metadata store")
+	c.Flags().BoolVar(&opts.yes, "yes", false, "skip the interactive confirmation")
+	c.Flags().BoolVar(&opts.allowIndexRebuilds, "allow-index-rebuilds", false, "permit changes that force index rebuilds (validator knob)")
+	c.Flags().BoolVar(&opts.allowUnsplitToSplit, "allow-unsplit-to-split", false, "permit the unsplit→split format migration (validator knob)")
 	return c
+}
+
+type metaApplyOptions struct {
+	contextName         string
+	clusterFile         string
+	file                string
+	storeKeyspace       string
+	forceInitial        bool
+	yes                 bool
+	allowIndexRebuilds  bool
+	allowUnsplitToSplit bool
+}
+
+func runMetaApply(cmd *cobra.Command, opts metaApplyOptions) error {
+	target, ksPath, err := resolveMetaApplyTarget(opts)
+	if err != nil {
+		return err
+	}
+	ss, err := parseKeyspacePath(ksPath)
+	if err != nil {
+		return err
+	}
+	if err := guardNotCatalog(ss); err != nil {
+		return err
+	}
+
+	newMeta, err := (&meta.FileSource{Path: opts.file}).Load(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("load --file: %w", err)
+	}
+	newProto, err := newMeta.ToProto()
+	if err != nil {
+		return fmt.Errorf("serialize new metadata: %w", err)
+	}
+
+	db, err := openDatabase(target.clusterFile())
+	if err != nil {
+		return err
+	}
+	rec := recordlayer.NewFDBDatabase(db)
+	validator := recordlayer.NewMetaDataEvolutionValidator().
+		SetAllowIndexRebuilds(opts.allowIndexRebuilds).
+		SetAllowUnsplitToSplit(opts.allowUnsplitToSplit).
+		Build()
+	metaStore := recordlayer.NewFDBMetaDataStore(ss)
+	metaStore.SetEvolutionValidator(validator)
+
+	oldProto, alreadyCurrent, err := previewMetaApply(cmd, rec, metaStore, validator, newMeta, newProto, ksPath, opts.forceInitial)
+	if err != nil || alreadyCurrent {
+		return err
+	}
+
+	action := fmt.Sprintf("apply metadata version %d from %s to %s", newMeta.Version(), opts.file, ksPath)
+	if oldProto != nil {
+		action = fmt.Sprintf("apply metadata %s (version %d → %d)", ksPath, oldProto.GetVersion(), newMeta.Version())
+	}
+	if err := confirmWrite(cmd, opts.yes, action); err != nil {
+		return err
+	}
+
+	outcomeAny, err := rec.Run(cmd.Context(), func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		return metaApplySave(rtx, metaStore, oldProto, newProto)
+	})
+	if err != nil {
+		return fmt.Errorf("save metadata: %w", err)
+	}
+	if outcome, _ := outcomeAny.(metaApplyOutcome); outcome == metaApplyAlreadyCurrent {
+		fmt.Fprintf(cmd.OutOrStdout(), "metadata version %d already current at %s — nothing to do\n", newMeta.Version(), ksPath)
+		return nil
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "applied metadata version %d to %s\n", newMeta.Version(), ksPath)
+	return nil
+}
+
+func resolveMetaApplyTarget(opts metaApplyOptions) (*storeTarget, string, error) {
+	if opts.file == "" {
+		return nil, "", fmt.Errorf("missing required flag --file (the new MetaData.pb to apply)")
+	}
+	f := storeAddressFlags{contextName: opts.contextName, clusterFile: opts.clusterFile}
+	target, err := f.resolve()
+	if err != nil {
+		return nil, "", err
+	}
+	ksPath := opts.storeKeyspace
+	if ksPath == "" {
+		ksPath = target.cfgCtx.GetMetadata().GetMetaStoreKeyspace()
+	}
+	if ksPath == "" {
+		return nil, "", fmt.Errorf("no FDBMetaDataStore to apply to: the context has no `meta_store_keyspace` and --meta-store-keyspace was not given. Path A setups (meta_file) keep metadata outside FDB — see the operator guide's Path A → Path B migration section")
+	}
+	return target, ksPath, nil
+}
+
+func previewMetaApply(
+	cmd *cobra.Command,
+	rec *recordlayer.FDBDatabase,
+	metaStore *recordlayer.FDBMetaDataStore,
+	validator *recordlayer.MetaDataEvolutionValidator,
+	newMeta *recordlayer.RecordMetaData,
+	newProto *metadatapb.MetaData,
+	ksPath string,
+	forceInitial bool,
+) (*metadatapb.MetaData, bool, error) {
+	// Preview pass: load current metadata and validate against it
+	// so the operator sees a validation failure BEFORE the
+	// confirmation prompt. Not authoritative — the save
+	// transaction below re-runs everything.
+	result, err := rec.Run(cmd.Context(), func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		return metaStore.LoadRecordMetaDataProto(rtx.Transaction())
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("read current metadata from %s: %w", ksPath, err)
+	}
+	oldProto, _ := result.(*metadatapb.MetaData)
+	switch {
+	case oldProto != nil && proto.Equal(oldProto, newProto):
+		fmt.Fprintf(cmd.OutOrStdout(), "metadata version %d already current at %s — nothing to do\n", newMeta.Version(), ksPath)
+		return nil, true, nil
+	case oldProto == nil && !forceInitial:
+		return nil, false, fmt.Errorf("no metadata stored at %s — pass --force-initial for the first write into an empty store", ksPath)
+	case oldProto != nil:
+		oldMeta, err := recordlayer.RecordMetaDataFromProto(oldProto)
+		if err != nil {
+			return nil, false, fmt.Errorf("current metadata at %s does not build: %w", ksPath, err)
+		}
+		if newProto.GetVersion() <= oldProto.GetVersion() {
+			return nil, false, fmt.Errorf("incompatible evolution — refusing to apply: %w", &recordlayer.MetaDataVersionMustIncreaseError{
+				OldVersion: oldProto.GetVersion(),
+				NewVersion: newProto.GetVersion(),
+			})
+		}
+		if err := validator.Validate(oldMeta, newMeta); err != nil {
+			return nil, false, fmt.Errorf("incompatible evolution — refusing to apply: %w", err)
+		}
+	}
+	return oldProto, false, nil
 }
 
 // metaApplyOutcome distinguishes a real save from the already-current
