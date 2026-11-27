@@ -30,16 +30,37 @@ func verifyVersionIndexes(ctx context.Context, store *recordlayer.FDBRecordStore
 	return violations
 }
 
+type versionEntryInfo struct {
+	pk           tuple.Tuple
+	versionstamp tuple.Versionstamp
+	hasVS        bool
+}
+
 func verifyVersionIndex(ctx context.Context, store *recordlayer.FDBRecordStore, model *StoreModel, idx *recordlayer.Index) []Violation {
 	var violations []Violation
 
-	// Scan actual VERSION index entries and collect PKs + versionstamps.
-	type entryInfo struct {
-		pk           tuple.Tuple
-		versionstamp tuple.Versionstamp
-		hasVS        bool
+	actualByPK, scanViolations := scanActualVersionEntries(ctx, store, idx)
+	violations = append(violations, scanViolations...)
+
+	// Build expected set: all model records that have this index.
+	expectedPKs := make(map[string]tuple.Tuple)
+	for _, rec := range model.Records {
+		if !model.indexAppliesToType(idx, rec.TypeName) {
+			continue
+		}
+		expectedPKs[string(rec.PrimaryKey.Pack())] = rec.PrimaryKey
 	}
-	actualByPK := make(map[string]*entryInfo) // packed PK -> entry info
+
+	violations = append(violations, diffVersionEntryKeys(idx, expectedPKs, actualByPK)...)
+	violations = append(violations, verifyVersionEntryStamps(store, expectedPKs, actualByPK)...)
+
+	return violations
+}
+
+func scanActualVersionEntries(ctx context.Context, store *recordlayer.FDBRecordStore, idx *recordlayer.Index) (map[string]*versionEntryInfo, []Violation) {
+	var violations []Violation
+	// Scan actual VERSION index entries and collect PKs + versionstamps.
+	actualByPK := make(map[string]*versionEntryInfo) // packed PK -> entry info
 
 	cursor := store.ScanIndex(idx, recordlayer.TupleRangeAll, nil, recordlayer.ForwardScan())
 	for {
@@ -59,7 +80,7 @@ func verifyVersionIndex(ctx context.Context, store *recordlayer.FDBRecordStore, 
 		pk := entry.PrimaryKey()
 		packedPK := string(pk.Pack())
 
-		info := &entryInfo{pk: pk}
+		info := &versionEntryInfo{pk: pk}
 		// Extract versionstamp from entry key. For VersionKeyExpression,
 		// the first key element is the versionstamp.
 		if len(entry.Key) > 0 {
@@ -82,14 +103,11 @@ func verifyVersionIndex(ctx context.Context, store *recordlayer.FDBRecordStore, 
 	}
 	_ = cursor.Close()
 
-	// Build expected set: all model records that have this index.
-	expectedPKs := make(map[string]tuple.Tuple)
-	for _, rec := range model.Records {
-		if !model.indexAppliesToType(idx, rec.TypeName) {
-			continue
-		}
-		expectedPKs[string(rec.PrimaryKey.Pack())] = rec.PrimaryKey
-	}
+	return actualByPK, violations
+}
+
+func diffVersionEntryKeys(idx *recordlayer.Index, expectedPKs map[string]tuple.Tuple, actualByPK map[string]*versionEntryInfo) []Violation {
+	var violations []Violation
 
 	// Diff: missing entries (model record with no index entry)
 	for key, pk := range expectedPKs {
@@ -123,6 +141,12 @@ func verifyVersionIndex(ctx context.Context, store *recordlayer.FDBRecordStore, 
 			Actual:    fmt.Sprintf("%d entries", len(actualByPK)),
 		})
 	}
+
+	return violations
+}
+
+func verifyVersionEntryStamps(store *recordlayer.FDBRecordStore, expectedPKs map[string]tuple.Tuple, actualByPK map[string]*versionEntryInfo) []Violation {
+	var violations []Violation
 
 	// Verify entry versionstamps match stored inline record versions.
 	for key, info := range actualByPK {

@@ -33,6 +33,11 @@ func verifyTextIndexes(ctx context.Context, store *recordlayer.FDBRecordStore, m
 	return violations
 }
 
+type textEntry struct {
+	token string
+	pk    tuple.Tuple
+}
+
 func verifyOneTextIndex(
 	ctx context.Context,
 	store *recordlayer.FDBRecordStore,
@@ -47,12 +52,25 @@ func verifyOneTextIndex(
 		return []Violation{{Invariant: fmt.Sprintf("failed to get text tokenizer: %v", err)}}
 	}
 
+	expected, tokenizeViolations := buildExpectedTextEntries(model, idx, tokenizer)
+	violations = append(violations, tokenizeViolations...)
+
+	actual, scanViolations := scanActualTextEntries(ctx, store, idx)
+	violations = append(violations, scanViolations...)
+
+	violations = append(violations, diffTextEntries(idx, expected, actual)...)
+
+	return violations
+}
+
+func buildExpectedTextEntries(
+	model *StoreModel,
+	idx *recordlayer.Index,
+	tokenizer recordlayer.TextTokenizer,
+) (map[string]textEntry, []Violation) {
+	var violations []Violation
 	// Build expected set of (token, packedPK) from model records.
 	// Use a map from "token\x00packedPK" → true for set membership.
-	type textEntry struct {
-		token string
-		pk    tuple.Tuple
-	}
 	expected := make(map[string]textEntry)
 
 	for _, rec := range model.Records {
@@ -83,6 +101,11 @@ func verifyOneTextIndex(
 		}
 	}
 
+	return expected, violations
+}
+
+func scanActualTextEntries(ctx context.Context, store *recordlayer.FDBRecordStore, idx *recordlayer.Index) (map[string]textEntry, []Violation) {
+	var violations []Violation
 	// Scan actual entries from the store.
 	actual := make(map[string]textEntry)
 	cursor := store.ScanIndexByType(idx, recordlayer.IndexScanByTextToken,
@@ -128,6 +151,12 @@ func verifyOneTextIndex(
 		actual[key] = textEntry{token: token, pk: pk}
 	}
 	_ = cursor.Close()
+
+	return actual, violations
+}
+
+func diffTextEntries(idx *recordlayer.Index, expected, actual map[string]textEntry) []Violation {
+	var violations []Violation
 
 	// Diff: missing entries (in model but not in store).
 	for key, exp := range expected {

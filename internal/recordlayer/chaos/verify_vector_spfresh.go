@@ -11,6 +11,11 @@ import (
 	"fdb.dev/pkg/recordlayer"
 )
 
+type spfreshModelEntry struct {
+	pk     tuple.Tuple
+	vector []float64
+}
+
 // verifyVectorSPFreshIndexes checks SPFresh (RFC-094) vector indexes against the
 // model. SPFresh is approximate and FDB-native (no exact ScanIndex), so the
 // invariants are the queryable + structural form of "the index agrees with the
@@ -42,169 +47,208 @@ func verifyVectorSPFreshIndexes(store *recordlayer.FDBRecordStore, model *StoreM
 			continue
 		}
 
-		// Collect model records that apply to this index, with their vectors.
-		type modelEntry struct {
-			pk     tuple.Tuple
-			vector []float64
-		}
-		var entries []modelEntry
+		violations = append(violations, verifyOneVectorSPFreshIndex(store, model, md, idx)...)
+	}
 
-		for _, rec := range model.Records {
-			if !model.indexAppliesToType(idx, rec.TypeName) {
-				continue
-			}
-			storedRec := &recordlayer.FDBStoredRecord[proto.Message]{
-				PrimaryKey: rec.PrimaryKey,
-				RecordType: md.GetRecordType(rec.TypeName),
-				Record:     rec.Message,
-			}
-			tuples, err := idx.RootExpression.Evaluate(storedRec, rec.Message)
-			if err != nil {
-				violations = append(violations, Violation{
-					Invariant:  "spfresh_index_eval_error",
-					PrimaryKey: rec.PrimaryKey,
-					Expected:   fmt.Sprintf("index %q evaluable", idx.Name),
-					Actual:     err.Error(),
-				})
-				continue
-			}
-			for _, values := range tuples {
-				vec := valuesToFloat64(values)
-				if vec == nil {
-					violations = append(violations, Violation{
-						Invariant:  "spfresh_index_convert_error",
-						PrimaryKey: rec.PrimaryKey,
-						Expected:   fmt.Sprintf("index %q values convertible to float64", idx.Name),
-						Actual:     fmt.Sprintf("values: %v", values),
-					})
-					continue
-				}
-				entries = append(entries, modelEntry{pk: rec.PrimaryKey, vector: vec})
-			}
-		}
+	return violations
+}
 
-		expectedCount := len(entries)
-		distinctPKs := make(map[string]bool, expectedCount)
-		for _, e := range entries {
-			distinctPKs[string(e.pk.Pack())] = true
-		}
-		if expectedCount == 0 {
+func verifyOneVectorSPFreshIndex(
+	store *recordlayer.FDBRecordStore,
+	model *StoreModel,
+	md *recordlayer.RecordMetaData,
+	idx *recordlayer.Index,
+) []Violation {
+	var violations []Violation
+
+	entries, collectViolations := collectSPFreshModelEntries(model, md, idx)
+	violations = append(violations, collectViolations...)
+
+	expectedCount := len(entries)
+	distinctPKs := make(map[string]bool, expectedCount)
+	for _, e := range entries {
+		distinctPKs[string(e.pk.Pack())] = true
+	}
+	if expectedCount == 0 {
+		return violations
+	}
+
+	// k large enough that every record at the queried vector (and beyond)
+	// is in range — at chaos scale the topology spans a handful of cells
+	// the default probe budget covers entirely.
+	k := expectedCount
+
+	// 1. Completeness: every model record found by self-search on its own
+	//    vector. With duplicate vectors, any record at distance ~0 with this
+	//    pk among results is fine; a true miss means the record is not in
+	//    the index (lost insert / orphaned membership / dropped by a fault).
+	violations = append(violations, verifySPFreshSelfSearch(store, idx, entries, k)...)
+
+	// 2. No orphans: every pk a search returns must exist in the model.
+	violations = append(violations, verifySPFreshOrphans(store, model, idx, entries[0].vector, expectedCount)...)
+
+	// 3. Structural integrity: membership ⊆ postings + every target ACTIVE.
+	//    Sample everything at chaos scale. STRICT — assumes the maintenance
+	//    queue is drained (the scenario drains before Verify).
+	violations = append(violations, verifySPFreshIntegrity(store, idx, len(distinctPKs))...)
+
+	return violations
+}
+
+func collectSPFreshModelEntries(
+	model *StoreModel,
+	md *recordlayer.RecordMetaData,
+	idx *recordlayer.Index,
+) ([]spfreshModelEntry, []Violation) {
+	var violations []Violation
+	// Collect model records that apply to this index, with their vectors.
+	var entries []spfreshModelEntry
+
+	for _, rec := range model.Records {
+		if !model.indexAppliesToType(idx, rec.TypeName) {
 			continue
 		}
-
-		// k large enough that every record at the queried vector (and beyond)
-		// is in range — at chaos scale the topology spans a handful of cells
-		// the default probe budget covers entirely.
-		k := expectedCount
-
-		// 1. Completeness: every model record found by self-search on its own
-		//    vector. With duplicate vectors, any record at distance ~0 with this
-		//    pk among results is fine; a true miss means the record is not in
-		//    the index (lost insert / orphaned membership / dropped by a fault).
-		for _, entry := range entries {
-			results, err := vectorindex.SearchSPFreshIndex(store, idx.Name, entry.vector, k)
-			if err != nil {
-				violations = append(violations, Violation{
-					Invariant:  "spfresh_index_self_search_error",
-					PrimaryKey: entry.pk,
-					Expected:   fmt.Sprintf("index %q self-search succeeds", idx.Name),
-					Actual:     err.Error(),
-				})
-				continue
-			}
-			if len(results) == 0 {
-				violations = append(violations, Violation{
-					Invariant:  "spfresh_index_self_search_empty",
-					PrimaryKey: entry.pk,
-					Expected:   "at least 1 result",
-					Actual:     "0 results",
-				})
-				continue
-			}
-			found := false
-			for _, r := range results {
-				if string(r.PrimaryKey.Pack()) == string(entry.pk.Pack()) {
-					found = true
-					break
-				}
-			}
-			if !found {
-				violations = append(violations, Violation{
-					Invariant:  "spfresh_index_self_search_miss",
-					PrimaryKey: entry.pk,
-					Expected:   fmt.Sprintf("index %q returns own pk for its own vector", idx.Name),
-					Actual:     fmt.Sprintf("nearest PK=%v distance=%f (%d results)", results[0].PrimaryKey, results[0].Distance, len(results)),
-				})
-			}
+		storedRec := &recordlayer.FDBStoredRecord[proto.Message]{
+			PrimaryKey: rec.PrimaryKey,
+			RecordType: md.GetRecordType(rec.TypeName),
+			Record:     rec.Message,
 		}
-
-		// 2. No orphans: every pk a search returns must exist in the model.
-		if orphans, err := vectorindex.SearchSPFreshIndex(store, idx.Name, entries[0].vector, expectedCount+10); err == nil {
-			for _, r := range orphans {
-				if !model.Has(r.PrimaryKey) {
-					violations = append(violations, Violation{
-						Invariant:  "spfresh_index_orphan",
-						PrimaryKey: r.PrimaryKey,
-						Expected:   fmt.Sprintf("index %q: PK in model", idx.Name),
-						Actual:     "returned by SPFresh search but not in model",
-					})
-				}
-			}
-		}
-
-		// 3. Structural integrity: membership ⊆ postings + every target ACTIVE.
-		//    Sample everything at chaos scale. STRICT — assumes the maintenance
-		//    queue is drained (the scenario drains before Verify).
-		const sampleAll = 1 << 30
-		report, err := vectorindex.SPFreshCheckIntegrity(store.GetContext(), store, idx.Name, sampleAll)
+		tuples, err := idx.RootExpression.Evaluate(storedRec, rec.Message)
 		if err != nil {
 			violations = append(violations, Violation{
-				Invariant: "spfresh_index_integrity_error",
-				Expected:  fmt.Sprintf("index %q integrity checkable", idx.Name),
-				Actual:    err.Error(),
+				Invariant:  "spfresh_index_eval_error",
+				PrimaryKey: rec.PrimaryKey,
+				Expected:   fmt.Sprintf("index %q evaluable", idx.Name),
+				Actual:     err.Error(),
 			})
 			continue
 		}
-		// Bidirectional count: exactly one membership row per live indexed
-		// record. Catches a leaked membership (a deleted record's row not
-		// cleared → Members > records) AND a lost one (a fault dropped the
-		// insert's membership → Members < records) deterministically — stronger
-		// than the single-query orphan probe above, which only reaches pks a
-		// query happens to surface.
-		if report.Members != len(distinctPKs) {
-			violations = append(violations, Violation{
-				Invariant: "spfresh_index_membership_count",
-				Expected:  fmt.Sprintf("index %q: %d membership rows (one per live record)", idx.Name, len(distinctPKs)),
-				Actual:    fmt.Sprintf("%d membership rows", report.Members),
-			})
-		}
-		if report.MembershipWithoutEntry > 0 {
-			violations = append(violations, Violation{
-				Invariant: "spfresh_index_membership_without_entry",
-				Expected:  fmt.Sprintf("index %q: every membership target holds the posting entry", idx.Name),
-				Actual:    fmt.Sprintf("%d/%d sampled pks missing a posting entry; e.g. %v", report.MembershipWithoutEntry, report.Sampled, report.Violations),
-			})
-		}
-		if report.BadTargets > 0 {
-			violations = append(violations, Violation{
-				Invariant: "spfresh_index_bad_targets",
-				Expected:  fmt.Sprintf("index %q: every membership target ACTIVE-or-SEALED (post-drain)", idx.Name),
-				Actual:    fmt.Sprintf("%d bad targets (forward/dead/absent); states=%v; e.g. %v", report.BadTargets, report.TargetStates, report.Violations),
-			})
-		}
-		// SPANN §3.2.1 balanced-postings / LIRE split guarantee: no ACTIVE
-		// posting may exceed the 4×Lmax hard envelope. The <=4Lmax band is the
-		// legitimate operating envelope (just-split children, unsampled
-		// Lmax..2Lmax postings, closure overcount), so only >4Lmax is a
-		// violation — that is a split the lifecycle failed to drain.
-		if report.OversizedHard > 0 {
-			violations = append(violations, Violation{
-				Invariant: "spfresh_index_posting_over_envelope",
-				Expected:  fmt.Sprintf("index %q: no ACTIVE posting over 4×Lmax", idx.Name),
-				Actual:    fmt.Sprintf("%d posting(s) over 4×Lmax (maxLen=%d, Lmax band exceeded by %d); e.g. %v", report.OversizedHard, report.MaxPostingLen, report.Oversized, report.Violations),
-			})
+		for _, values := range tuples {
+			vec := valuesToFloat64(values)
+			if vec == nil {
+				violations = append(violations, Violation{
+					Invariant:  "spfresh_index_convert_error",
+					PrimaryKey: rec.PrimaryKey,
+					Expected:   fmt.Sprintf("index %q values convertible to float64", idx.Name),
+					Actual:     fmt.Sprintf("values: %v", values),
+				})
+				continue
+			}
+			entries = append(entries, spfreshModelEntry{pk: rec.PrimaryKey, vector: vec})
 		}
 	}
 
+	return entries, violations
+}
+
+func verifySPFreshSelfSearch(store *recordlayer.FDBRecordStore, idx *recordlayer.Index, entries []spfreshModelEntry, k int) []Violation {
+	var violations []Violation
+	for _, entry := range entries {
+		results, err := vectorindex.SearchSPFreshIndex(store, idx.Name, entry.vector, k)
+		if err != nil {
+			violations = append(violations, Violation{
+				Invariant:  "spfresh_index_self_search_error",
+				PrimaryKey: entry.pk,
+				Expected:   fmt.Sprintf("index %q self-search succeeds", idx.Name),
+				Actual:     err.Error(),
+			})
+			continue
+		}
+		if len(results) == 0 {
+			violations = append(violations, Violation{
+				Invariant:  "spfresh_index_self_search_empty",
+				PrimaryKey: entry.pk,
+				Expected:   "at least 1 result",
+				Actual:     "0 results",
+			})
+			continue
+		}
+		found := false
+		for _, r := range results {
+			if string(r.PrimaryKey.Pack()) == string(entry.pk.Pack()) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			violations = append(violations, Violation{
+				Invariant:  "spfresh_index_self_search_miss",
+				PrimaryKey: entry.pk,
+				Expected:   fmt.Sprintf("index %q returns own pk for its own vector", idx.Name),
+				Actual:     fmt.Sprintf("nearest PK=%v distance=%f (%d results)", results[0].PrimaryKey, results[0].Distance, len(results)),
+			})
+		}
+	}
+	return violations
+}
+
+func verifySPFreshOrphans(store *recordlayer.FDBRecordStore, model *StoreModel, idx *recordlayer.Index, queryVec []float64, expectedCount int) []Violation {
+	var violations []Violation
+	if orphans, err := vectorindex.SearchSPFreshIndex(store, idx.Name, queryVec, expectedCount+10); err == nil {
+		for _, r := range orphans {
+			if !model.Has(r.PrimaryKey) {
+				violations = append(violations, Violation{
+					Invariant:  "spfresh_index_orphan",
+					PrimaryKey: r.PrimaryKey,
+					Expected:   fmt.Sprintf("index %q: PK in model", idx.Name),
+					Actual:     "returned by SPFresh search but not in model",
+				})
+			}
+		}
+	}
+	return violations
+}
+
+func verifySPFreshIntegrity(store *recordlayer.FDBRecordStore, idx *recordlayer.Index, distinctPKCount int) []Violation {
+	var violations []Violation
+	const sampleAll = 1 << 30
+	report, err := vectorindex.SPFreshCheckIntegrity(store.GetContext(), store, idx.Name, sampleAll)
+	if err != nil {
+		violations = append(violations, Violation{
+			Invariant: "spfresh_index_integrity_error",
+			Expected:  fmt.Sprintf("index %q integrity checkable", idx.Name),
+			Actual:    err.Error(),
+		})
+		return violations
+	}
+	// Bidirectional count: exactly one membership row per live indexed
+	// record. Catches a leaked membership (a deleted record's row not
+	// cleared → Members > records) AND a lost one (a fault dropped the
+	// insert's membership → Members < records) deterministically — stronger
+	// than the single-query orphan probe above, which only reaches pks a
+	// query happens to surface.
+	if report.Members != distinctPKCount {
+		violations = append(violations, Violation{
+			Invariant: "spfresh_index_membership_count",
+			Expected:  fmt.Sprintf("index %q: %d membership rows (one per live record)", idx.Name, distinctPKCount),
+			Actual:    fmt.Sprintf("%d membership rows", report.Members),
+		})
+	}
+	if report.MembershipWithoutEntry > 0 {
+		violations = append(violations, Violation{
+			Invariant: "spfresh_index_membership_without_entry",
+			Expected:  fmt.Sprintf("index %q: every membership target holds the posting entry", idx.Name),
+			Actual:    fmt.Sprintf("%d/%d sampled pks missing a posting entry; e.g. %v", report.MembershipWithoutEntry, report.Sampled, report.Violations),
+		})
+	}
+	if report.BadTargets > 0 {
+		violations = append(violations, Violation{
+			Invariant: "spfresh_index_bad_targets",
+			Expected:  fmt.Sprintf("index %q: every membership target ACTIVE-or-SEALED (post-drain)", idx.Name),
+			Actual:    fmt.Sprintf("%d bad targets (forward/dead/absent); states=%v; e.g. %v", report.BadTargets, report.TargetStates, report.Violations),
+		})
+	}
+	// SPANN §3.2.1 balanced-postings / LIRE split guarantee: no ACTIVE
+	// posting may exceed the 4×Lmax hard envelope. The <=4Lmax band is the
+	// legitimate operating envelope (just-split children, unsampled
+	// Lmax..2Lmax postings, closure overcount), so only >4Lmax is a
+	// violation — that is a split the lifecycle failed to drain.
+	if report.OversizedHard > 0 {
+		violations = append(violations, Violation{
+			Invariant: "spfresh_index_posting_over_envelope",
+			Expected:  fmt.Sprintf("index %q: no ACTIVE posting over 4×Lmax", idx.Name),
+			Actual:    fmt.Sprintf("%d posting(s) over 4×Lmax (maxLen=%d, Lmax band exceeded by %d); e.g. %v", report.OversizedHard, report.MaxPostingLen, report.Oversized, report.Violations),
+		})
+	}
 	return violations
 }

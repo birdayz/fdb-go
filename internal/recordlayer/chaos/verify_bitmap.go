@@ -54,14 +54,7 @@ func verifyOneBitmapIndex(
 	// the maintainer refuses refuses every write, so it must hold no entry.
 	entrySize, err := recordlayer.BitmapValueEntrySizeOption(idx)
 	if err != nil {
-		kvs, scanErr := store.GetContext().Transaction().GetRange(store.IndexSubspace(idx), fdb.RangeOptions{Limit: 1}).GetSliceWithError()
-		switch {
-		case scanErr != nil:
-			return []Violation{{Invariant: "bitmap_scan_error", Expected: fmt.Sprintf("index %q scannable", idx.Name), Actual: scanErr.Error()}}
-		case len(kvs) > 0:
-			return []Violation{{Invariant: "bitmap_refused_size_written", Expected: fmt.Sprintf("no entry in index %q, whose entry size is refused (%v)", idx.Name, err), Actual: fmt.Sprintf("%x", []byte(kvs[0].Key))}}
-		}
-		return nil
+		return verifyRefusedBitmapIndexEmpty(store, idx, err)
 	}
 
 	gke, ok := idx.RootExpression.(*recordlayer.GroupingKeyExpression)
@@ -70,6 +63,36 @@ func verifyOneBitmapIndex(
 	}
 	groupingCount := gke.GetGroupingCount()
 
+	expectedBits, expectedKeys, evalViolations := buildExpectedBitmapEntries(model, md, idx, groupingCount, entrySize)
+	violations = append(violations, evalViolations...)
+
+	actualBitmaps, actualKeys, scanViolations := scanActualBitmapEntries(ctx, store, idx)
+	violations = append(violations, scanViolations...)
+
+	violations = append(violations, diffBitmapEntries(idx, expectedBits, expectedKeys, actualBitmaps, actualKeys)...)
+
+	return violations
+}
+
+func verifyRefusedBitmapIndexEmpty(store *recordlayer.FDBRecordStore, idx *recordlayer.Index, sizeErr error) []Violation {
+	kvs, scanErr := store.GetContext().Transaction().GetRange(store.IndexSubspace(idx), fdb.RangeOptions{Limit: 1}).GetSliceWithError()
+	switch {
+	case scanErr != nil:
+		return []Violation{{Invariant: "bitmap_scan_error", Expected: fmt.Sprintf("index %q scannable", idx.Name), Actual: scanErr.Error()}}
+	case len(kvs) > 0:
+		return []Violation{{Invariant: "bitmap_refused_size_written", Expected: fmt.Sprintf("no entry in index %q, whose entry size is refused (%v)", idx.Name, sizeErr), Actual: fmt.Sprintf("%x", []byte(kvs[0].Key))}}
+	}
+	return nil
+}
+
+func buildExpectedBitmapEntries(
+	model *StoreModel,
+	md *recordlayer.RecordMetaData,
+	idx *recordlayer.Index,
+	groupingCount int,
+	entrySize int64,
+) (map[string]map[int64]bool, map[string]tuple.Tuple, []Violation) {
+	var violations []Violation
 	// Build expected bitmap entries from model records.
 	// Key: packed (groupKey + alignedPos) → set of bit offsets
 	type entryKey struct {
@@ -134,6 +157,15 @@ func verifyOneBitmapIndex(
 		}
 	}
 
+	return expectedBits, expectedKeys, violations
+}
+
+func scanActualBitmapEntries(
+	ctx context.Context,
+	store *recordlayer.FDBRecordStore,
+	idx *recordlayer.Index,
+) (map[string][]byte, map[string]tuple.Tuple, []Violation) {
+	var violations []Violation
 	// Scan actual bitmap entries from the store.
 	actualBitmaps := make(map[string][]byte) // packed key → raw bitmap bytes
 	actualKeys := make(map[string]tuple.Tuple)
@@ -165,6 +197,18 @@ func verifyOneBitmapIndex(
 		}
 	}
 	_ = cursor.Close()
+
+	return actualBitmaps, actualKeys, violations
+}
+
+func diffBitmapEntries(
+	idx *recordlayer.Index,
+	expectedBits map[string]map[int64]bool,
+	expectedKeys map[string]tuple.Tuple,
+	actualBitmaps map[string][]byte,
+	actualKeys map[string]tuple.Tuple,
+) []Violation {
+	var violations []Violation
 
 	// Compare: check expected entries exist with correct bits.
 	for packed, bits := range expectedBits {
