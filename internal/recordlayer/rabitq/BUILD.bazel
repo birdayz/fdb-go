@@ -4,7 +4,10 @@ package(default_visibility = ["//:__subpackages__"])
 
 go_library(
     name = "rabitq",
-    srcs = ["rabitq.go"],
+    srcs = [
+        "rabitq.go",
+        "rabitq_quantize.go",
+    ],
     importpath = "fdb.dev/internal/recordlayer/rabitq",
     visibility = ["//:__subpackages__"],
 )

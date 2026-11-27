@@ -31,6 +31,7 @@ go_library(
         "key_selector.go",
         "loadbalance.go",
         "locality.go",
+        "locality_query.go",
         "mappedrange.go",
         "mappedrange_pending.go",
         "mappedrange_selectors.go",
