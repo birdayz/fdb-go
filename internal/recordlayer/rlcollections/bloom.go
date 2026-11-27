@@ -4,7 +4,7 @@
 // Copyright (C) 2011 The Guava Authors
 // Licensed under the Apache License, Version 2.0; translated to Go and modified.
 
-package recordlayer
+package rlcollections
 
 import (
 	"encoding/binary"
@@ -17,30 +17,52 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
-// guavaBloomFilter preserves cross-engine probable-intersection continuations using Guava 33
+// BloomArgumentError reports an invalid argument to Bloom filter construction or key encoding.
+type BloomArgumentError struct {
+	Message string
+}
+
+func (e *BloomArgumentError) Error() string { return e.Message }
+
+// BloomCoreError reports Bloom filter deserialization or versionstamp encoding failure.
+type BloomCoreError struct {
+	Message string
+	Cause   error
+}
+
+func (e *BloomCoreError) Error() string {
+	if e.Cause != nil {
+		return fmt.Sprintf("%s: %v", e.Message, e.Cause)
+	}
+	return e.Message
+}
+
+func (e *BloomCoreError) Unwrap() error { return e.Cause }
+
+// GuavaBloomFilter preserves cross-engine probable-intersection continuations using Guava 33
 // MURMUR128_MITZ_64 framing and ProbableIntersectionCursorState.KeyFunnel.VERSION_0.
-type guavaBloomFilter struct {
+type GuavaBloomFilter struct {
 	data             []uint64
 	numHashFunctions int
 	strategy         byte // ordinal: 0 MURMUR128_MITZ_32, 1 MURMUR128_MITZ_64
 }
 
 const (
-	bloomStrategyMitz32 = 0
-	bloomStrategyMitz64 = 1
+	BloomStrategyMitz32 = 0
+	BloomStrategyMitz64 = 1
 )
 
-// newGuavaBloomFilter is BloomFilter.create(funnel, expectedInsertions, fpp)
+// NewGuavaBloomFilter is BloomFilter.create(funnel, expectedInsertions, fpp)
 // with optimalNumOfBits and optimalNumOfHashFunctions(fpp) (Guava 33).
-func newGuavaBloomFilter(expectedInsertions int64, fpp float64) (*guavaBloomFilter, error) {
+func NewGuavaBloomFilter(expectedInsertions int64, fpp float64) (*GuavaBloomFilter, error) {
 	if expectedInsertions < 0 {
-		return nil, &RecordCoreArgumentError{Message: fmt.Sprintf("Expected insertions (%d) must be >= 0", expectedInsertions)}
+		return nil, &BloomArgumentError{Message: fmt.Sprintf("Expected insertions (%d) must be >= 0", expectedInsertions)}
 	}
 	if !(fpp > 0.0) {
-		return nil, &RecordCoreArgumentError{Message: fmt.Sprintf("False positive probability (%v) must be > 0.0", fpp)}
+		return nil, &BloomArgumentError{Message: fmt.Sprintf("False positive probability (%v) must be > 0.0", fpp)}
 	}
 	if !(fpp < 1.0) {
-		return nil, &RecordCoreArgumentError{Message: fmt.Sprintf("False positive probability (%v) must be < 1.0", fpp)}
+		return nil, &BloomArgumentError{Message: fmt.Sprintf("False positive probability (%v) must be < 1.0", fpp)}
 	}
 	if expectedInsertions == 0 {
 		expectedInsertions = 1
@@ -53,16 +75,16 @@ func newGuavaBloomFilter(expectedInsertions int64, fpp float64) (*guavaBloomFilt
 	numHashFunctions := int(math.Max(1, float64(javaRound(-math.Log(fpp)/logTwo))))
 	// Guava stores this count as an unsigned byte in continuations.
 	if numHashFunctions > 255 {
-		return nil, &RecordCoreArgumentError{Message: fmt.Sprintf("numHashFunctions (%d) must be <= 255 (expectedInsertions=%d, fpp=%v)", numHashFunctions, expectedInsertions, fpp)}
+		return nil, &BloomArgumentError{Message: fmt.Sprintf("numHashFunctions (%d) must be <= 255 (expectedInsertions=%d, fpp=%v)", numHashFunctions, expectedInsertions, fpp)}
 	}
 	if numBits <= 0 {
-		return nil, &RecordCoreArgumentError{Message: fmt.Sprintf("Could not create BloomFilter of %d bits", numBits)}
+		return nil, &BloomArgumentError{Message: fmt.Sprintf("Could not create BloomFilter of %d bits", numBits)}
 	}
 	words := (numBits + 63) / 64
 	if words > math.MaxInt32 {
-		return nil, &RecordCoreArgumentError{Message: fmt.Sprintf("Could not create BloomFilter of %d bits", numBits)}
+		return nil, &BloomArgumentError{Message: fmt.Sprintf("Could not create BloomFilter of %d bits", numBits)}
 	}
-	return &guavaBloomFilter{data: make([]uint64, words), numHashFunctions: numHashFunctions, strategy: bloomStrategyMitz64}, nil
+	return &GuavaBloomFilter{data: make([]uint64, words), numHashFunctions: numHashFunctions, strategy: BloomStrategyMitz64}, nil
 }
 
 // javaRound is Math.round(double): floor(x + 0.5) as a long.
@@ -73,11 +95,11 @@ func javaRound(x float64) int64 {
 	return int64(math.Floor(x + 0.5))
 }
 
-// readGuavaBloomFilter reads strategy/count bytes, then a big-endian word count and words
+// ReadGuavaBloomFilter reads strategy/count bytes, then a big-endian word count and words
 // (Guava BloomFilter.readFrom).
-func readGuavaBloomFilter(b []byte) (*guavaBloomFilter, error) {
+func ReadGuavaBloomFilter(b []byte) (*GuavaBloomFilter, error) {
 	fail := func(msg string) error {
-		return &RecordCoreError{Message: "unable to deserialize bloom filter", Cause: &RecordCoreArgumentError{Message: msg}}
+		return &BloomCoreError{Message: "unable to deserialize bloom filter", Cause: &BloomArgumentError{Message: msg}}
 	}
 	if len(b) < 6 {
 		return nil, fail("truncated header")
@@ -85,7 +107,7 @@ func readGuavaBloomFilter(b []byte) (*guavaBloomFilter, error) {
 	strategy := int8(b[0])
 	numHashFunctions := int(b[1])
 	dataLength := int32(binary.BigEndian.Uint32(b[2:6]))
-	if strategy != bloomStrategyMitz32 && strategy != bloomStrategyMitz64 {
+	if strategy != BloomStrategyMitz32 && strategy != BloomStrategyMitz64 {
 		return nil, fail(fmt.Sprintf("unknown strategy ordinal %d", strategy))
 	}
 	if numHashFunctions == 0 {
@@ -101,11 +123,11 @@ func readGuavaBloomFilter(b []byte) (*guavaBloomFilter, error) {
 	for i := range data {
 		data[i] = binary.BigEndian.Uint64(b[6+8*i:])
 	}
-	return &guavaBloomFilter{data: data, numHashFunctions: numHashFunctions, strategy: byte(strategy)}, nil
+	return &GuavaBloomFilter{data: data, numHashFunctions: numHashFunctions, strategy: byte(strategy)}, nil
 }
 
-// writeTo is BloomFilter.writeTo.
-func (f *guavaBloomFilter) writeTo() []byte {
+// WriteTo is BloomFilter.writeTo.
+func (f *GuavaBloomFilter) WriteTo() []byte {
 	out := make([]byte, 6+8*len(f.data))
 	out[0] = f.strategy
 	out[1] = byte(f.numHashFunctions)
@@ -116,26 +138,26 @@ func (f *guavaBloomFilter) writeTo() []byte {
 	return out
 }
 
-func (f *guavaBloomFilter) bitSize() uint64 { return uint64(len(f.data)) * 64 }
+func (f *GuavaBloomFilter) bitSize() uint64 { return uint64(len(f.data)) * 64 }
 
-func (f *guavaBloomFilter) setBit(index uint64) {
+func (f *GuavaBloomFilter) setBit(index uint64) {
 	f.data[index>>6] |= 1 << (index & 63)
 }
 
-func (f *guavaBloomFilter) getBit(index uint64) bool {
+func (f *GuavaBloomFilter) getBit(index uint64) bool {
 	return f.data[index>>6]&(1<<(index&63)) != 0
 }
 
 // indexes yields the bit indexes the strategy derives for key
 // (BloomFilterStrategies.MURMUR128_MITZ_32 / MURMUR128_MITZ_64 put).
-func (f *guavaBloomFilter) indexes(key tuple.Tuple, visit func(uint64) bool) error {
+func (f *GuavaBloomFilter) indexes(key tuple.Tuple, visit func(uint64) bool) error {
 	sink, err := bloomKeyFunnel(key)
 	if err != nil {
 		return err
 	}
 	h1, h2 := murmur3x64128(sink)
 	size := f.bitSize()
-	if f.strategy == bloomStrategyMitz32 {
+	if f.strategy == BloomStrategyMitz32 {
 		hash1 := int32(h1)
 		hash2 := int32(h1 >> 32)
 		for i := int32(1); i <= int32(f.numHashFunctions); i++ {
@@ -159,11 +181,13 @@ func (f *guavaBloomFilter) indexes(key tuple.Tuple, visit func(uint64) bool) err
 	return nil
 }
 
-func (f *guavaBloomFilter) put(key tuple.Tuple) error {
+// Put inserts key into the Bloom filter.
+func (f *GuavaBloomFilter) Put(key tuple.Tuple) error {
 	return f.indexes(key, func(i uint64) bool { f.setBit(i); return true })
 }
 
-func (f *guavaBloomFilter) mightContain(key tuple.Tuple) (bool, error) {
+// MightContain reports whether key might be in the Bloom filter.
+func (f *GuavaBloomFilter) MightContain(key tuple.Tuple) (bool, error) {
 	all := true
 	err := f.indexes(key, func(i uint64) bool {
 		if !f.getBit(i) {
@@ -232,16 +256,16 @@ func bloomKeyFunnel(key tuple.Tuple) ([]byte, error) {
 }
 
 func packTupleElement(o any) ([]byte, error) {
-	return packBloomTuple(tuple.Tuple{o})
+	return PackBloomTuple(tuple.Tuple{o})
 }
 
-// packBloomTuple validates exact-set keys and tuple-valued Bloom funnel elements before encoding.
-func packBloomTuple(t tuple.Tuple) ([]byte, error) {
+// PackBloomTuple validates exact-set keys and tuple-valued Bloom funnel elements before encoding.
+func PackBloomTuple(t tuple.Tuple) ([]byte, error) {
 	if err := checkPackable(t); err != nil {
 		return nil, err
 	}
 	if incomplete, err := t.HasIncompleteVersionstamp(); err != nil || incomplete {
-		return nil, &RecordCoreError{Message: fmt.Sprintf("bloom filter key: incomplete versionstamp %v", t), Cause: err}
+		return nil, &BloomCoreError{Message: fmt.Sprintf("bloom filter key: incomplete versionstamp %v", t), Cause: err}
 	}
 	return t.Pack(), nil
 }
@@ -256,19 +280,19 @@ func checkPackable(t tuple.Tuple) error {
 			}
 		case *big.Int:
 			if v == nil {
-				return &RecordCoreArgumentError{Message: "bloom filter key: nil *big.Int"}
+				return &BloomArgumentError{Message: "bloom filter key: nil *big.Int"}
 			}
 			if v.BitLen() > 2040 {
-				return &RecordCoreArgumentError{Message: fmt.Sprintf("bloom filter key: integer magnitude is %d bits, exceeds 2040 bits", v.BitLen())}
+				return &BloomArgumentError{Message: fmt.Sprintf("bloom filter key: integer magnitude is %d bits, exceeds 2040 bits", v.BitLen())}
 			}
 		case big.Int:
 			if v.BitLen() > 2040 {
-				return &RecordCoreArgumentError{Message: fmt.Sprintf("bloom filter key: integer magnitude is %d bits, exceeds 2040 bits", v.BitLen())}
+				return &BloomArgumentError{Message: fmt.Sprintf("bloom filter key: integer magnitude is %d bits, exceeds 2040 bits", v.BitLen())}
 			}
 		case nil, int, int64, uint, uint64, []byte, fdb.KeyConvertible,
 			string, float32, float64, bool, tuple.UUID, tuple.Versionstamp:
 		default:
-			return &RecordCoreArgumentError{Message: fmt.Sprintf("bloom filter key: unencodable tuple element %v (type %T)", e, e)}
+			return &BloomArgumentError{Message: fmt.Sprintf("bloom filter key: unencodable tuple element %v (type %T)", e, e)}
 		}
 	}
 	return nil

@@ -11,72 +11,9 @@ import (
 	"testing"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/recordlayer/rlcollections"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
-
-func TestGuavaBloomFilterHashCountBoundary(t *testing.T) {
-	t.Parallel()
-	for _, hashes := range []int{1, 255} {
-		f, err := newGuavaBloomFilter(500, math.Ldexp(1, -hashes))
-		if err != nil {
-			t.Fatalf("create %d hashes: %v", hashes, err)
-		}
-		if f.numHashFunctions != hashes {
-			t.Fatalf("hash count = %d, want %d", f.numHashFunctions, hashes)
-		}
-		key := tuple.Tuple{int64(42)}
-		if err := f.put(key); err != nil {
-			t.Fatal(err)
-		}
-		encoded := f.writeTo()
-		if int(encoded[1]) != hashes {
-			t.Fatalf("encoded hash count = %d, want %d", encoded[1], hashes)
-		}
-		restored, err := readGuavaBloomFilter(encoded)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if restored.numHashFunctions != hashes || !bytes.Equal(restored.writeTo(), encoded) {
-			t.Fatalf("%d-hash filter changed on round trip", hashes)
-		}
-		if contains, err := restored.mightContain(key); err != nil || !contains {
-			t.Fatalf("inserted key: contains=%v, err=%v", contains, err)
-		}
-		if contains, err := restored.mightContain(tuple.Tuple{int64(43)}); err != nil || contains {
-			t.Fatalf("absent key: contains=%v, err=%v", contains, err)
-		}
-	}
-
-	for _, hashes := range []int{256, 1074} {
-		f, err := newGuavaBloomFilter(500, math.Ldexp(1, -hashes))
-		var argumentErr *RecordCoreArgumentError
-		if f != nil || !errors.As(err, &argumentErr) {
-			t.Fatalf("%d hashes: filter=%v, want RecordCoreArgumentError, got %v", hashes, f, err)
-		}
-		for _, context := range []string{"numHashFunctions", "255", "expectedInsertions=500", "fpp="} {
-			if !strings.Contains(argumentErr.Message, context) {
-				t.Fatalf("missing %q context in %q", context, argumentErr.Message)
-			}
-		}
-	}
-}
-
-func TestGuavaBloomFilterRejectsZeroHashCount(t *testing.T) {
-	t.Parallel()
-	for _, strategy := range []byte{bloomStrategyMitz32, bloomStrategyMitz64} {
-		// A complete one-word filter, not a truncated-header/bit-array failure.
-		encoded := []byte{strategy, 0, 0, 0, 0, 1, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
-		f, err := readGuavaBloomFilter(encoded)
-		var coreErr *RecordCoreError
-		var argumentErr *RecordCoreArgumentError
-		if f != nil || !errors.As(err, &coreErr) || !errors.As(err, &argumentErr) {
-			t.Fatalf("strategy %d: filter=%v, want typed decode error and argument cause, got %v", strategy, f, err)
-		}
-		if coreErr.Message != "unable to deserialize bloom filter" || !strings.Contains(argumentErr.Message, "numHashFunctions (0)") {
-			t.Fatalf("strategy %d: decode error=%v, cause=%v", strategy, coreErr, argumentErr)
-		}
-	}
-}
 
 func TestProbableIntersectionHashCountBoundaryPaging(t *testing.T) {
 	t.Parallel()
@@ -158,7 +95,7 @@ func (c *bloomFactoryCursor) Close() error {
 
 func TestProbableIntersectionValidatesAllFiltersBeforeOpeningChildren(t *testing.T) {
 	t.Parallel()
-	valid := []byte{bloomStrategyMitz64, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0}
+	valid := []byte{rlcollections.BloomStrategyMitz64, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0}
 	invalid := bytes.Clone(valid)
 	invalid[1] = 0
 	children := []*bloomFactoryCursor{{RecordCursor: Empty[int64]()}, {RecordCursor: Empty[int64]()}}
@@ -306,7 +243,7 @@ func TestProbableIntersectionRejectsInvalidHashCounts(t *testing.T) {
 	}
 
 	// This is the zero byte that an overflowing 256-hash filter used to write.
-	encoded := []byte{bloomStrategyMitz64, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0}
+	encoded := []byte{rlcollections.BloomStrategyMitz64, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0}
 	continuation := &gen.ProbableIntersectionContinuation{
 		ChildState: []*gen.ProbableIntersectionContinuation_CursorState{
 			{BloomFilter: encoded},

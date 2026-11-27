@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/rlcollections"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -159,7 +160,7 @@ func BenchmarkTextBunchedMapPipelinedPuts(b *testing.B) {
 			tx := &benchBunchTx{byMap: byMap, prefixLen: len(maps[0].Bytes()), walkDepth: depth}
 			pending := make([]pendingBunchedPut, 0, pipeline)
 			finishOldest := func() {
-				if _, _, err := pending[0].finish(); err != nil {
+				if _, _, err := pending[0].Finish(); err != nil {
 					b.Fatal(err)
 				}
 				pending = pending[1:]
@@ -171,7 +172,7 @@ func BenchmarkTextBunchedMapPipelinedPuts(b *testing.B) {
 					if len(pending) == pipeline {
 						finishOldest()
 					}
-					pending = append(pending, m.startPut(tx, ss, key, value))
+					pending = append(pending, rlcollections.StartPut(m, tx, ss, key, value))
 				}
 				for len(pending) > 0 {
 					finishOldest()

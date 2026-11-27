@@ -192,42 +192,6 @@ func TestTranslateTextCmpError(t *testing.T) {
 	}
 }
 
-func TestGuavaBloomFilterSizingAndRoundTrip(t *testing.T) {
-	t.Parallel()
-	g := NewWithT(t)
-	f, err := newGuavaBloomFilter(ProbableIntersectionDefaultExpectedResults, ProbableIntersectionDefaultFalsePositivePercentage)
-	g.Expect(err).NotTo(HaveOccurred())
-	// Guava 33: floor(-500 ln 0.01 / ln²2) = 4792 bits in 75 words, round(-log2 0.01) = 7 hashes.
-	g.Expect(f.data).To(HaveLen(75))
-	g.Expect(f.numHashFunctions).To(Equal(7))
-	keys := []tuple.Tuple{{int64(1)}, {"a", int64(-7)}, {[]byte{1, 2}}, {nil}, {true, 2.5}}
-	for _, k := range keys {
-		g.Expect(f.put(k)).To(Succeed())
-	}
-	b := f.writeTo()
-	g.Expect(b[:6]).To(Equal([]byte{1, 7, 0, 0, 0, 75}))
-	r, err := readGuavaBloomFilter(b)
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(r.writeTo()).To(Equal(b))
-	for _, k := range keys {
-		ok, err := r.mightContain(k)
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(ok).To(BeTrue())
-	}
-	_, err = readGuavaBloomFilter([]byte{})
-	g.Expect(err).To(HaveOccurred())
-	_, err = newGuavaBloomFilter(10, 1.0)
-	g.Expect(err).To(HaveOccurred())
-}
-
-func TestMurmur3EmptyIsZero(t *testing.T) {
-	t.Parallel()
-	g := NewWithT(t)
-	h1, h2 := murmur3x64128(nil)
-	g.Expect(h1).To(BeZero())
-	g.Expect(h2).To(BeZero())
-}
-
 func longLists(lists ...[]int64) []CursorFunction[int64] {
 	fns := make([]CursorFunction[int64], len(lists))
 	for i, l := range lists {

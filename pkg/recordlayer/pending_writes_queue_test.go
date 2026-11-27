@@ -336,11 +336,11 @@ var _ = Describe("PendingWritesQueue", func() {
 		rc := open()
 		var bytes [8]byte
 		binary.LittleEndian.PutUint64(bytes[:], 258)
-		rc.Transaction().Set(fdb.Key(queue.counter.Bytes()), bytes[:])
+		rc.Transaction().Set(fdb.Key(root.Sub("size").Bytes()), bytes[:])
 		size, err := queue.GetQueueSizeNoConflict(rc)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(*size).To(Equal(int64(258)))
-		rc.Transaction().Set(fdb.Key(queue.counter.Bytes()), []byte{1})
+		rc.Transaction().Set(fdb.Key(root.Sub("size").Bytes()), []byte{1})
 		_, err = queue.GetQueueSizeNoConflict(rc)
 		var storage *RecordCoreStorageError
 		Expect(errors.As(err, &storage)).To(BeTrue())

@@ -1,4 +1,4 @@
-package recordlayer
+package rlcollections
 
 import (
 	"bytes"
@@ -9,9 +9,9 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
-func randomBunch(rng *rand.Rand) []bunchedEntry {
+func randomBunch(rng *rand.Rand) []BunchedEntry[tuple.Tuple, []int] {
 	n := 1 + rng.IntN(25)
-	entries := make([]bunchedEntry, n)
+	entries := make([]BunchedEntry[tuple.Tuple, []int], n)
 	seq := int64(rng.IntN(1000))
 	for i := range entries {
 		seq += 1 + int64(rng.IntN(300))
@@ -30,9 +30,9 @@ func randomBunch(rng *rand.Rand) []bunchedEntry {
 			p += rng.IntN(400)
 			positions = append(positions, p)
 		}
-		entries[i] = bunchedEntry{Key: key, Value: positions}
+		entries[i] = BunchedEntry[tuple.Tuple, []int]{Key: key, Value: positions}
 	}
-	slices.SortFunc(entries, func(a, b bunchedEntry) int { return compareTuples(a.Key, b.Key) })
+	slices.SortFunc(entries, func(a, b BunchedEntry[tuple.Tuple, []int]) int { return compareTuples(a.Key, b.Key) })
 	return entries
 }
 
@@ -159,7 +159,7 @@ func TestBunchItemsFailWhereDeserializeFails(t *testing.T) {
 func TestDeserializeEntriesListsAreIndependent(t *testing.T) {
 	t.Parallel()
 	s := TextIndexBunchedSerializerInstance()
-	data, err := s.SerializeEntries([]bunchedEntry{
+	data, err := s.SerializeEntries([]BunchedEntry[tuple.Tuple, []int]{
 		{Key: tuple.Tuple{int64(1)}, Value: []int{1, 2}},
 		{Key: tuple.Tuple{int64(2)}, Value: []int{}},
 		{Key: tuple.Tuple{int64(3)}, Value: []int{7}},

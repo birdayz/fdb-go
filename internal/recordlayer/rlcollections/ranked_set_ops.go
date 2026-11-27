@@ -1,239 +1,25 @@
-// Portions derived from FoundationDB Record Layer (RankedSet.java,
-// RankedSetHashFunctions.java, RankIndexMaintainerFactory.java),
+// Portions derived from FoundationDB Record Layer (RankedSet.java),
 // Copyright 2015-2018 Apple Inc. and the FoundationDB project authors
-// Copyright 2015-2020 Apple Inc. and the FoundationDB project authors
 // Licensed under the Apache License, Version 2.0; translated to Go and modified.
 
-package recordlayer
+package rlcollections
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
-	"hash/crc32"
-	"math/bits"
 
 	"fdb.dev/internal/recordlayer/tuplefast"
 
 	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
-// rankedSetEmptyKeyError is returned when a rankedSet operation receives an empty key.
-type rankedSetEmptyKeyError struct{}
-
-func (e *rankedSetEmptyKeyError) Error() string { return "ranked set: empty key not allowed" }
-
-// rankedSet is a persistent skip-list that supports efficient retrieval of elements by rank.
-// Wire-compatible with Java's com.apple.foundationdb.async.rankedSet.
-//
-// Elements are byte-array keys. The FDB key format is:
-//
-//	[subspace][level][key] → count (little-endian int64)
-//
-// Level 0 has one entry per element. Coarser levels sample values by hash.
-// The count at each entry is the number of level-0 elements between this key
-// and the previous key at the same level.
-type rankedSet struct {
-	subspace subspace.Subspace
-	config   rankedSetConfig
-}
-
-// rankedSetConfig configures a rankedSet.
-// Matches Java's rankedSet.Config.
-type rankedSetConfig struct {
-	// HashFunction determines which levels a key appears on.
-	// Default: jdkArrayHash (matches Java's Arrays.hashCode).
-	HashFunction rankedSetHashFunction
-	// HashFunctionName is HashFunction's name in rankedSetHashFunctions, the
-	// identity Java's option check compares (RankIndexMaintainerFactory's
-	// getHashFunction().equals), since a Go func value has none.
-	HashFunctionName string
-	// NLevels is the number of skip-list levels (2-8, default 6).
-	NLevels int
-	// CountDuplicates tracks duplicate keys separately, increasing ranks below them.
-	CountDuplicates bool
-}
-
-// rankedSetHashFunction computes a hash for level determination.
-// Must return int32 to match Java's int semantics. Only RANDOM can fail: its
-// draw reads a randomness source, and a failed read fails the write rather
-// than choosing levels.
-type rankedSetHashFunction func(key []byte) (int32, error)
-
-// pureHash is a hash of the key alone, which cannot fail.
-func pureHash(f func(key []byte) int32) rankedSetHashFunction {
-	return func(key []byte) (int32, error) { return f(key), nil }
-}
-
-const (
-	rankedSetLevelFanPow   = 4
-	rankedSetMaxLevels     = 32 / rankedSetLevelFanPow // 8
-	rankedSetDefaultLevels = 6
-)
-
-var rankedSetLevelFanValues [rankedSetMaxLevels]int32
-
-func init() {
-	for i := range rankedSetMaxLevels {
-		rankedSetLevelFanValues[i] = (1 << (i * rankedSetLevelFanPow)) - 1
-	}
-}
-
-// defaultRankedSetConfig is the default configuration matching Java's defaults.
-var defaultRankedSetConfig = rankedSetConfig{
-	HashFunction:     pureHash(jdkArrayHash),
-	HashFunctionName: rankedSetHashJDK,
-	NLevels:          rankedSetDefaultLevels,
-}
-
-// The names Java's RankedSetHashFunctions knows for the rankHashFunction
-// index option.
-const (
-	rankedSetHashJDK     = "JDK"
-	rankedSetHashCRC     = "CRC"
-	rankedSetHashRandom  = "RANDOM"
-	rankedSetHashMurmur3 = "MURMUR3"
-)
-
-// rankedSetHashFunctions is Java's RankedSetHashFunctions extent: the option
-// value is looked up exactly, and a name it does not hold is refused
-// ("hash function not found", RankedSetHashFunctions.java:47-59).
-var rankedSetHashFunctions = map[string]rankedSetHashFunction{
-	rankedSetHashJDK:     pureHash(jdkArrayHash),
-	rankedSetHashCRC:     pureHash(crcHash),
-	rankedSetHashRandom:  randomHashFrom(nil),
-	rankedSetHashMurmur3: pureHash(murmur3Hash),
-}
-
-// jdkArrayHash matches Java's Arrays.hashCode(byte[]).
-// Uses signed byte arithmetic for compatibility.
-func jdkArrayHash(key []byte) int32 {
-	result := int32(1)
-	for _, b := range key {
-		result = 31*result + int32(int8(b))
-	}
-	return result
-}
-
-// crcHash uses CRC-32 (IEEE) for better distribution.
-// Matches Java's rankedSet.CRC_HASH.
-func crcHash(key []byte) int32 {
-	return int32(crc32.ChecksumIEEE(key))
-}
-
-// randomHashFrom matches Java's RankedSet.RANDOM_HASH: a uniformly random int
-// per call, whatever the key (ThreadLocalRandom.current().nextInt()). A key's
-// levels are then a coin toss on insert; a delete draws nothing, in either
-// engine (Java's remove never calls the hash, RankedSet.java:487-491, nor does
-// Remove), so it removes the key from every level that holds it. The draw
-// decides persisted ranked-set bytes, so it goes through the DST randomness
-// seam: a nil env is production's crypto/rand, and a maintainer binds its
-// store's env (withEnv) so a seeded run replays. A failed read is returned:
-// a zero hash would put the key on every level.
-func randomHashFrom(env *Env) rankedSetHashFunction {
-	return func([]byte) (int32, error) {
-		var b [4]byte
-		if _, err := env.Read(b[:]); err != nil {
-			return 0, fmt.Errorf("ranked set RANDOM hash: %w", err)
-		}
-		return int32(binary.LittleEndian.Uint32(b[:])), nil
-	}
-}
-
-// withEnv binds a RANDOM hash to env's randomness; other hashes are pure.
-func (c rankedSetConfig) withEnv(env *Env) rankedSetConfig {
-	if c.HashFunctionName == rankedSetHashRandom {
-		c.HashFunction = randomHashFrom(env)
-	}
-	return c
-}
-
-// murmur3Hash matches Java's MURMUR3 entry, Guava's
-// Hashing.murmur3_32_fixed().hashBytes(key).asInt(): MurmurHash3 x86_32 with
-// seed 0, blocks read little-endian. ("fixed" repairs Guava's hashString of
-// supplementary characters; hashBytes is the same in both.)
-func murmur3Hash(key []byte) int32 {
-	const c1, c2 = 0xcc9e2d51, 0x1b873593
-	var h uint32
-	n := len(key)
-	i := 0
-	for ; i+4 <= n; i += 4 {
-		k := binary.LittleEndian.Uint32(key[i:])
-		k *= c1
-		k = bits.RotateLeft32(k, 15)
-		k *= c2
-		h ^= k
-		h = bits.RotateLeft32(h, 13)
-		h = h*5 + 0xe6546b64
-	}
-	var k uint32
-	for j := n - 1; j >= i; j-- {
-		k = k<<8 | uint32(key[j])
-	}
-	if i < n {
-		k *= c1
-		k = bits.RotateLeft32(k, 15)
-		k *= c2
-		h ^= k
-	}
-	h ^= uint32(n)
-	h ^= h >> 16
-	h *= 0x85ebca6b
-	h ^= h >> 13
-	h *= 0xc2b2ae35
-	h ^= h >> 16
-	return int32(h)
-}
-
-// newRankedSet creates a rankedSet backed by the given subspace.
-func newRankedSet(sub subspace.Subspace, config rankedSetConfig) *rankedSet {
-	if config.NLevels <= 0 {
-		config.NLevels = rankedSetDefaultLevels
-	}
-	if config.NLevels > rankedSetMaxLevels {
-		config.NLevels = rankedSetMaxLevels
-	}
-	if config.HashFunction == nil {
-		config.HashFunction, config.HashFunctionName = pureHash(jdkArrayHash), rankedSetHashJDK
-	}
-	return &rankedSet{subspace: sub, config: config}
-}
-
-// Init initializes the ranked set by creating sentinel entries at each level.
-// Idempotent — skips levels that already have sentinels.
-// Must be called before first use. Matches Java's rankedSet.init().
-func (rs *rankedSet) Init(tx fdb.WritableTransaction) error {
-	for level := 0; level < rs.config.NLevels; level++ {
-		k := fdb.Key(rs.subspace.Pack(tuple.Tuple{int64(level), []byte{}}))
-		v, err := tx.Get(k).Get()
-		if err != nil {
-			return err
-		}
-		if v == nil {
-			tx.Set(k, rsEncodeLong(0))
-		}
-	}
-	return nil
-}
-
-// InitNeeded checks whether Init needs to be called.
-func (rs *rankedSet) InitNeeded(tx fdb.ReadTransaction) (bool, error) {
-	k := fdb.Key(rs.subspace.Pack(tuple.Tuple{int64(0), []byte{}}))
-	v, err := tx.Get(k).Get()
-	if err != nil {
-		return false, err
-	}
-	return v == nil, nil
-}
-
 // Add inserts a key into the ranked set. Returns true if the set was modified.
 // If CountDuplicates is false and key already exists, returns false.
-// Matches Java's rankedSet.add().
-func (rs *rankedSet) Add(tx fdb.WritableTransaction, key []byte) (bool, error) {
+// Matches Java's RankedSet.add().
+func (rs *RankedSet) Add(tx fdb.WritableTransaction, key []byte) (bool, error) {
 	if len(key) == 0 {
-		return false, &rankedSetEmptyKeyError{}
+		return false, &RankedSetEmptyKeyError{}
 	}
 
 	keyHash, err := rs.config.HashFunction(key)
@@ -278,7 +64,7 @@ func (rs *rankedSet) Add(tx fdb.WritableTransaction, key []byte) (bool, error) {
 
 // addInsertLevelKey inserts a new entry for key at the given level.
 // Splits the count from the previous entry by recounting from the level below.
-func (rs *rankedSet) addInsertLevelKey(tx fdb.WritableTransaction, key []byte, level int) error {
+func (rs *RankedSet) addInsertLevelKey(tx fdb.WritableTransaction, key []byte, level int) error {
 	prevKey, err := rs.getPreviousKey(tx, level, key, false)
 	if err != nil {
 		return err
@@ -305,10 +91,10 @@ func (rs *rankedSet) addInsertLevelKey(tx fdb.WritableTransaction, key []byte, l
 }
 
 // Remove removes a key from the ranked set. Returns true if the key was present.
-// Matches Java's rankedSet.remove().
-func (rs *rankedSet) Remove(tx fdb.WritableTransaction, key []byte) (bool, error) {
+// Matches Java's RankedSet.remove().
+func (rs *RankedSet) Remove(tx fdb.WritableTransaction, key []byte) (bool, error) {
 	if len(key) == 0 {
-		return false, &rankedSetEmptyKeyError{}
+		return false, &RankedSetEmptyKeyError{}
 	}
 
 	count, err := rs.countCheckedKey(tx, key)
@@ -373,7 +159,7 @@ func (rs *rankedSet) Remove(tx fdb.WritableTransaction, key []byte) (bool, error
 // with a single reverse GetRange. Subsequent Rank()/GetNth() calls that traverse
 // those levels become cache hits, eliminating 1 FDB round trip per cached level.
 // Matches Java's RankedSet.preloadForLookup().
-func (rs *rankedSet) PreloadForLookup(tx fdb.ReadTransaction) {
+func (rs *RankedSet) PreloadForLookup(tx fdb.ReadTransaction) {
 	begin, end := rs.subspace.FDBRangeKeys()
 	// Read the last nLevels entries (reverse). These are the sparse upper-level
 	// entries. The result goes into FDB's RYW cache; we discard it here.
@@ -386,10 +172,10 @@ func (rs *rankedSet) PreloadForLookup(tx fdb.ReadTransaction) {
 // Rank returns the 0-indexed rank (position in sorted order) of key.
 // If nullIfMissing is true and key is absent, returns nil.
 // If nullIfMissing is false, returns the rank key would have if inserted.
-// Matches Java's rankedSet.rank().
-func (rs *rankedSet) Rank(tx fdb.ReadTransaction, key []byte, nullIfMissing bool) (*int64, error) {
+// Matches Java's RankedSet.rank().
+func (rs *RankedSet) Rank(tx fdb.ReadTransaction, key []byte, nullIfMissing bool) (*int64, error) {
 	if len(key) == 0 {
-		return nil, &rankedSetEmptyKeyError{}
+		return nil, &RankedSetEmptyKeyError{}
 	}
 
 	if nullIfMissing {
@@ -457,8 +243,8 @@ func (rs *rankedSet) Rank(tx fdb.ReadTransaction, key []byte, nullIfMissing bool
 
 // GetNth returns the key at the given 0-indexed rank (select operation).
 // Returns nil if rank is out of bounds.
-// Matches Java's rankedSet.getNth().
-func (rs *rankedSet) GetNth(tx fdb.ReadTransaction, rank int64) ([]byte, error) {
+// Matches Java's RankedSet.getNth().
+func (rs *RankedSet) GetNth(tx fdb.ReadTransaction, rank int64) ([]byte, error) {
 	if rank < 0 {
 		return nil, nil
 	}
@@ -520,9 +306,9 @@ func (rs *rankedSet) GetNth(tx fdb.ReadTransaction, rank int64) ([]byte, error) 
 }
 
 // Contains checks if key is present in the set.
-func (rs *rankedSet) Contains(tx fdb.ReadTransaction, key []byte) (bool, error) {
+func (rs *RankedSet) Contains(tx fdb.ReadTransaction, key []byte) (bool, error) {
 	if len(key) == 0 {
-		return false, &rankedSetEmptyKeyError{}
+		return false, &RankedSetEmptyKeyError{}
 	}
 	count, err := rs.countCheckedKey(tx, key)
 	if err != nil {
@@ -533,9 +319,9 @@ func (rs *rankedSet) Contains(tx fdb.ReadTransaction, key []byte) (bool, error) 
 
 // Count returns the number of occurrences of key (0 if absent, 1 normally,
 // or more if CountDuplicates is enabled).
-func (rs *rankedSet) Count(tx fdb.ReadTransaction, key []byte) (int64, error) {
+func (rs *RankedSet) Count(tx fdb.ReadTransaction, key []byte) (int64, error) {
 	if len(key) == 0 {
-		return 0, &rankedSetEmptyKeyError{}
+		return 0, &RankedSetEmptyKeyError{}
 	}
 	count, err := rs.countCheckedKey(tx, key)
 	if err != nil {
@@ -548,8 +334,8 @@ func (rs *rankedSet) Count(tx fdb.ReadTransaction, key []byte) (int64, error) {
 }
 
 // Size returns the total number of elements in the set.
-// Sums counts at the coarsest level. Matches Java's rankedSet.size().
-func (rs *rankedSet) Size(tx fdb.ReadTransaction) (int64, error) {
+// Sums counts at the coarsest level. Matches Java's RankedSet.size().
+func (rs *RankedSet) Size(tx fdb.ReadTransaction) (int64, error) {
 	topLevel := rs.config.NLevels - 1
 	levelSub := rs.subspace.Sub(int64(topLevel))
 	beginKC, endKC := levelSub.FDBRangeKeys()
@@ -573,18 +359,9 @@ func (rs *rankedSet) Size(tx fdb.ReadTransaction) (int64, error) {
 	return total, nil
 }
 
-// Clear removes all entries and reinitializes the ranked set.
-func (rs *rankedSet) Clear(tx fdb.WritableTransaction) error {
-	beginKC, endKC := rs.subspace.FDBRangeKeys()
-	tx.ClearRange(fdb.KeyRange{Begin: beginKC.FDBKey(), End: endKC.FDBKey()})
-	return rs.Init(tx)
-}
-
-// --- Internal helpers ---
-
 // countCheckedKey reads the count for a key at level 0.
 // Returns nil if key has no entry.
-func (rs *rankedSet) countCheckedKey(tx fdb.ReadTransaction, key []byte) (*int64, error) {
+func (rs *RankedSet) countCheckedKey(tx fdb.ReadTransaction, key []byte) (*int64, error) {
 	v, err := tx.Get(fdb.Key(rs.subspace.Pack(tuple.Tuple{int64(0), key}))).Get()
 	if err != nil {
 		return nil, err
@@ -600,11 +377,11 @@ func (rs *rankedSet) countCheckedKey(tx fdb.ReadTransaction, key []byte) (*int64
 }
 
 // getPreviousKey finds the entry at or before key at the given level.
-// Uses snapshot reads with manual conflict ranges, matching Java's rankedSet.getPreviousKey().
+// Uses snapshot reads with manual conflict ranges, matching Java's RankedSet.getPreviousKey().
 //
 // If orEqual is true, the key itself may be returned (used for duplicates
 // where the key already exists at this level).
-func (rs *rankedSet) getPreviousKey(tx fdb.WritableTransaction, level int, key []byte, orEqual bool) ([]byte, error) {
+func (rs *RankedSet) getPreviousKey(tx fdb.WritableTransaction, level int, key []byte, orEqual bool) ([]byte, error) {
 	k := rs.subspace.Pack(tuple.Tuple{int64(level), key})
 	begin := fdb.Key(rs.subspace.Pack(tuple.Tuple{int64(level), []byte{}}))
 
@@ -655,7 +432,7 @@ func (rs *rankedSet) getPreviousKey(tx fdb.WritableTransaction, level int, key [
 }
 
 // countRange sums all counts at the given level in the range [beginKey, endKey).
-func (rs *rankedSet) countRange(tx fdb.ReadTransaction, level int, beginKey, endKey []byte) (int64, error) {
+func (rs *RankedSet) countRange(tx fdb.ReadTransaction, level int, beginKey, endKey []byte) (int64, error) {
 	levelSub := rs.subspace.Sub(int64(level))
 
 	var begin fdb.Key
@@ -694,28 +471,7 @@ func (rs *rankedSet) countRange(tx fdb.ReadTransaction, level int, beginKey, end
 }
 
 // levelEnd returns the end key of the range for a given level's subspace.
-func (rs *rankedSet) levelEnd(level int) fdb.Key {
+func (rs *RankedSet) levelEnd(level int) fdb.Key {
 	_, end := rs.subspace.Sub(int64(level)).FDBRangeKeys()
 	return end.FDBKey()
-}
-
-// rsEncodeLong encodes an int64 as 8-byte little-endian.
-// Matches Java's rankedSet.encodeLong().
-func rsEncodeLong(count int64) []byte {
-	b := make([]byte, 8)
-	binary.LittleEndian.PutUint64(b, uint64(count))
-	return b
-}
-
-// rsDecodeLong decodes 8-byte little-endian to int64.
-// Returns 0 for nil (missing FDB key = zero count).
-// Returns an error for non-nil values shorter than 8 bytes (data corruption).
-func rsDecodeLong(v []byte) (int64, error) {
-	if v == nil {
-		return 0, nil
-	}
-	if len(v) < 8 {
-		return 0, fmt.Errorf("ranked set: corrupted count value: expected 8 bytes, got %d", len(v))
-	}
-	return int64(binary.LittleEndian.Uint64(v)), nil
 }

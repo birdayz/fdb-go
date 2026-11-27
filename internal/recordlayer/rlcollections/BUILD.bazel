@@ -1,0 +1,58 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+package(default_visibility = ["//:__subpackages__"])
+
+go_library(
+    name = "rlcollections",
+    srcs = [
+        "bloom.go",
+        "bunched_map.go",
+        "bunched_map_iterator.go",
+        "bunched_map_write.go",
+        "pending_writes_queue.go",
+        "range_set.go",
+        "ranked_set.go",
+        "ranked_set_ops.go",
+        "text_index_serializer.go",
+        "tuple_compare.go",
+    ],
+    importpath = "fdb.dev/internal/recordlayer/rlcollections",
+    visibility = [
+        "//internal/recordlayer:__subpackages__",
+        "//pkg/recordlayer:__subpackages__",
+    ],
+    deps = [
+        "//gen",
+        "//internal/recordlayer/tuplefast",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/known/anypb",
+    ],
+)
+
+go_test(
+    name = "rlcollections_test",
+    srcs = [
+        "bloom_test.go",
+        "bunched_map_iterator_test.go",
+        "bunched_map_test.go",
+        "pending_writes_queue_test.go",
+        "range_set_test.go",
+        "ranked_set_test.go",
+        "text_index_serializer_test.go",
+        "text_index_serializer_unit_test.go",
+        "tuple_compare_test.go",
+    ],
+    embed = [":rlcollections"],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer/metadatapb",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//types/known/anypb",
+    ],
+)

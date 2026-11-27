@@ -138,31 +138,3 @@ func TestRecordKeyCursor_SurfacesGetError(t *testing.T) {
 		t.Fatalf("record-key scan must surface Get errors after a successful Advance, got %v", err)
 	}
 }
-
-// TestBunchedMapMultiIterator_SurfacesIteratorError pins the same fix for the
-// BunchedMap multi-iterator that backs the LIVE text-index scan (textCursor.Err()):
-// a transient FDB error landing on nextKV's Advance() must be recorded in iterErr and
-// surfaced by Err(), not swallowed as clean end-of-data (which truncated the scan).
-func TestBunchedMapMultiIterator_SurfacesIteratorError(t *testing.T) {
-	t.Parallel()
-	injErr := errors.New("injected transaction_too_old (1007)")
-	it := &bunchedMapMultiIterator{rangeIter: &fakeRangeIterator{getErr: injErr}}
-	if _, ok := it.nextKV(); ok {
-		t.Fatal("nextKV must report not-ok on an iterator error")
-	}
-	if !errors.Is(it.Err(), injErr) {
-		t.Fatalf("text-index scan must surface the iterator error via Err(), got %v", it.Err())
-	}
-}
-
-// TestBunchedMapIterator_SurfacesIteratorError pins the single-map iterator's
-// advance() — same Advance()/Get() swallow.
-func TestBunchedMapIterator_SurfacesIteratorError(t *testing.T) {
-	t.Parallel()
-	injErr := errors.New("injected transaction_too_old (1007)")
-	it := &BunchedMapIterator{rangeIter: &fakeRangeIterator{getErr: injErr}}
-	it.advance()
-	if !errors.Is(it.Err(), injErr) {
-		t.Fatalf("single-map scan must surface the iterator error via Err(), got %v", it.Err())
-	}
-}

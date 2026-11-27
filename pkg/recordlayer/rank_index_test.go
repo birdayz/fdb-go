@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/recordlayer/rlcollections"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -18,7 +19,7 @@ var _ = Describe("RankedSet", func() {
 
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			sub := ks.Sub("rs")
-			rs := newRankedSet(sub, defaultRankedSetConfig)
+			rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 			tx := rtx.Transaction()
 
 			Expect(rs.Init(tx)).To(Succeed())
@@ -105,7 +106,7 @@ var _ = Describe("RankedSet", func() {
 
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			sub := ks.Sub("rs")
-			rs := newRankedSet(sub, defaultRankedSetConfig)
+			rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 			tx := rtx.Transaction()
 
 			Expect(rs.Init(tx)).To(Succeed())
@@ -155,12 +156,12 @@ var _ = Describe("RankedSet", func() {
 
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			sub := ks.Sub("rs")
-			config := rankedSetConfig{
-				HashFunction:    pureHash(jdkArrayHash),
-				NLevels:         rankedSetDefaultLevels,
+			config := rlcollections.RankedSetConfig{
+				HashFunction:    rlcollections.PureHash(rlcollections.JDKArrayHash),
+				NLevels:         rlcollections.RankedSetDefaultLevels,
 				CountDuplicates: true,
 			}
-			rs := newRankedSet(sub, config)
+			rs := rlcollections.NewRankedSet(sub, config)
 			tx := rtx.Transaction()
 
 			Expect(rs.Init(tx)).To(Succeed())
@@ -226,7 +227,7 @@ var _ = Describe("RankedSet", func() {
 
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			sub := ks.Sub("rs")
-			rs := newRankedSet(sub, defaultRankedSetConfig)
+			rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 			tx := rtx.Transaction()
 
 			Expect(rs.Init(tx)).To(Succeed())
@@ -258,7 +259,7 @@ var _ = Describe("RankedSet", func() {
 
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			sub := ks.Sub("rs")
-			rs := newRankedSet(sub, defaultRankedSetConfig)
+			rs := rlcollections.NewRankedSet(sub, rlcollections.DefaultRankedSetConfig)
 			tx := rtx.Transaction()
 
 			Expect(rs.Init(tx)).To(Succeed())
@@ -297,11 +298,11 @@ var _ = Describe("RankedSet", func() {
 
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			sub := ks.Sub("rs")
-			config := rankedSetConfig{
-				HashFunction: pureHash(crcHash),
-				NLevels:      rankedSetDefaultLevels,
+			config := rlcollections.RankedSetConfig{
+				HashFunction: rlcollections.PureHash(rlcollections.CRCHash),
+				NLevels:      rlcollections.RankedSetDefaultLevels,
 			}
-			rs := newRankedSet(sub, config)
+			rs := rlcollections.NewRankedSet(sub, config)
 			tx := rtx.Transaction()
 
 			Expect(rs.Init(tx)).To(Succeed())
@@ -993,19 +994,19 @@ var _ = Describe("RankIndex", func() {
 	It("JDK hash function matches Java Arrays.hashCode", func() {
 		// Test vectors verified against Java's Arrays.hashCode(byte[])
 		// Java: Arrays.hashCode(new byte[]{}) = 1
-		Expect(jdkArrayHash([]byte{})).To(Equal(int32(1)))
+		Expect(rlcollections.JDKArrayHash([]byte{})).To(Equal(int32(1)))
 
 		// Java: Arrays.hashCode(new byte[]{0}) = 31
-		Expect(jdkArrayHash([]byte{0})).To(Equal(int32(31)))
+		Expect(rlcollections.JDKArrayHash([]byte{0})).To(Equal(int32(31)))
 
 		// Java: Arrays.hashCode(new byte[]{1}) = 32
-		Expect(jdkArrayHash([]byte{1})).To(Equal(int32(32)))
+		Expect(rlcollections.JDKArrayHash([]byte{1})).To(Equal(int32(32)))
 
 		// Java: Arrays.hashCode(new byte[]{-1}) = 30 (signed byte -1 = 0xFF)
-		Expect(jdkArrayHash([]byte{0xFF})).To(Equal(int32(30)))
+		Expect(rlcollections.JDKArrayHash([]byte{0xFF})).To(Equal(int32(30)))
 
 		// Java: Arrays.hashCode(new byte[]{1, 2}) = 31*32 + 2 = 994
-		Expect(jdkArrayHash([]byte{1, 2})).To(Equal(int32(994)))
+		Expect(rlcollections.JDKArrayHash([]byte{1, 2})).To(Equal(int32(994)))
 	})
 
 	It("deleteAllRecords clears rank index", func() {

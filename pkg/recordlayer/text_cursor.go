@@ -8,6 +8,7 @@ package recordlayer
 import (
 	"context"
 
+	"fdb.dev/internal/recordlayer/rlcollections"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
@@ -82,57 +83,8 @@ func (c *textCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry
 		return RecordCursorResult[*IndexEntry]{}, err
 	}
 
-	executeProps := c.scanProps.GetExecuteProperties()
-
-	// Check the returned-row limit FIRST (RFC-106a): a MAX_ROWS/LIMIT-bounded
-	// text scan must stop cleanly with ReturnLimitReached before the scan-record
-	// backstop below can turn a satisfied row cap into a 54F01 (match index_scan).
-	if executeProps.ReturnedRowLimit > 0 && c.recordsRead >= executeProps.ReturnedRowLimit {
-		result := NewResultNoNext[*IndexEntry](ReturnLimitReached, c.limitContinuation())
-		c.lastResult = &result
-		return result, nil
-	}
-
-	// Check byte scan limit BEFORE reading next entry (free initial pass for first record).
-	// Matches Java's CursorLimitManager.tryRecordScan() which checks
-	// byteScanLimiter.hasBytesRemaining() with usedInitialPass guard.
-	if executeProps.ScannedBytesLimit > 0 && c.recordsRead > 0 && c.scanState.BytesScanned() >= executeProps.ScannedBytesLimit {
-		result, err := noNextOrFail[*IndexEntry](executeProps, ByteLimitReached, c.limitContinuation())
-		if err != nil {
-			return RecordCursorResult[*IndexEntry]{}, err
-		}
-		c.lastResult = &result
-		return result, nil
-	}
-
-	// Check time limit BEFORE reading next entry (free initial pass for first record — unconditional;
-	// Java's time branch never suppresses it, even in fail mode). Matches Java's
-	// CursorLimitManager.tryRecordScan(). noNextOrFail (not a raw NewResultNoNext): Java throws on
-	// ANY halted limit under failOnScanLimitReached, not just the scanned-records one
-	// (CursorLimitManager.java:141-144).
-	if executeProps.TimeLimit > 0 && c.recordsRead > 0 && c.scanState.Elapsed() >= executeProps.TimeLimit {
-		result, err := noNextOrFail[*IndexEntry](executeProps, TimeLimitReached, c.limitContinuation())
-		if err != nil {
-			return RecordCursorResult[*IndexEntry]{}, err
-		}
-		c.lastResult = &result
-		return result, nil
-	}
-
-	// Check scanned records limit BEFORE reading next entry (free initial pass, EXCEPT under
-	// FailOnScanLimitReached — Java's record-scan branch never grants the free pass in fail mode,
-	// CursorLimitManager.java:135-136). Threshold is the (possibly shared) scanState so every leg of
-	// an IN-join/IN-union over a text index charges the same aggregate budget instead of resetting
-	// per leg.
-	if executeProps.ScannedRecordsLimit > 0 &&
-		(c.recordsRead > 0 || executeProps.FailOnScanLimitReached) &&
-		c.scanState.RecordsScanned() >= executeProps.ScannedRecordsLimit {
-		result, err := noNextOrFail[*IndexEntry](executeProps, ScanLimitReached, c.limitContinuation())
-		if err != nil {
-			return RecordCursorResult[*IndexEntry]{}, err
-		}
-		c.lastResult = &result
-		return result, nil
+	if halted, res, err := c.checkLimits(); err != nil || halted {
+		return res, err
 	}
 
 	if c.closed || !c.underlying.HasNext() {
@@ -219,7 +171,7 @@ func (c *textCursor) seekTo(ctx context.Context, target tuple.Tuple) (RecordCurs
 		return nil, err
 	}
 	c.timer.Increment(CountTextScanSeeks)
-	c.underlying.seekTo(target)
+	rlcollections.SeekBunchedMapMultiIterator(c.underlying, target)
 	if !c.underlying.HasNext() {
 		if err := c.underlying.Err(); err != nil {
 			return nil, err
@@ -244,3 +196,53 @@ func (c *textCursor) IsClosed() bool { return c.closed }
 
 // Ensure textCursor implements RecordCursor[*IndexEntry].
 var _ RecordCursor[*IndexEntry] = (*textCursor)(nil)
+
+func (c *textCursor) checkLimits() (bool, RecordCursorResult[*IndexEntry], error) {
+	executeProps := c.scanProps.GetExecuteProperties()
+
+	// Check the returned-row limit FIRST (RFC-106a): a MAX_ROWS/LIMIT-bounded
+	// text scan must stop cleanly with ReturnLimitReached before the scan-record
+	// backstop below can turn a satisfied row cap into a 54F01 (match index_scan).
+	if executeProps.ReturnedRowLimit > 0 && c.recordsRead >= executeProps.ReturnedRowLimit {
+		result := NewResultNoNext[*IndexEntry](ReturnLimitReached, c.limitContinuation())
+		c.lastResult = &result
+		return true, result, nil
+	}
+
+	// Check byte scan limit BEFORE reading next entry (free initial pass for first record).
+	// Matches Java's CursorLimitManager.tryRecordScan() which checks
+	// byteScanLimiter.hasBytesRemaining() with usedInitialPass guard.
+	if executeProps.ScannedBytesLimit > 0 && c.recordsRead > 0 && c.scanState.BytesScanned() >= executeProps.ScannedBytesLimit {
+		return c.haltWithLimit(executeProps, ByteLimitReached)
+	}
+
+	// Check time limit BEFORE reading next entry (free initial pass for first record — unconditional;
+	// Java's time branch never suppresses it, even in fail mode). Matches Java's
+	// CursorLimitManager.tryRecordScan(). noNextOrFail (not a raw NewResultNoNext): Java throws on
+	// ANY halted limit under failOnScanLimitReached, not just the scanned-records one
+	// (CursorLimitManager.java:141-144).
+	if executeProps.TimeLimit > 0 && c.recordsRead > 0 && c.scanState.Elapsed() >= executeProps.TimeLimit {
+		return c.haltWithLimit(executeProps, TimeLimitReached)
+	}
+
+	// Check scanned records limit BEFORE reading next entry (free initial pass, EXCEPT under
+	// FailOnScanLimitReached — Java's record-scan branch never grants the free pass in fail mode,
+	// CursorLimitManager.java:135-136). Threshold is the (possibly shared) scanState so every leg of
+	// an IN-join/IN-union over a text index charges the same aggregate budget instead of resetting
+	// per leg.
+	if executeProps.ScannedRecordsLimit > 0 &&
+		(c.recordsRead > 0 || executeProps.FailOnScanLimitReached) &&
+		c.scanState.RecordsScanned() >= executeProps.ScannedRecordsLimit {
+		return c.haltWithLimit(executeProps, ScanLimitReached)
+	}
+	return false, RecordCursorResult[*IndexEntry]{}, nil
+}
+
+func (c *textCursor) haltWithLimit(executeProps ExecuteProperties, reason NoNextReason) (bool, RecordCursorResult[*IndexEntry], error) {
+	result, err := noNextOrFail[*IndexEntry](executeProps, reason, c.limitContinuation())
+	if err != nil {
+		return true, RecordCursorResult[*IndexEntry]{}, err
+	}
+	c.lastResult = &result
+	return true, result, nil
+}

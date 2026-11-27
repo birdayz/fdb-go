@@ -8,11 +8,27 @@ import (
 	"errors"
 	"fmt"
 
+	"fdb.dev/internal/recordlayer/rlcollections"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/metadatapb"
+	"google.golang.org/protobuf/proto"
 )
+
+var (
+	CountPendingWritesQueueWrite                 = Event{"pending_writes_queue_write", "Pending writes queue write", KindCount}
+	CountPendingWritesQueueClear                 = Event{"pending_writes_queue_clear", "Pending writes queue clear", KindCount}
+	CountPendingWritesQueueOverflowDisabledIndex = Event{"pending_writes_queue_overflow_disabled_index", "Index disabled because pending writes queue overflowed", KindCount}
+	SizePendingWritesQueueSize                   = Event{"pending_writes_queue_size", "Pending writes queue size", KindSizeDistribution}
+)
+
+func newPendingWritesQueueCursor[T proto.Message](inner *rlcollections.PendingWritesQueue[T], rc *FDBRecordContext, props ScanProperties, continuation []byte) RecordCursor[*PendingWritesQueueEntry[T]] {
+	return MapErrCursor(newRawSplitCursor(rc, inner.Entries(), props, continuation), func(raw *rawSplitRecord) (*PendingWritesQueueEntry[T], error) {
+		entry, err := inner.Decode(raw.key, raw.value)
+		return entry, translatePendingWritesErr(err)
+	})
+}
 
 // indexingPendingWriteQueue uses the Java IndexingSubspaces layout. Queue
 // capacity is a producer policy; replay and emptiness never trust the counter.
@@ -26,7 +42,7 @@ func (store *FDBRecordStore) indexingPendingWriteQueue(index *Index, maximum int
 // handle's checked publication. The caller holds the shared maintenance gate.
 func (store *FDBRecordStore) isIndexPendingQueueEmpty(index *Index) (bool, error) {
 	queue := store.indexingPendingWriteQueue(index, 0)
-	rangeKeys, err := fdb.PrefixRange(queue.entries.Bytes())
+	rangeKeys, err := fdb.PrefixRange(queue.inner.Entries().Bytes())
 	if err != nil {
 		return false, err
 	}
@@ -142,4 +158,67 @@ func (store *FDBRecordStore) validatePendingQueueIndex(index *Index) error {
 		return &RecordCoreError{Message: "index does not support queued writes", IndexName: index.Name}
 	}
 	return nil
+}
+
+type pendingWritesCtx struct{ rc *FDBRecordContext }
+
+func (c pendingWritesCtx) ReadTransaction(snapshot bool) fdb.ReadTransaction {
+	return c.rc.ReadTransaction(snapshot)
+}
+func (c pendingWritesCtx) Transaction() fdb.WritableTransaction { return c.rc.Transaction() }
+func (c pendingWritesCtx) ClearRange(prefix fdb.KeyRange)       { c.rc.ClearRange(prefix) }
+func (c pendingWritesCtx) NowUnixMilli() int64                  { return c.rc.env.Now().UnixMilli() }
+
+func (c pendingWritesCtx) IncompleteVersionstamp() (tuple.Versionstamp, error) {
+	version, err := IncompleteVersion(c.rc.ClaimLocalVersion())
+	if err != nil {
+		return tuple.Versionstamp{}, err
+	}
+	return version.ToVersionstamp()
+}
+
+func (c pendingWritesCtx) SaveSplit(sub subspace.Subspace, key tuple.Tuple, serialized []byte) error {
+	return saveWithSplitClearingKey(c.rc, c.rc.Transaction(), sub, key, serialized, nil)
+}
+
+func (c pendingWritesCtx) RecordQueueSize(size int64) {
+	c.rc.Timer().RecordSize(SizePendingWritesQueueSize, size)
+}
+
+func (c pendingWritesCtx) IncrementQueueWrite() {
+	c.rc.Timer().Increment(CountPendingWritesQueueWrite)
+}
+
+func (c pendingWritesCtx) IncrementQueueClear() {
+	c.rc.Timer().Increment(CountPendingWritesQueueClear)
+}
+
+func translatePendingWritesErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	var argErr *rlcollections.PendingWritesArgumentError
+	if errors.As(err, &argErr) {
+		return &RecordCoreArgumentError{Message: argErr.Message}
+	}
+	var intErr *rlcollections.PendingWritesInternalError
+	if errors.As(err, &intErr) {
+		return &RecordCoreInternalError{Message: intErr.Message}
+	}
+	var stErr *rlcollections.PendingWritesStorageError
+	if errors.As(err, &stErr) {
+		recErr := &RecordCoreStorageError{
+			Message:       stErr.Message,
+			KeyTuple:      stErr.KeyTuple,
+			Version:       stErr.Version,
+			StoredVersion: stErr.StoredVersion,
+			ExpectedType:  stErr.ExpectedType,
+			ActualType:    stErr.ActualType,
+		}
+		if stErr.Cause != nil {
+			return fmt.Errorf("%w: %w", recErr, stErr.Cause)
+		}
+		return recErr
+	}
+	return err
 }

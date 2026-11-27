@@ -7,6 +7,7 @@ import (
 	"math/big"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/recordlayer/rlcollections"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -32,9 +33,9 @@ var _ = Describe("Rank and TEXT edges match Java", func() {
 	It("GetNth returns nil below level 0 unless the set counts duplicates", func() {
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			sub := specSubspace().Sub("rs")
-			counting := rankedSetConfig{HashFunction: pureHash(jdkArrayHash), NLevels: rankedSetDefaultLevels, CountDuplicates: true}
+			counting := rlcollections.RankedSetConfig{HashFunction: rlcollections.PureHash(rlcollections.JDKArrayHash), NLevels: rlcollections.RankedSetDefaultLevels, CountDuplicates: true}
 			tx := rtx.Transaction()
-			writer := newRankedSet(sub, counting)
+			writer := rlcollections.NewRankedSet(sub, counting)
 			Expect(writer.Init(tx)).To(Succeed())
 			for range 2 {
 				_, err := writer.Add(tx, []byte("a"))
@@ -48,7 +49,7 @@ var _ = Describe("Rank and TEXT edges match Java", func() {
 			// duplicate counting (RankedSet.java:576-581).
 			plain := counting
 			plain.CountDuplicates = false
-			nth, err = newRankedSet(sub, plain).GetNth(tx, 1)
+			nth, err = rlcollections.NewRankedSet(sub, plain).GetNth(tx, 1)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(nth).To(BeNil())
 			return nil, nil

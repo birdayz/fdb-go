@@ -53,8 +53,8 @@ var _ = Describe("Index pending queue application", func() {
 			maintainer, err := store.GetIndexMaintainer(index)
 			Expect(err).NotTo(HaveOccurred())
 			queue := store.indexingPendingWriteQueue(index, 100)
-			Expect(queue.entries.Bytes()).To(Equal(root.Sub(int64(9), index.SubspaceTupleKey(), int64(8)).Bytes()))
-			Expect(queue.counter.Bytes()).To(Equal(root.Sub(int64(9), index.SubspaceTupleKey(), int64(9)).Bytes()))
+			Expect(queue.inner.Entries().Bytes()).To(Equal(root.Sub(int64(9), index.SubspaceTupleKey(), int64(8)).Bytes()))
+			Expect(queue.inner.Counter().Bytes()).To(Equal(root.Sub(int64(9), index.SubspaceTupleKey(), int64(9)).Bytes()))
 			incarnation, err := store.GetIncarnation()
 			Expect(err).NotTo(HaveOccurred())
 			for _, partition := range []int32{7, 8} {
@@ -199,7 +199,7 @@ var _ = Describe("Pending queue checked readability", func() {
 					Expect(errors.As(err, &notBuilt)).To(BeTrue())
 					Expect(notBuilt.PendingWrites).To(BeTrue())
 					Expect(store.GetIndexState(index.Name)).To(Equal(IndexStateWriteOnly))
-					keys, err := fdb.PrefixRange(queue.entries.Bytes())
+					keys, err := fdb.PrefixRange(queue.inner.Entries().Bytes())
 					Expect(err).NotTo(HaveOccurred())
 					rc.ClearRange(keys)
 					Expect(rc.HasVersionMutations()).To(BeTrue(), "the other index still has pending entries")
@@ -235,7 +235,7 @@ var _ = Describe("Pending queue checked readability", func() {
 			store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root).Open()
 			Expect(err).NotTo(HaveOccurred())
 			queue := store.indexingPendingWriteQueue(index, 100)
-			rc.Transaction().Set(fdb.Key(queue.counter.Bytes()), make([]byte, 8))
+			rc.Transaction().Set(fdb.Key(queue.inner.Counter().Bytes()), make([]byte, 8))
 			_, err = store.MarkIndexReadable(index.Name)
 			var notBuilt *IndexNotBuiltError
 			Expect(errors.As(err, &notBuilt)).To(BeTrue())
