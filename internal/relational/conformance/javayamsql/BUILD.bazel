@@ -11,6 +11,7 @@ go_library(
         "errorcodes.go",
         "manifest.go",
         "parse.go",
+        "parse_testblock.go",
         "ranges.go",
         "segment.go",
         "tags.go",

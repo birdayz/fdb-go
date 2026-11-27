@@ -31,6 +31,7 @@ go_library(
         "sql_meta.go",
         "sql_render.go",
         "stats.go",
+        "stats_render.go",
         "status.go",
         "store.go",
         "store_create.go",

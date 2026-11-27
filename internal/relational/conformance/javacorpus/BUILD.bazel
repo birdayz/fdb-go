@@ -6,6 +6,7 @@ go_library(
     name = "javacorpus",
     srcs = [
         "connoptions.go",
+        "exec.go",
         "fixture.go",
         "gaps.go",
         "javarandom.go",
