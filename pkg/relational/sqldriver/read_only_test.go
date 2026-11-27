@@ -39,7 +39,7 @@ const roStaleFormatVersion = 13
 // newROBackend returns an empty SimFDB-backed database.
 func newROBackend(seed uint64) *recordlayer.FDBDatabase {
 	// This target has no testkit.Main to register the domain.
-	RegisterDomainIfNotExists("FRL")
+	keyspace.RegisterDomainIfNotExists("FRL")
 	env := dst.NewSim(seed)
 	env.Buggify = dst.DisabledBuggifier()
 	rdb := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
@@ -190,12 +190,6 @@ func TestNewConnector_UsesTheCallersDatabase(t *testing.T) {
 	if got := c.(*Connector).fdbDB; got != rdb {
 		t.Errorf("connector database = %p; want the caller's %p", got, rdb)
 	}
-	fdbDBCache.Range(func(key, value any) bool {
-		if value == rdb {
-			t.Errorf("the caller's database is in the driver's cache under %q", key)
-		}
-		return true
-	})
 
 	if _, err := NewConnector(nil, "fdbsql:///FRL/SIMDB"); err == nil {
 		t.Error("NewConnector(nil) accepted")

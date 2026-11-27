@@ -184,12 +184,10 @@ func openSimSchemaOnClock(t *testing.T, seed uint64, clock dst.Clock, tableDDL s
 	env.Buggify = dst.DisabledBuggifier()
 	simDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
-	key := "sim://" + t.Name()
-	fdbDBCache.Store(key, simDB)
-	t.Cleanup(func() { fdbDBCache.Delete(key) })
+	eng := openSimEngine(t, simDB)
 
 	ctx := context.Background()
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/SIMDB?cluster_file=%s", key))
+	setup, err := eng.OpenDB("/FRL/SIMDB")
 	if err != nil {
 		t.Fatalf("open setup: %v", err)
 	}
@@ -198,7 +196,7 @@ func openSimSchemaOnClock(t *testing.T, seed uint64, clock dst.Clock, tableDDL s
 	mustExecSQL(t, setup, ctx, "CREATE SCHEMA TEMPLATE tmpl "+tableDDL)
 	mustExecSQL(t, setup, ctx, "CREATE SCHEMA /FRL/simdb/s WITH TEMPLATE tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/SIMDB?cluster_file=%s&schema=S", key))
+	db, err := eng.OpenDB("/FRL/SIMDB", WithSchema("S"))
 	if err != nil {
 		t.Fatalf("open query conn: %v", err)
 	}

@@ -2,7 +2,6 @@ package sqldriver
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	mrand "math/rand/v2"
 	"testing"
@@ -15,10 +14,10 @@ import (
 // free, seed-reproducible SQL workload the goroutine-based stress harness cannot be.
 func TestSQL_SimFDB_WorkloadDriver(t *testing.T) {
 	t.Parallel()
-	key := injectSimFDB(t, 7)
+	eng := injectSimFDB(t, 7)
 	ctx := context.Background()
 
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/WL?cluster_file=%s", key))
+	setup, err := eng.OpenDB("/FRL/WL")
 	if err != nil {
 		t.Fatalf("open setup: %v", err)
 	}
@@ -28,7 +27,7 @@ func TestSQL_SimFDB_WorkloadDriver(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE wt CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mustExecSQL(t, setup, ctx, "CREATE SCHEMA /FRL/wl/s WITH TEMPLATE wt")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/WL?cluster_file=%s&schema=S", key))
+	db, err := eng.OpenDB("/FRL/WL", WithSchema("S"))
 	if err != nil {
 		t.Fatalf("open query conn: %v", err)
 	}

@@ -9,18 +9,16 @@ import (
 	"testing"
 
 	"fdb.dev/internal/dst"
-	"fdb.dev/internal/dstwire"
 	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/internal/relational/simgate"
 	"fdb.dev/internal/simfdb"
-	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/fdbgo/fdb"
 )
 
-func simBackend(seed uint64) (*recordlayer.FDBDatabase, *simgate.Backend) {
+func simGateBackend(seed uint64) *simgate.Backend {
 	env := dst.NewSim(seed)
 	env.Buggify = dst.DisabledBuggifier()
-	gate := simgate.New(simfdb.New(env))
-	return recordlayer.NewFDBDatabaseWithBackend(gate).SetEnv(dstwire.Env(env)), gate
+	return simgate.New(simfdb.New(env))
 }
 
 func connectorFor(t *testing.T, clusterFile string) *Connector {
@@ -38,11 +36,12 @@ func TestConnector_RetriesFailedInitialization(t *testing.T) {
 	t.Parallel()
 	clusterFile := filepath.Join(t.TempDir(), "absent.cluster")
 	c := connectorFor(t, clusterFile)
+	t.Cleanup(func() { _ = c.Close() })
 	if _, err := c.Connect(context.Background()); err == nil {
 		t.Fatal("Connect with no cluster file succeeded")
 	}
-	db, _ := simBackend(601)
-	t.Cleanup(RegisterBackend(clusterFile, db))
+	gate := simGateBackend(601)
+	c.openBackend = func(string) (fdb.BackendDatabase, error) { return gate, nil }
 	conn, err := c.Connect(context.Background())
 	if err != nil {
 		t.Fatalf("Connect after the cluster became reachable: %v (the first failure was kept)", err)
@@ -57,9 +56,10 @@ func TestConnector_RetriesFailedInitialization(t *testing.T) {
 func TestConnector_CallerContextDoesNotCutInitializationShort(t *testing.T) {
 	t.Parallel()
 	clusterFile := filepath.Join(t.TempDir(), "gated.cluster")
-	db, gate := simBackend(603)
-	t.Cleanup(RegisterBackend(clusterFile, db))
+	gate := simGateBackend(603)
 	c := connectorFor(t, clusterFile)
+	c.openBackend = func(string) (fdb.BackendDatabase, error) { return gate, nil }
+	t.Cleanup(func() { _ = c.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	read := gate.BlockNextRead()
@@ -87,18 +87,30 @@ func TestConnector_CallerContextDoesNotCutInitializationShort(t *testing.T) {
 }
 
 // A panic while the connector initializes is the internal error, not a crash,
-// and the next Connect initializes again.
+// closes any backend opened by the failed attempt, and the next Connect
+// initializes again with a fresh backend.
 func TestConnector_PanickingInitializationIsRetried(t *testing.T) {
 	t.Parallel()
 	clusterFile := filepath.Join(t.TempDir(), "panicking.cluster")
-	db, gate := simBackend(605)
-	t.Cleanup(RegisterBackend(clusterFile, db))
+	gate1 := simGateBackend(605)
+	gate1.PanicOnce(simgate.Read)
+	b1 := &closeCountingBackend{BackendDatabase: gate1}
+	b2 := &closeCountingBackend{BackendDatabase: simGateBackend(606)}
+	var opens atomic.Int32
 	c := connectorFor(t, clusterFile)
-	gate.PanicOnce(simgate.Read)
+	c.openBackend = func(string) (fdb.BackendDatabase, error) {
+		if opens.Add(1) == 1 {
+			return b1, nil
+		}
+		return b2, nil
+	}
 	_, err := c.Connect(context.Background())
 	var ae *api.Error
 	if !errors.As(err, &ae) || ae.Code != api.ErrCodeInternalError {
 		t.Fatalf("Connect whose initialization panicked = %v, want XX000", err)
+	}
+	if got := b1.closes.Load(); got != 1 {
+		t.Fatalf("panicking attempt backend closed %d times, want 1 (leaked)", got)
 	}
 	conn, err := c.Connect(context.Background())
 	if err != nil {
@@ -106,6 +118,98 @@ func TestConnector_PanickingInitializationIsRetried(t *testing.T) {
 	}
 	if err := conn.Close(); err != nil {
 		t.Fatal(err)
+	}
+	if got := b2.closes.Load(); got != 0 {
+		t.Fatalf("retried backend closed %d times before Connector.Close, want 0", got)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("Connector.Close: %v", err)
+	}
+	if got := b2.closes.Load(); got != 1 {
+		t.Fatalf("retried backend closed %d times after Connector.Close, want 1", got)
+	}
+	if got := b1.closes.Load(); got != 1 {
+		t.Fatalf("first backend closed %d times total, want 1", got)
+	}
+}
+
+// Driver.Open closes the owned connector and its opened backend if Connect fails
+// after opening the backend (e.g. a panic during stored-query warm-up).
+func TestDriverOpen_ConnectFailureClosesOwnedConnector(t *testing.T) {
+	t.Parallel()
+	gate := simGateBackend(607)
+	gate.PanicOnce(simgate.Read)
+	b := &closeCountingBackend{BackendDatabase: gate}
+	d := &Driver{openBackend: func(string) (fdb.BackendDatabase, error) { return b, nil }}
+	if _, err := d.Open("fdbsql:///FRL/OPENFAIL"); err == nil {
+		t.Fatal("Driver.Open succeeded when initialization panicked, want error")
+	}
+	if got := b.closes.Load(); got != 1 {
+		t.Fatalf("backend closed %d times after Driver.Open Connect failure, want 1", got)
+	}
+}
+
+// Concurrent Connect (including a cancelled caller leaving a detached init
+// goroutine running) and Close must not race on planCache or ownedBackend, and
+// must close the opened backend exactly once.
+func TestConnector_ConcurrentConnectAndCloseWithDetachedInit(t *testing.T) {
+	t.Parallel()
+	for i := 0; i < 8; i++ {
+		clusterFile := filepath.Join(t.TempDir(), "race.cluster")
+		gate := simGateBackend(uint64(700 + i))
+		b := &closeCountingBackend{BackendDatabase: gate}
+		c := connectorFor(t, clusterFile)
+		c.openBackend = func(string) (fdb.BackendDatabase, error) { return b, nil }
+
+		read := gate.BlockNextRead()
+		ctx, cancel := context.WithCancel(context.Background())
+		firstDone := make(chan error, 1)
+		go func() {
+			_, err := c.Connect(ctx)
+			firstDone <- err
+		}()
+		<-read.Entered()
+
+		// Capture the active initAttempt so we can wait for the detached goroutine
+		// after releasing the gate.
+		c.init.mu.Lock()
+		attempt := c.init.running
+		c.init.mu.Unlock()
+		if attempt == nil {
+			t.Fatal("expected active initAttempt while gate read is blocked")
+		}
+
+		cancel()
+		if err := <-firstDone; !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled Connect = %v, want context.Canceled", err)
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			_ = c.Close()
+		}()
+		go func() {
+			defer wg.Done()
+			if conn, err := c.Connect(context.Background()); err == nil {
+				_ = conn.Close()
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			read.Release()
+		}()
+		wg.Wait()
+		<-attempt.finished
+
+		if got := b.closes.Load(); got != 1 {
+			t.Fatalf("iteration %d: backend closed %d times, want 1", i, got)
+		}
+		var ae *api.Error
+		if _, err := c.Connect(context.Background()); !errors.As(err, &ae) || ae.Code != api.ErrCodeConnectionDoesNotExist {
+			t.Fatalf("iteration %d: Connect after Close = %v, want ErrCodeConnectionDoesNotExist", i, err)
+		}
 	}
 }
 

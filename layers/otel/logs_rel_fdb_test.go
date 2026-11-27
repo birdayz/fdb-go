@@ -3,7 +3,6 @@ package otel
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"math"
@@ -12,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/internal/relational/keyspace"
 	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/layers/otel/otelsql/otelv1pb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -37,12 +37,21 @@ func newLRHarness(t *testing.T) (*qrHarness, fdb.Database) {
 	if err := fdb.APIVersion(730); err != nil {
 		t.Fatal(err)
 	}
-	sqldriver.RegisterDomainIfNotExists(relDomain)
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s&schema=CATALOG", cluster))
+	keyspace.RegisterDomainIfNotExists(relDomain)
+	eng, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		ClusterFile: cluster,
+		Domains:     []string{relDomain},
+		Limits:      sqldriver.UnboundedJavaCompatLimits(),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { setup.Close() })
+	t.Cleanup(func() { _ = eng.Close() })
+	setup, err := eng.OpenDB("/__SYS", sqldriver.WithSchema("CATALOG"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = setup.Close() })
 	if err := otelsql.CreateTemplate(ctx, setup); err != nil {
 		t.Fatal(err)
 	}

@@ -282,17 +282,24 @@ type EngineConfig struct {
 }
 
 type engineOptions struct {
-	hasDB bool
-	db    *recordlayer.FDBDatabase
+	hasDB       bool
+	db          *recordlayer.FDBDatabase
+	openBackend func(clusterFile string) (fdb.BackendDatabase, error)
+}
+
+func withBackendOpener(fn func(clusterFile string) (fdb.BackendDatabase, error)) EngineOption {
+	return func(o *engineOptions) {
+		o.openBackend = fn
+	}
 }
 
 // EngineOption customizes NewEngine construction.
 type EngineOption func(*engineOptions)
 
 // WithDatabase injects an already-constructed *recordlayer.FDBDatabase into
-// NewEngine (e.g. a SimFDB-backed database), replacing process-global
-// RegisterBackend. The caller retains ownership of db: Engine.Close does not
-// close an injected database.
+// NewEngine (e.g. a SimFDB-backed database or custom TLS client handle) instead
+// of opening a cluster via ClusterFile. The caller retains ownership of db:
+// Engine.Close does not close an injected database.
 func WithDatabase(db *recordlayer.FDBDatabase) EngineOption {
 	return func(o *engineOptions) {
 		o.hasDB = true
@@ -398,7 +405,11 @@ func NewEngine(cfg EngineConfig, opts ...EngineOption) (*Engine, error) {
 		if clusterFile == "" {
 			clusterFile = os.Getenv(defaultClusterFileEnv)
 		}
-		rawDB, err := fdbclient.Open(clusterFile)
+		openFn := fdbclient.Open
+		if eo.openBackend != nil {
+			openFn = eo.openBackend
+		}
+		rawDB, err := openFn(clusterFile)
 		if err != nil {
 			return nil, api.WrapError(api.ErrCodeInternalError, "open FDB database", err)
 		}

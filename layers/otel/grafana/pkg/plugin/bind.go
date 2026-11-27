@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 
+	"fdb.dev/internal/relational/keyspace"
 	"fdb.dev/layers/otel"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/sqldriver"
@@ -29,7 +30,7 @@ func newConnector(db *recordlayer.FDBDatabase, dsn string) (driver.Connector, er
 		return nil, err
 	}
 	if domain, _, ok := strings.Cut(strings.TrimPrefix(u.Path, "/"), "/"); ok && domain != "" {
-		sqldriver.RegisterDomainIfNotExists(domain)
+		keyspace.RegisterDomainIfNotExists(domain)
 	}
 	return sqldriver.NewConnector(db, dsn)
 }

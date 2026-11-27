@@ -12,22 +12,31 @@ import (
 	"fdb.dev/pkg/recordlayer"
 )
 
-// injectSimFDB registers a SimFDB-backed FDBDatabase in the driver's cluster-file cache under
-// a unique key, so `sql.Open("fdbsql", "...cluster_file=<key>...")` drives the full SQL engine
-// (parser → Cascades planner → executor → record layer) over SimFDB instead of a real cluster —
-// no Docker. Returns the cluster_file key to use in DSNs. RFC-199: SimFDB validates the
-// *relational* layer, not just the record layer.
-func injectSimFDB(t *testing.T, seed uint64) string {
+func openSimEngine(t *testing.T, simDB *recordlayer.FDBDatabase) *Engine {
+	t.Helper()
+	eng, err := NewEngine(EngineConfig{
+		Domains: []string{"FRL"},
+		Limits:  UnboundedJavaCompatLimits(),
+	}, WithDatabase(simDB))
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	return eng
+}
+
+// injectSimFDB constructs an isolated *Engine over a SimFDB-backed FDBDatabase
+// so the full SQL stack (parser → Cascades planner → executor → record layer)
+// runs over SimFDB instead of a real cluster — no Docker. RFC-199: SimFDB
+// validates the *relational* layer, not just the record layer.
+func injectSimFDB(t *testing.T, seed uint64) *Engine {
 	t.Helper()
 	env := dst.NewSim(seed)
 	env.Buggify = dst.DisabledBuggifier()
 	simDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(dstwire.Env(env))
 	// Match the driver's own setup so the SQL metadata-version path behaves identically.
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
-	key := "sim://" + t.Name()
-	fdbDBCache.Store(key, simDB)
-	t.Cleanup(func() { fdbDBCache.Delete(key) })
-	return key
+	return openSimEngine(t, simDB)
 }
 
 func mustExecSQL(t *testing.T, db *sql.DB, ctx context.Context, query string) {
@@ -43,10 +52,10 @@ func mustExecSQL(t *testing.T, db *sql.DB, ctx context.Context, query string) {
 // past the record layer).
 func TestSQL_OverSimFDB(t *testing.T) {
 	t.Parallel()
-	key := injectSimFDB(t, 1)
+	eng := injectSimFDB(t, 1)
 	ctx := context.Background()
 
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/SIMDB?cluster_file=%s", key))
+	setup, err := eng.OpenDB("/FRL/SIMDB")
 	if err != nil {
 		t.Fatalf("open setup: %v", err)
 	}
@@ -56,7 +65,7 @@ func TestSQL_OverSimFDB(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE tmpl CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	mustExecSQL(t, setup, ctx, "CREATE SCHEMA /FRL/simdb/s WITH TEMPLATE tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/SIMDB?cluster_file=%s&schema=S", key))
+	db, err := eng.OpenDB("/FRL/SIMDB", WithSchema("S"))
 	if err != nil {
 		t.Fatalf("open query conn: %v", err)
 	}
