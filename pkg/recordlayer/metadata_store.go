@@ -46,24 +46,6 @@ func (s *FDBMetaDataStore) SetEvolutionValidator(v *MetaDataEvolutionValidator) 
 	s.evolutionValidator = v
 }
 
-// MetaDataVersionMustIncreaseError is returned by SaveRecordMetaData when
-// the new metadata's version is not strictly greater than the stored one.
-// This check is unconditional — it does not consult the evolution
-// validator's allowNoVersionChange knob, exactly like Java, where
-// saveAndSetCurrent throws before the validator ever runs.
-// Matches Java's MetaDataException("meta-data version must increase")
-// with log keys OLD / NEW.
-type MetaDataVersionMustIncreaseError struct {
-	OldVersion int32
-	NewVersion int32
-}
-
-func (e *MetaDataVersionMustIncreaseError) Error() string {
-	return fmt.Sprintf("meta-data version must increase (old: %d, new: %d)", e.OldVersion, e.NewVersion)
-}
-
-func (*MetaDataVersionMustIncreaseError) JavaRecordCoreException() {}
-
 // SaveRecordMetaData saves a MetaData proto to FDB, with the full
 // validation Java runs in the same transaction — this is NOT a raw
 // persist. In order (matching Java's FDBMetaDataStore.saveAndSetCurrent):

@@ -38,26 +38,6 @@ func RecordTypeKey() *RecordTypeKeyExpression {
 	return &RecordTypeKeyExpression{}
 }
 
-// RecordTypeKeyUnresolvedError reports an evaluation of a record type key
-// against a record whose type was never resolved. Java cannot reach this: its
-// FDBRecord always carries a RecordType, and the save path evaluates the
-// primary key against an FDBStoredRecordBuilder that has been given the type
-// before any key is computed (FDBRecordStore.saveTypedRecord). Go's callers
-// must do the same. It is an ERROR rather than a fallback to the message's
-// type NAME because that fallback wrote a string where the integer type key
-// belongs — bytes Java reads as a different key entirely — and did it
-// silently.
-type RecordTypeKeyUnresolvedError struct {
-	// MessageType is the proto message name that was being evaluated, empty
-	// when there was no message either.
-	MessageType string
-}
-
-func (e *RecordTypeKeyUnresolvedError) Error() string {
-	return fmt.Sprintf("record type key evaluated without a resolved record type (message type %q): "+
-		"the caller must supply the FDBStoredRecord's RecordType", e.MessageType)
-}
-
 // recordTypeKeyOf resolves the record type key exactly as Java does: off the
 // record's own resolved type. A nil record is Java's NULL case.
 func recordTypeKeyOf(record *FDBStoredRecord[proto.Message], msg proto.Message) (any, bool, error) {

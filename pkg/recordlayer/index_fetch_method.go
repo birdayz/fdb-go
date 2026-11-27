@@ -68,21 +68,3 @@ func (b IndexOrphanBehavior) String() string {
 		return fmt.Sprintf("IndexOrphanBehavior(%d)", int(b))
 	}
 }
-
-// UnsupportedRemoteFetchIndexError is Java's UnsupportedRemoteFetchIndexException:
-// the index maintainer, or the transaction's client, cannot fetch remotely.
-type UnsupportedRemoteFetchIndexError struct {
-	Message   string
-	IndexName string
-}
-
-func (e *UnsupportedRemoteFetchIndexError) Error() string { return e.Message }
-
-func (*UnsupportedRemoteFetchIndexError) JavaRecordCoreException() {}
-
-// UnsupportedMethodError is Java's UnsupportedMethodException.
-type UnsupportedMethodError struct{ Message string }
-
-func (e *UnsupportedMethodError) Error() string { return e.Message }
-
-func (*UnsupportedMethodError) JavaRecordCoreException() {}

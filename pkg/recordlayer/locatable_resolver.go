@@ -49,11 +49,6 @@ type LocatableResolver interface {
 	stateKey() fdb.Key
 }
 
-// LocatableResolverLockedError is Java's LocatableResolverLockedException.
-type LocatableResolverLockedError struct{ Message string }
-
-func (e *LocatableResolverLockedError) Error() string { return e.Message }
-
 // resolverCache is FDBDatabase's directory cache: committed mappings per
 // scope. Java keys it additionally by the resolver state's version, which
 // only the unported migration operations change.
@@ -171,11 +166,6 @@ func reverseLookup(rctx *FDBRecordContext, r LocatableResolver, value int64) (st
 func reverseCacheKey(r LocatableResolver, value int64) string {
 	return fmt.Sprintf("%s\x00%d", r.scopeKey(), value)
 }
-
-// NoSuchElementError is Java's NoSuchElementException.
-type NoSuchElementError struct{ Message string }
-
-func (e *NoSuchElementError) Error() string { return e.Message }
 
 // readOrCreate is readOrCreateValue and createIfNotLocked with the default
 // hooks (no pre-write checks, no metadata): the stored mapping, else the

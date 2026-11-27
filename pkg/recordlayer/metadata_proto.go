@@ -288,21 +288,6 @@ func LiteralToProtoValue(v any) (*metadatapb.Value, error) {
 	return valueToProto(v)
 }
 
-// UnsupportedValueTypeError is the RecordCoreException Java's
-// LiteralKeyExpression.toProtoValue throws for a value no Value field holds
-// (LiteralKeyExpression.java:192-194), with its message: "Unsupported value
-// type " and the value's Class (`class java.util.UUID`). JavaClass is the Java
-// class the value would be in the target, or the Go type where it has none.
-type UnsupportedValueTypeError struct {
-	JavaClass string
-}
-
-func (e *UnsupportedValueTypeError) Error() string {
-	return "Unsupported value type class " + e.JavaClass
-}
-
-func (*UnsupportedValueTypeError) JavaRecordCoreException() {}
-
 // valueToProto serializes a Go value to a Value proto.
 // Matches Java's LiteralKeyExpression.toProtoValue().
 func valueToProto(v any) (*metadatapb.Value, error) {

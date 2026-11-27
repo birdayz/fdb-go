@@ -96,24 +96,3 @@ func lookupIndexMaintainerFactory(index *Index) (IndexMaintainerFactory, error) 
 	}
 	return nil, nil
 }
-
-// IndexMaintainerNotLinkedError is raised when an index's type is implemented
-// by a package this binary does not link (see linkedIndexTypePackages). Like
-// UnknownIndexTypeError it unwraps to *MetaDataError, Java's registry miss.
-type IndexMaintainerNotLinkedError struct {
-	IndexName string
-	IndexType string
-	Package   string
-}
-
-func (e *IndexMaintainerNotLinkedError) Error() string {
-	return fmt.Sprintf("index %q has type %q, implemented by package %s, which this binary does not link: add import _ %q",
-		e.IndexName, e.IndexType, e.Package, e.Package)
-}
-
-func (*IndexMaintainerNotLinkedError) JavaRecordCoreException() {}
-
-// Unwrap reports this as a metadata failure.
-func (e *IndexMaintainerNotLinkedError) Unwrap() error {
-	return &MetaDataError{Message: e.Error()}
-}

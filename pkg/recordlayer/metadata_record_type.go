@@ -61,31 +61,6 @@ func (rtb *RecordTypeBuilder) SetRecordTypeKey(key any) *RecordTypeBuilder {
 	return rtb
 }
 
-// RecordTypeKeyTypeError reports a record type key whose Go type cannot be a
-// record type key. Java's equivalent is the MetaDataException "Only primitive
-// types are allowed as record type key" thrown by
-// RecordTypeIndexesBuilder.setRecordTypeKey.
-type RecordTypeKeyTypeError struct {
-	// Key is the offending value.
-	Key any
-	// Reason distinguishes the two ways a key is refused. Empty means the Go
-	// TYPE is not one a record type key may have, which is Java's wording
-	// verbatim. A non-empty reason means the type is fine but this VALUE
-	// cannot be represented, where Java's message would be actively
-	// misleading — a uint64 above max int64 is a primitive, and saying
-	// otherwise sends the reader looking for the wrong mistake.
-	Reason string
-}
-
-func (e *RecordTypeKeyTypeError) Error() string {
-	if e.Reason != "" {
-		return fmt.Sprintf("record type key %v (%T) cannot be used: %s", e.Key, e.Key, e.Reason)
-	}
-	return fmt.Sprintf("only primitive types are allowed as record type key, got %T (%v)", e.Key, e.Key)
-}
-
-func (*RecordTypeKeyTypeError) JavaRecordCoreException() {}
-
 // canonicalRecordTypeKey validates and canonicalizes a record type key, the
 // port of Java's setRecordTypeKey guard followed by
 // TupleTypeUtil.toTupleEquivalentValue.
