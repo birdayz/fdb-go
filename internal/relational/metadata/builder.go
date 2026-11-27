@@ -25,7 +25,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"fdb.dev/gen"
+	storagepb "fdb.dev/internal/pb/storage"
 	"fdb.dev/internal/recordlayer/protoscope"
 	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/internal/unicode15"
@@ -950,7 +950,7 @@ func (b *Builder) templateFileProto() *descriptorpb.FileDescriptorProto {
 	return &descriptorpb.FileDescriptorProto{
 		Name: proto.String(b.name),
 		Dependency: []string{
-			gen.File_tuple_fields_proto.Path(),
+			storagepb.File_tuple_fields_proto.Path(),
 			metadatapb.File_record_metadata_options_proto.Path(),
 		},
 	}
@@ -995,7 +995,7 @@ func newTemplateFile(fdp *descriptorpb.FileDescriptorProto) (protoreflect.FileDe
 	// the global registry already has these files and we just want them
 	// available to the local resolver.
 	resolver := &protoregistry.Files{}
-	_ = resolver.RegisterFile(gen.File_tuple_fields_proto)
+	_ = resolver.RegisterFile(storagepb.File_tuple_fields_proto)
 	_ = resolver.RegisterFile(metadatapb.File_record_metadata_options_proto)
 
 	// The RETAINED proto keeps Java's RELATIVE type_name references

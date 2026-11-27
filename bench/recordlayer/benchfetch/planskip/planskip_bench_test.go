@@ -16,7 +16,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/internal/recordlayer/indexfetch"
 	"fdb.dev/internal/recordlayer/query/executor"
 	"fdb.dev/internal/testutil/benchcluster"

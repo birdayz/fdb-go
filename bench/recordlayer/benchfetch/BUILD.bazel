@@ -14,7 +14,7 @@ go_test(
         "matrix_bench_test.go",
     ],
     deps = [
-        "//gen/demopb",
+        "//internal/pb/demopb",
         "//internal/testutil/benchcluster",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",

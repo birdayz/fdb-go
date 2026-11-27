@@ -2,8 +2,6 @@ version: v2
 managed:
   enabled: true
   override:
-    - file_option: go_package_prefix
-      value: fdb.dev/gen
     # Public Record Layer metadata proto closure: record_metadata.proto, its
     # complete imported closure, and index_build.proto. Java proto packages stay
     # unchanged; only Go import paths move under pkg/recordlayer/metadatapb.
@@ -22,11 +20,52 @@ managed:
     - file_option: go_package
       path: index_build.proto
       value: fdb.dev/pkg/recordlayer/metadatapb
-    # The demo schema is test data: its own package keeps its
-    # com.apple.foundationdb.record types out of every production binary.
+    # Internal generated protos (P2.7) — zero public gen/ package.
+    - file_option: go_package
+      path: catalog_data.proto
+      value: fdb.dev/internal/pb/catalog
+    - file_option: go_package
+      path: distinct_continuation.proto
+      value: fdb.dev/internal/pb/continuations
+    - file_option: go_package
+      path: scan_range_set_continuation.proto
+      value: fdb.dev/internal/pb/continuations
+    - file_option: go_package
+      path: record_cursor.proto
+      value: fdb.dev/internal/pb/cursor
     - file_option: go_package
       path: record_layer_demo.proto
-      value: fdb.dev/gen/demopb
+      value: fdb.dev/internal/pb/demopb
+    - file_option: go_package
+      path: keyspace.proto
+      value: fdb.dev/internal/pb/keyspace
+    - file_option: go_package
+      path: planner_events.proto
+      value: fdb.dev/internal/pb/planner
+    - file_option: go_package
+      path: record_planner_config.proto
+      value: fdb.dev/internal/pb/planner
+    - file_option: go_package
+      path: record_query_runtime.proto
+      value: fdb.dev/internal/pb/runtime
+    - file_option: go_package
+      path: record_sorting.proto
+      value: fdb.dev/internal/pb/sorting
+    - file_option: go_package
+      path: pending_writes_queue.proto
+      value: fdb.dev/internal/pb/storage
+    - file_option: go_package
+      path: resolver_state.proto
+      value: fdb.dev/internal/pb/storage
+    - file_option: go_package
+      path: string_interning_data.proto
+      value: fdb.dev/internal/pb/storage
+    - file_option: go_package
+      path: time_window_leaderboard.proto
+      value: fdb.dev/internal/pb/storage
+    - file_option: go_package
+      path: tuple_fields.proto
+      value: fdb.dev/internal/pb/storage
 plugins:
   - local:
       - bazelisk
@@ -45,6 +84,13 @@ plugins:
     opt:
       - module=fdb.dev
       - features=marshal+unmarshal+size+pool
-      - pool=fdb.dev/gen.*
-      - pool=fdb.dev/gen/demopb.*
+      - pool=fdb.dev/internal/pb/catalog.*
+      - pool=fdb.dev/internal/pb/continuations.*
+      - pool=fdb.dev/internal/pb/cursor.*
+      - pool=fdb.dev/internal/pb/demopb.*
+      - pool=fdb.dev/internal/pb/keyspace.*
+      - pool=fdb.dev/internal/pb/planner.*
+      - pool=fdb.dev/internal/pb/runtime.*
+      - pool=fdb.dev/internal/pb/sorting.*
+      - pool=fdb.dev/internal/pb/storage.*
       - pool=fdb.dev/pkg/recordlayer/metadatapb.*

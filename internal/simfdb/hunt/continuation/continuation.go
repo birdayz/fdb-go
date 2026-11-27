@@ -42,8 +42,8 @@ import (
 	"math/rand/v2"
 	"sort"
 
-	"fdb.dev/gen/demopb"
 	"fdb.dev/internal/dstwire"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/internal/simfdb"
 	"fdb.dev/internal/simfdb/hunt"
 	fdb "fdb.dev/pkg/fdbgo/fdb"

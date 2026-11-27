@@ -58,11 +58,11 @@ func run(out string) error {
 	}
 	fdp.Options.GoPackage = proto.String(goPackage)
 	// Every transitive import, dependencies first; the Record Layer's own
-	// files are fdb.dev/gen's.
+	// files live under fdb.dev/internal/pb/... and fdb.dev/pkg/recordlayer/metadatapb.
 	var files []*descriptorpb.FileDescriptorProto
 	seen := map[string]bool{}
-	var walk func(protoreflect.FileDescriptor)
-	walk = func(f protoreflect.FileDescriptor) {
+	var walk func(protoreflect.FileDescriptor) error
+	walk = func(f protoreflect.FileDescriptor) error {
 		imports := f.Imports()
 		for i := 0; i < imports.Len(); i++ {
 			dep := imports.Get(i).FileDescriptor
@@ -70,18 +70,30 @@ func run(out string) error {
 				continue
 			}
 			seen[dep.Path()] = true
-			walk(dep)
+			if err := walk(dep); err != nil {
+				return err
+			}
 			p := protodesc.ToFileDescriptorProto(dep)
 			if p.GetOptions().GetGoPackage() == "" {
 				if p.Options == nil {
 					p.Options = &descriptorpb.FileOptions{}
 				}
-				p.Options.GoPackage = proto.String("fdb.dev/gen;gen")
+				switch dep.Path() {
+				case "tuple_fields.proto":
+					p.Options.GoPackage = proto.String("fdb.dev/internal/pb/storage;storage")
+				case "record_metadata.proto", "record_metadata_options.proto", "record_key_expression.proto", "record_query_plan.proto", "index_build.proto":
+					p.Options.GoPackage = proto.String("fdb.dev/pkg/recordlayer/metadatapb;metadatapb")
+				default:
+					return fmt.Errorf("genotelv1: unknown proto import %q missing go_package option", dep.Path())
+				}
 			}
 			files = append(files, p)
 		}
+		return nil
 	}
-	walk(records)
+	if err := walk(records); err != nil {
+		return err
+	}
 	files = append(files, fdp)
 	req := &pluginpb.CodeGeneratorRequest{
 		FileToGenerate: []string{fdp.GetName()},

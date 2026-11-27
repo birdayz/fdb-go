@@ -16,8 +16,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
 	"fdb.dev/internal/dst"
+	catalogpb "fdb.dev/internal/pb/catalog"
 	"fdb.dev/internal/relational/catalog"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -393,11 +393,11 @@ func statusCatalogBudgetChecks(t *testing.T, ctx context.Context, clusterFile st
 			t.Fatal(err)
 		}
 		const extraDatabases = 110
-		records := make([]*gen.Databases, extraDatabases)
+		records := make([]*catalogpb.Databases, extraDatabases)
 		payloadBytes := 0
 		for i := range records {
 			id := fmt.Sprintf("/FRL/BYTE_BUDGET_%03d_%s", i, strings.Repeat("X", 5000))
-			records[i] = &gen.Databases{DATABASE_ID: proto.String(id)}
+			records[i] = &catalogpb.Databases{DATABASE_ID: proto.String(id)}
 			payloadBytes += len(tuple.Tuple{catalog.DatabaseInfoRecordTypeKey, id}.Pack()) + proto.Size(records[i])
 		}
 		if payloadBytes <= 1<<20 || extraDatabases+2 >= 256 {

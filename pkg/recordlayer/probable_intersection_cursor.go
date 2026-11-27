@@ -11,7 +11,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/internal/recordlayer/rlcollections"
 	"fdb.dev/internal/recordlayer/textcmp"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -205,9 +205,9 @@ func (c *probableIntersectionCursor[T]) continuation() (RecordCursorContinuation
 	if allEnd {
 		return &EndContinuation{}, nil
 	}
-	cont := &gen.ProbableIntersectionContinuation{}
+	cont := &cursorpb.ProbableIntersectionContinuation{}
 	for i, child := range c.children {
-		state := &gen.ProbableIntersectionContinuation_CursorState{}
+		state := &cursorpb.ProbableIntersectionContinuation_CursorState{}
 		if child.continuation.IsEnd() {
 			state.Exhausted = proto.Bool(true)
 		} else {
@@ -262,7 +262,7 @@ func decodeProbableIntersectionContinuation(data []byte, n int) ([]probableChild
 		}
 		return out, nil
 	}
-	var parsed gen.ProbableIntersectionContinuation
+	var parsed cursorpb.ProbableIntersectionContinuation
 	if err := UnmarshalVTAsJava(&parsed, data); err != nil {
 		return nil, &RecordCoreError{Message: "invalid continuation", Cause: err}
 	}

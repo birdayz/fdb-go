@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
+	sortingpb "fdb.dev/internal/pb/sorting"
 	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -146,14 +146,14 @@ func TestSortContinuationWithoutMatchStateIsRejected(t *testing.T) {
 
 	// Strip the carried state, reproducing a token written before it was
 	// carried — the shape whose rows used to reach the binder stateless.
-	var msg gen.MemorySortContinuation
+	var msg sortingpb.MemorySortContinuation
 	if err := proto.Unmarshal(data, &msg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if len(msg.Records) != 1 {
 		t.Fatalf("encoded %d records, want 1", len(msg.Records))
 	}
-	var sorted gen.SortedRecord
+	var sorted sortingpb.SortedRecord
 	if err := proto.Unmarshal(msg.Records[0], &sorted); err != nil {
 		t.Fatalf("sorted record: %v", err)
 	}

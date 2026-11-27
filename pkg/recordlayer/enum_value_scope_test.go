@@ -7,7 +7,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"fdb.dev/gen"
+	storagepb "fdb.dev/internal/pb/storage"
 	"fdb.dev/internal/recordlayer/protoscope"
 	"fdb.dev/pkg/recordlayer/metadatapb"
 )
@@ -64,7 +64,7 @@ func enumScopeMetaData(names []string, values [][]string) *metadatapb.MetaData {
 	return &metadatapb.MetaData{
 		Records: &descriptorpb.FileDescriptorProto{
 			Name:       proto.String("P"),
-			Dependency: []string{gen.File_tuple_fields_proto.Path(), metadatapb.File_record_metadata_options_proto.Path()},
+			Dependency: []string{storagepb.File_tuple_fields_proto.Path(), metadatapb.File_record_metadata_options_proto.Path()},
 			MessageType: []*descriptorpb.DescriptorProto{
 				{Name: proto.String("T"), Field: fields},
 				{Name: proto.String("RecordTypeUnion"), Options: unionOpts, Field: []*descriptorpb.FieldDescriptorProto{{

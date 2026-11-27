@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"testing"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 )
 
 // A deprecated index-type alias must behave EXACTLY like the type it names, in

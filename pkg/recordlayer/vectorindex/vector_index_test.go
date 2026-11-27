@@ -14,8 +14,8 @@ import (
 	"strconv"
 	"time"
 
-	"fdb.dev/gen"
-	"fdb.dev/gen/demopb"
+	cursorpb "fdb.dev/internal/pb/cursor"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/internal/recordlayer/rabitq"
 	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -4822,7 +4822,7 @@ var _ = Describe("Vector Search Cursor Continuation", func() {
 			{Key: tuple.Tuple{int64(1)}, Value: tuple.Tuple{nil}},
 		}
 		encoded := encodeVectorScanContinuation(entries, 259)
-		var contProto gen.VectorIndexScanContinuation
+		var contProto cursorpb.VectorIndexScanContinuation
 		Expect(contProto.UnmarshalVT(encoded)).To(Succeed())
 		// Java: ByteBuffer.allocate(Integer.BYTES).putInt(nextPosition)
 		// (ListCursor.Continuation.toBytes) — 259 = 0x00000103.
@@ -4833,8 +4833,8 @@ var _ = Describe("Vector Search Cursor Continuation", func() {
 		entries := []*recordlayer.IndexEntry{
 			{Key: tuple.Tuple{int64(1)}, Value: tuple.Tuple{nil}},
 		}
-		contProto := &gen.VectorIndexScanContinuation{
-			IndexEntries: []*gen.VectorIndexScanContinuation_IndexEntry{
+		contProto := &cursorpb.VectorIndexScanContinuation{
+			IndexEntries: []*cursorpb.VectorIndexScanContinuation_IndexEntry{
 				{Key: entries[0].Key.Pack(), Value: entries[0].Value.Pack()},
 			},
 			InnerContinuation: []byte{0x01}, // Java: ByteBuffer.getInt underflows

@@ -17,9 +17,9 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/internal/recordlayer/query/executor"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
@@ -224,7 +224,7 @@ var _ = Describe("WSGAggregateStateConformance", func() {
 		for limit := 1; limit < len(wsgRows); limit++ {
 			paused := run(nil, limit)
 			Expect(paused.cont).NotTo(BeEmpty(), "limit %d did not stop inside the group", limit)
-			var cont gen.AggregateCursorContinuation
+			var cont cursorpb.AggregateCursorContinuation
 			Expect(proto.Unmarshal(paused.cont, &cont)).To(Succeed())
 			par := cont.GetPartialAggregationResults()
 			Expect(par).NotTo(BeNil(), "limit %d: no partial group", limit)
@@ -248,13 +248,13 @@ var _ = Describe("WSGAggregateStateConformance", func() {
 			Expect(java.InvokeAs(ctx, "aggregatePartialState", map[string]any{"spec": wsgJSON(wsgSpec(wsgRows[n:], goStates))}, &resumed)).To(Succeed())
 			Expect(resumed.Finished).To(Equal(whole.Finished), "rows %d: the target resumed Go's states", n)
 
-			javaPartial := &gen.PartialAggregationResult{}
+			javaPartial := &cursorpb.PartialAggregationResult{}
 			javaPartial.GroupKey, err = base64.StdEncoding.DecodeString(target.GroupKey)
 			Expect(err).NotTo(HaveOccurred())
 			for _, s := range target.States {
 				b, err := base64.StdEncoding.DecodeString(s)
 				Expect(err).NotTo(HaveOccurred())
-				state := &gen.AccumulatorState{}
+				state := &cursorpb.AccumulatorState{}
 				Expect(proto.Unmarshal(b, state)).To(Succeed())
 				javaPartial.AccumulatorStates = append(javaPartial.AccumulatorStates, state)
 			}

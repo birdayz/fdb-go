@@ -450,7 +450,7 @@ func (c *CoverageReport) CoverageColor() string {
 }
 
 // parseLCOV reads an LCOV file and returns a CoverageReport.
-// Skips files in gen/ directories and test files (*_test.go).
+// Skips generated proto/parser files (gen/, internal/pb/) and test files (*_test.go).
 func parseLCOV(path string) (*CoverageReport, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -498,7 +498,7 @@ func parseLCOV(path string) (*CoverageReport, error) {
 	// Aggregate by package, skipping gen/ and _test.go.
 	pkgMap := make(map[string]*PackageCoverage)
 	for _, fc := range files {
-		if strings.HasPrefix(fc.Path, "gen/") || strings.Contains(fc.Path, "/gen/") {
+		if strings.HasPrefix(fc.Path, "gen/") || strings.Contains(fc.Path, "/gen/") || strings.HasPrefix(fc.Path, "internal/pb/") {
 			continue
 		}
 		if strings.HasSuffix(fc.Path, "_test.go") {

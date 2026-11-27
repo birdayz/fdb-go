@@ -5,7 +5,7 @@ import (
 	"context"
 	"testing"
 
-	"fdb.dev/gen"
+	continuationspb "fdb.dev/internal/pb/continuations"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -90,7 +90,7 @@ func TestDistinctNoProgressPageIsByteStable(t *testing.T) {
 	if b1 == nil {
 		t.Fatal("first page produced no resumable continuation")
 	}
-	var decoded gen.DistinctHashContinuation
+	var decoded continuationspb.DistinctHashContinuation
 	if uerr := decoded.UnmarshalVT(b1); uerr != nil {
 		t.Fatalf("decode: %v", uerr)
 	}

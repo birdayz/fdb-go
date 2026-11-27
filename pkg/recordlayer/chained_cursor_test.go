@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"testing"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -222,7 +222,7 @@ func TestChainedCursorRejectsUndecodableContinuation(t *testing.T) {
 					}
 					var cursor RecordCursor[int]
 					if concat {
-						wrapped, err := (&gen.ConcatContinuation{Second: proto.Bool(true), Continuation: raw}).MarshalVT()
+						wrapped, err := (&cursorpb.ConcatContinuation{Second: proto.Bool(true), Continuation: raw}).MarshalVT()
 						if err != nil {
 							t.Fatal(err)
 						}

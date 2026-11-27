@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -326,7 +326,7 @@ func TestExecuteUnorderedUnion_ResumeContract(t *testing.T) {
 	}
 
 	// A valid token marking child 0 exhausted resumes: only child 1 emits.
-	tok, terr := proto.Marshal(&gen.UnionContinuation{FirstExhausted: proto.Bool(true)})
+	tok, terr := proto.Marshal(&cursorpb.UnionContinuation{FirstExhausted: proto.Bool(true)})
 	if terr != nil {
 		t.Fatalf("marshal: %v", terr)
 	}

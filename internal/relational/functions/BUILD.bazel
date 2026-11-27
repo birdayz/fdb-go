@@ -35,8 +35,9 @@ go_test(
     ],
     embed = [":functions"],
     deps = [
-        "//gen",
-        "//gen/demopb",
+        "//internal/pb/demopb",
+        "//internal/pb/sorting",
+        "//internal/pb/storage",
         "//internal/relational/relapi",
         "//pkg/recordlayer/metadatapb",
         "@org_golang_google_protobuf//proto",

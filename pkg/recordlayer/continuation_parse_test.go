@@ -24,7 +24,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 )
 
 // contPos is a FromListWithContinuation continuation: a 4-byte big-endian
@@ -109,22 +109,22 @@ func TestConcatContinuationRoundTrips(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		continuation *gen.ConcatContinuation
+		continuation *cursorpb.ConcatContinuation
 		want         []int
 	}{
 		{
 			name:         "resume mid-first",
-			continuation: &gen.ConcatContinuation{Second: proto.Bool(false), Continuation: contPos(1)},
+			continuation: &cursorpb.ConcatContinuation{Second: proto.Bool(false), Continuation: contPos(1)},
 			want:         []int{2, 3, 4},
 		},
 		{
 			name:         "resume mid-second",
-			continuation: &gen.ConcatContinuation{Second: proto.Bool(true), Continuation: contPos(1)},
+			continuation: &cursorpb.ConcatContinuation{Second: proto.Bool(true), Continuation: contPos(1)},
 			want:         []int{4},
 		},
 		{
 			name:         "resume on second from its start",
-			continuation: &gen.ConcatContinuation{Second: proto.Bool(true)},
+			continuation: &cursorpb.ConcatContinuation{Second: proto.Bool(true)},
 			want:         []int{3, 4},
 		},
 	}
@@ -194,17 +194,17 @@ func TestFlatMapContinuationRoundTrips(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		continuation *gen.FlatMapContinuation
+		continuation *cursorpb.FlatMapContinuation
 		want         []int
 	}{
 		{
 			name:         "outer-only resume skips consumed outer rows",
-			continuation: &gen.FlatMapContinuation{OuterContinuation: contPos(1)},
+			continuation: &cursorpb.FlatMapContinuation{OuterContinuation: contPos(1)},
 			want:         []int{20, 21},
 		},
 		{
 			name: "outer+inner resume replays mid-inner",
-			continuation: &gen.FlatMapContinuation{
+			continuation: &cursorpb.FlatMapContinuation{
 				OuterContinuation: contPos(0),
 				InnerContinuation: contPos(1),
 			},
@@ -256,7 +256,7 @@ func TestDedupContinuationInvalid(t *testing.T) {
 
 	equal, pack, unpack := dedupIntFuncs()
 
-	marshalDedup := func(t *testing.T, cont *gen.DedupContinuation) []byte {
+	marshalDedup := func(t *testing.T, cont *cursorpb.DedupContinuation) []byte {
 		t.Helper()
 		raw, err := cont.MarshalVT()
 		if err != nil {
@@ -301,7 +301,7 @@ func TestDedupContinuationInvalid(t *testing.T) {
 			name: "lastValue that fails to unpack is an error, not dropped dedup state",
 			continuation: func(t *testing.T) []byte {
 				// 2-byte lastValue: unpack only accepts exactly 1 byte.
-				return marshalDedup(t, &gen.DedupContinuation{
+				return marshalDedup(t, &cursorpb.DedupContinuation{
 					InnerContinuation: contPos(0),
 					LastValue:         []byte{0x01, 0x02},
 				})
@@ -319,7 +319,7 @@ func TestDedupContinuationInvalid(t *testing.T) {
 		{
 			name: "lastValue with nil unpack function is an error",
 			continuation: func(t *testing.T) []byte {
-				return marshalDedup(t, &gen.DedupContinuation{
+				return marshalDedup(t, &cursorpb.DedupContinuation{
 					InnerContinuation: contPos(0),
 					LastValue:         []byte{0x01},
 				})
@@ -368,18 +368,18 @@ func TestDedupContinuationRoundTrips(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		continuation *gen.DedupContinuation
+		continuation *cursorpb.DedupContinuation
 		want         []int
 	}{
 		{
 			// lastValue=2 restored → the 2s at positions 2,3 are duplicates.
 			name:         "lastValue restores dedup state across resume",
-			continuation: &gen.DedupContinuation{InnerContinuation: contPos(2), LastValue: []byte{0x02}},
+			continuation: &cursorpb.DedupContinuation{InnerContinuation: contPos(2), LastValue: []byte{0x02}},
 			want:         []int{3},
 		},
 		{
 			name:         "resume without lastValue emits the next distinct run",
-			continuation: &gen.DedupContinuation{InnerContinuation: contPos(2)},
+			continuation: &cursorpb.DedupContinuation{InnerContinuation: contPos(2)},
 			want:         []int{2, 3},
 		},
 	}

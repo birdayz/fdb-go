@@ -10,9 +10,9 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -275,7 +275,7 @@ func TestRecursiveUnionCursor_HeldContinuationImmuneToLaterLevelTransition(t *te
 	if heldBytes == nil {
 		t.Fatal("held continuation must not be an end continuation")
 	}
-	var rcc gen.RecursiveCursorContinuation
+	var rcc cursorpb.RecursiveCursorContinuation
 	if err := rcc.UnmarshalVT(heldBytes); err != nil {
 		t.Fatalf("unmarshal held continuation: %v", err)
 	}

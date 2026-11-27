@@ -5,9 +5,9 @@ import (
 	"sync"
 	"testing"
 
-	"fdb.dev/gen"
+	sortingpb "fdb.dev/internal/pb/sorting"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/gomega"
@@ -813,9 +813,9 @@ func TestKeyExpressionFastPath_UnsignedFieldsReadSigned(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 	got := assertFastPathAgreement(t, Field("section_number"),
-		&gen.SortSectionHeader{SectionNumber: proto.Uint32(3000000000)})
+		&sortingpb.SortSectionHeader{SectionNumber: proto.Uint32(3000000000)})
 	g.Expect(got).To(Equal(tuple.Tuple{int64(-1294967296)}))
 	got = assertFastPathAgreement(t, Field("number_of_bytes"),
-		&gen.SortSectionHeader{NumberOfBytes: proto.Uint64(1 << 63)})
+		&sortingpb.SortSectionHeader{NumberOfBytes: proto.Uint64(1 << 63)})
 	g.Expect(got).To(Equal(tuple.Tuple{int64(-1 << 63)}))
 }

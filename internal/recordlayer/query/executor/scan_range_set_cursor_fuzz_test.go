@@ -8,7 +8,7 @@ import (
 	"slices"
 	"testing"
 
-	"fdb.dev/gen"
+	continuationspb "fdb.dev/internal/pb/continuations"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -57,7 +57,7 @@ func FuzzAdvanceScanRangeChoices(f *testing.F) {
 
 func FuzzScanRangeSetContinuationParserNeverRestartsCorruptState(f *testing.F) {
 	started := true
-	valid, err := (&gen.ScanRangeSetContinuation{
+	valid, err := (&continuationspb.ScanRangeSetContinuation{
 		Fingerprint:  testScanRangeFingerprint,
 		Choices:      []uint32{1, 0},
 		ChildStarted: &started,
@@ -93,7 +93,7 @@ func FuzzScanRangeSetContinuationParserNeverRestartsCorruptState(f *testing.F) {
 		// decode to the exact validated position; it may never silently restart.
 		concrete := cursor.(*scanRangeSetCursor[int])
 		if raw != nil {
-			var decoded gen.ScanRangeSetContinuation
+			var decoded continuationspb.ScanRangeSetContinuation
 			if err := decoded.UnmarshalVT(raw); err != nil {
 				t.Fatalf("constructor accepted undecodable bytes: %v", err)
 			}

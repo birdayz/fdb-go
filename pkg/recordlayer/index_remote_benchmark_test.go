@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"google.golang.org/protobuf/proto"
 )
 

@@ -4,7 +4,7 @@ import (
 	"crypto/sha256"
 	"sync"
 
-	"fdb.dev/gen"
+	catalogpb "fdb.dev/internal/pb/catalog"
 	"fdb.dev/internal/relational/relapi"
 )
 
@@ -34,7 +34,7 @@ var templateCache struct {
 
 // loadTemplate is deserializeTemplate through templateCache. Errors are not
 // cached.
-func loadTemplate(msg *gen.Templates) (api.SchemaTemplate, error) {
+func loadTemplate(msg *catalogpb.Templates) (api.SchemaTemplate, error) {
 	key := templateCacheKey{name: msg.GetTEMPLATE_NAME(), version: msg.GetTEMPLATE_VERSION(), metaData: sha256.Sum256(msg.GetMETA_DATA())}
 	templateCache.mu.Lock()
 	t, ok := templateCache.entries[key]

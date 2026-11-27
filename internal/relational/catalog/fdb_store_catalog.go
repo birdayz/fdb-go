@@ -12,7 +12,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	catalogpb "fdb.dev/internal/pb/catalog"
 	"fdb.dev/internal/relational/exceptionutil"
 	"fdb.dev/internal/relational/metadata"
 	"fdb.dev/internal/relational/relapi"
@@ -264,7 +264,7 @@ func (c *RecordLayerStoreCatalog) loadSchemaIfExists(txn api.Transaction, store 
 	if rec == nil {
 		return nil, nil
 	}
-	msg, ok := rec.Record.(*gen.Schemas)
+	msg, ok := rec.Record.(*catalogpb.Schemas)
 	if !ok {
 		return nil, api.NewErrorf(api.ErrCodeInternalError,
 			"catalog row at %s/%s has unexpected type %T", databaseID, schemaName, rec.Record)
@@ -337,7 +337,7 @@ func (c *RecordLayerStoreCatalog) SaveSchema(txn api.Transaction, s api.Schema, 
 		}
 	}
 
-	rec := &gen.Schemas{
+	rec := &catalogpb.Schemas{
 		DATABASE_ID:      proto.String(s.DatabaseName()),
 		SCHEMA_NAME:      proto.String(s.MetadataName()),
 		TEMPLATE_NAME:    proto.String(tmpl.MetadataName()),
@@ -433,7 +433,7 @@ func (c *RecordLayerStoreCatalog) CreateDatabase(txn api.Transaction, dbURI stri
 }
 
 func createDatabaseOnStore(store *recordlayer.FDBRecordStore, dbURI string) error {
-	rec := &gen.Databases{DATABASE_ID: proto.String(dbURI)}
+	rec := &catalogpb.Databases{DATABASE_ID: proto.String(dbURI)}
 	if _, err := store.SaveRecord(rec); err != nil {
 		return storeError(err, "save database")
 	}
@@ -548,7 +548,7 @@ func (c *RecordLayerStoreCatalog) ListDatabases(txn api.Transaction, _ api.Conti
 		if !r.HasNext() {
 			break
 		}
-		if db, isDB := r.GetValue().Record.(*gen.Databases); isDB {
+		if db, isDB := r.GetValue().Record.(*catalogpb.Databases); isDB {
 			rows = append(rows, []any{db.GetDATABASE_ID()})
 		}
 	}
@@ -604,7 +604,7 @@ func (c *RecordLayerStoreCatalog) listSchemasImpl(txn api.Transaction, databaseI
 		if !r.HasNext() {
 			break
 		}
-		s, isS := r.GetValue().Record.(*gen.Schemas)
+		s, isS := r.GetValue().Record.(*catalogpb.Schemas)
 		if !isS {
 			continue
 		}

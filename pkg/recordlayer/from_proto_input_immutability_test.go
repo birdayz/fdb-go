@@ -9,7 +9,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/metadatapb"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 )
 
 // RecordMetaDataFromProto MUST NOT MUTATE THE PROTO IT IS HANDED, because

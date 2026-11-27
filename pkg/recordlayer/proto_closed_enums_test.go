@@ -14,7 +14,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/recordlayer/metadatapb"
 )
 
@@ -464,7 +464,7 @@ func TestUnmarshalVTAsJavaKeepsJavasRecursionLimit(t *testing.T) {
 	t.Parallel()
 	// A continuation of fixed depth is bounded; the store header holds a
 	// KeyExpression (its record-count key), which nests through Then.
-	if !vtBounded((&gen.UnionContinuation{}).ProtoReflect().Descriptor(), javaVTRule.limit) {
+	if !vtBounded((&cursorpb.UnionContinuation{}).ProtoReflect().Descriptor(), javaVTRule.limit) {
 		t.Error("UnionContinuation is not bounded")
 	}
 	for _, m := range []proto.Message{&metadatapb.DataStoreInfo{}, &metadatapb.KeyExpression{}} {

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	"fdb.dev/gen"
-	"fdb.dev/gen/demopb"
+	catalogpb "fdb.dev/internal/pb/catalog"
+	"fdb.dev/internal/pb/demopb"
 )
 
 // testMetaData creates metadata with all record types having primary keys set.
@@ -89,7 +89,7 @@ func TestGetTypedRecordStore_InvalidType(t *testing.T) {
 func TestNewTypedRecordStore_RecordTypeOutsideStoreMetaData(t *testing.T) {
 	t.Parallel()
 	baseStore := &FDBRecordStore{metaData: testMetaData(t)}
-	catalog := NewRecordMetaDataBuilder().SetRecords(gen.File_catalog_data_proto)
+	catalog := NewRecordMetaDataBuilder().SetRecords(catalogpb.File_catalog_data_proto)
 	catalog.GetRecordType("Databases").SetPrimaryKey(Field("DATABASE_ID"))
 	catalog.GetRecordType("Schemas").SetPrimaryKey(Field("DATABASE_ID"))
 	catalog.GetRecordType("Templates").SetPrimaryKey(Field("TEMPLATE_NAME"))

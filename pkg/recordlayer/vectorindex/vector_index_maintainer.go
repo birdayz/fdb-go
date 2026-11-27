@@ -13,7 +13,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/internal/recordlayer/tuplefast"
 	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -582,10 +582,10 @@ func (c *vectorSearchCursor) IsClosed() bool { return c.closed }
 // Matches Java's Continuation.toByteString() which serializes all entries +
 // the inner ListCursor continuation.
 func encodeVectorScanContinuation(entries []*recordlayer.IndexEntry, innerPos int) []byte {
-	contProto := &gen.VectorIndexScanContinuation{}
+	contProto := &cursorpb.VectorIndexScanContinuation{}
 	for _, e := range entries {
 		contProto.IndexEntries = append(contProto.IndexEntries,
-			&gen.VectorIndexScanContinuation_IndexEntry{
+			&cursorpb.VectorIndexScanContinuation_IndexEntry{
 				Key:   e.Key.Pack(),
 				Value: e.Value.Pack(),
 			})
@@ -621,7 +621,7 @@ func encodeVectorScanContinuation(entries []*recordlayer.IndexEntry, innerPos in
 // returns the correct key on a resumed page instead of an empty tuple (which
 // would fetch the wrong record / skip the remaining nearest rows).
 func (m *vectorIndexMaintainer) parseVectorScanContinuation(data []byte, prefix tuple.Tuple) ([]*recordlayer.IndexEntry, int, error) {
-	var contProto gen.VectorIndexScanContinuation
+	var contProto cursorpb.VectorIndexScanContinuation
 	if err := recordlayer.UnmarshalVTAsJava(&contProto, data); err != nil {
 		return nil, 0, &recordlayer.ContinuationParseError{RawBytes: data, Cause: err}
 	}
@@ -763,7 +763,7 @@ func (m *vectorIndexMaintainer) newVectorMultiPartitionCursor(
 	// skip-scan) throws RecordCoreException("error parsing continuation"), and
 	// a silent restart would re-emit rows the caller already consumed.
 	if len(continuation) > 0 {
-		var fm gen.FlatMapContinuation
+		var fm cursorpb.FlatMapContinuation
 		if uerr := recordlayer.UnmarshalVTAsJava(&fm, continuation); uerr != nil {
 			return recordlayer.NewErrorCursor[*recordlayer.IndexEntry](&recordlayer.ContinuationParseError{RawBytes: continuation, Cause: uerr})
 		}
@@ -879,7 +879,7 @@ func (c *vectorMultiPartitionCursor) wrapContinuation(inner recordlayer.RecordCu
 	if err != nil {
 		return nil, fmt.Errorf("VECTOR index %q multi-partition continuation: inner: %w", c.m.Index().Name, err)
 	}
-	fm := &gen.FlatMapContinuation{
+	fm := &cursorpb.FlatMapContinuation{
 		OuterContinuation: c.currentPrefix.Pack(),
 		InnerContinuation: innerBytes,
 	}

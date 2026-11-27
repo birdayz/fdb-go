@@ -15,7 +15,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/metadatapb"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 )
 
 // markRangeSetComplete inserts the full range into the IndexingRangeSet so that

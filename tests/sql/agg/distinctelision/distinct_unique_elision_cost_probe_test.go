@@ -61,8 +61,8 @@ import (
 
 	"fdb.dev/internal/relational/sqltest/testkit"
 
-	"fdb.dev/gen"
 	"fdb.dev/internal/fdbwire"
+	continuationspb "fdb.dev/internal/pb/continuations"
 	"fdb.dev/internal/recordlayer/query/executor"
 	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -1988,7 +1988,7 @@ func duecRetained(
 			if eErr != nil {
 				return nil, eErr
 			}
-			var dc gen.DistinctHashContinuation
+			var dc continuationspb.DistinctHashContinuation
 			if uErr := dc.UnmarshalVT(encoded); uErr != nil {
 				return nil, fmt.Errorf("not a DistinctHashContinuation: %w", uErr)
 			}

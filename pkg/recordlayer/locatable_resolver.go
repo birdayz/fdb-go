@@ -14,7 +14,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	storagepb "fdb.dev/internal/pb/storage"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/directory"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -183,13 +183,13 @@ func readOrCreate(rctx *FDBRecordContext, r LocatableResolver, name string) (Res
 	if err != nil {
 		return ResolverResult{}, err
 	}
-	state := &gen.State{}
+	state := &storagepb.State{}
 	if raw != nil {
 		if err := proto.Unmarshal(raw, state); err != nil {
 			return ResolverResult{}, &RecordCoreError{Message: "invalid state value", Cause: err}
 		}
 	}
-	if state.GetLock() != gen.WriteLock_UNLOCKED {
+	if state.GetLock() != storagepb.WriteLock_UNLOCKED {
 		return ResolverResult{}, &LocatableResolverLockedError{Message: "locatable resolver is not writable"}
 	}
 	return r.create(rctx, name, nil)
@@ -330,7 +330,7 @@ func (s *ScopedInterningLayer) read(rctx *FDBRecordContext, name string) (*Resol
 	if err != nil || raw == nil {
 		return nil, err
 	}
-	data := &gen.Data{}
+	data := &storagepb.Data{}
 	if err := proto.Unmarshal(raw, data); err != nil {
 		return nil, &RecordCoreError{Message: "invalid interned value", Cause: err}
 	}
@@ -351,7 +351,7 @@ func (s *ScopedInterningLayer) create(rctx *FDBRecordContext, name string, metad
 	if err != nil {
 		return ResolverResult{}, err
 	}
-	data := &gen.Data{InternedValue: proto.Uint64(uint64(value))}
+	data := &storagepb.Data{InternedValue: proto.Uint64(uint64(value))}
 	if metadata != nil {
 		data.Metadata = metadata
 	}

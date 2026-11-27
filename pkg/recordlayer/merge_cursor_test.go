@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
@@ -23,9 +23,9 @@ func TestSharedUnionContinuationCodec(t *testing.T) {
 		&StartContinuation{}, NewBytesContinuation([]byte("second")),
 		&EndContinuation{}, &StartContinuation{}, NewBytesContinuation([]byte("fifth")),
 	}
-	want, err := (&gen.UnionContinuation{
+	want, err := (&cursorpb.UnionContinuation{
 		SecondContinuation: []byte("second"),
-		OtherChildState: []*gen.UnionContinuation_CursorState{
+		OtherChildState: []*cursorpb.UnionContinuation_CursorState{
 			{Exhausted: &yes}, {Exhausted: &no}, {Continuation: []byte("fifth")},
 		},
 	}).MarshalVT()

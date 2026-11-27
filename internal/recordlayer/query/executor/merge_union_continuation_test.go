@@ -27,7 +27,7 @@ import (
 	"fmt"
 	"testing"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -68,12 +68,12 @@ func mustBytes(t *testing.T, c recordlayer.RecordCursorContinuation) []byte {
 
 // decodeUnionProto unmarshals emitted merge-continuation bytes as the
 // wire-format UnionContinuation proto.
-func decodeUnionProto(t *testing.T, b []byte) *gen.UnionContinuation {
+func decodeUnionProto(t *testing.T, b []byte) *cursorpb.UnionContinuation {
 	t.Helper()
 	if len(b) == 0 {
 		t.Fatal("emitted merge row carries EMPTY continuation bytes (the pre-A5 StartContinuation fake) — no resume possible")
 	}
-	msg := &gen.UnionContinuation{}
+	msg := &cursorpb.UnionContinuation{}
 	if err := msg.UnmarshalVT(b); err != nil {
 		t.Fatalf("emitted merge continuation does not decode as UnionContinuation: %v", err)
 	}
@@ -421,8 +421,8 @@ func TestMergeSortCursor_ContinuationDecodeErrors(t *testing.T) {
 	}
 
 	// A 3-child token fed to a 2-child merge: count mismatch.
-	threeChild := &gen.UnionContinuation{
-		OtherChildState: []*gen.UnionContinuation_CursorState{{Continuation: []byte("X")}},
+	threeChild := &cursorpb.UnionContinuation{
+		OtherChildState: []*cursorpb.UnionContinuation_CursorState{{Continuation: []byte("X")}},
 	}
 	b, err := threeChild.MarshalVT()
 	if err != nil {

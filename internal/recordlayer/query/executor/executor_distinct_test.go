@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
+	continuationspb "fdb.dev/internal/pb/continuations"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -159,7 +159,7 @@ func TestExecuteUnorderedPrimaryKeyDistinct_ContinuationCarriesSeenSet(
 	if err != nil {
 		t.Fatalf("encode continuation: %v", err)
 	}
-	var hashContinuation gen.DistinctHashContinuation
+	var hashContinuation continuationspb.DistinctHashContinuation
 	if err := hashContinuation.UnmarshalVT(continuation); err != nil {
 		t.Fatalf("decode hash continuation: %v", err)
 	}

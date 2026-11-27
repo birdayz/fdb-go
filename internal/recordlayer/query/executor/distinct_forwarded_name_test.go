@@ -5,7 +5,8 @@ import (
 	"context"
 	"testing"
 
-	"fdb.dev/gen"
+	continuationspb "fdb.dev/internal/pb/continuations"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -66,11 +67,11 @@ func TestDistinctForwardedInnerStaysNameable(t *testing.T) {
 	if c1 == nil {
 		t.Fatal("page 1 exhausted the plan; the shape needs a mid-inner page boundary")
 	}
-	var fmc1 gen.FlatMapContinuation
+	var fmc1 cursorpb.FlatMapContinuation
 	if uerr := fmc1.UnmarshalVT(c1); uerr != nil {
 		t.Fatalf("decode page 1 continuation: %v", uerr)
 	}
-	var dhc gen.DistinctHashContinuation
+	var dhc continuationspb.DistinctHashContinuation
 	if uerr := dhc.UnmarshalVT(fmc1.GetInnerContinuation()); uerr != nil {
 		t.Fatalf("decode page 1 inner continuation: %v", uerr)
 	}
@@ -117,7 +118,7 @@ func TestDistinctForwardedInnerStaysNameable(t *testing.T) {
 	_ = fm.Close()
 	scratch.SweepAfterPage(false)
 
-	var fmc2 gen.FlatMapContinuation
+	var fmc2 cursorpb.FlatMapContinuation
 	if uerr := fmc2.UnmarshalVT(c2); uerr != nil {
 		t.Fatalf("decode page 2 continuation: %v", uerr)
 	}

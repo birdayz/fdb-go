@@ -9,7 +9,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	catalogpb "fdb.dev/internal/pb/catalog"
 	"fdb.dev/internal/relational/metadata"
 	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
@@ -18,8 +18,8 @@ import (
 
 // cachedTemplateRow is a template row of name at version holding its own copy
 // of md, so equal rows share no backing array.
-func cachedTemplateRow(name string, version int32, md []byte) *gen.Templates {
-	return &gen.Templates{
+func cachedTemplateRow(name string, version int32, md []byte) *catalogpb.Templates {
+	return &catalogpb.Templates{
 		TEMPLATE_NAME: proto.String(name), TEMPLATE_VERSION: proto.Int32(version), META_DATA: append([]byte(nil), md...),
 	}
 }
@@ -32,7 +32,7 @@ func templateCached(name string, version int32, md []byte) (api.SchemaTemplate, 
 	return t, ok
 }
 
-func mustLoadTemplate(t *testing.T, row *gen.Templates) api.SchemaTemplate {
+func mustLoadTemplate(t *testing.T, row *catalogpb.Templates) api.SchemaTemplate {
 	t.Helper()
 	tmpl, err := loadTemplate(row)
 	if err != nil {

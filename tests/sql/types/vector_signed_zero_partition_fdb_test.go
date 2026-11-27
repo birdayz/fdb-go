@@ -22,7 +22,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"fdb.dev/gen"
+	continuationspb "fdb.dev/internal/pb/continuations"
 	"fdb.dev/internal/recordlayer/query/executor"
 	"fdb.dev/internal/relational/metadata"
 	"fdb.dev/internal/relational/relapi"
@@ -322,7 +322,7 @@ func runVectorSignedZeroPartition(t *testing.T, width string) {
 
 			// Pin that the test is resuming the range-set wrapper around a live
 			// vector child, rather than an end marker or a generic LIMIT envelope.
-			var rangeSetContinuation gen.ScanRangeSetContinuation
+			var rangeSetContinuation continuationspb.ScanRangeSetContinuation
 			if parseErr := rangeSetContinuation.UnmarshalVT(liveContinuation); parseErr != nil {
 				t.Fatalf("live continuation is not a range-set token: %v", parseErr)
 			}

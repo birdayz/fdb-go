@@ -18,7 +18,8 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"fdb.dev/gen"
+	continuationspb "fdb.dev/internal/pb/continuations"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -35,7 +36,7 @@ func executeDistinct(
 	// Streaming adjacent-dedup path (resume-clean): the planner sets Streaming
 	// only when the inner is ordered by the dedup key, so equal rows are
 	// adjacent and only the last emitted key need ride the continuation
-	// (gen.DedupContinuation). This is the fix for the fresh-per-page hash-set's
+	// (cursorpb.DedupContinuation). This is the fix for the fresh-per-page hash-set's
 	// cross-page re-admission (TODO.md C5) — a Go-internal continuation, since
 	// Java's SELECT DISTINCT does not deduplicate (DIVERGENCES.md).
 	if p.IsStreaming() {
@@ -43,7 +44,7 @@ func executeDistinct(
 		var lastKey string
 		var hasLast bool
 		if len(continuation) > 0 {
-			var dc gen.DedupContinuation
+			var dc cursorpb.DedupContinuation
 			if uerr := recordlayer.UnmarshalVTAsJava(&dc, continuation); uerr != nil {
 				return nil, fmt.Errorf("invalid streaming-distinct continuation: %w", uerr)
 			}
@@ -87,7 +88,7 @@ func executeDistinct(
 	// Java's SQL layer never dedups SELECT DISTINCT (DIVERGENCES.md),
 	// and Java's value-distinct HashSet is likewise un-carried across
 	// continuations — so this continuation is Go-internal
-	// (gen.DistinctHashContinuation) with no Java wire format to match. The set
+	// (continuationspb.DistinctHashContinuation) with no Java wire format to match. The set
 	// is bounded by the statement memory budget; a high-cardinality DISTINCT
 	// fails LOUDLY on the budget (never silent wrong rows), the signal that the
 	// cost-based sort-distinct follow-up should have been chosen.
@@ -173,7 +174,7 @@ func executeHashDistinct(
 	}
 	innerCont := continuation
 	if len(continuation) > 0 {
-		var dc gen.DistinctHashContinuation
+		var dc continuationspb.DistinctHashContinuation
 		if uerr := recordlayer.UnmarshalVTAsJava(&dc, continuation); uerr != nil {
 			return nil, fmt.Errorf("invalid distinct-hash continuation: %w", uerr)
 		}

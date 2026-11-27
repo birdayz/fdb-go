@@ -14,8 +14,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen/demopb"
 	"fdb.dev/internal/fdbclient/libfdbc"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/directory"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"

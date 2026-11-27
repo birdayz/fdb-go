@@ -8,7 +8,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -33,13 +33,13 @@ func TestFlatMapBuildContinuation_PairsPriorOuterWithInner(t *testing.T) {
 			currentOuter:           &QueryResult{PrimaryKey: tuple.Tuple{int64(3)}},
 		}
 	}
-	decode := func(t *testing.T, cont recordlayer.RecordCursorContinuation) *gen.FlatMapContinuation {
+	decode := func(t *testing.T, cont recordlayer.RecordCursorContinuation) *cursorpb.FlatMapContinuation {
 		t.Helper()
 		b, err := cont.ToBytes()
 		if err != nil {
 			t.Fatalf("ToBytes: %v", err)
 		}
-		var fmc gen.FlatMapContinuation
+		var fmc cursorpb.FlatMapContinuation
 		if err := proto.Unmarshal(b, &fmc); err != nil {
 			t.Fatalf("Unmarshal: %v", err)
 		}
@@ -105,7 +105,7 @@ func TestFlatMapInnerRowLimitPreservesContinuation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var continuation gen.FlatMapContinuation
+	var continuation cursorpb.FlatMapContinuation
 	if err := proto.Unmarshal(encoded, &continuation); err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestFlatMapWrapOuterContinuation_PreservesPendingInner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ToBytes: %v", err)
 	}
-	var fmc gen.FlatMapContinuation
+	var fmc cursorpb.FlatMapContinuation
 	if err := proto.Unmarshal(b, &fmc); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}

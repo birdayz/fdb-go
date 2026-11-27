@@ -10,7 +10,7 @@ package catalog
 import (
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	catalogpb "fdb.dev/internal/pb/catalog"
 	"fdb.dev/internal/relational/metadata"
 	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -89,7 +89,7 @@ func (c *RecordLayerStoreSchemaTemplateCatalog) LoadSchemaTemplate(txn api.Trans
 	if !r.HasNext() {
 		return nil, errTemplateNotInCatalog(templateName)
 	}
-	msg, castOK := r.GetValue().Record.(*gen.Templates)
+	msg, castOK := r.GetValue().Record.(*catalogpb.Templates)
 	if !castOK {
 		return nil, api.NewErrorf(api.ErrCodeInternalError,
 			"catalog template row has unexpected type %T", r.GetValue().Record)
@@ -112,7 +112,7 @@ func (c *RecordLayerStoreSchemaTemplateCatalog) LoadSchemaTemplateAtVersion(txn 
 
 // loadTemplateRowIn is the (name, version) catalog row, or
 // errTemplateVersionNotInCatalog when there is none.
-func loadTemplateRowIn(store *recordlayer.FDBRecordStore, templateName string, version int) (*gen.Templates, error) {
+func loadTemplateRowIn(store *recordlayer.FDBRecordStore, templateName string, version int) (*catalogpb.Templates, error) {
 	rec, err := store.LoadRecord(templateKeyAtVersion(templateName, version))
 	if err != nil {
 		return nil, err
@@ -120,7 +120,7 @@ func loadTemplateRowIn(store *recordlayer.FDBRecordStore, templateName string, v
 	if rec == nil {
 		return nil, errTemplateVersionNotInCatalog(templateName, version)
 	}
-	msg, ok := rec.Record.(*gen.Templates)
+	msg, ok := rec.Record.(*catalogpb.Templates)
 	if !ok {
 		return nil, api.NewErrorf(api.ErrCodeInternalError,
 			"catalog template row has unexpected type %T", rec.Record)
@@ -129,7 +129,7 @@ func loadTemplateRowIn(store *recordlayer.FDBRecordStore, templateName string, v
 }
 
 // templateRowProto is a catalog row's META_DATA unmarshalled, as stored.
-func templateRowProto(msg *gen.Templates) (*metadatapb.MetaData, error) {
+func templateRowProto(msg *catalogpb.Templates) (*metadatapb.MetaData, error) {
 	p := &metadatapb.MetaData{}
 	if err := recordlayer.UnmarshalAsJava(msg.GetMETA_DATA(), p); err != nil {
 		return nil, api.WrapErrorf(err, api.ErrCodeInternalError, "template unmarshal")
@@ -246,7 +246,7 @@ func (c *RecordLayerStoreSchemaTemplateCatalog) CreateTemplate(txn api.Transacti
 // bytes CreateTemplate did not see. The restore, a raw-write route with its
 // own checks (template_restore.go), writes its row itself.
 func writeTemplateRow(store *recordlayer.FDBRecordStore, rl *metadata.RecordLayerSchemaTemplate, payload []byte) error {
-	rec := &gen.Templates{
+	rec := &catalogpb.Templates{
 		TEMPLATE_NAME:    proto.String(rl.MetadataName()),
 		TEMPLATE_VERSION: proto.Int32(int32(rl.Version())),
 		META_DATA:        payload,
@@ -274,7 +274,7 @@ func (c *RecordLayerStoreSchemaTemplateCatalog) ListTemplates(txn api.Transactio
 		if !r.HasNext() {
 			break
 		}
-		if t, isT := r.GetValue().Record.(*gen.Templates); isT {
+		if t, isT := r.GetValue().Record.(*catalogpb.Templates); isT {
 			rows = append(rows, []any{
 				t.GetTEMPLATE_NAME(),
 				t.GetTEMPLATE_VERSION(),
@@ -383,7 +383,7 @@ func latestTemplateVersion(store *recordlayer.FDBRecordStore, templateName strin
 	if !r.HasNext() {
 		return 0, false, nil
 	}
-	msg, ok := r.GetValue().Record.(*gen.Templates)
+	msg, ok := r.GetValue().Record.(*catalogpb.Templates)
 	if !ok {
 		return 0, false, api.NewErrorf(api.ErrCodeInternalError,
 			"catalog template row has unexpected type %T", r.GetValue().Record)
@@ -418,7 +418,7 @@ func serializeTemplate(rl *metadata.RecordLayerSchemaTemplate) ([]byte, error) {
 // api.SchemaTemplate. Note: since we don't persist the SQL-layer
 // template version separately, we use md.Version() as the returned
 // template version. Java does the same when reading legacy data.
-func deserializeTemplate(msg *gen.Templates) (api.SchemaTemplate, error) {
+func deserializeTemplate(msg *catalogpb.Templates) (api.SchemaTemplate, error) {
 	// Java's loadSchemaTemplate maps a failure here through
 	// ExceptionUtil.toRelationalException (RecordLayerStoreSchemaTemplateCatalog
 	// .java:207-208): a MetaDataException, the deserialization wrapper included,

@@ -28,7 +28,7 @@ go_library(
     importpath = "fdb.dev/internal/relational/catalog",
     visibility = ["//:__subpackages__"],
     deps = [
-        "//gen",
+        "//internal/pb/catalog",
         "//internal/relational/exceptionutil",
         "//internal/relational/keyspace",
         "//internal/relational/metadata",
@@ -77,9 +77,9 @@ go_test(
     embed = [":catalog"],
     tags = ["resources:memory:400"],
     deps = [
-        "//gen",
-        "//gen/demopb",
         "//internal/fdbwire",
+        "//internal/pb/catalog",
+        "//internal/pb/demopb",
         "//internal/relational/keyspace",
         "//internal/relational/metadata",
         "//internal/relational/relapi",

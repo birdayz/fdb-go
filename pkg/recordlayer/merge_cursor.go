@@ -12,7 +12,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 )
@@ -426,7 +426,7 @@ func (c *intersectionCursor[T]) buildContinuation() (RecordCursorContinuation, e
 // mergeChildState (set on advance + seeded on resume) rather than a cursor-level
 // flag, so the START/MID/END distinction survives any OnNext/checkpoint ordering.
 func buildIntersectionContinuation[T any](children []*mergeChildState[T]) (RecordCursorContinuation, error) {
-	cont := &gen.IntersectionContinuation{}
+	cont := &cursorpb.IntersectionContinuation{}
 	for i, child := range children {
 		cc := child.continuation
 		if cc == nil {
@@ -454,7 +454,7 @@ func buildIntersectionContinuation[T any](children []*mergeChildState[T]) (Recor
 			cont.SecondContinuation = contBytes
 			cont.SecondStarted = proto.Bool(childStarted)
 		} else {
-			cont.OtherChildState = append(cont.OtherChildState, &gen.IntersectionContinuation_CursorState{
+			cont.OtherChildState = append(cont.OtherChildState, &cursorpb.IntersectionContinuation_CursorState{
 				Continuation: contBytes,
 				Started:      proto.Bool(childStarted),
 			})
@@ -489,7 +489,7 @@ func DecodeIntersectionContinuation(data []byte, n int) ([]IntersectionChildResu
 	if len(data) == 0 {
 		return out, nil // all-fresh
 	}
-	var cont gen.IntersectionContinuation
+	var cont cursorpb.IntersectionContinuation
 	if err := UnmarshalVTAsJava(&cont, data); err != nil {
 		return nil, fmt.Errorf("decode intersection continuation: %w", err)
 	}

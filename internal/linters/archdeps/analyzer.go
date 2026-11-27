@@ -215,7 +215,6 @@ var (
 		"conformance/",
 		"example/",
 		"fdb/",
-		"gen/",
 		"infra/",
 		"internal/",
 		"layers/",

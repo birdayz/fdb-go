@@ -67,8 +67,8 @@ go_test(
         "test-full",
     ],
     deps = [
-        "//gen",
-        "//gen/demopb",
+        "//internal/pb/catalog",
+        "//internal/pb/demopb",
         "//internal/recordlayer/query/executor",
         "//internal/recordlayer/vectorcodec",
         "//internal/relational/catalog",

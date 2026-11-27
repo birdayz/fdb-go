@@ -156,7 +156,7 @@ go_test(
         "test-full",
     ],
     deps = [
-        "//gen",
+        "//internal/pb/continuations",
         "//internal/recordlayer/protoname",
         "//internal/recordlayer/query/executor",
         "//internal/recordlayer/vectorcodec",

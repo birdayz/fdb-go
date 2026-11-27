@@ -5,7 +5,7 @@ import (
 	"context"
 	"time"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -366,7 +366,7 @@ var _ = Describe("Index Scan Unit Tests", func() {
 		It("unwraps proto-wrapped continuation with magic number", func() {
 			inner := []byte{0xAA, 0xBB, 0xCC}
 			magic := int64(6_773_487_359_078_157_740)
-			msg := &gen.KeyValueCursorContinuation{
+			msg := &cursorpb.KeyValueCursorContinuation{
 				InnerContinuation: inner,
 				MagicNumber:       &magic,
 			}
@@ -380,7 +380,7 @@ var _ = Describe("Index Scan Unit Tests", func() {
 		It("treats proto without magic number as raw bytes", func() {
 			// If the magic number doesn't match, fall back to raw.
 			wrongMagic := int64(12345)
-			msg := &gen.KeyValueCursorContinuation{
+			msg := &cursorpb.KeyValueCursorContinuation{
 				InnerContinuation: []byte{0x01},
 				MagicNumber:       &wrongMagic,
 			}
@@ -393,7 +393,7 @@ var _ = Describe("Index Scan Unit Tests", func() {
 		})
 
 		It("treats proto without magic field as raw bytes", func() {
-			msg := &gen.KeyValueCursorContinuation{
+			msg := &cursorpb.KeyValueCursorContinuation{
 				InnerContinuation: []byte{0x01, 0x02},
 				// no MagicNumber set
 			}

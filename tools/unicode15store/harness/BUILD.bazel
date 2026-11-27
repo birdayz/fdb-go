@@ -6,7 +6,7 @@ go_library(
     importpath = "fdb.dev/tools/unicode15store/harness",
     visibility = ["//visibility:public"],
     deps = [
-        "//gen/demopb",
+        "//internal/pb/demopb",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",

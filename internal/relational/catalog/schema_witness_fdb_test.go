@@ -7,7 +7,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	catalogpb "fdb.dev/internal/pb/catalog"
 	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -68,7 +68,7 @@ func templateRowBytes(t *testing.T, cat *RecordLayerStoreCatalog, run func(fn fu
 		if err != nil || rec == nil {
 			return err
 		}
-		out = rec.Record.(*gen.Templates).GetMETA_DATA()
+		out = rec.Record.(*catalogpb.Templates).GetMETA_DATA()
 		return nil
 	})
 	return out
@@ -161,7 +161,7 @@ func TestFDB_SchemaUnchanged(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			_, err = store.SaveRecord(&gen.Templates{
+			_, err = store.SaveRecord(&catalogpb.Templates{
 				TEMPLATE_NAME: proto.String("w"), TEMPLATE_VERSION: proto.Int32(1), META_DATA: md,
 			})
 			return err

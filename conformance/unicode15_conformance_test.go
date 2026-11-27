@@ -15,7 +15,7 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/internal/recordlayer/keystoretest"
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"

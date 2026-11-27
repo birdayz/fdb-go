@@ -6,7 +6,7 @@ import (
 	"sort"
 	"testing"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 )
 
 // TestKeyFunctionRegistry_BuiltInsAreTheTargetsCore pins the names this

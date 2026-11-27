@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+package(default_visibility = ["//:__subpackages__"])
+
+go_library(
+    name = "planner",
+    srcs = [
+        "planner_events.pb.go",
+        "planner_events_vtproto.pb.go",
+        "record_planner_config.pb.go",
+        "record_planner_config_vtproto.pb.go",
+    ],
+    importpath = "fdb.dev/internal/pb/planner",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "@com_github_planetscale_vtprotobuf//protohelpers",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//runtime/protoimpl",
+        "@org_golang_google_protobuf//types/descriptorpb",
+    ],
+)

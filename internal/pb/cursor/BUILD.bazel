@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+package(default_visibility = ["//:__subpackages__"])
+
+go_library(
+    name = "cursor",
+    srcs = [
+        "record_cursor.pb.go",
+        "record_cursor_vtproto.pb.go",
+    ],
+    importpath = "fdb.dev/internal/pb/cursor",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/pb/runtime",
+        "@com_github_planetscale_vtprotobuf//protohelpers",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//runtime/protoimpl",
+        "@org_golang_google_protobuf//types/descriptorpb",
+    ],
+)

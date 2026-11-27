@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"

@@ -108,7 +108,7 @@ go_test(
     ],
     embed = [":query"],
     deps = [
-        "//gen/demopb",
+        "//internal/pb/demopb",
         "//internal/recordlayer/protoname",
         "//internal/relational/keyspace",
         "//internal/relational/metadata",

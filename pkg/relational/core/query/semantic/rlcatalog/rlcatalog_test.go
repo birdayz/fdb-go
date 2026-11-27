@@ -8,7 +8,7 @@ import (
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/query/semantic"
 	"fdb.dev/pkg/relational/core/query/semantic/rlcatalog"

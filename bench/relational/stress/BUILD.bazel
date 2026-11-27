@@ -25,8 +25,8 @@ go_test(
         "stress",
     ],
     deps = [
-        "//gen/demopb",
         "//internal/fdbgo/client",
+        "//internal/pb/demopb",
         "//internal/recordlayer/query/executor",
         "//internal/relational/keyspace",
         "//internal/relational/metadata",
@@ -71,8 +71,8 @@ go_test(
     ],
     visibility = ["//bench/relational/stress/tenmguard:__pkg__"],
     deps = [
-        "//gen/demopb",
         "//internal/fdbgo/client",
+        "//internal/pb/demopb",
         "//internal/recordlayer/query/executor",
         "//internal/relational/keyspace",
         "//internal/relational/metadata",

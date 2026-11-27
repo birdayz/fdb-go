@@ -3,9 +3,9 @@ package recordlayer
 import (
 	"context"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -1348,7 +1348,7 @@ var _ = Describe("KeyValueCursor", func() {
 		It("unwrapContinuation handles proto-wrapped format (TO_NEW)", func() {
 			magic := continuationMagicNumber
 			inner := []byte{0xAA, 0xBB, 0xCC}
-			msg := &gen.KeyValueCursorContinuation{
+			msg := &cursorpb.KeyValueCursorContinuation{
 				MagicNumber:       &magic,
 				InnerContinuation: inner,
 			}
@@ -1362,7 +1362,7 @@ var _ = Describe("KeyValueCursor", func() {
 		It("unwrapContinuation treats proto without magic as raw bytes", func() {
 			// Valid proto but wrong/missing magic number -> treat as raw
 			wrongMagic := int64(12345)
-			msg := &gen.KeyValueCursorContinuation{
+			msg := &cursorpb.KeyValueCursorContinuation{
 				MagicNumber:       &wrongMagic,
 				InnerContinuation: []byte{0xDD},
 			}
@@ -1380,7 +1380,7 @@ var _ = Describe("KeyValueCursor", func() {
 			Expect(wrapErr).NotTo(HaveOccurred())
 			// Not raw: the token is a KeyValueCursorContinuation{inner, magic}.
 			Expect(result).NotTo(Equal(inner))
-			msg := &gen.KeyValueCursorContinuation{}
+			msg := &cursorpb.KeyValueCursorContinuation{}
 			Expect(proto.Unmarshal(result, msg)).To(Succeed())
 			Expect(msg.GetMagicNumber()).To(Equal(continuationMagicNumber))
 			Expect(msg.GetInnerContinuation()).To(Equal(inner))
@@ -1395,7 +1395,7 @@ var _ = Describe("KeyValueCursor", func() {
 			Expect(wrapErr).NotTo(HaveOccurred())
 			Expect(result).NotTo(BeEmpty()) // carries the magic number
 			Expect((&BytesContinuation{bytes: result}).IsEnd()).To(BeFalse())
-			msg := &gen.KeyValueCursorContinuation{}
+			msg := &cursorpb.KeyValueCursorContinuation{}
 			Expect(proto.Unmarshal(result, msg)).To(Succeed())
 			Expect(msg.GetMagicNumber()).To(Equal(continuationMagicNumber))
 		})

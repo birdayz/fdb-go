@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"fdb.dev/cmd/fdb/internal/meta"
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/pkg/recordlayer"
 )
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	catalogpb "fdb.dev/internal/pb/catalog"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -31,7 +31,7 @@ var _ = Describe("TypedStoreUnionField", func() {
 	}
 	// A copy of the compiled file, so the metadata decodes its records as dynamicpb.
 	dynamicCatalog := func() protoreflect.FileDescriptor {
-		fd, err := protodesc.NewFile(protodesc.ToFileDescriptorProto(gen.File_catalog_data_proto), protoregistry.GlobalFiles)
+		fd, err := protodesc.NewFile(protodesc.ToFileDescriptorProto(catalogpb.File_catalog_data_proto), protoregistry.GlobalFiles)
 		Expect(err).NotTo(HaveOccurred())
 		return fd
 	}
@@ -60,18 +60,18 @@ var _ = Describe("TypedStoreUnionField", func() {
 	}
 
 	It("round-trips records of a non-demo union", func() {
-		md := catalogMetaData(gen.File_catalog_data_proto)
+		md := catalogMetaData(catalogpb.File_catalog_data_proto)
 		_, err := sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
 			store := openStore(rtx, md)
-			databases, err := GetTypedRecordStore[*gen.Databases](store, "Databases")
+			databases, err := GetTypedRecordStore[*catalogpb.Databases](store, "Databases")
 			Expect(err).NotTo(HaveOccurred())
-			templates, err := GetTypedRecordStore[*gen.Templates](store, "Templates")
+			templates, err := GetTypedRecordStore[*catalogpb.Templates](store, "Templates")
 			Expect(err).NotTo(HaveOccurred())
 
-			db := &gen.Databases{DATABASE_ID: proto.String("/FRL/DB")}
+			db := &catalogpb.Databases{DATABASE_ID: proto.String("/FRL/DB")}
 			_, err = databases.SaveRecord(db)
 			Expect(err).NotTo(HaveOccurred())
-			tmpl := &gen.Templates{TEMPLATE_NAME: proto.String("T"), TEMPLATE_VERSION: proto.Int32(3), META_DATA: []byte{1, 2}}
+			tmpl := &catalogpb.Templates{TEMPLATE_NAME: proto.String("T"), TEMPLATE_VERSION: proto.Int32(3), META_DATA: []byte{1, 2}}
 			_, err = templates.SaveRecord(tmpl)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -92,20 +92,20 @@ var _ = Describe("TypedStoreUnionField", func() {
 	})
 
 	It("refuses a record held in another union field and leaves it in place", func() {
-		md := catalogMetaData(gen.File_catalog_data_proto)
+		md := catalogMetaData(catalogpb.File_catalog_data_proto)
 		_, err := sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
 			store := openStore(rtx, md)
-			schema := &gen.Schemas{DATABASE_ID: proto.String("/FRL/X"), SCHEMA_NAME: proto.String("S")}
+			schema := &catalogpb.Schemas{DATABASE_ID: proto.String("/FRL/X"), SCHEMA_NAME: proto.String("S")}
 			_, err := store.SaveRecord(schema)
 			Expect(err).NotTo(HaveOccurred())
-			databases, err := GetTypedRecordStore[*gen.Databases](store, "Databases")
+			databases, err := GetTypedRecordStore[*catalogpb.Databases](store, "Databases")
 			Expect(err).NotTo(HaveOccurred())
 
 			_, err = databases.LoadRecord(tuple.Tuple{"/FRL/X"})
 			expectDeserializationError(err, "Specified union field was not set")
 
 			// Java's typed save and delete read the existing record through the typed serializer.
-			_, err = databases.SaveRecord(&gen.Databases{DATABASE_ID: proto.String("/FRL/X")})
+			_, err = databases.SaveRecord(&catalogpb.Databases{DATABASE_ID: proto.String("/FRL/X")})
 			expectDeserializationError(err, "Specified union field was not set")
 			_, err = databases.DeleteRecord(tuple.Tuple{"/FRL/X"})
 			expectDeserializationError(err, "Specified union field was not set")
@@ -161,7 +161,7 @@ var _ = Describe("TypedStoreUnionField", func() {
 			_, err := store.SaveRecord(db)
 			Expect(err).NotTo(HaveOccurred())
 			// The metadata decodes Databases as dynamicpb, never as the compiled type.
-			databases, err := GetTypedRecordStore[*gen.Databases](store, "Databases")
+			databases, err := GetTypedRecordStore[*catalogpb.Databases](store, "Databases")
 			Expect(err).NotTo(HaveOccurred())
 
 			_, err = databases.LoadRecord(tuple.Tuple{"/FRL/GEN"})
@@ -170,7 +170,7 @@ var _ = Describe("TypedStoreUnionField", func() {
 			// anything else (FDBRecordStore.java:552, RecordMetaData.java:219-223),
 			// ahead of the existing record's load at /FRL/GEN.
 			for _, key := range []string{"/FRL/GEN", "/FRL/GEN2"} {
-				_, err = databases.SaveRecord(&gen.Databases{DATABASE_ID: proto.String(key)})
+				_, err = databases.SaveRecord(&catalogpb.Databases{DATABASE_ID: proto.String(key)})
 				expectMetaDataError(err, "descriptor did not match record type")
 			}
 			var scanErr error

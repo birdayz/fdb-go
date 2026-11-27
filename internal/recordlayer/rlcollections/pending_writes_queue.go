@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"strings"
 
-	"fdb.dev/gen"
+	storagepb "fdb.dev/internal/pb/storage"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -146,7 +146,7 @@ func (q *PendingWritesQueue[T]) Enqueue(ctx PendingWritesContext, payload T, inc
 	if err != nil {
 		return err
 	}
-	envelope, err := proto.Marshal(&gen.PendingWriteItem{
+	envelope, err := proto.Marshal(&storagepb.PendingWriteItem{
 		Version:          proto.Int32(PendingWritesQueueVersion),
 		Payload:          packed,
 		EnqueueTimestamp: proto.Int64(ctx.NowUnixMilli()),
@@ -210,7 +210,7 @@ func (q *PendingWritesQueue[T]) ClearEntry(ctx PendingWritesContext, entry *Pend
 
 // Decode decodes a raw queue entry key and envelope payload into a typed PendingWritesQueueEntry.
 func (q *PendingWritesQueue[T]) Decode(key tuple.Tuple, data []byte) (*PendingWritesQueueEntry[T], error) {
-	envelope := &gen.PendingWriteItem{}
+	envelope := &storagepb.PendingWriteItem{}
 	e := &PendingWritesStorageError{KeyTuple: key}
 	if err := q.unmarshalAsJava(data, envelope); err != nil {
 		e.Message = "Failed to parse pending writes queue entry"

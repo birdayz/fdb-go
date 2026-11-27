@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"fdb.dev/gen"
+	plannerpb "fdb.dev/internal/pb/planner"
 	"fdb.dev/internal/recordlayer/indexfetch"
 	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/proto"
@@ -54,9 +54,9 @@ func TestPlanSchemaTags(t *testing.T) {
 		{plan, 41, "covering_index_value_plan"},
 		{(&metadatapb.PRecordQueryExplodePlan{}).ProtoReflect().Descriptor(), 3, "zero_based_ordinality"},
 		{(&metadatapb.PRecordQueryAggregateIndexPlan{}).ProtoReflect().Descriptor(), 7, "result_type"},
-		{(&gen.PlannerConfiguration{}).ProtoReflect().Descriptor(), 15, "vectorIndexEnginePreference"},
+		{(&plannerpb.PlannerConfiguration{}).ProtoReflect().Descriptor(), 15, "vectorIndexEnginePreference"},
 		{(&metadatapb.PRecordQueryIndexPlan{}).ProtoReflect().Descriptor(), 4, "index_fetch_method"},
-		{(&gen.PlannerConfiguration{}).ProtoReflect().Descriptor(), 10, "indexFetchMethod"},
+		{(&plannerpb.PlannerConfiguration{}).ProtoReflect().Descriptor(), 10, "indexFetchMethod"},
 	} {
 		if fd := c.md.Fields().ByNumber(c.tag); fd == nil || fd.Name() != c.name {
 			t.Errorf("%s tag %d = %v, want %s", c.md.FullName(), c.tag, fd, c.name)
@@ -76,7 +76,7 @@ func TestIndexFetchMethodWireNumbers(t *testing.T) {
 	if got := len(metadatapb.PIndexFetchMethod_name); got != len(methods) {
 		t.Fatalf("PIndexFetchMethod has %d values, indexfetch.Method %d", got, len(methods))
 	}
-	if got := len(gen.PlannerConfiguration_IndexFetchMethod_name); got != len(methods) {
+	if got := len(plannerpb.PlannerConfiguration_IndexFetchMethod_name); got != len(methods) {
 		t.Fatalf("PlannerConfiguration.IndexFetchMethod has %d values, indexfetch.Method %d", got, len(methods))
 	}
 	for i, m := range methods {
@@ -84,7 +84,7 @@ func TestIndexFetchMethodWireNumbers(t *testing.T) {
 		if int(plan) != i+1 {
 			t.Errorf("PIndexFetchMethod %s = %d, want %d", m, plan, i+1)
 		}
-		config := gen.PlannerConfiguration_IndexFetchMethod(gen.PlannerConfiguration_IndexFetchMethod_value[m.String()])
+		config := plannerpb.PlannerConfiguration_IndexFetchMethod(plannerpb.PlannerConfiguration_IndexFetchMethod_value[m.String()])
 		if int(config) != i || config.String() != m.String() {
 			t.Errorf("PlannerConfiguration.IndexFetchMethod %s = %d (%s), want %d", m, config, config, i)
 		}
@@ -92,7 +92,7 @@ func TestIndexFetchMethodWireNumbers(t *testing.T) {
 		if err != nil || !bytes.Equal(encoded, []byte{0x20, byte(i + 1)}) {
 			t.Errorf("PRecordQueryIndexPlan{%s} = % x (%v), want 20 %02x", m, encoded, err, i+1)
 		}
-		encoded, err = proto.Marshal(&gen.PlannerConfiguration{IndexFetchMethod: config.Enum()})
+		encoded, err = proto.Marshal(&plannerpb.PlannerConfiguration{IndexFetchMethod: config.Enum()})
 		if err != nil || !bytes.Equal(encoded, []byte{0x50, byte(i)}) {
 			t.Errorf("PlannerConfiguration{%s} = % x (%v), want 50 %02x", m, encoded, err, i)
 		}

@@ -9,7 +9,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/metadatapb"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/internal/relational/session"
 	"fdb.dev/pkg/recordlayer"

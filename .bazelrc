@@ -42,7 +42,7 @@ test --test_env=FDB_VERSION=7.3.77
 test --test_timeout=60,300,900,3600
 
 # Coverage: only instrument our code, not generated types or linters.
-# Without this, Bazel auto-instruments everything (including gen/ and
+# Without this, Bazel auto-instruments everything (including internal/pb/ and
 # internal/linters/) which dilutes the coverage percentage.
 coverage --instrumentation_filter="^//internal/fdbgo/client[/:],^//pkg/fdbgo/fdb[/:],^//internal/fdbgo/transport[/:],^//pkg/recordlayer[/:],^//internal/recordlayer[/:]"
 

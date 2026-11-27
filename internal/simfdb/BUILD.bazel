@@ -99,9 +99,9 @@ go_test(
     embed = [":simfdb"],
     tags = ["resources:memory:400"],
     deps = [
-        "//gen/demopb",
         "//internal/dst",
         "//internal/dstwire",
+        "//internal/pb/demopb",
         "//internal/simfdb/hunt",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",

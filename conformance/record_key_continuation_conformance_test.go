@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -100,12 +100,12 @@ func recordKeyInteropAssertFraming(page recordKeyInteropPage, bare bool) {
 		ExpectWithOffset(1, err).NotTo(HaveOccurred())
 		inner := raw
 		if !bare {
-			var dedup gen.DedupContinuation
+			var dedup cursorpb.DedupContinuation
 			ExpectWithOffset(1, dedup.UnmarshalVT(raw)).To(Succeed())
 			ExpectWithOffset(1, dedup.LastValue).To(Equal(pk))
 			inner = dedup.InnerContinuation
 		}
-		var leaf gen.KeyValueCursorContinuation
+		var leaf cursorpb.KeyValueCursorContinuation
 		ExpectWithOffset(1, leaf.UnmarshalVT(inner)).To(Succeed())
 		ExpectWithOffset(1, leaf.MagicNumber).NotTo(BeNil())
 		ExpectWithOffset(1, leaf.GetMagicNumber()).To(Equal(int64(6773487359078157740)))
@@ -730,7 +730,7 @@ var _ = Describe("Record-key opaque continuation Java interchange", func() {
 									duplicatePages++
 								}
 								Expect(ids).NotTo(BeEmpty())
-								var stopped gen.DedupContinuation
+								var stopped cursorpb.DedupContinuation
 								Expect(stopped.UnmarshalVT(recordKeyInteropDecode(page.Continuation))).To(Succeed())
 								Expect(stopped.LastValue).To(Equal(recordKeyInteropPK(byte(ids[len(ids)-1]))))
 								Expect(page.Continuation).NotTo(Equal(req.Continuation))

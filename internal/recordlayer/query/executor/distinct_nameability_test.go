@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 )
@@ -71,7 +71,7 @@ func TestDistinctAggregateFinalRowStaysResumable(t *testing.T) {
 		t.Fatal("aggregate produced no final-row continuation; the shape no longer applies")
 	}
 
-	var ac gen.AggregateCursorContinuation
+	var ac cursorpb.AggregateCursorContinuation
 	if uerr := ac.UnmarshalVT(finalCont); uerr != nil {
 		t.Fatalf("decode aggregate continuation: %v", uerr)
 	}

@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+package(default_visibility = ["//:__subpackages__"])
+
+go_library(
+    name = "sorting",
+    srcs = [
+        "record_sorting.pb.go",
+        "record_sorting_vtproto.pb.go",
+    ],
+    importpath = "fdb.dev/internal/pb/sorting",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "@com_github_planetscale_vtprotobuf//protohelpers",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//runtime/protoimpl",
+        "@org_golang_google_protobuf//types/descriptorpb",
+    ],
+)

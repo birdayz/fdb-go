@@ -611,11 +611,11 @@ go_test(
     ],
     tags = ["resources:cpu:4"],
     deps = [
-        "//gen",
-        "//gen/demopb",
         "//internal/dst",
         "//internal/dstwire",
         "//internal/fdbwire",
+        "//internal/pb/catalog",
+        "//internal/pb/demopb",
         "//internal/recordlayer/chaos",
         "//internal/recordlayer/indexfetch",
         "//internal/recordlayer/protoname",

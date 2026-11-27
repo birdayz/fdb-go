@@ -6,7 +6,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	catalogpb "fdb.dev/internal/pb/catalog"
 	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer/metadatapb"
 )
@@ -38,7 +38,7 @@ func FuzzDeserializeTemplate(f *testing.F) {
 	f.Add(make([]byte, 1024))             // long zero run
 
 	f.Fuzz(func(t *testing.T, blob []byte) {
-		msg := &gen.Templates{
+		msg := &catalogpb.Templates{
 			TEMPLATE_NAME:    proto.String("fuzz"),
 			TEMPLATE_VERSION: proto.Int32(1),
 			META_DATA:        blob,

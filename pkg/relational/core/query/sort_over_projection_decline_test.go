@@ -33,7 +33,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/query/logical"
 )

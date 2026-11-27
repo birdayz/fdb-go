@@ -11,7 +11,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 )
 
 // dedupCursor removes adjacent duplicate elements from an inner cursor.
@@ -71,7 +71,7 @@ func newDedupCursor[T any](
 	}
 
 	if continuation != nil {
-		var cont gen.DedupContinuation
+		var cont cursorpb.DedupContinuation
 		if err := UnmarshalVTAsJava(&cont, continuation); err != nil {
 			// Java: throw new RecordCoreException("Error parsing continuation", ex)
 			//           .addLogInfo("raw_bytes", ...)  (DedupCursor's constructor).
@@ -190,7 +190,7 @@ type dedupContinuationWrapper[T any] struct {
 }
 
 func (d *dedupContinuationWrapper[T]) ToBytes() ([]byte, error) {
-	cont := &gen.DedupContinuation{
+	cont := &cursorpb.DedupContinuation{
 		InnerContinuation: d.inner,
 		LastValue:         d.lastPack,
 	}

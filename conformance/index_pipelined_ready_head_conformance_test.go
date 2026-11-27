@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"time"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
@@ -71,7 +71,7 @@ func indexReadyHeadAssertBaseline(row scanLimitRow) {
 	continuation, err := base64.StdEncoding.DecodeString(row.Continuation)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(continuation).NotTo(BeEmpty())
-	var token gen.KeyValueCursorContinuation
+	var token cursorpb.KeyValueCursorContinuation
 	Expect(proto.Unmarshal(continuation, &token)).To(Succeed())
 	Expect(token.GetMagicNumber()).To(Equal(int64(6_773_487_359_078_157_740)))
 	Expect(token.GetInnerContinuation()).To(Equal(key), "mapped row preserves the real index continuation")
