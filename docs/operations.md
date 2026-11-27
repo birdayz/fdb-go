@@ -58,8 +58,8 @@ or a SimFDB test database) passes `sqldriver.WithDatabase(rdb)` to `sqldriver.Ne
 caller retains ownership of `rdb` (`Engine.Close` does not close an injected database).
 
 For legacy blank-import `database/sql` callers, `fdbsql` still registers on import with
-`sql.Open("fdbsql", "fdbsql:///FRL/MYAPP?cluster_file=...")` and `sqldriver.RegisterDomainIfNotExists`
-(deprecated; prefer `sqldriver.NewEngine`). The remote form `fdbsql://host:port/...` is
+`sql.Open("fdbsql", "fdbsql:///FRL/MYAPP?cluster_file=...")` (using `keyspace.RegisterDomainIfNotExists`;
+prefer `sqldriver.NewEngine`). `sql.DB.Close()` closes the connector-owned FDB handle. The remote form `fdbsql://host:port/...` is
 **not implemented** (returns an unsupported-operation error) — the driver is in-process.
 
 `sqldriver.WithReadOnly(true)` on `engine.OpenDB` / `engine.Connector` (or `read_only=true` on a legacy DSN) makes every connection of the pool read-only:
@@ -328,8 +328,7 @@ http.Handle("/metrics/recordlayer", rlmetrics.Handler(engine.StoreTimer()))
 ```
 
 Scope is one timer per `Engine` instance, with no tenant label by design — see
-[`mt-saas.md` §4](mt-saas.md#4-observability). (For legacy `sql.Open("fdbsql", ...)`,
-`sqldriver.EnableStoreTimer(clusterFile)` is deprecated.) `StoreTimer.KeysAndValues()`
+[`mt-saas.md` §4](mt-saas.md#4-observability). `StoreTimer.KeysAndValues()`
 gives Java's `_count`/`_micros` log-key form for `KeyValueLogMessage`-style logging instead.
 
 **Logs.** Diagnostics route through the standard `log/slog`. Apps set their own handler with

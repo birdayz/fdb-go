@@ -29,6 +29,7 @@ go_test(
         "//internal/recordlayer/query/executor",
         "//internal/relational/catalog",
         "//internal/relational/ddl",
+        "//internal/relational/keyspace",
         "//internal/relational/metadata",
         "//internal/relational/relapi",
         "//internal/relational/sqltest/testkit",

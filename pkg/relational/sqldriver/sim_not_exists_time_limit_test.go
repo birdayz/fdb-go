@@ -72,7 +72,7 @@ func (b *txCountingBackend) count() int64 { return b.n.Load() }
 
 // injectTickingSimFDB is injectSimFDB with the simulation's wall clock replaced
 // by a ticking logical clock and its backend wrapped in a transaction counter.
-func injectTickingSimFDB(t *testing.T, seed uint64, tick time.Duration) (string, *txCountingBackend) {
+func injectTickingSimFDB(t *testing.T, seed uint64, tick time.Duration) (*Engine, *txCountingBackend) {
 	t.Helper()
 	env := dst.NewSim(seed)
 	env.Buggify = dst.DisabledBuggifier()
@@ -80,10 +80,7 @@ func injectTickingSimFDB(t *testing.T, seed uint64, tick time.Duration) (string,
 	backend := &txCountingBackend{BackendDatabase: simfdb.New(env)}
 	simDB := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(dstwire.Env(env))
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
-	key := "sim://" + t.Name()
-	fdbDBCache.Store(key, simDB)
-	t.Cleanup(func() { fdbDBCache.Delete(key) })
-	return key, backend
+	return openSimEngine(t, simDB), backend
 }
 
 // pinSimConn pins one *sql.Conn and configures its embedded connection, so the
@@ -147,10 +144,10 @@ func TestSim_NotExistsTinyTimeBudget_MakesProgress(t *testing.T) {
 	t.Parallel()
 	const tick = time.Millisecond
 
-	key, _ := injectTickingSimFDB(t, 832, tick)
+	eng, _ := injectTickingSimFDB(t, 832, tick)
 	ctx := context.Background()
 
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TINY?cluster_file=%s", key))
+	setup, err := eng.OpenDB("/FRL/TINY")
 	if err != nil {
 		t.Fatalf("open setup: %v", err)
 	}
@@ -160,7 +157,7 @@ func TestSim_NotExistsTinyTimeBudget_MakesProgress(t *testing.T) {
 		"CREATE TABLE t_rd (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 	mustExecSQL(t, setup, ctx, "CREATE SCHEMA /FRL/tiny/s WITH TEMPLATE tiny_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TINY?cluster_file=%s&schema=S", key))
+	db, err := eng.OpenDB("/FRL/TINY", WithSchema("S"))
 	if err != nil {
 		t.Fatalf("open query conn: %v", err)
 	}
@@ -249,10 +246,10 @@ func TestSim_NotExistsTimeLimit_PaginatesNotErrors(t *testing.T) {
 	const tick = time.Millisecond
 	const budgetMillis = 500
 
-	key, backend := injectTickingSimFDB(t, 831, tick)
+	eng, backend := injectTickingSimFDB(t, 831, tick)
 	ctx := context.Background()
 
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/NETL?cluster_file=%s", key))
+	setup, err := eng.OpenDB("/FRL/NETL")
 	if err != nil {
 		t.Fatalf("open setup: %v", err)
 	}
@@ -262,7 +259,7 @@ func TestSim_NotExistsTimeLimit_PaginatesNotErrors(t *testing.T) {
 		"CREATE TABLE t_rd (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 	mustExecSQL(t, setup, ctx, "CREATE SCHEMA /FRL/netl/s WITH TEMPLATE netl_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/NETL?cluster_file=%s&schema=S", key))
+	db, err := eng.OpenDB("/FRL/NETL", WithSchema("S"))
 	if err != nil {
 		t.Fatalf("open query conn: %v", err)
 	}

@@ -2,7 +2,6 @@ package sqldriver
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -64,10 +63,8 @@ func TestSimPageBudgetAdaptsToShortMVCCWindow(t *testing.T) {
 	backend := &shortWindowBackend{SimDB: simfdb.New(env), clock: clock}
 	rdb := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(dstwire.Env(env))
 	rdb.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
-	key := "sim://" + t.Name()
-	fdbDBCache.Store(key, rdb)
-	t.Cleanup(func() { fdbDBCache.Delete(key) })
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/SIMDB?cluster_file=%s", key))
+	eng := openSimEngine(t, rdb)
+	setup, err := eng.OpenDB("/FRL/SIMDB")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +72,7 @@ func TestSimPageBudgetAdaptsToShortMVCCWindow(t *testing.T) {
 	for _, q := range []string{"CREATE DATABASE /FRL/simdb", "CREATE SCHEMA TEMPLATE tmpl CREATE TABLE t (id BIGINT, PRIMARY KEY (id))", "CREATE SCHEMA /FRL/simdb/s WITH TEMPLATE tmpl"} {
 		mustExecSQL(t, setup, ctx, q)
 	}
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/SIMDB?cluster_file=%s&schema=S", key))
+	db, err := eng.OpenDB("/FRL/SIMDB", WithSchema("S"))
 	if err != nil {
 		t.Fatal(err)
 	}

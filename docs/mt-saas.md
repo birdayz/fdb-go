@@ -57,8 +57,8 @@ segment names the database. Declare the engine's domains in `EngineConfig.Domain
 `Engine.Connector` / `OpenDB` rejects an empty path or a bare `/`; store resolution also requires a
 valid database path under a registered domain (`pkg/relational/core/keyspace/domains.go`,
 `ToDatabasePath`). Use the exact path and schema case stored by DDL (unquoted DDL names fold to
-upper case). (Legacy `sql.Open("fdbsql", ...)` with `sqldriver.RegisterDomainIfNotExists` is
-deprecated.)
+upper case). (Legacy `sql.Open("fdbsql", ...)` uses the process-global `keyspace` registry
+and has no engine-managed `StoreTimer` or default `ResourceLimits`.)
 
 `WithSchema` (or `schema=` on a DSN) has **no default**. Omit it and the session schema stays empty
 and metadata loading is a silent no-op (`Connector.Connect` in `pkg/relational/sqldriver/driver.go`,
@@ -516,10 +516,9 @@ rdb := recordlayer.NewFDBDatabase(db)
 
 **From SQL via `sqldriver.Engine`:** `engine.Metrics().Client` returns a
 `*client.ClientMetricsSnapshot` directly when `NewEngine` opened the FDB handle
-(`pkg/relational/sqldriver/engine.go:700-722`). For live Prometheus exposition via
+(`pkg/relational/sqldriver/engine.go`). For live Prometheus exposition via
 `fdbmetrics.Handler`, retain `cdb` as above and pass `sqldriver.WithDatabase(rdb)` to
-`sqldriver.NewEngine` (`engine.go:291`). (The legacy `RegisterBackend` test seam in `driver.go:108`
-is deprecated.)
+`sqldriver.NewEngine`.
 
 ### Record-layer counters: `engine.StoreTimer()`
 
@@ -542,7 +541,6 @@ http.Handle("/metrics/recordlayer", rlmetrics.Handler(engine.StoreTimer()))
 
 Both statement paths are covered: autocommit statements inherit the timer through
 `FDBDatabase.Run`, and explicit `BeginTx`→`COMMIT` transactions through `FDBDatabase.NewRecordContext`.
-(For legacy `sql.Open`, `sqldriver.EnableStoreTimer` in `driver.go:159` is deprecated.)
 
 **The aggregation level is one timer per `Engine`, which in practice means one per process.** It
 aggregates every tenant, connection and transaction against that engine. This is deliberate and it

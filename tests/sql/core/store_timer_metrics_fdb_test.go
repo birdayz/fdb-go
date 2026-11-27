@@ -1,28 +1,22 @@
 package sqltest
 
 // End-to-end proof that record-layer instrumentation is reachable from the SQL
-// layer: arm a StoreTimer through the driver, run known SQL, and read the exact
-// counts back out of the Prometheus exposition.
+// layer: configure or inspect a StoreTimer through sqldriver.Engine, run known
+// SQL, and read the exact counts back out of the Prometheus exposition.
 //
-// This is the gap the whole change exists to close. The driver opens the
-// record-layer database itself and caches it privately, so before
-// EnableStoreTimer there was no way for a database/sql-only deployment to reach
-// an FDBRecordContext and install a timer on it — record loads, index scans and
-// commit timings were unobservable no matter what the operator did.
-//
-// Every test here registers its OWN record-layer database under a unique
-// cluster-file key. That is load-bearing, not tidiness, in both directions: the
-// timer's scope is one per cluster-file key, so tests sharing the package's
-// clusterFilePath would share a timer and every "exactly N" assertion below would
-// instead count whatever the rest of this parallel package happened to be doing —
-// and, worse, arming a timer on the shared database would wrap every scan cursor
-// in the whole suite. The client CONNECTION is shared (see
-// sharedStoreTimerBackend); only the record-layer wrapper is per test.
+// Every test here builds its OWN *sqldriver.Engine over its own
+// *recordlayer.FDBDatabase. That is load-bearing, not tidiness, in both
+// directions: the timer's scope is one per Engine, so tests sharing the
+// package's clusterFilePath would share a timer and every "exactly N" assertion
+// below would instead count whatever the rest of this parallel package happened
+// to be doing — and, worse, arming a timer on the shared database would wrap
+// every scan cursor in the whole suite. The client CONNECTION is shared (see
+// sharedStoreTimerBackend); only the record-layer wrapper and Engine are per
+// test.
 
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
@@ -67,40 +61,45 @@ func sharedStoreTimerBackend(t *testing.T) fdb.BackendDatabase {
 	return storeTimerBackendDB
 }
 
-// armTimer registers a dedicated record-layer database under key and returns the
-// timer the driver installs on it. armFirst chooses which of the two orderings
-// between EnableStoreTimer and the database appearing in the driver's cache is
-// exercised — both must end with an instrumented database, and the two paths that
-// make that true are different code (EnableStoreTimer's own cache lookup, versus
-// applyStoreTimer at registration).
+// openTimerEngine builds an isolated *sqldriver.Engine over a dedicated
+// *recordlayer.FDBDatabase sharing the package's client connection, and returns
+// the Engine and its active StoreTimer. When customTimer is non-nil it is
+// passed via EngineConfig.StoreTimer; otherwise NewEngine creates a dedicated
+// timer exposed by Engine.StoreTimer().
 // clock, when supplied, becomes the record layer's elapsed-time source for this
-// database. It exists so the explicit-transaction test can force the
-// whole-transaction budget pre-emption through the SAME registered backend the
-// timer is bound to — the timer and the clock have to live on one database, or
-// the scrape would describe a different store from the one that was pre-empted.
-func armTimer(t *testing.T, key string, armFirst bool, clock ...dst.Clock) *recordlayer.StoreTimer {
+// database so the explicit-transaction test can force budget pre-emption on
+// the same database the timer is bound to.
+func openTimerEngine(t *testing.T, customTimer *recordlayer.StoreTimer, clock ...dst.Clock) (*sqldriver.Engine, *recordlayer.StoreTimer) {
 	t.Helper()
-
-	var timer *recordlayer.StoreTimer
-	if armFirst {
-		timer = sqldriver.EnableStoreTimer(key)
-	}
 
 	db := recordlayer.NewFDBDatabaseWithBackend(sharedStoreTimerBackend(t))
 	if len(clock) == 1 {
 		db.SetEnv(&recordlayer.Env{Clock: clock[0]})
 	}
 	db.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
-	t.Cleanup(sqldriver.RegisterBackend(key, db))
 
-	if !armFirst {
-		timer = sqldriver.EnableStoreTimer(key)
+	eng, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		Domains:    []string{"FRL"},
+		Limits:     sqldriver.UnboundedJavaCompatLimits(),
+		StoreTimer: customTimer,
+	}, sqldriver.WithDatabase(db))
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+
+	timer := eng.StoreTimer()
+	if timer == nil {
+		t.Fatal("eng.StoreTimer() = nil, want non-nil")
+	}
+	if customTimer != nil && timer != customTimer {
+		t.Fatalf("eng.StoreTimer() = %p, want caller StoreTimer %p", timer, customTimer)
 	}
 	if db.Timer() != timer {
-		t.Fatalf("the driver's database did not receive the armed timer (armFirst=%v); "+
-			"a SQL-only deployment would silently scrape zeros", armFirst)
+		t.Fatalf("the engine's database did not receive the StoreTimer; " +
+			"a SQL-only deployment would silently scrape zeros")
 	}
-	return timer
+	return eng, timer
 }
 
 // scrape renders the timer through the exporter and parses the sample lines.
@@ -144,26 +143,15 @@ func TestFDB_StoreTimerExporter_CountsRealSQLWork(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	const key = "storetimer-metrics-counts"
-	timer := armTimer(t, key, true)
+	eng, timer := openTimerEngine(t, nil)
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_STTIMER?cluster_file=%s", key)
-	setup, err := sql.Open("fdbsql", dsn)
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	t.Cleanup(func() { setup.Close() })
-
+	setup := testkit.OpenEngineDB(t, eng, "/FRL/TESTDB_STTIMER", "")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sttimer")
 	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE sttimer CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sttimer/s WITH TEMPLATE sttimer")
 
-	db, err := sql.Open("fdbsql", dsn+"&schema=S")
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
+	db := testkit.OpenEngineDB(t, eng, "/FRL/TESTDB_STTIMER", "S")
 
 	// One warm-up write, so schema resolution and store-header state are settled
 	// and the reset below starts from a steady state rather than mid-warm-up.
@@ -279,16 +267,9 @@ func TestFDB_StoreTimerExporter_IndexScansAreCounted(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	const key = "storetimer-metrics-index"
-	timer := armTimer(t, key, true)
+	eng, timer := openTimerEngine(t, nil)
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_STTIMER_IDX?cluster_file=%s", key)
-	setup, err := sql.Open("fdbsql", dsn)
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	t.Cleanup(func() { setup.Close() })
-
+	setup := testkit.OpenEngineDB(t, eng, "/FRL/TESTDB_STTIMER_IDX", "")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sttimer_idx")
 	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE sttimeridx "+
@@ -296,11 +277,7 @@ func TestFDB_StoreTimerExporter_IndexScansAreCounted(t *testing.T) {
 			"CREATE INDEX t_v AS SELECT v, id FROM t ORDER BY v, id")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sttimer_idx/s WITH TEMPLATE sttimeridx")
 
-	db, err := sql.Open("fdbsql", dsn+"&schema=S")
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
+	db := testkit.OpenEngineDB(t, eng, "/FRL/TESTDB_STTIMER_IDX", "S")
 
 	// Five rows, all sharing v = 100, so an equality probe on the index returns a
 	// known number of entries.
@@ -352,38 +329,25 @@ func TestFDB_StoreTimerExporter_IndexScansAreCounted(t *testing.T) {
 	}
 }
 
-// TestFDB_StoreTimerExporter_ArmingAfterTheBackendStillInstruments covers the
-// other ordering. EnableStoreTimer must work whether it runs before or after the
-// database exists, because an operator arming metrics at startup and one arming
-// them from an admin endpoint after traffic has begun are both realistic, and
-// the second is the one where a silent no-op looks exactly like "no traffic".
-func TestFDB_StoreTimerExporter_ArmingAfterTheBackendStillInstruments(t *testing.T) {
+// TestFDB_StoreTimerExporter_CustomStoreTimerInstrumentsDatabase verifies
+// that supplying an explicit EngineConfig.StoreTimer instruments an
+// already-constructed *recordlayer.FDBDatabase passed via WithDatabase.
+func TestFDB_StoreTimerExporter_CustomStoreTimerInstrumentsDatabase(t *testing.T) {
 	t.Parallel()
 	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	const key = "storetimer-metrics-late-arm"
-	timer := armTimer(t, key, false)
+	eng, timer := openTimerEngine(t, recordlayer.NewStoreTimer())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_STTIMER_LATE?cluster_file=%s", key)
-	setup, err := sql.Open("fdbsql", dsn)
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	t.Cleanup(func() { setup.Close() })
-
+	setup := testkit.OpenEngineDB(t, eng, "/FRL/TESTDB_STTIMER_LATE", "")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sttimer_late")
 	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE sttimerlate CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sttimer_late/s WITH TEMPLATE sttimerlate")
 
-	db, err := sql.Open("fdbsql", dsn+"&schema=S")
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
+	db := testkit.OpenEngineDB(t, eng, "/FRL/TESTDB_STTIMER_LATE", "S")
 
 	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id) VALUES (1)")
 	timer.Reset()
@@ -411,28 +375,17 @@ func TestFDB_StoreTimerExporter_ExplicitTransactionIsInstrumented(t *testing.T) 
 	}
 	ctx := context.Background()
 
-	const key = "storetimer-metrics-explicit-tx"
 	// One-shot spike on the SAME database the timer is bound to.
 	clk := testkit.NewLateClock(30 * time.Second)
-	timer := armTimer(t, key, true, clk)
+	eng, timer := openTimerEngine(t, nil, clk)
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_STTIMER_TX?cluster_file=%s", key)
-	setup, err := sql.Open("fdbsql", dsn)
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	t.Cleanup(func() { setup.Close() })
-
+	setup := testkit.OpenEngineDB(t, eng, "/FRL/TESTDB_STTIMER_TX", "")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sttimer_tx")
 	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE sttimertx CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
 	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sttimer_tx/s WITH TEMPLATE sttimertx")
 
-	db, err := sql.Open("fdbsql", dsn+"&schema=S")
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
+	db := testkit.OpenEngineDB(t, eng, "/FRL/TESTDB_STTIMER_TX", "S")
 
 	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id) VALUES (1)")
 	timer.Reset()

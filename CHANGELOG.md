@@ -221,6 +221,12 @@ below; neither publication nor readiness is asserted.
   checks; explicit failed commits release their transaction handles.
 
 ### Breaking changes / compatibility
+- **`sqldriver` global registries removed:** removed deprecated
+  `sqldriver.RegisterBackend`, `sqldriver.EnableStoreTimer`, and
+  `sqldriver.RegisterDomainIfNotExists` in favor of `sqldriver.Engine`
+  (`NewEngine`, `WithDatabase`, `EngineConfig.StoreTimer`,
+  `EngineConfig.Domains` / `Engine.RegisterDomain`); added
+  `sqldriver.IsRetryable` for SQL-safe transaction retry classification.
 - **Read-version pins (#1045):** pure-Go `SetReadVersion` matches native 7.3.77:
   a cached, pending or already-failed read-version request on this incarnation
   defers 2010 before checking the value; otherwise a value <= 0 defers 2011.

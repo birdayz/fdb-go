@@ -14,6 +14,7 @@ go_library(
     deps = [
         "//internal/fdbclient",
         "//internal/fdbgo/client",
+        "//internal/fdbwire",
         "//internal/relational/catalog",
         "//internal/relational/ddl",
         "//internal/relational/keyspace",
@@ -93,6 +94,7 @@ go_test(
         "//internal/dst",
         "//internal/dstwire",
         "//internal/fdbgo/client",
+        "//internal/fdbwire",
         "//internal/recordlayer/keystoretest",
         "//internal/relational/catalog",
         "//internal/relational/connknob",
@@ -179,6 +181,8 @@ go_test(
     deps = [
         "//internal/dst",
         "//internal/dstwire",
+        "//internal/fdbwire",
+        "//internal/relational/keyspace",
         "//internal/relational/relapi",
         "//internal/simfdb",
         "//pkg/fdbgo/fdb",

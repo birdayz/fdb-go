@@ -182,15 +182,18 @@ and a port of its Cascades planner. Not PostgreSQL-compatible;
 [differences from Java](DIVERGENCES.md).
 
 ```go
-import (
-	"database/sql"
-	"net/url"
+import "fdb.dev/pkg/relational/sqldriver"
 
-	"fdb.dev/pkg/relational/sqldriver"
-)
+engine, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+	ClusterFile: clusterFile,
+	Domains:     []string{"FRL"},
+})
+if err != nil {
+	return err
+}
+defer engine.Close()
 
-sqldriver.RegisterDomainIfNotExists("FRL")
-db, err := sql.Open("fdbsql", "fdbsql:///FRL/SHOP?schema=APP&cluster_file="+url.QueryEscape(clusterFile))
+db, err := engine.OpenDB("/FRL/SHOP", sqldriver.WithSchema("APP"))
 if err != nil {
 	return err
 }

@@ -15,6 +15,8 @@ import (
 
 	"fdb.dev/internal/dst"
 	"fdb.dev/internal/dstwire"
+	wire "fdb.dev/internal/fdbwire"
+	"fdb.dev/internal/relational/keyspace"
 	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/internal/simfdb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -98,13 +100,18 @@ func TestEngine_LifecycleAndNoGlobalCacheLeak(t *testing.T) {
 		t.Fatalf("count = %d, want 2", count)
 	}
 
-	// Verify Engine does not leak into process-global fdbDBCache.
-	fdbDBCache.Range(func(key, value any) bool {
-		if value == simDB {
-			t.Errorf("Engine leaked database into process-global fdbDBCache under key %q", key)
-		}
-		return true
-	})
+	// Verify Engine.OpenDB closing a single *sql.DB does not close the shared Engine.
+	if err := db.Close(); err != nil {
+		t.Fatalf("db.Close(): %v", err)
+	}
+	db2, err := eng.OpenDB("/ENG_LIFE/APP", WithSchema("S"))
+	if err != nil {
+		t.Fatalf("OpenDB after db.Close(): %v", err)
+	}
+	defer db2.Close()
+	if err := db2.QueryRowContext(ctx, "SELECT COUNT(*) FROM item").Scan(&count); err != nil || count != 2 {
+		t.Fatalf("SELECT COUNT after db.Close() = %d, %v, want 2", count, err)
+	}
 
 	metrics := eng.Metrics()
 	if len(metrics.StoreTimer) == 0 {
@@ -156,14 +163,18 @@ func TestEngine_ConstructorValidationAndOwnedClose(t *testing.T) {
 		t.Error("NewEngine with missing cluster file succeeded, want error")
 	}
 
-	// Verify ownedBackend is closed exactly once across repeated Engine.Close() calls.
+	// Verify ownedBackend is closed exactly once across repeated Engine.Close() calls
+	// when Engine opened the backend itself.
 	env := dst.NewSim(1003)
 	env.Buggify = dst.DisabledBuggifier()
 	backend := &closeCountingBackend{BackendDatabase: simfdb.New(env)}
-	eng := &Engine{
-		fdbDB:        recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(dstwire.Env(env)),
-		ownedBackend: backend,
-		planCache:    embedded.NewRelationalPlanCache(nil),
+	eng, err := NewEngine(EngineConfig{
+		Domains: []string{"FRL"},
+	}, withBackendOpener(func(string) (fdb.BackendDatabase, error) {
+		return backend, nil
+	}))
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
 	}
 	if err := eng.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -182,7 +193,7 @@ func TestEngine_DomainIsolationBetweenTwoEngines(t *testing.T) {
 
 	// Register a global domain in the same process to prove instance-scoped
 	// Engines do not inherit global domains.
-	RegisterDomainIfNotExists("ENG_GLOBAL_DOM")
+	keyspace.RegisterDomainIfNotExists("ENG_GLOBAL_DOM")
 
 	// Share one underlying SimFDB so catalog entries created by eng1 are visible
 	// in storage, testing that domain enforcement isolates the two engines.
@@ -623,5 +634,320 @@ func TestEngine_DisableStoreTimer(t *testing.T) {
 		DisableStoreTimer: true,
 	}, WithDatabase(newEngineSimDB(1010))); !errors.As(err, &ae) || ae.Code != api.ErrCodeInvalidParameter {
 		t.Errorf("StoreTimer + DisableStoreTimer = %v, want ErrCodeInvalidParameter", err)
+	}
+}
+
+func TestConnectorClose_OwnsAndClosesLegacyBackendWithoutLeak(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// 1. OpenConnector -> sql.OpenDB -> query -> db.Close() closes the
+	// connector-owned backend exactly once (no process-global cache leak).
+	env := dst.NewSim(2001)
+	env.Buggify = dst.DisabledBuggifier()
+	backend := &closeCountingBackend{BackendDatabase: simfdb.New(env)}
+
+	c, err := (&Driver{}).OpenConnector("fdbsql:///FRL/CONNCLOSE")
+	if err != nil {
+		t.Fatalf("OpenConnector: %v", err)
+	}
+	conn := c.(*Connector)
+	conn.openBackend = func(string) (fdb.BackendDatabase, error) { return backend, nil }
+
+	db := sql.OpenDB(conn)
+	if err := db.PingContext(ctx); err != nil {
+		t.Fatalf("PingContext: %v", err)
+	}
+	if got := backend.closes.Load(); got != 0 {
+		t.Fatalf("backend closed before db.Close(): %d", got)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("db.Close(): %v", err)
+	}
+	if got := backend.closes.Load(); got != 1 {
+		t.Fatalf("backend closes after db.Close() = %d, want 1", got)
+	}
+	// Connector.Close is idempotent.
+	if err := conn.Close(); err != nil {
+		t.Fatalf("second Connector.Close(): %v", err)
+	}
+	if got := backend.closes.Load(); got != 1 {
+		t.Fatalf("backend closes after second Close() = %d, want 1", got)
+	}
+	var ae *api.Error
+	if _, err := conn.Connect(ctx); !errors.As(err, &ae) || ae.Code != api.ErrCodeConnectionDoesNotExist {
+		t.Errorf("Connect after Close = %v, want ErrCodeConnectionDoesNotExist", err)
+	}
+
+	// 2. Closing an unused Connector (ownedBackend == nil) is clean and rejects later Connect.
+	cUnused, err := (&Driver{}).OpenConnector("fdbsql:///FRL/UNUSED")
+	if err != nil {
+		t.Fatalf("OpenConnector unused: %v", err)
+	}
+	unusedConn := cUnused.(*Connector)
+	unusedDB := sql.OpenDB(unusedConn)
+	if err := unusedDB.Close(); err != nil {
+		t.Fatalf("unused db.Close(): %v", err)
+	}
+	if _, err := unusedConn.Connect(ctx); !errors.As(err, &ae) || ae.Code != api.ErrCodeConnectionDoesNotExist {
+		t.Errorf("Connect on closed unused connector = %v, want ErrCodeConnectionDoesNotExist", err)
+	}
+
+	// 3. NewConnector does not own the caller's FDBDatabase: db.Close() leaves it open.
+	envCaller := dst.NewSim(2002)
+	envCaller.Buggify = dst.DisabledBuggifier()
+	callerBackend := &closeCountingBackend{BackendDatabase: simfdb.New(envCaller)}
+	callerDB := recordlayer.NewFDBDatabaseWithBackend(callerBackend).SetEnv(dstwire.Env(envCaller))
+	callerConn, err := NewConnector(callerDB, "fdbsql:///FRL/CALLER")
+	if err != nil {
+		t.Fatalf("NewConnector: %v", err)
+	}
+	callerSQL := sql.OpenDB(callerConn)
+	if err := callerSQL.PingContext(ctx); err != nil {
+		t.Fatalf("callerSQL.PingContext: %v", err)
+	}
+	if err := callerSQL.Close(); err != nil {
+		t.Fatalf("callerSQL.Close(): %v", err)
+	}
+	if got := callerBackend.closes.Load(); got != 0 {
+		t.Fatalf("NewConnector closed caller backend %d times, want 0", got)
+	}
+
+	// 4. Driver.Open(dsn) closes the owned backend when Conn.Close() runs, and surfaces Connect failures.
+	envOpen := dst.NewSim(2003)
+	envOpen.Buggify = dst.DisabledBuggifier()
+	openBackend := &closeCountingBackend{BackendDatabase: simfdb.New(envOpen)}
+	dOpen := &Driver{openBackend: func(string) (fdb.BackendDatabase, error) { return openBackend, nil }}
+	dc, err := dOpen.Open("fdbsql:///FRL/SINGLEOPEN")
+	if err != nil {
+		t.Fatalf("Driver.Open: %v", err)
+	}
+	if got := openBackend.closes.Load(); got != 0 {
+		t.Fatalf("Driver.Open closed backend before Conn.Close(): %d", got)
+	}
+	if err := dc.Close(); err != nil {
+		t.Fatalf("Conn.Close(): %v", err)
+	}
+	if got := openBackend.closes.Load(); got != 1 {
+		t.Fatalf("Driver.Open Conn.Close() closed backend %d times, want 1", got)
+	}
+
+	dFail := &Driver{openBackend: func(string) (fdb.BackendDatabase, error) { return nil, errors.New("open boom") }}
+	if _, err := dFail.Open("fdbsql:///FRL/FAILOPEN"); err == nil {
+		t.Fatal("Driver.Open with failing openBackend = nil, want error")
+	}
+
+	// 5. Engine.OpenDB closing a single pool does NOT close the shared Engine backend,
+	// whereas Engine.Close() closes the Engine-opened backend once.
+	envEng := dst.NewSim(2004)
+	envEng.Buggify = dst.DisabledBuggifier()
+	engBackend := &closeCountingBackend{BackendDatabase: simfdb.New(envEng)}
+	eng, err := NewEngine(EngineConfig{
+		Domains: []string{"FRL"},
+	}, withBackendOpener(func(string) (fdb.BackendDatabase, error) {
+		return engBackend, nil
+	}))
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	edb, err := eng.OpenDB("/FRL/SHARED")
+	if err != nil {
+		t.Fatalf("eng.OpenDB: %v", err)
+	}
+	if err := edb.Close(); err != nil {
+		t.Fatalf("edb.Close(): %v", err)
+	}
+	if got := engBackend.closes.Load(); got != 0 {
+		t.Fatalf("eng.OpenDB Close closed Engine backend %d times, want 0", got)
+	}
+	if err := eng.Close(); err != nil {
+		t.Fatalf("eng.Close(): %v", err)
+	}
+	if got := engBackend.closes.Load(); got != 1 {
+		t.Fatalf("eng.Close() closed Engine backend %d times, want 1", got)
+	}
+}
+
+type customIsErr struct {
+	target error
+	cause  error
+}
+
+func (e customIsErr) Error() string        { return "custom: " + e.target.Error() }
+func (e customIsErr) Is(target error) bool { return target == e.target }
+func (e customIsErr) Unwrap() error        { return e.cause }
+
+func TestIsRetryable(t *testing.T) {
+	t.Parallel()
+
+	var (
+		nilAPIErr  *api.Error
+		nilFDBErr  *fdb.Error
+		nilWireErr *wire.FDBError
+		nilRLErr   *recordlayer.RecordCoreRetriableTransactionError
+	)
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"plain error", errors.New("boom"), false},
+		{"typed nil *api.Error", nilAPIErr, false},
+		{"typed nil *fdb.Error", nilFDBErr, false},
+		{"typed nil *wire.FDBError", nilWireErr, false},
+		{"typed nil *RecordCoreRetriableTransactionError", nilRLErr, false},
+		{"wrapped typed nil *api.Error", fmt.Errorf("wrap: %w", nilAPIErr), false},
+		{"joined typed nil pointers", errors.Join(nilAPIErr, nilFDBErr), false},
+
+		// Context cancellation and deadlines must never be retried, even when wrapped with retryable errors
+		// or matched via a custom Is(error) bool method.
+		{"context.Canceled", context.Canceled, false},
+		{"context.DeadlineExceeded", context.DeadlineExceeded, false},
+		{"wrapped context.Canceled", fmt.Errorf("query: %w", context.Canceled), false},
+		{"wrapped context.DeadlineExceeded", fmt.Errorf("query: %w", context.DeadlineExceeded), false},
+		{"custom Is(context.Canceled)", customIsErr{target: context.Canceled}, false},
+		{"wrapped custom Is(context.DeadlineExceeded)", fmt.Errorf("query: %w", customIsErr{target: context.DeadlineExceeded}), false},
+		{"joined 40001 and custom Is(context.Canceled)", errors.Join(api.NewError(api.ErrCodeSerializationFailure, "conflict"), customIsErr{target: context.Canceled}), false},
+		{"custom Is(context.Canceled) wrapping 40001", customIsErr{target: context.Canceled, cause: api.NewError(api.ErrCodeSerializationFailure, "conflict")}, false},
+		{"40001 wrapping context.Canceled", api.WrapError(api.ErrCodeSerializationFailure, "conflict", context.Canceled), false},
+		{"40001 wrapping context.DeadlineExceeded", api.WrapError(api.ErrCodeSerializationFailure, "conflict", context.DeadlineExceeded), false},
+		{"joined 40001 and context.Canceled", errors.Join(api.NewError(api.ErrCodeSerializationFailure, "conflict"), context.Canceled), false},
+
+		// SQLSTATE 40001 is retryable across all producers.
+		{"bare 40001", api.NewError(api.ErrCodeSerializationFailure, "serialization failure"), true},
+		{"wrapped 40001", fmt.Errorf("tx: %w", api.NewError(api.ErrCodeSerializationFailure, "conflict")), true},
+		{"40001 with fdb 1020", api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction conflict", fdb.Error{Code: 1020}), true},
+		{"40001 with wire 1020", api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction conflict", &wire.FDBError{Code: 1020}), true},
+		{"MarkFDBTransactionTooOld", api.MarkFDBTransactionTooOld(fdb.Error{Code: 1007}), true},
+		{"NewTransactionTimeLimitError", api.NewTransactionTimeLimitError(4*time.Second, 5*time.Second), true},
+
+		// SQLSTATE 40003 (commit outcome unknown) must NOT be blindly retried even though it wraps FDB 1021.
+		{"bare 40003", api.NewError(api.ErrCodeStatementCompletionUnknown, "unknown"), false},
+		{"40003 wrapping fdb 1021", api.WrapError(api.ErrCodeStatementCompletionUnknown, "unknown", fdb.Error{Code: 1021}), false},
+		{"40003 wrapping wire 1021", api.WrapError(api.ErrCodeStatementCompletionUnknown, "unknown", &wire.FDBError{Code: 1021}), false},
+		{"wrapped 40003 wrapping fdb 1021", fmt.Errorf("commit: %w", api.WrapError(api.ErrCodeStatementCompletionUnknown, "unknown", fdb.Error{Code: 1021})), false},
+
+		// Non-retryable SQLSTATEs and non-retryable FDB codes.
+		{"53F00 transaction timeout (1031)", api.WrapError(api.ErrCodeTransactionTimeout, "timeout", fdb.Error{Code: 1031}), false},
+		{"25F01 transaction inactive (1025)", api.WrapError(api.ErrCodeTransactionInactive, "cancelled", fdb.Error{Code: 1025}), false},
+		{"25F01 used during commit (2017)", api.WrapError(api.ErrCodeTransactionInactive, "used during commit", fdb.Error{Code: 2017}), false},
+		{"23505 unique violation", api.NewError(api.ErrCodeUniqueConstraintViolation, "dup"), false},
+		{"54F01 execution limit", api.NewError(api.ErrCodeExecutionLimitReached, "limit"), false},
+		{"42601 syntax error", api.NewError(api.ErrCodeSyntaxError, "syntax"), false},
+		{"fdb 1031 raw", fdb.Error{Code: 1031}, false},
+		{"wire 1031 raw", &wire.FDBError{Code: 1031}, false},
+		{"fdb 2000 raw", fdb.Error{Code: 2000}, false},
+		{"fdb 2101 raw", fdb.Error{Code: 2101}, false},
+
+		// RecordCoreRetriableTransactionError and unmapped FDB retryable codes wrapped under *api.Error or fmt.Errorf.
+		{"RecordCoreRetriableTransactionError", &recordlayer.RecordCoreRetriableTransactionError{Message: "lock"}, true},
+		{"wrapped RecordCoreRetriableTransactionError", api.WrapError(api.ErrCodeInternalError, "open", &recordlayer.RecordCoreRetriableTransactionError{Message: "lock"}), true},
+		{"api InternalError wrapping fdb 1038", api.WrapError(api.ErrCodeInternalError, "locked", fdb.Error{Code: 1038}), true},
+		{"api InternalError wrapping wire 1009", api.WrapError(api.ErrCodeInternalError, "future", &wire.FDBError{Code: 1009}), true},
+		{"joined non-retryable and fdb 1020", errors.Join(errors.New("other"), fdb.Error{Code: 1020}), true},
+	}
+
+	// Definitely-not-committed FDB retryable codes align across fdb.Error, *fdb.Error, and *wire.FDBError.
+	for _, code := range []int{1007, 1009, 1020, 1037, 1038, 1042, 1051, 1078, 1213, 1223} {
+		if !fdb.IsRetryable(code) {
+			t.Fatalf("fdb.IsRetryable(%d) = false, want true", code)
+		}
+		cases = append(cases,
+			struct {
+				name string
+				err  error
+				want bool
+			}{fmt.Sprintf("fdb.Error %d", code), fdb.Error{Code: code}, true},
+			struct {
+				name string
+				err  error
+				want bool
+			}{fmt.Sprintf("*fdb.Error %d", code), &fdb.Error{Code: code}, true},
+			struct {
+				name string
+				err  error
+				want bool
+			}{fmt.Sprintf("wrapped *wire.FDBError %d", code), fmt.Errorf("op: %w", &wire.FDBError{Code: code}), true},
+		)
+	}
+
+	// Maybe-committed FDB codes (1021 commit_unknown_result, 1039 cluster_version_changed)
+	// MUST NEVER be retried by SQL callers in any error form.
+	for _, code := range []int{1021, 1039} {
+		cases = append(cases,
+			struct {
+				name string
+				err  error
+				want bool
+			}{fmt.Sprintf("bare fdb.Error %d", code), fdb.Error{Code: code}, false},
+			struct {
+				name string
+				err  error
+				want bool
+			}{fmt.Sprintf("bare *fdb.Error %d", code), &fdb.Error{Code: code}, false},
+			struct {
+				name string
+				err  error
+				want bool
+			}{fmt.Sprintf("bare *wire.FDBError %d", code), &wire.FDBError{Code: code}, false},
+			struct {
+				name string
+				err  error
+				want bool
+			}{fmt.Sprintf("wrapped fdb.Error %d", code), fmt.Errorf("op: %w", fdb.Error{Code: code}), false},
+			struct {
+				name string
+				err  error
+				want bool
+			}{fmt.Sprintf("wrapped *fdb.Error %d", code), fmt.Errorf("op: %w", error(&fdb.Error{Code: code})), false},
+			struct {
+				name string
+				err  error
+				want bool
+			}{fmt.Sprintf("wrapped *wire.FDBError %d", code), fmt.Errorf("op: %w", &wire.FDBError{Code: code}), false},
+			struct {
+				name string
+				err  error
+				want bool
+			}{fmt.Sprintf("api InternalError wrapping fdb.Error %d", code), api.WrapError(api.ErrCodeInternalError, "commit", fdb.Error{Code: code}), false},
+			struct {
+				name string
+				err  error
+				want bool
+			}{fmt.Sprintf("api InternalError wrapping *fdb.Error %d", code), api.WrapError(api.ErrCodeInternalError, "commit", &fdb.Error{Code: code}), false},
+			struct {
+				name string
+				err  error
+				want bool
+			}{fmt.Sprintf("api InternalError wrapping *wire.FDBError %d", code), api.WrapError(api.ErrCodeInternalError, "commit", &wire.FDBError{Code: code}), false},
+			struct {
+				name string
+				err  error
+				want bool
+			}{fmt.Sprintf("api 40001 wrapping fdb.Error %d", code), api.WrapError(api.ErrCodeSerializationFailure, "conflict", fdb.Error{Code: code}), false},
+			struct {
+				name string
+				err  error
+				want bool
+			}{fmt.Sprintf("joined other and fdb.Error %d", code), errors.Join(errors.New("other"), fdb.Error{Code: code}), false},
+			struct {
+				name string
+				err  error
+				want bool
+			}{fmt.Sprintf("joined fdb 1020 and *fdb.Error %d", code), errors.Join(fdb.Error{Code: 1020}, &fdb.Error{Code: code}), false},
+			struct {
+				name string
+				err  error
+				want bool
+			}{fmt.Sprintf("joined 40001 and *wire.FDBError %d", code), errors.Join(api.NewError(api.ErrCodeSerializationFailure, "conflict"), &wire.FDBError{Code: code}), false},
+		)
+	}
+
+	for _, tc := range cases {
+		if got := IsRetryable(tc.err); got != tc.want {
+			t.Errorf("%s: IsRetryable(%v) = %v, want %v", tc.name, tc.err, got, tc.want)
+		}
 	}
 }

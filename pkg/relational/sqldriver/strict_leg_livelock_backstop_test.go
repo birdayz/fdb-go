@@ -19,7 +19,6 @@ package sqldriver
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 	"testing"
@@ -31,10 +30,10 @@ import (
 
 func TestSim_StrictLegTinyBudget_FailsLoudNeverHangs(t *testing.T) {
 	t.Parallel()
-	key, _ := injectTickingSimFDB(t, 9317, time.Millisecond)
+	eng, _ := injectTickingSimFDB(t, 9317, time.Millisecond)
 	ctx := context.Background()
 
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/STRICTP?cluster_file=%s", key))
+	setup, err := eng.OpenDB("/FRL/STRICTP")
 	if err != nil {
 		t.Fatalf("open setup: %v", err)
 	}
@@ -45,7 +44,7 @@ func TestSim_StrictLegTinyBudget_FailsLoudNeverHangs(t *testing.T) {
 		"CREATE TABLE uniq (id BIGINT, k BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mustExecSQL(t, setup, ctx, "CREATE SCHEMA /FRL/strictp/s WITH TEMPLATE strictp_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/STRICTP?cluster_file=%s&schema=S", key))
+	db, err := eng.OpenDB("/FRL/STRICTP", WithSchema("S"))
 	if err != nil {
 		t.Fatalf("open query conn: %v", err)
 	}

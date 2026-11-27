@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/internal/relational/keyspace"
 	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/sqldriver"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 )
@@ -39,7 +39,7 @@ func BenchmarkLogExport(b *testing.B) {
 	if err := fdb.APIVersion(730); err != nil {
 		b.Fatal(err)
 	}
-	sqldriver.RegisterDomainIfNotExists(relDomain)
+	keyspace.RegisterDomainIfNotExists(relDomain)
 	raw, err := fdb.OpenDatabase(cluster)
 	if err != nil {
 		b.Fatal(err)

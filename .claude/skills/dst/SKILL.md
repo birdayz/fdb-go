@@ -157,8 +157,8 @@ bazelisk test //internal/simfdb/hunt:hunt_test --test_arg=-test.run=TestHuntSeed
   cfg) *Report`) is the extension point — implement one, drop it in a `Config`, and the whole loop /
   fault schedule / shrink / recording works unchanged. Two exist: the default **record-layer** workload
   (`recordWorkload`, chaos vocab + `chaos.Verify`) and **`sqlhunt.SQLWorkload`** (`internal/simfdb/hunt/sqlhunt`)
-  which drives the full parser→Cascades→executor stack over SimFDB via `sqldriver.RegisterBackend` +
-  `sql.Open("fdbsql", …cluster_file=<key>)`, runs idempotent DML (absolute `UPDATE`+`DELETE`) under the
+  which drives the full parser→Cascades→executor stack over SimFDB via `sqldriver.NewEngine(..., sqldriver.WithDatabase(...))` +
+  `engine.OpenDB(...)`, runs idempotent DML (absolute `UPDATE`+`DELETE`) under the
   fault schedule, and compares the table to a Go row-model. To add one: new package, implement `Workload`,
   build the seeded env with `hunt.NewSimEnv`, fingerprint with `hunt.Fingerprint`, export `Profiles()`,
   and add it to the `profiles` slice in `cmd/dst-hunt/main.go`. Design an oracle that avoids KNOWN-hazard

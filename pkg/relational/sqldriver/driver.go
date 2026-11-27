@@ -7,23 +7,25 @@
 // Package sqldriver implements a database/sql driver for the
 // FoundationDB Record Layer relational (SQL) layer.
 //
-// Importing this package registers the "fdbsql" driver. Register a domain,
-// then open a connection:
+// Construct an explicit Engine (with instance-scoped domains, StoreTimer,
+// default ResourceLimits, and Close lifecycle) and open a *sql.DB pool from it:
 //
-//	import (
-//	    "database/sql"
+//	engine, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+//	    ClusterFile: "/etc/foundationdb/fdb.cluster",
+//	    Domains:     []string{"FRL"},
+//	})
+//	if err != nil {
+//	    return err
+//	}
+//	defer engine.Close()
 //
-//	    "fdb.dev/pkg/relational/sqldriver"
-//	)
+//	db, err := engine.OpenDB("/FRL/MYDB", sqldriver.WithSchema("S"))
 //
-//	sqldriver.RegisterDomainIfNotExists("FRL")
-//	db, err := sql.Open("fdbsql", "fdbsql:///FRL/MYDB?cluster_file=/etc/foundationdb/fdb.cluster")
-//
-// A database path is /DOMAIN/DATABASE, and its domain must be registered
-// first, once per process, exactly as a Java program registers it with
-// RelationalKeyspaceProvider.instance().registerDomainIfNotExists. The driver
-// registers none itself (Java's engine neither); Java's server, CLI and
-// yaml-test runner use FRL. /__SYS, the system catalog, needs no domain.
+// A database path is /DOMAIN/DATABASE, and its domain must be registered on
+// the Engine (EngineConfig.Domains or Engine.RegisterDomain) before use; /__SYS,
+// the system catalog, needs no domain. Legacy sql.Open("fdbsql", dsn) also
+// registers the "fdbsql" driver on import and validates paths against the
+// process-global keyspace domain registry (keyspace.RegisterDomainIfNotExists).
 //
 // DSN shape mirrors Java's JDBC URI (minus the jdbc: prefix):
 //
@@ -57,16 +59,20 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"io"
 	"os"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"fdb.dev/internal/fdbclient"
+	wire "fdb.dev/internal/fdbwire"
 	"fdb.dev/internal/relational/catalog"
 	"fdb.dev/internal/relational/ddl"
 	"fdb.dev/internal/relational/keyspace"
 	"fdb.dev/internal/relational/relapi"
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/embedded"
@@ -78,106 +84,44 @@ const DriverName = "fdbsql"
 // defaultClusterFileEnv is the environment variable FDB checks for cluster file path.
 const defaultClusterFileEnv = "FDB_CLUSTER_FILE"
 
-// fdbDBCache caches FDB database handles by cluster-file path so repeated
-// sql.Open calls against the same cluster don't leak FDB connections.
-//
-// Why: database/sql creates a new driver.Connector per sql.Open, and each
-// Connector lazily opens its own FDB database (see initialize). database/sql
-// has no Connector-close hook, so once an *sql.DB is closed, the Connector
-// (and its FDB database handle) can only be released when GC eventually runs
-// — which doesn't release the underlying TCP connection to FDB. Workloads
-// that repeatedly open+close *sql.DB against the same cluster (e.g. plandiff's
-// per-corpus-entry ephemeral schemas) accumulate hundreds of leaked FDB
-// connections, eventually exhausting the testcontainer FDB's connection
-// table and causing i/o timeouts on subsequent opens.
-//
-// The cache is process-global, keyed by cluster-file path. Concurrent opens
-// against the same path race once and the loser drops its handle. Different
-// cluster files get distinct entries.
-var fdbDBCache sync.Map // clusterFile string -> *recordlayer.FDBDatabase
-
-// RegisterBackend associates an already-built FDBDatabase with a cluster_file key, so a DSN of
-// the form "fdbsql:///FRL/DB?cluster_file=<key>" drives the full SQL engine (parser → Cascades →
-// executor → record layer) over that backend instead of opening a real cluster. It returns a
-// func that unregisters the key.
-//
-// This is the seam for deterministic-simulation harnesses that back the SQL stack with SimFDB
-// (RFC-199 DST): register a SimFDB-backed FDBDatabase, open a `fdbsql` DSN against its key, and
-// the whole relational layer runs in-process with no Docker. It only exposes the cache
-// population that connect() already performs internally — production behavior is unchanged.
-func RegisterBackend(key string, db *recordlayer.FDBDatabase) (unregister func()) {
-	fdbDBCache.Store(key, db)
-	applyStoreTimer(key, db)
-	return func() { fdbDBCache.Delete(key) }
-}
-
-// storeTimers holds the record-layer StoreTimer armed for each cluster-file key, so a
-// timer can be installed before the corresponding FDBDatabase exists. Keyed the same way
-// as fdbDBCache and never removed: a scrape endpoint outlives any single *sql.DB, and
-// dropping the timer when the last connection closed would silently reset an operator's
-// counters mid-flight.
-var storeTimers sync.Map // clusterFile string -> *recordlayer.StoreTimer
-
-// applyStoreTimer installs the armed timer, if any, on a database just entered into the
-// cache. Called from both directions (here and EnableStoreTimer) precisely because either
-// can happen first; both write the same pointer, so the overlap is idempotent rather than
-// a race, and the two orderings between them leave no window where a database ends up
-// uninstrumented.
-func applyStoreTimer(clusterFile string, db *recordlayer.FDBDatabase) {
-	if t, ok := storeTimers.Load(clusterFile); ok {
-		db.SetTimer(t.(*recordlayer.StoreTimer))
-	}
-}
-
-// EnableStoreTimer arms record-layer instrumentation for the given cluster_file key and
-// returns the StoreTimer that collects it. Idempotent: repeat calls for the same key
-// return the same timer, so an operator never has to reason about who called first.
-//
-// This is the inversion the SQL path needs. The driver opens the record-layer database
-// itself and caches it privately (fdbDBCache), so a tenant service that speaks only
-// database/sql has no *recordlayer.FDBDatabase to call SetTimer on — and record-layer
-// counters were, in consequence, unobservable from SQL. Arming by key instead of by handle
-// works before the lazy Connect that opens the database:
-//
-//	timer := sqldriver.EnableStoreTimer("/etc/foundationdb/fdb.cluster")
-//	http.Handle("/metrics/recordlayer", rlmetrics.Handler(timer))
-//	db, _ := sql.Open("fdbsql", "fdbsql:///T/1?cluster_file=/etc/foundationdb/fdb.cluster")
-//
-// SCOPE — and this is the part that decides what the numbers mean. One timer per
-// cluster-file key means one timer per process, aggregating EVERY tenant, connection and
-// transaction that runs against that cluster. It is deliberately not per-tenant: tenant
-// count in a SaaS deployment is unbounded and operator-driven, so a tenant label would
-// make the cardinality of every record-layer metric grow with the customer list — the
-// classic way to take down a Prometheus. Per-tenant attribution is already available at a
-// layer that can afford it, because it is sampled and log-shaped rather than a live time
-// series: PlanGenerationLogger and ExecutionStatsLogger are installed per connection borrow
-// (ResetSession removes them) and close over the tenant ID (see docs/mt-saas.md §4).
-//
-// A caller who genuinely wants finer scope has it without a label: build the
-// *recordlayer.FDBDatabase, call SetTimer on it, and RegisterBackend it under a key of its
-// own. That keeps the cardinality decision explicit and in the caller's hands.
-func EnableStoreTimer(clusterFile string) *recordlayer.StoreTimer {
-	actual, _ := storeTimers.LoadOrStore(clusterFile, recordlayer.NewStoreTimer())
-	timer := actual.(*recordlayer.StoreTimer)
-	if db, ok := fdbDBCache.Load(clusterFile); ok {
-		db.(*recordlayer.FDBDatabase).SetTimer(timer)
-	}
-	return timer
-}
-
 // Driver is the database/sql/driver.Driver for fdbsql.
 //
 // Implements driver.Driver and driver.DriverContext.
-type Driver struct{}
+type Driver struct {
+	openBackend func(clusterFile string) (fdb.BackendDatabase, error)
+}
 
 // Open satisfies driver.Driver. Prefer OpenConnector (via
-// driver.DriverContext) for lazy connection pooling.
+// driver.DriverContext) for lazy connection pooling. The returned connection
+// owns its underlying connector and closes it when Conn.Close runs.
 func (d *Driver) Open(name string) (driver.Conn, error) {
 	c, err := d.OpenConnector(name)
 	if err != nil {
 		return nil, err
 	}
-	return c.Connect(context.Background())
+	conn, err := c.Connect(context.Background())
+	if err != nil {
+		_ = c.(*Connector).Close()
+		return nil, err
+	}
+	return &connectorClosingConn{
+		EmbeddedConnection: conn.(*embedded.EmbeddedConnection),
+		connector:          c.(*Connector),
+	}, nil
+}
+
+type connectorClosingConn struct {
+	*embedded.EmbeddedConnection
+	connector *Connector
+}
+
+func (c *connectorClosingConn) Close() error {
+	connErr := c.EmbeddedConnection.Close()
+	closeErr := c.connector.Close()
+	if connErr != nil {
+		return connErr
+	}
+	return closeErr
 }
 
 // OpenConnector parses the DSN and returns a lazy Connector.
@@ -215,18 +159,18 @@ func (d *Driver) OpenConnector(name string) (driver.Connector, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Connector{driver: d, dsn: dsn, connOpts: connOpts, readOnly: readOnly}, nil
+	return &Connector{driver: d, dsn: dsn, connOpts: connOpts, readOnly: readOnly, openBackend: d.openBackend}, nil
 }
 
 // NewConnector returns a Connector over db, an FDB database the caller opened
-// and owns, for sql.OpenDB. Unlike sql.Open it neither opens nor caches a
-// database by cluster file, and unlike RegisterBackend it touches no
-// process-global state: the connector, its catalog, keyspace and plan cache
-// are its own. dsn is an embedded DSN without cluster_file, for example
-// "fdbsql:///FRL/MYDB?schema=S&read_only=true"; its domain must be registered
-// (RegisterDomainIfNotExists) like any other. The DSN is checked here, as in
-// OpenConnector. A StoreTimer is the caller's to set on db
-// (EnableStoreTimer arms only databases the driver opens by cluster file).
+// and owns, for sql.OpenDB. Unlike sql.Open it neither opens nor owns a
+// database by cluster file: the connector, its catalog, keyspace and plan cache
+// are its own, and Connector.Close does not close db. dsn is an embedded DSN
+// without cluster_file, for example "fdbsql:///FRL/MYDB?schema=S&read_only=true";
+// its domain must be registered (keyspace.RegisterDomainIfNotExists) like any
+// other. The DSN is checked here, as in OpenConnector. A StoreTimer is the
+// caller's to set on db. For full engine lifecycle, instance-scoped domains, and
+// default resource limits, prefer NewEngine.
 func NewConnector(db *recordlayer.FDBDatabase, dsn string) (driver.Connector, error) {
 	if db == nil {
 		return nil, api.NewError(api.ErrCodeInvalidParameter, "NewConnector: nil FDB database")
@@ -264,9 +208,14 @@ type Connector struct {
 	// (EmbeddedConnection.SetReadOnly), and the connector's own catalog read
 	// at its start is cancelled too.
 	readOnly bool
-	// callerDB marks fdbDB as the caller's (NewConnector): initialize neither
-	// opens nor caches one.
+	// callerDB marks fdbDB as the caller's (NewConnector or Engine.Connector):
+	// initialize does not open a backend and Close does not close fdbDB.
 	callerDB bool
+
+	closeMu      sync.Mutex
+	closed       atomic.Bool
+	ownedBackend fdb.BackendDatabase // non-nil only when opened by Connector.initialize
+	openBackend  func(clusterFile string) (fdb.BackendDatabase, error)
 
 	init    initFlight
 	fdbDB   *recordlayer.FDBDatabase
@@ -394,12 +343,23 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 			"remote (gRPC) mode is not yet implemented")
 	}
+	if c.closed.Load() {
+		return nil, api.NewError(api.ErrCodeConnectionDoesNotExist, "connector is closed")
+	}
 	if c.engine != nil {
 		if c.engine.closed.Load() {
 			return nil, api.NewError(api.ErrCodeConnectionDoesNotExist, "engine is closed")
 		}
 	} else if err := c.init.do(ctx, c.initialize); err != nil {
 		return nil, err
+	}
+	c.closeMu.Lock()
+	defer c.closeMu.Unlock()
+	if c.closed.Load() {
+		return nil, api.NewError(api.ErrCodeConnectionDoesNotExist, "connector is closed")
+	}
+	if c.engine != nil && c.engine.closed.Load() {
+		return nil, api.NewError(api.ErrCodeConnectionDoesNotExist, "engine is closed")
 	}
 	conn := embedded.New(c.dsn.Path, c.fdbDB, c.cat, c.factory, c.ks)
 	if c.readOnly {
@@ -431,6 +391,9 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 // and wires catalog + factory. The catalog Bootstrap
 // (Initialize) is deferred — it runs on the first DDL transaction, not here.
 func (c *Connector) initialize(ctx context.Context) error {
+	if c.closed.Load() {
+		return api.NewError(api.ErrCodeConnectionDoesNotExist, "connector is closed")
+	}
 	clusterFile := c.dsn.Options["cluster_file"]
 	if clusterFile == "" {
 		clusterFile = os.Getenv(defaultClusterFileEnv)
@@ -444,62 +407,111 @@ func (c *Connector) initialize(ctx context.Context) error {
 	// open fail with a version mismatch. An app that legitimately selected its own
 	// version still wins — fdbclient.Open never overrides a set version.
 
-	// Reuse a previously-opened FDB database for this cluster file.
-	// See fdbDBCache docstring above for why this is necessary.
-	cacheKey := clusterFile
+	var (
+		openedBackend fdb.BackendDatabase
+		newDB         *recordlayer.FDBDatabase
+		planCache     *embedded.RelationalPlanCache
+		handedOff     bool
+	)
+	defer func() {
+		if handedOff {
+			return
+		}
+		if planCache != nil {
+			planCache.Invalidate()
+		}
+		if openedBackend != nil {
+			openedBackend.Close()
+		}
+	}()
+
 	if c.callerDB {
-		// NewConnector's database: the caller's, neither opened nor cached here.
-	} else if cached, ok := fdbDBCache.Load(cacheKey); ok {
-		c.fdbDB = cached.(*recordlayer.FDBDatabase)
+		newDB = c.fdbDB
 	} else {
 		// Leave an empty path for the selected backend's default lookup, including
 		// a present-but-empty environment variable and a local fdb.cluster.
-		rawDB, err := fdbclient.Open(clusterFile)
+		openFn := fdbclient.Open
+		if c.openBackend != nil {
+			openFn = c.openBackend
+		}
+		rawDB, err := openFn(clusterFile)
 		if err != nil {
 			return api.WrapError(api.ErrCodeInternalError, "open FDB database", err)
 		}
-		newDB := recordlayer.NewFDBDatabaseWithBackend(rawDB)
-		newDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
-		// LoadOrStore returns the previously-stored entry if a concurrent
-		// caller raced ahead. In that case, the FDB database we just
-		// opened becomes garbage; close it to release its TCP connection.
-		actual, loaded := fdbDBCache.LoadOrStore(cacheKey, newDB)
-		if loaded {
-			rawDB.Close()
-			c.fdbDB = actual.(*recordlayer.FDBDatabase)
-		} else {
-			c.fdbDB = newDB
+		openedBackend = rawDB
+		if c.closed.Load() {
+			return api.NewError(api.ErrCodeConnectionDoesNotExist, "connector is closed")
 		}
-	}
-
-	// Install the armed StoreTimer, if any. This runs AFTER the database is in the
-	// cache on every branch, which is what closes the ordering window against a
-	// concurrent EnableStoreTimer: that call stores the timer before it looks in the
-	// cache, so if it missed this database then this read cannot miss its timer.
-	if !c.callerDB {
-		applyStoreTimer(cacheKey, c.fdbDB)
+		newDB = recordlayer.NewFDBDatabaseWithBackend(rawDB)
+		newDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 	}
 
 	// root subspace is the empty subspace — all catalog and schema data lives
 	// under well-known tuple prefixes via RelationalKeyspace.
-	c.ks = keyspace.New(subspace.Sub())
-	cat, catErr := catalog.NewRecordLayerStoreCatalog(c.ks.CatalogSubspace())
+	ks := keyspace.New(subspace.Sub())
+	cat, catErr := catalog.NewRecordLayerStoreCatalog(ks.CatalogSubspace())
 	if catErr != nil {
 		return catErr
 	}
-	c.cat = cat
-	c.factory = ddl.NewRecordLayerMetadataOperationsFactoryWithKeyspace(cat, c.ks)
-	c.planCache = embedded.NewRelationalPlanCache(c.connOpts)
+	factory := ddl.NewRecordLayerMetadataOperationsFactoryWithKeyspace(cat, ks)
+	planCache = embedded.NewRelationalPlanCache(c.connOpts)
 	// Java's RecordLayerEngine.makeEngine: the engine's start plans every
 	// template's stored queries into the shared cache. Failures are logged,
 	// never returned.
-	var catalogReader keyspace.Runner = c.fdbDB
+	var catalogReader keyspace.Runner = newDB
 	if c.readOnly {
-		catalogReader = embedded.ReadOnlyRunner(c.fdbDB)
+		catalogReader = embedded.ReadOnlyRunner(newDB)
 	}
-	warmUp := warmUpCountsFromEmbedded(embedded.WarmStoredQueries(ctx, c.planCache,
-		embedded.StoredQueryTemplates(ctx, catalogReader, c.cat)))
+	warmUp := warmUpCountsFromEmbedded(embedded.WarmStoredQueries(ctx, planCache,
+		embedded.StoredQueryTemplates(ctx, catalogReader, cat)))
+
+	c.closeMu.Lock()
+	if c.closed.Load() {
+		c.closeMu.Unlock()
+		return api.NewError(api.ErrCodeConnectionDoesNotExist, "connector is closed")
+	}
+	if !c.callerDB {
+		c.fdbDB = newDB
+		c.ownedBackend = openedBackend
+	}
+	c.ks = ks
+	c.cat = cat
+	c.factory = factory
+	c.planCache = planCache
 	c.warmUp.Store(&warmUp)
+	handedOff = true
+	c.closeMu.Unlock()
+	return nil
+}
+
+// Close closes any FDB database handle and plan cache owned by this Connector
+// and rejects subsequent Connect calls. Callers must close all active
+// connections (or the owning *sql.DB) before calling Close, matching
+// database/sql semantics: closing a Connector while connections are still
+// active tears down its owned FDB handle underneath them. For Connectors
+// opened from an Engine or NewConnector, the Engine or caller retains
+// ownership of the underlying database, so Close leaves it open. Idempotent;
+// implements io.Closer so sql.DB.Close cleans up connectors created by
+// sql.Open.
+func (c *Connector) Close() error {
+	c.closeMu.Lock()
+	defer c.closeMu.Unlock()
+	if c.closed.Swap(true) {
+		return nil
+	}
+	owned := c.ownedBackend
+	c.ownedBackend = nil
+	var planCache *embedded.RelationalPlanCache
+	if c.engine == nil {
+		planCache = c.planCache
+		c.planCache = nil
+	}
+	if planCache != nil {
+		planCache.Invalidate()
+	}
+	if owned != nil {
+		owned.Close()
+	}
 	return nil
 }
 
@@ -520,17 +532,119 @@ var (
 	_ driver.Driver        = (*Driver)(nil)
 	_ driver.DriverContext = (*Driver)(nil)
 	_ driver.Connector     = (*Connector)(nil)
+	_ io.Closer            = (*Connector)(nil)
 )
 
 func init() {
 	sql.Register(DriverName, &Driver{})
 }
 
-// RegisterDomainIfNotExists makes /name/DATABASE a valid database path for
-// every connection of the process: Java's
-// RelationalKeyspaceProvider.instance().registerDomainIfNotExists. Idempotent
-// and additive; a path under an unregistered domain is INVALID_PATH where Java
-// resolves it (CREATE DATABASE, a schema's store, connecting to a schema).
-func RegisterDomainIfNotExists(name string) {
-	keyspace.RegisterDomainIfNotExists(name)
+// IsRetryable reports whether err represents a transient relational or FDB
+// failure that is safe to retry in a fresh SQL transaction.
+//
+// It walks err's unwrap tree (including joined errors) and returns false for
+// nil, typed-nil error pointers, context.Canceled, context.DeadlineExceeded
+// (including custom errors whose Is method matches them),
+// api.ErrCodeStatementCompletionUnknown (SQLSTATE 40003), and FDB
+// maybe-committed codes 1021 (commit_unknown_result) and 1039
+// (cluster_version_changed), because the transaction may already have
+// committed and a blind retry risks double-applying non-idempotent work. If
+// none of those vetoes appear anywhere in the error tree, it returns true
+// when the tree contains api.ErrCodeSerializationFailure (SQLSTATE 40001),
+// a *recordlayer.RecordCoreRetriableTransactionError, or a
+// definitely-not-committed retryable FDB error (fdb.Error, *fdb.Error, or
+// *wire.FDBError with fdb.IsRetryable(code) excluding 1021 and 1039).
+func IsRetryable(err error) bool {
+	if isNilError(err) || hasNonRetryableVeto(err) {
+		return false
+	}
+	return isRetryableNode(err)
+}
+
+func isNilError(err error) bool {
+	if err == nil {
+		return true
+	}
+	v := reflect.ValueOf(err)
+	return v.Kind() == reflect.Pointer && v.IsNil()
+}
+
+// isMaybeCommittedFDBCode reports FDB error codes where the transaction may
+// already have committed (MAYBE_COMMITTED in pkg/fdbgo/fdb/error.go).
+// SQL callers must not blindly retry them.
+func isMaybeCommittedFDBCode(code int) bool {
+	return code == 1021 || code == 1039
+}
+
+func hasNonRetryableVeto(err error) bool {
+	if isNilError(err) {
+		return false
+	}
+	if err == context.DeadlineExceeded || err == context.Canceled {
+		return true
+	}
+	if custom, ok := err.(interface{ Is(error) bool }); ok {
+		if custom.Is(context.DeadlineExceeded) || custom.Is(context.Canceled) {
+			return true
+		}
+	}
+	switch e := err.(type) {
+	case *api.Error:
+		if e.Code == api.ErrCodeStatementCompletionUnknown {
+			return true
+		}
+		return hasNonRetryableVeto(e.Cause)
+	case fdb.Error:
+		return isMaybeCommittedFDBCode(e.Code)
+	case *fdb.Error:
+		return isMaybeCommittedFDBCode(e.Code)
+	case *wire.FDBError:
+		return isMaybeCommittedFDBCode(e.Code)
+	}
+	switch u := err.(type) {
+	case interface{ Unwrap() []error }:
+		for _, branch := range u.Unwrap() {
+			if hasNonRetryableVeto(branch) {
+				return true
+			}
+		}
+	case interface{ Unwrap() error }:
+		return hasNonRetryableVeto(u.Unwrap())
+	}
+	return false
+}
+
+func isRetryableNode(err error) bool {
+	if isNilError(err) {
+		return false
+	}
+	switch e := err.(type) {
+	case *api.Error:
+		switch e.Code {
+		case api.ErrCodeSerializationFailure:
+			return true
+		case api.ErrCodeStatementCompletionUnknown:
+			return false
+		}
+		return isRetryableNode(e.Cause)
+	case fdb.Error:
+		return fdb.IsRetryable(e.Code) && !isMaybeCommittedFDBCode(e.Code)
+	case *fdb.Error:
+		return fdb.IsRetryable(e.Code) && !isMaybeCommittedFDBCode(e.Code)
+	case *wire.FDBError:
+		return fdb.IsRetryable(e.Code) && !isMaybeCommittedFDBCode(e.Code)
+	case *recordlayer.RecordCoreRetriableTransactionError:
+		return true
+	}
+	switch u := err.(type) {
+	case interface{ Unwrap() []error }:
+		for _, branch := range u.Unwrap() {
+			if isRetryableNode(branch) {
+				return true
+			}
+		}
+	case interface{ Unwrap() error }:
+		return isRetryableNode(u.Unwrap())
+	}
+	return false
 }

@@ -24,27 +24,24 @@ import (
 // injectSimFDBWithHandle is injectSimFDB plus the *simfdb.SimDB itself, so a test can place a
 // fault at an exact commit. Kept separate from injectSimFDB so the non-fault tests keep the
 // narrower helper.
-func injectSimFDBWithHandle(t *testing.T, seed uint64) (string, *simfdb.SimDB) {
+func injectSimFDBWithHandle(t *testing.T, seed uint64) (*Engine, *simfdb.SimDB) {
 	t.Helper()
 	env := dst.NewSim(seed)
 	env.Buggify = dst.DisabledBuggifier()
 	sim := simfdb.New(env)
 	simDB := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(dstwire.Env(env))
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
-	key := "sim://" + t.Name()
-	fdbDBCache.Store(key, simDB)
-	t.Cleanup(func() { fdbDBCache.Delete(key) })
-	return key, sim
+	return openSimEngine(t, simDB), sim
 }
 
 // openSimSchema builds a database + schema over a SimFDB backend and returns a connection
 // bound to the schema, plus the SimDB handle for fault placement.
 func openSimSchema(t *testing.T, seed uint64, tableDDL string) (*sql.DB, *simfdb.SimDB) {
 	t.Helper()
-	key, sim := injectSimFDBWithHandle(t, seed)
+	eng, sim := injectSimFDBWithHandle(t, seed)
 	ctx := context.Background()
 
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/SIMDB?cluster_file=%s", key))
+	setup, err := eng.OpenDB("/FRL/SIMDB")
 	if err != nil {
 		t.Fatalf("open setup: %v", err)
 	}
@@ -53,7 +50,7 @@ func openSimSchema(t *testing.T, seed uint64, tableDDL string) (*sql.DB, *simfdb
 	mustExecSQL(t, setup, ctx, "CREATE SCHEMA TEMPLATE tmpl "+tableDDL)
 	mustExecSQL(t, setup, ctx, "CREATE SCHEMA /FRL/simdb/s WITH TEMPLATE tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/SIMDB?cluster_file=%s&schema=S", key))
+	db, err := eng.OpenDB("/FRL/SIMDB", WithSchema("S"))
 	if err != nil {
 		t.Fatalf("open query conn: %v", err)
 	}

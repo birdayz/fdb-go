@@ -9,7 +9,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -35,26 +34,35 @@ import (
 const limitsDDL = "CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_a ON t(a) " +
 	"CREATE TABLE u (id BIGINT, a BIGINT, PRIMARY KEY (id))"
 
+func openLimitsConnectorDB(t *testing.T, simDB *recordlayer.FDBDatabase, dsn string) *sql.DB {
+	t.Helper()
+	c, err := NewConnector(simDB, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sql.OpenDB(c)
+}
+
 // openLimitsDB seeds eight rows on a fresh SimFDB backend and opens params on
 // it; the returned recorder sees every transaction the backend creates.
 func openLimitsDB(t *testing.T, params string) (*sql.DB, *txOptionRecorder) {
 	t.Helper()
+	db, rec, _ := openLimitsDBWithHandle(t, params)
+	return db, rec
+}
+
+func openLimitsDBWithHandle(t *testing.T, params string) (*sql.DB, *txOptionRecorder, *recordlayer.FDBDatabase) {
+	t.Helper()
 	// dsn_test has no testkit.Main to register the domain.
-	RegisterDomainIfNotExists("FRL")
+	keyspace.RegisterDomainIfNotExists("FRL")
 	env := dst.NewSim(221)
 	env.Buggify = dst.DisabledBuggifier()
 	rec := &txOptionRecorder{SimDB: simfdb.New(env)}
 	simDB := recordlayer.NewFDBDatabaseWithBackend(rec).SetEnv(dstwire.Env(env))
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
-	key := "sim://" + t.Name()
-	fdbDBCache.Store(key, simDB)
-	t.Cleanup(func() { fdbDBCache.Delete(key) })
 
 	ctx := context.Background()
-	setup, err := sql.Open(DriverName, "fdbsql:///FRL/SIMDB?cluster_file="+url.QueryEscape(key))
-	if err != nil {
-		t.Fatal(err)
-	}
+	setup := openLimitsConnectorDB(t, simDB, "fdbsql:///FRL/SIMDB")
 	defer setup.Close()
 	for _, stmt := range []string{
 		"CREATE DATABASE /FRL/simdb",
@@ -65,10 +73,7 @@ func openLimitsDB(t *testing.T, params string) (*sql.DB, *txOptionRecorder) {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
-	seed, err := sql.Open(DriverName, "fdbsql:///FRL/SIMDB?schema=S&cluster_file="+url.QueryEscape(key))
-	if err != nil {
-		t.Fatal(err)
-	}
+	seed := openLimitsConnectorDB(t, simDB, "fdbsql:///FRL/SIMDB?schema=S")
 	defer seed.Close()
 	for i := 0; i < 8; i++ {
 		for _, table := range []string{"t", "u"} {
@@ -77,12 +82,13 @@ func openLimitsDB(t *testing.T, params string) (*sql.DB, *txOptionRecorder) {
 			}
 		}
 	}
-	db, err := sql.Open(DriverName, "fdbsql:///FRL/SIMDB?schema=S&cluster_file="+url.QueryEscape(key)+"&"+params)
-	if err != nil {
-		t.Fatal(err)
+	dsn := "fdbsql:///FRL/SIMDB?schema=S"
+	if params != "" {
+		dsn += "&" + params
 	}
+	db := openLimitsConnectorDB(t, simDB, dsn)
 	t.Cleanup(func() { db.Close() })
-	return db, rec
+	return db, rec, simDB
 }
 
 func countRows(ctx context.Context, q interface {
@@ -359,9 +365,7 @@ func TestDSN_CatalogStoreFDBErrorsAreTranslated(t *testing.T) {
 // SQLSTATE, as every other relational entry point does.
 func TestDSN_RestoreTemplateVersionTranslatesFDBErrors(t *testing.T) {
 	t.Parallel()
-	_, rec := openLimitsDB(t, "")
-	v, _ := fdbDBCache.Load("sim://" + t.Name())
-	db := v.(*recordlayer.FDBDatabase)
+	_, rec, db := openLimitsDBWithHandle(t, "")
 	ks := keyspace.New(subspace.Sub())
 	cat, err := catalog.NewRecordLayerStoreCatalog(ks.CatalogSubspace())
 	if err != nil {

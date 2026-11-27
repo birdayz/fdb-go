@@ -19,8 +19,8 @@ package testkit
 //
 // WHY NO PRODUCTION KNOB WAS ADDED. The budget is already injectable: the
 // elapsed comparison is `env.Since(instant)` on the record layer's dst.Env
-// clock, and RegisterBackend is an exported seam for binding a database built
-// with a chosen Env to a cluster_file key. So the condition is forced by moving
+// clock, and sqldriver.WithDatabase binds a database built with a chosen Env
+// to an explicit sqldriver.Engine. So the condition is forced by moving
 // the CLOCK, exactly as sim_tx_budget_midpage_test.go does — the house
 // mechanism — rather than by making a production constant mutable. A knob added
 // only so a test can turn it is a knob production has to carry forever.

@@ -1635,9 +1635,17 @@ func testRelLogsMessagesSQL(t *testing.T, cluster string) {
 		t.Fatal(err)
 	}
 
-	sqldriver.RegisterDomainIfNotExists(relDomain)
+	eng, err := sqldriver.NewEngine(sqldriver.EngineConfig{
+		ClusterFile: cluster,
+		Domains:     []string{relDomain},
+		Limits:      sqldriver.UnboundedJavaCompatLimits(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
 	path, schema := relTenantPaths(e.Config().Run, e.Config().Tenant)
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", path, cluster, schema))
+	db, err := eng.OpenDB(path, sqldriver.WithSchema(schema))
 	if err != nil {
 		t.Fatal(err)
 	}
