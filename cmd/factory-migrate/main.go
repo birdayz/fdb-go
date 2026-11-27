@@ -89,15 +89,15 @@ func run(oldDir, outDir, censusPath string) (code int) {
 		return exitInfra
 	}
 
-	startCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	container, err := foundationdbtc.Run(startCtx, "")
-	cancel()
+	ctx := context.Background()
+	const dbPath = "/FRL/factorymigrate"
+	engine, setupDB, cleanup, err := startMigrateEngine(ctx, dbPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "INFRA: FDB container: %v\n", err)
+		fmt.Fprintf(os.Stderr, "INFRA: %v\n", err)
 		return exitInfra
 	}
 	defer func() {
-		if err := foundationdbtc.Terminate(context.Background(), container); err != nil {
+		if err := cleanup(); err != nil {
 			fmt.Fprintf(os.Stderr, "INFRA: %v\n", err)
 			if code == exitOK {
 				code = exitInfra
@@ -105,106 +105,21 @@ func run(oldDir, outDir, censusPath string) (code int) {
 		}
 	}()
 
-	ctx := context.Background()
-	clusterContent, err := container.ClusterFile(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "INFRA: cluster file: %v\n", err)
-		return exitInfra
-	}
-	tmp, err := os.CreateTemp("", "factory-migrate-*.cluster")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "INFRA: %v\n", err)
-		return exitInfra
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(clusterContent); err != nil {
-		fmt.Fprintf(os.Stderr, "INFRA: %v\n", err)
-		return exitInfra
-	}
-	tmp.Close()
-
-	const dbPath = "/FRL/factorymigrate"
-	engine, err := sqldriver.NewEngine(sqldriver.EngineConfig{
-		ClusterFile: tmp.Name(),
-		Domains:     []string{"FRL"},
-		Limits:      sqldriver.UnboundedJavaCompatLimits(),
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "INFRA: engine: %v\n", err)
-		return exitInfra
-	}
-	defer engine.Close()
-	setupDB, err := engine.OpenDB(strings.ToUpper(dbPath))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "INFRA: open: %v\n", err)
-		return exitInfra
-	}
-	defer setupDB.Close()
-	if _, err := setupDB.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
-		fmt.Fprintf(os.Stderr, "INFRA: create database: %v\n", err)
-		return exitInfra
-	}
-
 	batch, err := factory.NewBatch(outDir, len(old)+1)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "INFRA: %v\n", err)
 		return exitInfra
 	}
 
-	// Index the old corpus by (seed, qi, pj) and enumerate seeds in ascending
-	// order — the order the original batch swept them in, which is what makes
-	// the dedup walk reproduce the original outcome exactly.
-	byTriple := map[string]*oldScenario{}
-	seedDates := map[uint64]string{}
-	var seeds []uint64
-	for _, o := range old {
-		byTriple[tripleKey(o.seed, o.qi, o.pj)] = o
-		if prev, ok := seedDates[o.seed]; ok && prev != o.date {
-			fmt.Fprintf(os.Stderr, "INFRA: seed %d carries two dates (%s, %s); re-emission needs one date per seed\n", o.seed, prev, o.date)
-			return exitInfra
-		}
-		if _, ok := seedDates[o.seed]; !ok {
-			seeds = append(seeds, o.seed)
-		}
-		seedDates[o.seed] = o.date
+	byTriple, seedDates, seeds, err := indexOldCorpus(old)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "INFRA: %v\n", err)
+		return exitInfra
 	}
-	sort.Slice(seeds, func(i, j int) bool { return seeds[i] < seeds[j] })
 
-	matchedScenarios, matchedRows, matchedCells := 0, 0, 0
-	for n, seed := range seeds {
-		sweep := factory.Sweep{
-			SetupDB: setupDB,
-			DBPath:  dbPath,
-			OpenSchemaDB: func(schema string) (*sql.DB, error) {
-				return engine.OpenDB(strings.ToUpper(dbPath),
-					sqldriver.WithSchema(strings.ToUpper(schema)),
-					sqldriver.WithOptions(api.NoOptions().With(api.OptMaxTotalTaskCount, int(150000))))
-			},
-			Date: seedDates[seed],
-			Filter: func(c factory.Candidate) bool {
-				_, ok := byTriple[tripleKey(c.Seed, c.QueryIndex, c.ProjIndex)]
-				return ok
-			},
-		}
-		outcomes, err := sweep.RunSeed(ctx, seed, batch)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "INFRA: seed %d: %v\n", seed, err)
-			return exitInfra
-		}
-		for _, o := range outcomes {
-			ref := byTriple[tripleKey(o.Candidate.Seed, o.Candidate.QueryIndex, o.Candidate.ProjIndex)]
-			rows, cells, err := verify(ref, o)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "MISMATCH: %s: %v\n", ref.name, err)
-				return exitMismatch
-			}
-			matchedScenarios++
-			matchedRows += rows
-			matchedCells += cells
-		}
-		if (n+1)%50 == 0 {
-			fmt.Printf("  %d/%d seeds re-emitted (%d scenarios verified)\n", n+1, len(seeds), matchedScenarios)
-		}
+	matchedScenarios, matchedRows, matchedCells, code := reemitSeeds(ctx, setupDB, engine, dbPath, batch, seeds, seedDates, byTriple)
+	if code != exitOK {
+		return code
 	}
 
 	if matchedScenarios != len(old) {
@@ -231,6 +146,130 @@ func run(oldDir, outDir, censusPath string) (code int) {
 	fmt.Printf("re-emitted %d scenarios (%d rows, %d cells) into %d family files; census: %d scenarios, %d tests\n",
 		matchedScenarios, matchedRows, matchedCells, countFamilies(outDir), manifest.Census.Scenarios, manifest.Census.Tests)
 	return exitOK
+}
+
+func startMigrateEngine(ctx context.Context, dbPath string) (_ *sqldriver.Engine, _ *sql.DB, _ func() error, err error) {
+	startCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	container, err := foundationdbtc.Run(startCtx, "")
+	cancel()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("FDB container: %w", err)
+	}
+
+	var tmpPath string
+	var engine *sqldriver.Engine
+	var setupDB *sql.DB
+	cleanup := func() error {
+		if setupDB != nil {
+			setupDB.Close()
+		}
+		if engine != nil {
+			engine.Close()
+		}
+		if tmpPath != "" {
+			os.Remove(tmpPath)
+		}
+		return foundationdbtc.Terminate(context.Background(), container)
+	}
+	defer func() {
+		if err != nil {
+			if cerr := cleanup(); cerr != nil {
+				fmt.Fprintf(os.Stderr, "INFRA: %v\n", cerr)
+			}
+		}
+	}()
+
+	clusterContent, err := container.ClusterFile(ctx)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("cluster file: %w", err)
+	}
+	tmp, err := os.CreateTemp("", "factory-migrate-*.cluster")
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	tmpPath = tmp.Name()
+	if _, err := tmp.WriteString(clusterContent); err != nil {
+		return nil, nil, nil, err
+	}
+	tmp.Close()
+
+	engine, err = sqldriver.NewEngine(sqldriver.EngineConfig{
+		ClusterFile: tmpPath,
+		Domains:     []string{"FRL"},
+		Limits:      sqldriver.UnboundedJavaCompatLimits(),
+	})
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("engine: %w", err)
+	}
+	setupDB, err = engine.OpenDB(strings.ToUpper(dbPath))
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("open: %w", err)
+	}
+	if _, err := setupDB.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
+		return nil, nil, nil, fmt.Errorf("create database: %w", err)
+	}
+	return engine, setupDB, cleanup, nil
+}
+
+func indexOldCorpus(old []*oldScenario) (map[string]*oldScenario, map[uint64]string, []uint64, error) {
+	// Index the old corpus by (seed, qi, pj) and enumerate seeds in ascending
+	// order — the order the original batch swept them in, which is what makes
+	// the dedup walk reproduce the original outcome exactly.
+	byTriple := map[string]*oldScenario{}
+	seedDates := map[uint64]string{}
+	var seeds []uint64
+	for _, o := range old {
+		byTriple[tripleKey(o.seed, o.qi, o.pj)] = o
+		if prev, ok := seedDates[o.seed]; ok && prev != o.date {
+			return nil, nil, nil, fmt.Errorf("seed %d carries two dates (%s, %s); re-emission needs one date per seed", o.seed, prev, o.date)
+		}
+		if _, ok := seedDates[o.seed]; !ok {
+			seeds = append(seeds, o.seed)
+		}
+		seedDates[o.seed] = o.date
+	}
+	sort.Slice(seeds, func(i, j int) bool { return seeds[i] < seeds[j] })
+	return byTriple, seedDates, seeds, nil
+}
+
+func reemitSeeds(ctx context.Context, setupDB *sql.DB, engine *sqldriver.Engine, dbPath string, batch *factory.Batch, seeds []uint64, seedDates map[uint64]string, byTriple map[string]*oldScenario) (int, int, int, int) {
+	matchedScenarios, matchedRows, matchedCells := 0, 0, 0
+	for n, seed := range seeds {
+		sweep := factory.Sweep{
+			SetupDB: setupDB,
+			DBPath:  dbPath,
+			OpenSchemaDB: func(schema string) (*sql.DB, error) {
+				return engine.OpenDB(strings.ToUpper(dbPath),
+					sqldriver.WithSchema(strings.ToUpper(schema)),
+					sqldriver.WithOptions(api.NoOptions().With(api.OptMaxTotalTaskCount, int(150000))))
+			},
+			Date: seedDates[seed],
+			Filter: func(c factory.Candidate) bool {
+				_, ok := byTriple[tripleKey(c.Seed, c.QueryIndex, c.ProjIndex)]
+				return ok
+			},
+		}
+		outcomes, err := sweep.RunSeed(ctx, seed, batch)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "INFRA: seed %d: %v\n", seed, err)
+			return 0, 0, 0, exitInfra
+		}
+		for _, o := range outcomes {
+			ref := byTriple[tripleKey(o.Candidate.Seed, o.Candidate.QueryIndex, o.Candidate.ProjIndex)]
+			rows, cells, err := verify(ref, o)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "MISMATCH: %s: %v\n", ref.name, err)
+				return 0, 0, 0, exitMismatch
+			}
+			matchedScenarios++
+			matchedRows += rows
+			matchedCells += cells
+		}
+		if (n+1)%50 == 0 {
+			fmt.Printf("  %d/%d seeds re-emitted (%d scenarios verified)\n", n+1, len(seeds), matchedScenarios)
+		}
+	}
+	return matchedScenarios, matchedRows, matchedCells, exitOK
 }
 
 func tripleKey(seed uint64, qi, pj int) string { return fmt.Sprintf("%d/%d/%d", seed, qi, pj) }
