@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"fdb.dev/internal/recordlayer/vectorcodec"
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -75,48 +76,13 @@ func spfreshMergeFine(ctx context.Context, db *recordlayer.FDBDatabase, s *spfre
 			return nil
 		}
 
-		// Targets: the nearest ACTIVE siblings IN THE SAME CELL, found by
-		// loading the cell directly — the posting HDR can carry only one
-		// cellID, so cross-cell targets would be invisible to stale queries
-		// resolving the FORWARD; and filtering a GLOBAL
-		// top-K route down to the cell could come up empty even when the cell
-		// has perfectly good siblings, making an under-Lmin posting a
-		// permanent non-candidate. The REAL cell read also
-		// fences a racing coarse split of this cell.
 		vec, err := cent.vector()
 		if err != nil {
 			return err
 		}
-		cellRows, _, _, lerr := spfreshLoadCellForWrite(tx, s, cellID)
-		if lerr != nil {
-			return lerr
-		}
-		var targets []spfreshMergeTarget
-		for _, r := range cellRows {
-			if r.fineID == fineID || r.row.state != spfreshStateActive {
-				continue
-			}
-			tvec, verr := r.row.vector()
-			if verr != nil {
-				return verr
-			}
-			targets = append(targets, spfreshMergeTarget{fineID: r.fineID, vec: tvec})
-		}
-		// Nearest-first by distance to the merged centroid, capped at Kn.
-		// Distances precomputed once — the comparator recomputing them made
-		// the insertion sort O(n²·D) per merge for nothing.
-		d2s := make([]float64, len(targets))
-		for i := range targets {
-			d2s[i] = spfreshSquaredDistance(vec, targets[i].vec)
-		}
-		for i := 1; i < len(targets); i++ {
-			for j := i; j > 0 && d2s[j] < d2s[j-1]; j-- {
-				targets[j], targets[j-1] = targets[j-1], targets[j]
-				d2s[j], d2s[j-1] = d2s[j-1], d2s[j]
-			}
-		}
-		if len(targets) > config.Kn {
-			targets = targets[:config.Kn]
+		targets, err := spfreshMergeFindTargets(tx, s, config, cellID, fineID, vec)
+		if err != nil {
+			return err
 		}
 		if len(targets) == 0 {
 			// No ACTIVE sibling in this cell to drain into (last centroid
@@ -127,86 +93,8 @@ func spfreshMergeFine(ctx context.Context, db *recordlayer.FDBDatabase, s *spfre
 			return nil
 		}
 
-		// Drain: REAL posting read (the fence), per-pk membership-serialized
-		// moves.
-		entries, err := spfreshLoadPostingForSplit(tx, s, fineID)
-		if err != nil {
+		if err := spfreshMergeDrain(tx, s, config, quantizer, cellID, fineID, targets); err != nil {
 			return err
-		}
-		counterDeltas := map[int64]int64{}
-		for _, e := range entries {
-			mem, merr := spfreshReadMembership(tx, s, e.pk)
-			if merr != nil {
-				if errors.Is(merr, errSPFreshNotFound) {
-					return fmt.Errorf("spfresh merge: posting %d member %v has no membership row", fineID, e.pk)
-				}
-				return merr
-			}
-			newSet := make([]int64, 0, len(mem))
-			for _, id := range mem {
-				if id != fineID {
-					newSet = append(newSet, id)
-				}
-			}
-			// The member's vector, for nearest-target choice and residual
-			// encode. Sidecar is authoritative; without it we cannot re-encode.
-			data, gerr := tx.Get(s.sidecarKey(e.pk)).Get()
-			if gerr != nil {
-				return gerr
-			}
-			if data == nil {
-				return fmt.Errorf("spfresh merge: posting %d member %v has no sidecar vector", fineID, e.pk)
-			}
-			v, verr := vectorcodec.Deserialize(data)
-			if verr != nil {
-				return verr
-			}
-			if len(newSet) == 0 || !spfreshAnyIn(newSet, targets) {
-				// Move the copy to the nearest target. The entry condition
-				// guarantees NO target is in the remaining copy-set and
-				// targets is non-empty, so a best always exists — replication
-				// can never hit zero here.
-				best, bestD := targets[0].fineID, spfreshSquaredDistance(v, targets[0].vec)
-				bestVec := targets[0].vec
-				for _, t := range targets[1:] {
-					if d := spfreshSquaredDistance(v, t.vec); d < bestD {
-						best, bestD, bestVec = t.fineID, d, t.vec
-					}
-				}
-				residual := make([]float64, len(v))
-				for d := range v {
-					residual[d] = v[d] - bestVec[d]
-				}
-				tx.Set(s.postingKey(best, e.pk), quantizer.Encode(residual))
-				counterDeltas[best]++
-				newSet = append(newSet, best)
-			}
-			tx.Set(s.membershipKey(e.pk), encodeMembership(newSet))
-		}
-		// A drain target can cross Lmax right here, and post-quiescence
-		// nothing re-probes it (insert probes are the only other trigger site
-		// once writes stop) — file the split with the drain, honoring the
-		// same csplit-pause guard as every other issuance site (the targets
-		// live in this cell; a pausing coarse split re-files for oversized
-		// rows it moves).
-		paused, perr := spfreshCSplitPaused(tx, s, cellID)
-		if perr != nil {
-			return perr
-		}
-		for id, delta := range counterDeltas {
-			spfreshCounterAdd(tx, s, spfreshCounterFine, id, delta)
-			if paused {
-				continue
-			}
-			count, cerr := spfreshCounterReadSnapshot(tx, s, spfreshCounterFine, id)
-			if cerr != nil {
-				return cerr
-			}
-			if count > int64(config.Lmax) {
-				if _, terr := spfreshTaskSetIfAbsent(tx, s, spfreshTaskSplit, id); terr != nil {
-					return terr
-				}
-			}
 		}
 
 		// Retire the posting behind a FORWARD to the two nearest targets.
@@ -235,6 +123,134 @@ func spfreshMergeFine(ctx context.Context, db *recordlayer.FDBDatabase, s *spfre
 		return spfreshOutcomeSkipped, err
 	}
 	return outcome, nil
+}
+
+// spfreshMergeFindTargets finds the nearest ACTIVE siblings IN THE SAME CELL
+// by loading the cell directly — the posting HDR can carry only one cellID, so
+// cross-cell targets would be invisible to stale queries resolving the FORWARD;
+// and filtering a GLOBAL top-K route down to the cell could come up empty even
+// when the cell has perfectly good siblings, making an under-Lmin posting a
+// permanent non-candidate. The REAL cell read also fences a racing coarse split
+// of this cell.
+func spfreshMergeFindTargets(tx fdb.WritableTransaction, s *spfreshStorage, config SPFreshConfig, cellID, fineID int64, vec []float64) ([]spfreshMergeTarget, error) {
+	cellRows, _, _, lerr := spfreshLoadCellForWrite(tx, s, cellID)
+	if lerr != nil {
+		return nil, lerr
+	}
+	var targets []spfreshMergeTarget
+	for _, r := range cellRows {
+		if r.fineID == fineID || r.row.state != spfreshStateActive {
+			continue
+		}
+		tvec, verr := r.row.vector()
+		if verr != nil {
+			return nil, verr
+		}
+		targets = append(targets, spfreshMergeTarget{fineID: r.fineID, vec: tvec})
+	}
+	// Nearest-first by distance to the merged centroid, capped at Kn.
+	// Distances precomputed once — the comparator recomputing them made
+	// the insertion sort O(n²·D) per merge for nothing.
+	d2s := make([]float64, len(targets))
+	for i := range targets {
+		d2s[i] = spfreshSquaredDistance(vec, targets[i].vec)
+	}
+	for i := 1; i < len(targets); i++ {
+		for j := i; j > 0 && d2s[j] < d2s[j-1]; j-- {
+			targets[j], targets[j-1] = targets[j-1], targets[j]
+			d2s[j], d2s[j-1] = d2s[j-1], d2s[j]
+		}
+	}
+	if len(targets) > config.Kn {
+		targets = targets[:config.Kn]
+	}
+	return targets, nil
+}
+
+// spfreshMergeDrain performs the REAL posting read (the fence) and per-pk
+// membership-serialized moves, then updates target counters and files splits
+// for targets that crossed Lmax.
+func spfreshMergeDrain(tx fdb.WritableTransaction, s *spfreshStorage, config SPFreshConfig, quantizer *spfreshQuantizer, cellID, fineID int64, targets []spfreshMergeTarget) error {
+	entries, err := spfreshLoadPostingForSplit(tx, s, fineID)
+	if err != nil {
+		return err
+	}
+	counterDeltas := map[int64]int64{}
+	for _, e := range entries {
+		mem, merr := spfreshReadMembership(tx, s, e.pk)
+		if merr != nil {
+			if errors.Is(merr, errSPFreshNotFound) {
+				return fmt.Errorf("spfresh merge: posting %d member %v has no membership row", fineID, e.pk)
+			}
+			return merr
+		}
+		newSet := make([]int64, 0, len(mem))
+		for _, id := range mem {
+			if id != fineID {
+				newSet = append(newSet, id)
+			}
+		}
+		// The member's vector, for nearest-target choice and residual
+		// encode. Sidecar is authoritative; without it we cannot re-encode.
+		data, gerr := tx.Get(s.sidecarKey(e.pk)).Get()
+		if gerr != nil {
+			return gerr
+		}
+		if data == nil {
+			return fmt.Errorf("spfresh merge: posting %d member %v has no sidecar vector", fineID, e.pk)
+		}
+		v, verr := vectorcodec.Deserialize(data)
+		if verr != nil {
+			return verr
+		}
+		if len(newSet) == 0 || !spfreshAnyIn(newSet, targets) {
+			// Move the copy to the nearest target. The entry condition
+			// guarantees NO target is in the remaining copy-set and
+			// targets is non-empty, so a best always exists — replication
+			// can never hit zero here.
+			best, bestD := targets[0].fineID, spfreshSquaredDistance(v, targets[0].vec)
+			bestVec := targets[0].vec
+			for _, t := range targets[1:] {
+				if d := spfreshSquaredDistance(v, t.vec); d < bestD {
+					best, bestD, bestVec = t.fineID, d, t.vec
+				}
+			}
+			residual := make([]float64, len(v))
+			for d := range v {
+				residual[d] = v[d] - bestVec[d]
+			}
+			tx.Set(s.postingKey(best, e.pk), quantizer.Encode(residual))
+			counterDeltas[best]++
+			newSet = append(newSet, best)
+		}
+		tx.Set(s.membershipKey(e.pk), encodeMembership(newSet))
+	}
+	// A drain target can cross Lmax right here, and post-quiescence
+	// nothing re-probes it (insert probes are the only other trigger site
+	// once writes stop) — file the split with the drain, honoring the
+	// same csplit-pause guard as every other issuance site (the targets
+	// live in this cell; a pausing coarse split re-files for oversized
+	// rows it moves).
+	paused, perr := spfreshCSplitPaused(tx, s, cellID)
+	if perr != nil {
+		return perr
+	}
+	for id, delta := range counterDeltas {
+		spfreshCounterAdd(tx, s, spfreshCounterFine, id, delta)
+		if paused {
+			continue
+		}
+		count, cerr := spfreshCounterReadSnapshot(tx, s, spfreshCounterFine, id)
+		if cerr != nil {
+			return cerr
+		}
+		if count > int64(config.Lmax) {
+			if _, terr := spfreshTaskSetIfAbsent(tx, s, spfreshTaskSplit, id); terr != nil {
+				return terr
+			}
+		}
+	}
+	return nil
 }
 
 // spfreshMergeTarget is one drain destination: an ACTIVE sibling centroid.

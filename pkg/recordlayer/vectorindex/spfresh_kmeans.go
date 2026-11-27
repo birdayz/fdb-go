@@ -127,9 +127,61 @@ func spfreshKMeansCore(vectors [][]float64, k int, seed int64, maxIters, workers
 	dims := len(vectors[0])
 	rng := &splittableRandom{seed: seed, gamma: goldenGamma}
 
-	// k-means++ seeding: first centroid uniform, then proportional to squared
-	// distance from the nearest chosen centroid.
-	centroids = make([][]float64, 0, k)
+	centroids = spfreshKMeansSeed(vectors, k, rng, chunked)
+
+	// Lloyd iterations.
+	assign = make([]int, n)
+	counts := make([]int, k)
+	sums := make([][]float64, k)
+	for i := range sums {
+		sums[i] = make([]float64, dims)
+	}
+	numChunks := (n + chunkSize - 1) / chunkSize
+	// Partial-reduction buffers live OUTSIDE the iteration loop: at the
+	// coarse-1M shape (62 chunks × k≈3k × 128 dims) reallocating them every
+	// Lloyd iteration churned ~190MB per iteration through the allocator.
+	// Zeroed at chunk start each iteration instead; per-cluster rows are
+	// still allocated lazily (most chunks see a small subset of clusters)
+	// and zeroing is unconditional once allocated — a row whose cluster
+	// skips an iteration must not leak stale sums into a later one.
+	partialCounts := make([][]int, numChunks)
+	partialSums := make([][][]float64, numChunks)
+	for chunk := range partialCounts {
+		partialCounts[chunk] = make([]int, k)
+		partialSums[chunk] = make([][]float64, k)
+	}
+	converged := false
+	for iter := 0; iter < maxIters; iter++ {
+		changed := spfreshKMeansAssign(vectors, centroids, assign, chunked)
+		// Converged: stop when <= convergeThresh points were reassigned. With
+		// convergeThresh==0 this is the exact "no change" stop (splits, tests).
+		// With the build fraction it also trims the long micro-refinement tail
+		// at high k that doesn't move recall (RFC-102). On this break `assign` is
+		// already current for `centroids` (the assignment phase above ran against
+		// them and no centroid update follows), so the final pass below is
+		// skipped — re-running it would give back one full O(n·k) Lloyd
+		// assignment, the exact work this early-stop exists to save.
+		if iter > 0 && changed <= convergeThresh {
+			converged = true
+			break
+		}
+		spfreshKMeansUpdateCentroids(vectors, centroids, sums, assign, counts, partialCounts, partialSums, k, dims, numChunks, chunked)
+	}
+	// Final assignment against the final centroids — needed only when the loop
+	// exhausted maxIters without converging (the last iteration updated centroids
+	// after assigning, so `assign` is stale for them). On an early-stop break
+	// `assign` is already current for `centroids`, so this is skipped.
+	if !converged {
+		spfreshKMeansAssign(vectors, centroids, assign, chunked)
+	}
+	return centroids, assign
+}
+
+// spfreshKMeansSeed runs k-means++ seeding: first centroid uniform, then
+// proportional to squared distance from the nearest chosen centroid.
+func spfreshKMeansSeed(vectors [][]float64, k int, rng *splittableRandom, chunked func(func(int, int, int))) [][]float64 {
+	n := len(vectors)
+	centroids := make([][]float64, 0, k)
 	first := int(uint64(rng.nextLong()) % uint64(n))
 	centroids = append(centroids, append([]float64(nil), vectors[first]...))
 
@@ -170,143 +222,97 @@ func spfreshKMeansCore(vectors [][]float64, k int, seed int64, maxIters, workers
 			}
 		})
 	}
+	return centroids
+}
 
-	// Lloyd iterations.
-	assign = make([]int, n)
-	counts := make([]int, k)
-	sums := make([][]float64, k)
-	for i := range sums {
-		sums[i] = make([]float64, dims)
-	}
-	numChunks := (n + chunkSize - 1) / chunkSize
-	// Partial-reduction buffers live OUTSIDE the iteration loop: at the
-	// coarse-1M shape (62 chunks × k≈3k × 128 dims) reallocating them every
-	// Lloyd iteration churned ~190MB per iteration through the allocator.
-	// Zeroed at chunk start each iteration instead; per-cluster rows are
-	// still allocated lazily (most chunks see a small subset of clusters)
-	// and zeroing is unconditional once allocated — a row whose cluster
-	// skips an iteration must not leak stale sums into a later one.
-	partialCounts := make([][]int, numChunks)
-	partialSums := make([][][]float64, numChunks)
-	for chunk := range partialCounts {
-		partialCounts[chunk] = make([]int, k)
-		partialSums[chunk] = make([][]float64, k)
-	}
-	converged := false
-	for iter := 0; iter < maxIters; iter++ {
-		// Assignment: index-disjoint writes, order-independent — parallel.
-		// changed is the per-iteration reassignment count (an order-independent
-		// sum), used for the convergence test below.
-		var changed atomic.Int64
-		chunked(func(_, lo, hi int) {
-			chunkChanged := int64(0)
-			for i := lo; i < hi; i++ {
-				v := vectors[i]
-				best, bestD := 0, math.Inf(1)
-				for c := range centroids {
-					if d := spfreshSquaredDistance(v, centroids[c]); d < bestD {
-						best, bestD = c, d
-					}
-				}
-				if assign[i] != best {
-					chunkChanged++
-					assign[i] = best
+// spfreshKMeansAssign runs Lloyd assignment in parallel (index-disjoint writes,
+// order-independent) and returns the per-iteration reassignment count (an
+// order-independent sum).
+func spfreshKMeansAssign(vectors, centroids [][]float64, assign []int, chunked func(func(int, int, int))) int64 {
+	var changed atomic.Int64
+	chunked(func(_, lo, hi int) {
+		chunkChanged := int64(0)
+		for i := lo; i < hi; i++ {
+			v := vectors[i]
+			best, bestD := 0, math.Inf(1)
+			for c := range centroids {
+				if d := spfreshSquaredDistance(v, centroids[c]); d < bestD {
+					best, bestD = c, d
 				}
 			}
-			changed.Add(chunkChanged)
-		})
-		// Converged: stop when <= convergeThresh points were reassigned. With
-		// convergeThresh==0 this is the exact "no change" stop (splits, tests).
-		// With the build fraction it also trims the long micro-refinement tail
-		// at high k that doesn't move recall (RFC-102). On this break `assign` is
-		// already current for `centroids` (the assignment phase above ran against
-		// them and no centroid update follows), so the final pass below is
-		// skipped — re-running it would give back one full O(n·k) Lloyd
-		// assignment, the exact work this early-stop exists to save.
-		if iter > 0 && changed.Load() <= convergeThresh {
-			converged = true
-			break
-		}
-		// Accumulation: per-chunk partials merged in CHUNK ORDER, so the
-		// float addition order is fixed by the constant chunk size —
-		// deterministic on any machine, any worker count.
-		chunked(func(chunk, lo, hi int) {
-			pc := partialCounts[chunk]
-			ps := partialSums[chunk]
-			for c := range pc {
-				pc[c] = 0
-				if ps[c] != nil {
-					for d := range ps[c] {
-						ps[c][d] = 0
-					}
-				}
-			}
-			for i := lo; i < hi; i++ {
-				c := assign[i]
-				pc[c]++
-				if ps[c] == nil {
-					ps[c] = make([]float64, dims)
-				}
-				for d, x := range vectors[i] {
-					ps[c][d] += x
-				}
-			}
-		})
-		for c := range sums {
-			counts[c] = 0
-			for d := range sums[c] {
-				sums[c][d] = 0
-			}
-		}
-		for chunk := 0; chunk < numChunks; chunk++ {
-			for c := 0; c < k; c++ {
-				counts[c] += partialCounts[chunk][c]
-				if partialSums[chunk][c] != nil {
-					for d, x := range partialSums[chunk][c] {
-						sums[c][d] += x
-					}
-				}
-			}
-		}
-		for c := range centroids {
-			if counts[c] == 0 {
-				// Empty cluster: re-seed from the point farthest from its
-				// current centroid (deterministic).
-				far, farD := 0, -1.0
-				for i, v := range vectors {
-					if d := spfreshSquaredDistance(v, centroids[assign[i]]); d > farD {
-						far, farD = i, d
-					}
-				}
-				copy(centroids[c], vectors[far])
-				assign[far] = c
-				continue
-			}
-			inv := 1.0 / float64(counts[c])
-			for d := range centroids[c] {
-				centroids[c][d] = sums[c][d] * inv
-			}
-		}
-	}
-	// Final assignment against the final centroids — needed only when the loop
-	// exhausted maxIters without converging (the last iteration updated centroids
-	// after assigning, so `assign` is stale for them). On an early-stop break
-	// `assign` is already current for `centroids`, so this is skipped.
-	if !converged {
-		chunked(func(_, lo, hi int) {
-			for i := lo; i < hi; i++ {
-				v := vectors[i]
-				best, bestD := 0, math.Inf(1)
-				for c := range centroids {
-					if d := spfreshSquaredDistance(v, centroids[c]); d < bestD {
-						best, bestD = c, d
-					}
-				}
+			if assign[i] != best {
+				chunkChanged++
 				assign[i] = best
 			}
-		})
+		}
+		changed.Add(chunkChanged)
+	})
+	return changed.Load()
+}
+
+// spfreshKMeansUpdateCentroids accumulates per-chunk partials merged in CHUNK
+// ORDER (so the float addition order is fixed by the constant chunk size —
+// deterministic on any machine, any worker count) and updates centroids.
+func spfreshKMeansUpdateCentroids(vectors, centroids, sums [][]float64, assign, counts []int,
+	partialCounts [][]int, partialSums [][][]float64, k, dims, numChunks int, chunked func(func(int, int, int)),
+) {
+	chunked(func(chunk, lo, hi int) {
+		pc := partialCounts[chunk]
+		ps := partialSums[chunk]
+		for c := range pc {
+			pc[c] = 0
+			if ps[c] != nil {
+				for d := range ps[c] {
+					ps[c][d] = 0
+				}
+			}
+		}
+		for i := lo; i < hi; i++ {
+			c := assign[i]
+			pc[c]++
+			if ps[c] == nil {
+				ps[c] = make([]float64, dims)
+			}
+			for d, x := range vectors[i] {
+				ps[c][d] += x
+			}
+		}
+	})
+	for c := range sums {
+		counts[c] = 0
+		for d := range sums[c] {
+			sums[c][d] = 0
+		}
 	}
-	return centroids, assign
+	for chunk := 0; chunk < numChunks; chunk++ {
+		for c := 0; c < k; c++ {
+			counts[c] += partialCounts[chunk][c]
+			if partialSums[chunk][c] != nil {
+				for d, x := range partialSums[chunk][c] {
+					sums[c][d] += x
+				}
+			}
+		}
+	}
+	for c := range centroids {
+		if counts[c] == 0 {
+			// Empty cluster: re-seed from the point farthest from its
+			// current centroid (deterministic).
+			far, farD := 0, -1.0
+			for i, v := range vectors {
+				if d := spfreshSquaredDistance(v, centroids[assign[i]]); d > farD {
+					far, farD = i, d
+				}
+			}
+			copy(centroids[c], vectors[far])
+			assign[far] = c
+			continue
+		}
+		inv := 1.0 / float64(counts[c])
+		for d := range centroids[c] {
+			centroids[c][d] = sums[c][d] * inv
+		}
+	}
 }
 
 // spfreshSquaredDistance is squared L2 — the k-means objective and the routing

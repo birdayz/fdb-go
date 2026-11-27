@@ -122,7 +122,85 @@ const (
 // monopolize a fleet pass). Returns the number of tasks acted
 // on; tasks under live foreign leases are skipped.
 func spfreshRebalanceOnce(ctx context.Context, db *recordlayer.FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, seed int64, limit int, timer *recordlayer.StoreTimer) (int, error) {
-	// Scan (snapshot — the queue is advisory; claims are the authority).
+	refs, err := spfreshScanRebalanceTasks(ctx, db, s)
+	if err != nil {
+		return 0, err
+	}
+
+	// One routing cache per round for the NPA arm (lazily loaded): the
+	// per-task full reload was O(fines) × one NPA per split — the dominant
+	// maintenance CPU at fine granularity. Round staleness is the same
+	// tolerated staleness as the plan phase's snapshot reads.
+	var npaRouting *spfreshRoutingCache
+	// worked counts COMMITTED WRITES — lifecycle actions and zombie-cleanup
+	// clears (both make progress and cost real transactions). Foreign-lease
+	// and task-gone skips write nothing and consume no budget: a tenant whose
+	// queue head is live-leased by another executor must not have its whole
+	// action budget burned on skips while actionable tasks behind it starve.
+	worked := 0
+	// A failed task is SKIPPED, counted, and surfaced at the end — never
+	// allowed to halt the pass: the scan order is deterministic (kind+id),
+	// so returning on the first handler error would park a poisoned task at
+	// the queue head and silently starve everything behind it on every pass,
+	// with an operator signal identical to "sweeper down". The errors still
+	// fail the pass loudly; the work behind the poison still happens.
+	var taskErrs []error
+	fail := func(err error) {
+		timer.Increment(CountSPFreshTaskErrors)
+		taskErrs = append(taskErrs, err)
+	}
+	for _, ref := range refs {
+		if limit > 0 && worked >= limit {
+			break // per-pass budget spent: the caller schedules the rest
+		}
+		switch ref.kind {
+		case spfreshTaskSplit:
+			w, serr := spfreshRunSplitTask(ctx, db, s, config, owner, seed, ref, timer)
+			if serr != nil {
+				fail(serr)
+				continue
+			}
+			worked += w
+		case spfreshTaskNPA:
+			if npaRouting == nil {
+				npaRouting = newSPFreshRoutingCache(0)
+				if lerr := spfreshRun(ctx, db, func(rtx *recordlayer.FDBRecordContext) error {
+					return npaRouting.fullReload(rtx.Transaction(), s, s.generation)
+				}); lerr != nil {
+					// Not a task failure: the shared cache is broken — every
+					// NPA would fail identically. Abort the pass.
+					return worked, errors.Join(append(taskErrs, fmt.Errorf("NPA routing load: %w", lerr))...)
+				}
+			}
+			out, nerr := spfreshNPARun(ctx, db, s, config, owner, ref.id, npaRouting)
+			if nerr != nil {
+				fail(fmt.Errorf("NPA %d: %w", ref.id, nerr))
+				continue
+			}
+			worked += spfreshMeterOutcome(timer, out, CountSPFreshNPAs)
+		case spfreshTaskMerge:
+			out, merr := spfreshMergeFine(ctx, db, s, config, owner, ref.cellID, ref.id)
+			if merr != nil {
+				fail(fmt.Errorf("merge fine %d (cell %d): %w", ref.id, ref.cellID, merr))
+				continue
+			}
+			worked += spfreshMeterOutcome(timer, out, CountSPFreshMerges)
+		case spfreshTaskCSplit:
+			out, cerr := spfreshCoarseSplit(ctx, db, s, config, owner, ref.id, seed+ref.id)
+			if cerr != nil {
+				fail(fmt.Errorf("coarse split cell %d: %w", ref.id, cerr))
+				continue
+			}
+			worked += spfreshMeterOutcome(timer, out, CountSPFreshCSplits)
+		}
+	}
+	return worked, errors.Join(taskErrs...)
+}
+
+// spfreshScanRebalanceTasks scans the task queue (snapshot — the queue is
+// advisory; claims are the authority), clears leaked cellfin rows, and returns
+// tasks sorted in lifecycle execution order.
+func spfreshScanRebalanceTasks(ctx context.Context, db *recordlayer.FDBDatabase, s *spfreshStorage) ([]spfreshTaskRef, error) {
 	var refs []spfreshTaskRef
 	var legacyCellfin []int64
 	err := spfreshRun(ctx, db, func(rtx *recordlayer.FDBRecordContext) error {
@@ -177,7 +255,7 @@ func spfreshRebalanceOnce(ctx context.Context, db *recordlayer.FDBDatabase, s *s
 		return nil
 	})
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	if len(legacyCellfin) > 0 {
 		if err := spfreshRun(ctx, db, func(rtx *recordlayer.FDBRecordContext) error {
@@ -186,7 +264,7 @@ func spfreshRebalanceOnce(ctx context.Context, db *recordlayer.FDBDatabase, s *s
 			}
 			return nil
 		}); err != nil {
-			return 0, err
+			return nil, err
 		}
 	}
 
@@ -200,116 +278,54 @@ func spfreshRebalanceOnce(ctx context.Context, db *recordlayer.FDBDatabase, s *s
 		}
 		return refs[i].id < refs[j].id
 	})
+	return refs, nil
+}
 
-	// One routing cache per round for the NPA arm (lazily loaded): the
-	// per-task full reload was O(fines) × one NPA per split — the dominant
-	// maintenance CPU at fine granularity. Round staleness is the same
-	// tolerated staleness as the plan phase's snapshot reads.
-	var npaRouting *spfreshRoutingCache
-	// worked counts COMMITTED WRITES — lifecycle actions and zombie-cleanup
-	// clears (both make progress and cost real transactions). Foreign-lease
-	// and task-gone skips write nothing and consume no budget: a tenant whose
-	// queue head is live-leased by another executor must not have its whole
-	// action budget burned on skips while actionable tasks behind it starve.
-	worked := 0
-	// A failed task is SKIPPED, counted, and surfaced at the end — never
-	// allowed to halt the pass: the scan order is deterministic (kind+id),
-	// so returning on the first handler error would park a poisoned task at
-	// the queue head and silently starve everything behind it on every pass,
-	// with an operator signal identical to "sweeper down". The errors still
-	// fail the pass loudly; the work behind the poison still happens.
-	var taskErrs []error
-	fail := func(err error) {
-		timer.Increment(CountSPFreshTaskErrors)
-		taskErrs = append(taskErrs, err)
+func spfreshRunSplitTask(ctx context.Context, db *recordlayer.FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, seed int64, ref spfreshTaskRef, timer *recordlayer.StoreTimer) (int, error) {
+	out, serr := spfreshSealFine(ctx, db, s, owner, ref.cellID, ref.id)
+	if serr != nil {
+		return 0, fmt.Errorf("seal fine %d (cell %d): %w", ref.id, ref.cellID, serr)
 	}
-	for _, ref := range refs {
-		if limit > 0 && worked >= limit {
-			break // per-pass budget spent: the caller schedules the rest
+	if !out.proceed {
+		if out.cleaned {
+			timer.Increment(CountSPFreshZombieCleans)
+			return 1, nil
 		}
-		switch ref.kind {
-		case spfreshTaskSplit:
-			out, serr := spfreshSealFine(ctx, db, s, owner, ref.cellID, ref.id)
-			if serr != nil {
-				fail(fmt.Errorf("seal fine %d (cell %d): %w", ref.id, ref.cellID, serr))
-				continue
-			}
-			if !out.proceed {
-				if out.cleaned {
-					timer.Increment(CountSPFreshZombieCleans)
-					worked++
-				} else {
-					timer.Increment(CountSPFreshLeaseSkips)
-				}
-				continue // zombie cleaned or foreign lease
-			}
-			if spfreshSealSplitGapHook != nil {
-				spfreshSealSplitGapHook(ref.cellID, ref.id)
-			}
-			if serr := spfreshSplitFine(ctx, db, s, config, owner, ref.cellID, ref.id, seed+ref.id); serr != nil {
-				if errors.Is(serr, errSPFreshLeaseHeld) {
-					// Short leases let another executor take the SPLIT task over in
-					// the window between SEAL (which claimed + proceeded) and SPLIT's
-					// own re-claim. The new owner completes the split; the lease loss
-					// is benign here because spfreshSplitFine claims BEFORE any
-					// mutation, so nothing is half-written or orphaned. Skip, don't
-					// fail — mirrors the SEAL phase above and the merge/npa/csplit
-					// lease-skip handling.
-					//
-					// Unlike those sibling sites we absorb ONLY errSPFreshLeaseHeld,
-					// not errSPFreshNotFound: spfreshSplitFine re-claims only after
-					// proving the centroid SEALED, and a centroid already split away
-					// is caught earlier by its FORWARD no-op — so a missing task row
-					// at this point is a genuine SEALED-without-task anomaly that must
-					// fail loudly, not be skipped.
-					timer.Increment(CountSPFreshLeaseSkips)
-					continue
-				}
-				if errors.Is(serr, errSPFreshSplitDeferred) {
-					// Budget-free like a lease skip: charging it would spin the drain
-					// loop on a child whose split another executor still holds.
-					timer.Increment(countSPFreshSplitDefers)
-					continue
-				}
-				fail(fmt.Errorf("split fine %d (cell %d): %w", ref.id, ref.cellID, serr))
-				continue
-			}
-			timer.Increment(CountSPFreshSplits)
-			worked++
-		case spfreshTaskNPA:
-			if npaRouting == nil {
-				npaRouting = newSPFreshRoutingCache(0)
-				if lerr := spfreshRun(ctx, db, func(rtx *recordlayer.FDBRecordContext) error {
-					return npaRouting.fullReload(rtx.Transaction(), s, s.generation)
-				}); lerr != nil {
-					// Not a task failure: the shared cache is broken — every
-					// NPA would fail identically. Abort the pass.
-					return worked, errors.Join(append(taskErrs, fmt.Errorf("NPA routing load: %w", lerr))...)
-				}
-			}
-			out, nerr := spfreshNPARun(ctx, db, s, config, owner, ref.id, npaRouting)
-			if nerr != nil {
-				fail(fmt.Errorf("NPA %d: %w", ref.id, nerr))
-				continue
-			}
-			worked += spfreshMeterOutcome(timer, out, CountSPFreshNPAs)
-		case spfreshTaskMerge:
-			out, merr := spfreshMergeFine(ctx, db, s, config, owner, ref.cellID, ref.id)
-			if merr != nil {
-				fail(fmt.Errorf("merge fine %d (cell %d): %w", ref.id, ref.cellID, merr))
-				continue
-			}
-			worked += spfreshMeterOutcome(timer, out, CountSPFreshMerges)
-		case spfreshTaskCSplit:
-			out, cerr := spfreshCoarseSplit(ctx, db, s, config, owner, ref.id, seed+ref.id)
-			if cerr != nil {
-				fail(fmt.Errorf("coarse split cell %d: %w", ref.id, cerr))
-				continue
-			}
-			worked += spfreshMeterOutcome(timer, out, CountSPFreshCSplits)
-		}
+		timer.Increment(CountSPFreshLeaseSkips)
+		return 0, nil // zombie cleaned or foreign lease
 	}
-	return worked, errors.Join(taskErrs...)
+	if spfreshSealSplitGapHook != nil {
+		spfreshSealSplitGapHook(ref.cellID, ref.id)
+	}
+	if serr := spfreshSplitFine(ctx, db, s, config, owner, ref.cellID, ref.id, seed+ref.id); serr != nil {
+		if errors.Is(serr, errSPFreshLeaseHeld) {
+			// Short leases let another executor take the SPLIT task over in
+			// the window between SEAL (which claimed + proceeded) and SPLIT's
+			// own re-claim. The new owner completes the split; the lease loss
+			// is benign here because spfreshSplitFine claims BEFORE any
+			// mutation, so nothing is half-written or orphaned. Skip, don't
+			// fail — mirrors the SEAL phase above and the merge/npa/csplit
+			// lease-skip handling.
+			//
+			// Unlike those sibling sites we absorb ONLY errSPFreshLeaseHeld,
+			// not errSPFreshNotFound: spfreshSplitFine re-claims only after
+			// proving the centroid SEALED, and a centroid already split away
+			// is caught earlier by its FORWARD no-op — so a missing task row
+			// at this point is a genuine SEALED-without-task anomaly that must
+			// fail loudly, not be skipped.
+			timer.Increment(CountSPFreshLeaseSkips)
+			return 0, nil
+		}
+		if errors.Is(serr, errSPFreshSplitDeferred) {
+			// Budget-free like a lease skip: charging it would spin the drain
+			// loop on a child whose split another executor still holds.
+			timer.Increment(countSPFreshSplitDefers)
+			return 0, nil
+		}
+		return 0, fmt.Errorf("split fine %d (cell %d): %w", ref.id, ref.cellID, serr)
+	}
+	timer.Increment(CountSPFreshSplits)
+	return 1, nil
 }
 
 // spfreshMeterOutcome attributes one handler outcome to the right counter

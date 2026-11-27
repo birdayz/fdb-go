@@ -390,8 +390,17 @@ func (g *guardiann) reassign(tx fdb.WritableTransaction, t *guardiannTask, targe
 			assignment.put(s.cluster, s.ref)
 		}
 	}
-	// ReassignTask.foldCollapsedReplicas over the replicas by descending
-	// priority, keeping at most replicatedClusterTarget.
+	kept, err := g.foldCollapsedReplicas(tx, replicas)
+	if err != nil {
+		return err
+	}
+	assignment.put(target.id, kept...)
+	return g.persistReassign(tx, t, random, target, inner, clusters, stats, assignment)
+}
+
+// foldCollapsedReplicas is ReassignTask.foldCollapsedReplicas over the replicas
+// by descending priority, keeping at most replicatedClusterTarget.
+func (g *guardiann) foldCollapsedReplicas(tx fdb.ReadTransaction, replicas []guardiannVectorRef) ([]guardiannVectorRef, error) {
 	sortRefsDesc(replicas)
 	var kept []guardiannVectorRef
 	seen := map[tuple.UUID]bool{}
@@ -409,7 +418,7 @@ func (g *guardiann) reassign(tx fdb.WritableTransaction, t *guardiannTask, targe
 		}
 		stored, err := g.fetchCollapsedID(tx, sig, r.id.pk)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if stored == nil {
 			kept = append(kept, r)
@@ -418,7 +427,13 @@ func (g *guardiann) reassign(tx fdb.WritableTransaction, t *guardiannTask, targe
 			kept = append(kept, r.toCollapsed(sig, sig))
 		}
 	}
-	assignment.put(target.id, kept...)
+	return kept, nil
+}
+
+func (g *guardiann) persistReassign(tx fdb.WritableTransaction, t *guardiannTask, random *splittableRandom,
+	target guardiannClusterMetadata, inner []guardiannCluster, clusters *orderedClusters,
+	stats map[tuple.UUID]guardiannRunningStats, assignment *orderedAssignments,
+) error {
 	toWrite, toDelete := computeTargetClusterDelta(inner[0], assignment.values[target.id])
 	counts := countAssignments(assignment)
 	for _, k := range assignment.keys {
