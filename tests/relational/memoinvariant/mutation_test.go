@@ -3,9 +3,9 @@ package memoinvariant
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 )
 
 // The mutation-proofs. RFC-184's exit standard (per §15): a test that only ever

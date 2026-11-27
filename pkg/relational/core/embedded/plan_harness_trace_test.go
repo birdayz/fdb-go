@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
+	"fdb.dev/internal/recordlayer/query/plan/cascades"
 )
 
 func TestPlanPhysicalForTestTracedAccountsForTheWholeRun(t *testing.T) {

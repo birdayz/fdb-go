@@ -6,8 +6,8 @@ go_library(
     importpath = "fdb.dev/cmd/explain-differ",
     visibility = ["//visibility:private"],
     deps = [
+        "//internal/recordlayer/query/plan/cascades",
         "//internal/relational/conformance/explaindiff",
-        "//pkg/recordlayer/query/plan/cascades",
     ],
 )
 

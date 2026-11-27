@@ -1,0 +1,464 @@
+// Portions derived from FoundationDB Record Layer (QueryPredicate.java,
+// RangeConstraints.java, ValuePredicate.java, ExistentialValuePredicate.java,
+// and others),
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2023 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2025 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
+package predicates
+
+import (
+	"fmt"
+
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+)
+
+// ReplaceValues applies a Value replacement function to all Value trees
+// embedded in a predicate, rebuilding only the spine that changed. Ports
+// Java's QueryPredicate.replaceValuesMaybe. Pointer-equality stable: returns
+// p itself when nothing changed.
+//
+// This is the EXPORTED home of the walk (the cascades package's
+// replacePredicateValues delegates here): the translator bakes gated-join
+// leg references at the seed with it, and the planner's rule-side callers
+// share the identical spine so predicate-value rewrites can never diverge
+// between the two layers.
+func ReplaceValues(p QueryPredicate, fn func(values.Value) values.Value) QueryPredicate {
+	return TransformEmbeddedValues(p, func(v values.Value) values.Value {
+		return values.Replace(v, fn)
+	})
+}
+
+// TranslateLeafPredicates applies a TranslationMap to every Value tree
+// embedded in a predicate — the Go analog of Java's
+// QueryPredicate.translateLeafPredicate (ValuePredicate.java:149: each
+// predicate's embedded Value goes through Value.translateCorrelations).
+// LEAF-ONLY by construction: the map fires on
+// correlation-bearing leaves via values.TranslateCorrelations — never on
+// interior nodes — and shares the exact predicate spine ReplaceValues uses,
+// so the two rewrite families cannot diverge. Pointer-stable.
+func TranslateLeafPredicates(p QueryPredicate, m values.TranslationMap) QueryPredicate {
+	translated, err := TranslateLeafPredicatesChecked(p, m)
+	if err != nil {
+		return nil
+	}
+	return translated
+}
+
+// TranslateLeafPredicatesChecked is the atomic, error-bearing translation
+// authority. A failed Value reconstruction returns no predicate graph; it
+// never embeds a nil Value in an otherwise valid predicate or publishes a
+// partially translated conjunction.
+func TranslateLeafPredicatesChecked(p QueryPredicate, m values.TranslationMap) (QueryPredicate, error) {
+	if m == nil || m.DefinesOnlyIdentities() {
+		return p, nil
+	}
+	return transformEmbeddedValuesChecked(p, func(v values.Value) (values.Value, error) {
+		return values.TranslateCorrelationsChecked(v, m)
+	})
+}
+
+// TransformEmbeddedValuesChecked applies transform once to every complete
+// Value tree owned by p. It does not independently revisit interior Value
+// nodes: callers that need a recursive Value rewrite perform that recursion
+// inside transform. Predicate rebuilding is invocation-local and atomic; the
+// first error returns no predicate graph.
+func TransformEmbeddedValuesChecked(
+	p QueryPredicate,
+	transform func(values.Value) (values.Value, error),
+) (QueryPredicate, error) {
+	return transformEmbeddedValuesChecked(p, transform)
+}
+
+// DependsOnStatementClock reports whether any Value tree embedded in the
+// predicate contains a CURRENT_TIMESTAMP-family function (see
+// values.DependsOnStatementClock). It probes through the SAME spine the
+// value-rewrite families walk (TransformEmbeddedValues), so a predicate
+// shape that carries values cannot be visible to rewrites yet invisible
+// to the statement-clock need check. The probe transform returns every
+// value unchanged, so the pointer-stable spine rebuilds nothing.
+// ReadsConstantPool reports whether p embeds a statement constant reference.
+func ReadsConstantPool(p QueryPredicate) bool {
+	found := false
+	TransformEmbeddedValues(p, func(v values.Value) values.Value {
+		if !found && values.ReadsConstantPool(v) {
+			found = true
+		}
+		return v
+	})
+	return found
+}
+
+func DependsOnStatementClock(p QueryPredicate) bool {
+	found := false
+	TransformEmbeddedValues(p, func(v values.Value) values.Value {
+		if !found && values.DependsOnStatementClock(v) {
+			found = true
+		}
+		return v
+	})
+	return found
+}
+
+// TransformEmbeddedValues applies transform once per complete embedded Value
+// tree, not per interior node. An identity transform rebuilds no predicate nodes.
+func TransformEmbeddedValues(p QueryPredicate, transform func(values.Value) values.Value) QueryPredicate {
+	if p == nil {
+		return nil
+	}
+	switch pred := p.(type) {
+	case *ComparisonPredicate:
+		newOperand := transform(pred.Operand)
+		newCmp, cmpChanged := transformComparison(pred.Comparison, transform)
+		if newOperand == pred.Operand && !cmpChanged {
+			return p
+		}
+		return &ComparisonPredicate{
+			Operand:    newOperand,
+			Comparison: newCmp,
+		}
+	case *ValuePredicate:
+		newVal := transform(pred.Value)
+		if newVal == pred.Value {
+			return p
+		}
+		return NewValuePredicate(newVal)
+	case *AndPredicate:
+		changed := false
+		newSubs := make([]QueryPredicate, len(pred.SubPredicates))
+		for i, s := range pred.SubPredicates {
+			newSubs[i] = TransformEmbeddedValues(s, transform)
+			if newSubs[i] != s {
+				changed = true
+			}
+		}
+		if !changed {
+			return p
+		}
+		return WithAtomicity(NewAnd(newSubs...), pred.atomic)
+	case *OrPredicate:
+		changed := false
+		newSubs := make([]QueryPredicate, len(pred.SubPredicates))
+		for i, s := range pred.SubPredicates {
+			newSubs[i] = TransformEmbeddedValues(s, transform)
+			if newSubs[i] != s {
+				changed = true
+			}
+		}
+		if !changed {
+			return p
+		}
+		return WithAtomicity(NewOr(newSubs...), pred.atomic)
+	case *NotPredicate:
+		newChild := TransformEmbeddedValues(pred.Child, transform)
+		if newChild == pred.Child {
+			return p
+		}
+		return WithAtomicity(NewNot(newChild), pred.atomic)
+	case *Placeholder:
+		newVal := transform(pred.Value)
+		if newVal == pred.Value {
+			return p
+		}
+		return &Placeholder{
+			ParameterAlias: pred.ParameterAlias,
+			Value:          newVal,
+			CompRange:      pred.CompRange,
+		}
+	case *ExistentialValuePredicate:
+		// Java ExistentialValuePredicate.translateLeafPredicate (:94-100)
+		// translates the embedded existential QOV like any leaf. The rebuild
+		// goes through the Must constructor: a transform that turns the QOV
+		// into a non-QOV violates the predicate's structural invariant and
+		// panics loudly there — never a silently mis-shaped predicate.
+		// (Review catch: the arm was missing — the alias-map spine's
+		// RebasePredicate covered this type while this spine fell to the
+		// default silent skip.)
+		newVal := transform(pred.Value)
+		newCmp, cmpChanged := transformComparison(pred.Comparison, transform)
+		if newVal == pred.Value && !cmpChanged {
+			return p
+		}
+		return MustNewExistentialValuePredicate(newVal, newCmp)
+	case *PredicateWithValueAndRanges:
+		// Value-bearing leaf predicate (Java PredicateWithValueAndRanges
+		// .translateLeafPredicate): the anchor value AND every range
+		// comparison's embedded values rebase — a silent default-arm skip
+		// left stale aliases after a cross-boundary rebase (review catch).
+		newVal := transform(pred.GetValue())
+		changed := newVal != pred.GetValue()
+		newRanges := make([]*RangeConstraints, len(pred.GetRanges()))
+		for i, rc := range pred.GetRanges() {
+			newRC, rcChanged := transformRangeConstraints(rc, transform)
+			newRanges[i] = newRC
+			changed = changed || rcChanged
+		}
+		if !changed {
+			return p
+		}
+		return NewPredicateWithValueAndRanges(newVal, newRanges)
+	default:
+		return p
+	}
+}
+
+// transformEmbeddedValuesChecked is the fallible twin of
+// TransformEmbeddedValues. It builds only invocation-local predicate nodes and
+// returns no graph after the first Value or structural error.
+func transformEmbeddedValuesChecked(
+	p QueryPredicate,
+	transform func(values.Value) (values.Value, error),
+) (QueryPredicate, error) {
+	if p == nil {
+		return nil, nil
+	}
+	switch pred := p.(type) {
+	case *ComparisonPredicate:
+		newOperand, err := transform(pred.Operand)
+		if err != nil {
+			return nil, err
+		}
+		newCmp, cmpChanged, err := transformComparisonChecked(pred.Comparison, transform)
+		if err != nil {
+			return nil, err
+		}
+		if newOperand == pred.Operand && !cmpChanged {
+			return p, nil
+		}
+		return &ComparisonPredicate{Operand: newOperand, Comparison: newCmp}, nil
+	case *ValuePredicate:
+		newVal, err := transform(pred.Value)
+		if err != nil {
+			return nil, err
+		}
+		if newVal == pred.Value {
+			return p, nil
+		}
+		return NewValuePredicate(newVal), nil
+	case *AndPredicate:
+		changed := false
+		newSubs := make([]QueryPredicate, len(pred.SubPredicates))
+		for i, sub := range pred.SubPredicates {
+			translatedSub, err := transformEmbeddedValuesChecked(sub, transform)
+			if err != nil {
+				return nil, err
+			}
+			newSubs[i] = translatedSub
+			changed = changed || newSubs[i] != sub
+		}
+		if !changed {
+			return p, nil
+		}
+		return WithAtomicity(NewAnd(newSubs...), pred.atomic), nil
+	case *OrPredicate:
+		changed := false
+		newSubs := make([]QueryPredicate, len(pred.SubPredicates))
+		for i, sub := range pred.SubPredicates {
+			translatedSub, err := transformEmbeddedValuesChecked(sub, transform)
+			if err != nil {
+				return nil, err
+			}
+			newSubs[i] = translatedSub
+			changed = changed || newSubs[i] != sub
+		}
+		if !changed {
+			return p, nil
+		}
+		return WithAtomicity(NewOr(newSubs...), pred.atomic), nil
+	case *NotPredicate:
+		newChild, err := transformEmbeddedValuesChecked(pred.Child, transform)
+		if err != nil {
+			return nil, err
+		}
+		if newChild == pred.Child {
+			return p, nil
+		}
+		return WithAtomicity(NewNot(newChild), pred.atomic), nil
+	case *Placeholder:
+		newVal, err := transform(pred.Value)
+		if err != nil {
+			return nil, err
+		}
+		if newVal == pred.Value {
+			return p, nil
+		}
+		return &Placeholder{ParameterAlias: pred.ParameterAlias, Value: newVal, CompRange: pred.CompRange}, nil
+	case *ExistentialValuePredicate:
+		newVal, err := transform(pred.Value)
+		if err != nil {
+			return nil, err
+		}
+		newCmp, cmpChanged, err := transformComparisonChecked(pred.Comparison, transform)
+		if err != nil {
+			return nil, err
+		}
+		if newVal == pred.Value && !cmpChanged {
+			return p, nil
+		}
+		if _, ok := values.AsQuantifiedObjectValue(newVal); !ok {
+			return nil, &values.ResolutionError{
+				ErrorCode: values.RewriteInvalidCallbackOutput,
+				Path:      "predicate.existential.value",
+				Detail:    "translated existential value is not an exact QuantifiedObjectValue",
+			}
+		}
+		return &ExistentialValuePredicate{Value: newVal, Comparison: newCmp}, nil
+	case *PredicateWithValueAndRanges:
+		newVal, err := transform(pred.GetValue())
+		if err != nil {
+			return nil, err
+		}
+		changed := newVal != pred.GetValue()
+		newRanges := make([]*RangeConstraints, len(pred.GetRanges()))
+		for i, ranges := range pred.GetRanges() {
+			newRanges[i], err = transformRangeConstraintsChecked(ranges, transform)
+			if err != nil {
+				return nil, err
+			}
+			changed = changed || newRanges[i] != ranges
+		}
+		if !changed {
+			return p, nil
+		}
+		return NewPredicateWithValueAndRanges(newVal, newRanges), nil
+	default:
+		return p, nil
+	}
+}
+
+func transformComparisonChecked(
+	cmp Comparison,
+	transform func(values.Value) (values.Value, error),
+) (Comparison, bool, error) {
+	changed := false
+	if cmp.Operand != nil {
+		newOperand, err := transform(cmp.Operand)
+		if err != nil {
+			return Comparison{}, false, err
+		}
+		if newOperand != cmp.Operand {
+			cmp.Operand = newOperand
+			changed = true
+		}
+	}
+	if cmp.QueryVector != nil {
+		newVector, err := transform(cmp.QueryVector)
+		if err != nil {
+			return Comparison{}, false, err
+		}
+		if newVector != cmp.QueryVector {
+			cmp.QueryVector = newVector
+			changed = true
+		}
+	}
+	return cmp, changed, nil
+}
+
+func transformRangeConstraintsChecked(
+	ranges *RangeConstraints,
+	transform func(values.Value) (values.Value, error),
+) (*RangeConstraints, error) {
+	changed := false
+	builder := NewRangeConstraintsBuilder()
+	// AddComparisonMaybe returns false when canBeUsedInScanPrefix rejects the
+	// comparison, and the builder then holds nothing for it. Discarding that
+	// bool DROPS THE PREDICATE: the rebuilt constraints are weaker than the ones
+	// handed in, silently, and a filter built from them returns rows the
+	// original excluded. Measured before this check existed — a constraint set
+	// of {> 1, != 5} came back holding only the `>`, with a nil error.
+	//
+	// It is unreachable from production today: the only construction path is
+	// this builder, which applies the same gate on the way in, and
+	// transformComparisonChecked rewrites Operand and QueryVector while leaving
+	// Type alone, so a comparison that entered can always re-enter. That makes
+	// this an assertion rather than a live fix — but the drop is a wrong-answer
+	// failure with no signal, the function already returns an error, and its
+	// name already promises the check.
+	add := func(kind string, translated Comparison) error {
+		if builder.AddComparisonMaybe(translated) {
+			return nil
+		}
+		return fmt.Errorf(
+			"transformRangeConstraintsChecked: %s comparison %s cannot bound a scan prefix "+
+				"after translation, and rebuilding without it would silently weaken the range",
+			kind, translated.Type.Symbol())
+	}
+	for _, comparison := range ranges.GetCompilableComparisons() {
+		translated, comparisonChanged, err := transformComparisonChecked(comparison, transform)
+		if err != nil {
+			return nil, err
+		}
+		changed = changed || comparisonChanged
+		if err := add("compilable", translated); err != nil {
+			return nil, err
+		}
+	}
+	for _, comparison := range ranges.GetDeferredRanges() {
+		translated, comparisonChanged, err := transformComparisonChecked(comparison, transform)
+		if err != nil {
+			return nil, err
+		}
+		changed = changed || comparisonChanged
+		if err := add("deferred", translated); err != nil {
+			return nil, err
+		}
+	}
+	if !changed {
+		return ranges, nil
+	}
+	return builder.Build(), nil
+}
+
+// transformComparison applies transform to every VALUE-BEARING field of a
+// Comparison — the RHS Operand and the DistanceRank QueryVector (both are
+// correlation surfaces per Comparison.GetCorrelatedTo; transforming only the
+// Operand left stale aliases in vector predicates, review catch). Returns the
+// (possibly copied) comparison and whether anything changed; all other
+// subclass fields are preserved by the whole-struct copy.
+func transformComparison(cmp Comparison, transform func(values.Value) values.Value) (Comparison, bool) {
+	changed := false
+	if cmp.Operand != nil {
+		if newOp := transform(cmp.Operand); newOp != cmp.Operand {
+			cmp.Operand = newOp
+			changed = true
+		}
+	}
+	if cmp.QueryVector != nil {
+		if newQV := transform(cmp.QueryVector); newQV != cmp.QueryVector {
+			cmp.QueryVector = newQV
+			changed = true
+		}
+	}
+	return cmp, changed
+}
+
+// transformRangeConstraints rebuilds a RangeConstraints with every
+// comparison's value fields transformed; pointer-stable when nothing changed.
+// Every transformed comparison is RE-CLASSIFIED through the builder — Java's
+// RangeConstraints.translateCorrelations (:349-366) does the same, and its
+// comment says why: translation can CHANGE whether a comparison is compilable
+// (a rebase that strips the last correlation turns a deferred comparison into
+// a compile-time one). Blindly preserving the old compilable/deferred split
+// matched only Java's builder-failure fallback (review catch).
+func transformRangeConstraints(rc *RangeConstraints, transform func(values.Value) values.Value) (*RangeConstraints, bool) {
+	// Delegates rather than repeating the rebuild loop. The two copies were
+	// identical apart from the error channel, and BOTH discarded
+	// AddComparisonMaybe's bool — which is the signal that the builder held
+	// nothing for that comparison, so the rebuilt range is weaker than the one
+	// handed in. One loop, one gate, so the halves cannot drift.
+	//
+	// This spine has no error channel by design (it is the pointer-stable
+	// non-fallible twin), so a rejection returns the ORIGINAL constraints and
+	// "unchanged". That preserves the predicate instead of silently weakening
+	// it: leaving a value un-rebased surfaces downstream as a loud unbaked-ref
+	// failure, while dropping a conjunct returns rows the original excluded and
+	// says nothing. Unreachable either way today — see the checked twin.
+	out, err := transformRangeConstraintsChecked(rc, func(v values.Value) (values.Value, error) {
+		return transform(v), nil
+	})
+	if err != nil {
+		return rc, false
+	}
+	return out, out != rc
+}

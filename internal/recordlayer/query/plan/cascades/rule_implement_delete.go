@@ -1,0 +1,72 @@
+// Portions derived from FoundationDB Record Layer (ImplementDeleteRule.java,
+// ImplementUpdateRule.java),
+// Copyright 2015-2019 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
+package cascades
+
+import (
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
+)
+
+// ImplementDeleteRule implements a logical DeleteExpression as a
+// physical RecordQueryDeletePlan.
+//
+//	Delete(target, stored-record-access-path)
+//	  →  DeletePlan(target,
+//	         UnorderedPrimaryKeyDistinct(stored-record-access-path))
+//
+// Ports Java's ImplementDeleteRule 1:1 on both of its structural decisions:
+//
+//   - the inner reference is bound only through partitions whose
+//     StoredRecordProperty holds (ImplementDeleteRule.java:55-57), and
+//   - a primary-key dedup is interposed between the access path and the
+//     mutation UNLESS the access path already proves
+//     DistinctRecordsProperty.distinctRecords() (ImplementDeleteRule.java:79-82).
+//
+// The short-circuit is the ONE place the two DML rules differ: an UPDATE gets
+// the dedup unconditionally (ImplementUpdateRule.java:79-80). Reading that as
+// an inconsistency and unifying it either way would be wrong in one direction
+// or the other, so it is preserved exactly.
+type ImplementDeleteRule struct {
+	matcher matching.BindingMatcher
+}
+
+// NewImplementDeleteRule constructs the rule.
+func NewImplementDeleteRule() *ImplementDeleteRule {
+	return &ImplementDeleteRule{
+		matcher: NewExpressionMatcher[*expressions.DeleteExpression]("delete"),
+	}
+}
+
+// Matcher returns the pattern.
+func (r *ImplementDeleteRule) Matcher() matching.BindingMatcher { return r.matcher }
+
+// OnMatch fires on every DeleteExpression, once per stored-record access path
+// the inner reference offers.
+func (r *ImplementDeleteRule) OnMatch(call *ExpressionRuleCall) {
+	del := matching.Get[*expressions.DeleteExpression](call.Bindings, r.matcher)
+	innerRef := del.GetInner().GetRangesOver()
+	if innerRef == nil {
+		return
+	}
+	for _, candidate := range storedRecordDMLCandidates(innerRef) {
+		// The DELETE plan is its own cascades expression (RFC-184 W2) — it
+		// carries the live child edge directly, no physicalDeleteWrapper.
+		innerQ, err := dmlDedupedInnerQuantifier(call, candidate, del.GetInner(), candidate.distinctRecords)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		delPlan, err := plans.NewRecordQueryDeletePlanFromQuantifier(innerQ, del.GetTargetRecordType())
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		call.Yield(delPlan)
+	}
+}
+
+var _ ExpressionRule = (*ImplementDeleteRule)(nil)

@@ -165,13 +165,13 @@ pkg/relational/core/embedded/plan_harness_test.go       — 19+ planner unit tes
 bench/relational/stress/stress_test.go                   — 1M stress test (wall-clock validation)
 pkg/relational/core/embedded/cascades_generator.go      — SQL → Cascades entry point + fetchTableStatistics
 pkg/relational/core/query/cascades_translator.go        — logical → Cascades translation
-pkg/recordlayer/query/plan/cascades/planner.go          — Cascades planner + WithStatistics
-pkg/recordlayer/query/plan/cascades/planning_cost_model.go — 17-criterion cost model + NewPlanningCostModelLess(stats)
-pkg/recordlayer/query/plan/cascades/rule_implement_*.go — implementation rules
-pkg/recordlayer/query/plan/cascades/rule_streaming_agg_from_index.go — GROUP BY + index → StreamingAgg
-pkg/recordlayer/query/plan/cascades/physical_wrapper.go — physical plan wrappers + HintCost(child, stats)
-pkg/recordlayer/query/plan/cascades/expression_partition.go — plan partitioning by ordering direction
-pkg/recordlayer/query/plan/cascades/properties/cost.go  — Cost, StatisticsProvider, CostHinter
+internal/recordlayer/query/plan/cascades/planner.go          — Cascades planner + WithStatistics
+internal/recordlayer/query/plan/cascades/planning_cost_model.go — 17-criterion cost model + NewPlanningCostModelLess(stats)
+internal/recordlayer/query/plan/cascades/rule_implement_*.go — implementation rules
+internal/recordlayer/query/plan/cascades/rule_streaming_agg_from_index.go — GROUP BY + index → StreamingAgg
+internal/recordlayer/query/plan/cascades/physical_wrapper.go — physical plan wrappers + HintCost(child, stats)
+internal/recordlayer/query/plan/cascades/expression_partition.go — plan partitioning by ordering direction
+internal/recordlayer/query/plan/cascades/properties/cost.go  — Cost, StatisticsProvider, CostHinter
 internal/recordlayer/query/executor/executor.go         — plan execution
 TODO.md                                                 — perf targets + status
 ```

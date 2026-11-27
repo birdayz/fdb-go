@@ -15,8 +15,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 )
 
 // TestLimitContinuation_RoundTrip verifies encode→decode preserves the inner

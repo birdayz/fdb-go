@@ -3,8 +3,8 @@ package rowdiff
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 )
 
 // rowdiffPlanFixtureType is the exact row shape used by the synthetic cost and

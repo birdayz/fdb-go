@@ -16,9 +16,9 @@ go_test(
         "test-full",
     ],
     deps = [
+        "//internal/recordlayer/query/plan/cascades",
         "//internal/relational/relapi",
         "//internal/relational/sqltest/testkit",
-        "//pkg/recordlayer/query/plan/cascades",
         "//pkg/relational/core/embedded",
     ],
 )

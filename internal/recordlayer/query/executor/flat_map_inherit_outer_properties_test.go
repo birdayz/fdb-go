@@ -6,9 +6,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // TestFlatMapInheritOuterRecordProperties pins the Java FlatMap contract used

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/internal/relational/relapi"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 )
 
 // CTE/derived-table unnest support. These are PLAN-LEVEL pins (plans

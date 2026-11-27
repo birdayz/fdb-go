@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // Java refuses a data-modification plan at SNAPSHOT isolation before it opens

@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+package(default_visibility = ["//:__subpackages__"])
+
+go_library(
+    name = "fuzzfloor",
+    testonly = True,
+    srcs = ["fuzzfloor.go"],
+    importpath = "fdb.dev/internal/testutil/fuzzfloor",
+    visibility = ["//:__subpackages__"],
+)
+
+go_test(
+    name = "fuzzfloor_test",
+    srcs = ["fuzzfloor_test.go"],
+    embed = [":fuzzfloor"],
+)

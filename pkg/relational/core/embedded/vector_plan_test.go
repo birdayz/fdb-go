@@ -9,7 +9,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer"
 
-	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
+	cascades "fdb.dev/internal/recordlayer/query/plan/cascades"
 )
 
 // TestVectorPlan_QualifyPlansToVectorScan is the 9.3a/b proof: a full

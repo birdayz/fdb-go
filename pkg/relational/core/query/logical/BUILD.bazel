@@ -13,10 +13,10 @@ go_library(
     importpath = "fdb.dev/pkg/relational/core/query/logical",
     visibility = ["//visibility:public"],
     deps = [
+        "//internal/recordlayer/query/plan/cascades/expressions",
+        "//internal/recordlayer/query/plan/cascades/predicates",
+        "//internal/recordlayer/query/plan/cascades/values",
         "//internal/unicode15",
-        "//pkg/recordlayer/query/plan/cascades/expressions",
-        "//pkg/recordlayer/query/plan/cascades/predicates",
-        "//pkg/recordlayer/query/plan/cascades/values",
     ],
 )
 
@@ -28,5 +28,5 @@ go_test(
         "operators_test.go",
     ],
     embed = [":logical"],
-    deps = ["//pkg/recordlayer/query/plan/cascades/values"],
+    deps = ["//internal/recordlayer/query/plan/cascades/values"],
 )

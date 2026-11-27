@@ -20,7 +20,7 @@ package embedded
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 )
 
 // valueIndexScansIn counts value-index scans only — an aggregate index plan

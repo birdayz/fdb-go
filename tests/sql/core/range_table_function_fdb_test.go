@@ -10,8 +10,8 @@ import (
 
 	"fdb.dev/internal/relational/sqltest/testkit"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/internal/relational/relapi"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // The built-in range() table function (Java's RangeValue.RangeFn).

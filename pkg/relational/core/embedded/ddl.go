@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/internal/relational/catalog"
 	"fdb.dev/internal/relational/functions"
 	"fdb.dev/internal/relational/metadata"
@@ -24,7 +25,6 @@ import (
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	queryddl "fdb.dev/pkg/relational/core/query/ddl"

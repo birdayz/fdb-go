@@ -3,8 +3,8 @@ package explaindiff_test
 import (
 	"testing"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/internal/testinstruments/querycensus"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 
 	"fdb.dev/internal/relational/conformance/explaindiff"
 )
@@ -21,7 +21,7 @@ import (
 // comparators because this package's harness imports the planner, so a test
 // inside the planner package cannot import the harness back.
 //
-// The counts are produced by pkg/recordlayer/query/plan/cascades'
+// The counts are produced by internal/recordlayer/query/plan/cascades'
 // ordering_comparison_census.go, which classifies each pair independently of
 // whichever arm the site ran, and derives what the RETIRED availability dispatch
 // would have answered for the same pair. So the zero this test asserts is not

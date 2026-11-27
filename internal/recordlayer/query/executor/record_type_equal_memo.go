@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"weak"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // recordTypeEqualMemoEntries bounds the memo; a full memo starts over.

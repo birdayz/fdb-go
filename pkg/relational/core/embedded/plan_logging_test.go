@@ -7,12 +7,12 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	cascadesvalues "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	cascadesvalues "fdb.dev/internal/recordlayer/query/plan/cascades/values"
 
 	"fdb.dev/internal/relational/queryfixtures"
 	"fdb.dev/internal/relational/relapi"
 
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 
 	"fdb.dev/internal/relational/session"
 	"fdb.dev/pkg/recordlayer"

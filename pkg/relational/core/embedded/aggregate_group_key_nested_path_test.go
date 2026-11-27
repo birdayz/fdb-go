@@ -3,8 +3,8 @@ package embedded
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query/logical"
 )

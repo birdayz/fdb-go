@@ -17,7 +17,7 @@ import (
 
 	"fdb.dev/internal/testinstruments/querycensus"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	_ "fdb.dev/pkg/relational/sqldriver"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 )
@@ -35,7 +35,7 @@ var clusterFilePath string
 // standing E2E proof of the RFC-048 success criterion ("no production code path
 // emits an unresolved reference"). The unit-level proof of the loud-miss
 // mechanism lives in
-// pkg/recordlayer/query/plan/cascades/values/w1_unresolved_reference_test.go.
+// internal/recordlayer/query/plan/cascades/values/w1_unresolved_reference_test.go.
 
 func Main(m *testing.M) { os.Exit(runTests(m)) }
 

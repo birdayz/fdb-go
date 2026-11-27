@@ -3,7 +3,7 @@ package executor
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // comparisonKeyPrograms hands the same program to every row of a leg. That is a

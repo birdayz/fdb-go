@@ -1,0 +1,142 @@
+package cascades
+
+import (
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
+	"fdb.dev/internal/unicode15"
+)
+
+// Scan/index match helpers shared by the data-access match path and the ordered-scan,
+// streaming-aggregate, and aggregate-data-access rules. They are pure (no rule state) and
+// have several live callers, which is why they live in their own file rather than inside
+// any one rule.
+
+// extractIndexPlan extracts a *RecordQueryIndexPlan from a plan that is an index
+// scan, or a FetchFromPartialRecordPlan over one.
+//
+// Both levels go through plans.IndexPlanOf, which sees through the COVERING
+// wrapper. That is not defensive: the access path emits
+// Fetch(Covering(IndexScan)) for every index-backed access (RFC-220), and the
+// covering plan holds its scan as a FIELD, so matching the bare type under the
+// fetch found nothing for essentially every plan this helper is asked about.
+// Callers read a nil as "no index scan / no comparison ranges" — the
+// unrestricted-scan direction.
+func extractIndexPlan(p plans.RecordQueryPlan) *plans.RecordQueryIndexPlan {
+	if ip, ok := plans.IndexPlanOf(p); ok {
+		return ip
+	}
+	if fp, ok := p.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
+		if inner := fp.GetInner(); inner != nil {
+			if ip, ok := plans.IndexPlanOf(inner); ok {
+				return ip
+			}
+		}
+	}
+	return nil
+}
+
+// isScanRangeCompatible reports whether a ComparisonType can be safely pushed into
+// an FDB key-range scan. Simple scalar comparisons (=, <, <=, >, >=) and STARTS_WITH
+// (prefix range) map cleanly to range bounds. ComparisonIn and others must stay as
+// residual predicates.
+func isScanRangeCompatible(t predicates.ComparisonType) bool {
+	switch t {
+	case predicates.ComparisonEquals,
+		predicates.ComparisonLessThan,
+		predicates.ComparisonLessThanOrEq,
+		predicates.ComparisonGreaterThan,
+		predicates.ComparisonGreaterThanEq,
+		predicates.ComparisonStartsWith:
+		return true
+	}
+	return false
+}
+
+// comparisonTypesCompatible checks whether a field's type and the comparison's
+// operand type are compatible for index pushdown. Returns false for obvious
+// mismatches like BIGINT column vs STRING literal — these must remain as residual
+// predicates so the executor surfaces the type error. Unknown types (from
+// unresolved columns) pass through.
+func comparisonTypesCompatible(fv values.FieldValue, cmp *predicates.Comparison) bool {
+	if cmp.Operand == nil {
+		return true
+	}
+	fieldType := fv.Type()
+	if fieldType == nil || fieldType == values.UnknownType {
+		return true
+	}
+	rhsType := cmp.Operand.Type()
+	if rhsType == nil || rhsType == values.UnknownType {
+		return true
+	}
+	// Numeric ↔ String is always a type mismatch.
+	fieldIsNum := isNumericType(fieldType)
+	rhsIsNum := isNumericType(rhsType)
+	fieldIsStr := isStringType(fieldType)
+	rhsIsStr := isStringType(rhsType)
+	if (fieldIsNum && rhsIsStr) || (fieldIsStr && rhsIsNum) {
+		return false
+	}
+	return true
+}
+
+func isNumericType(t values.Type) bool {
+	if pt, ok := t.(*values.PrimitiveType); ok {
+		return pt.TypeCode.IsNumeric()
+	}
+	return false
+}
+
+func isStringType(t values.Type) bool {
+	if pt, ok := t.(*values.PrimitiveType); ok {
+		return pt.TypeCode == values.TypeCodeString
+	}
+	return false
+}
+
+// findFullScan looks for a FullUnorderedScanExpression in a Reference.
+func findFullScan(ref *expressions.Reference) *expressions.FullUnorderedScanExpression {
+	for _, m := range ref.Members() {
+		if s, ok := m.(*expressions.FullUnorderedScanExpression); ok {
+			return s
+		}
+	}
+	return nil
+}
+
+// findFullScanThroughFilter is like findFullScan but also looks inside
+// LogicalFilterExpression children. Used by AggregateDataAccessRule when
+// PushFilterThroughGroupByRule wraps the Scan in a Filter.
+func findFullScanThroughFilter(ref *expressions.Reference) *expressions.FullUnorderedScanExpression {
+	for _, m := range ref.Members() {
+		if s, ok := m.(*expressions.FullUnorderedScanExpression); ok {
+			return s
+		}
+		if f, ok := m.(*expressions.LogicalFilterExpression); ok {
+			childRef := f.GetInner().GetRangesOver()
+			if childRef != nil {
+				if s := findFullScanThroughFilter(childRef); s != nil {
+					return s
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// recordTypesOverlap returns true if any element of a appears in b.
+func recordTypesOverlap(a, b []string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return true
+	}
+	for _, ta := range a {
+		for _, tb := range b {
+			if unicode15.EqualFold(ta, tb) {
+				return true
+			}
+		}
+	}
+	return false
+}

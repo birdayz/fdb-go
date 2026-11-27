@@ -5,9 +5,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/metadatapb"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 )
 
 // RFC-202 D10(a): the flat candidate bridge's column list must respect the

@@ -3,7 +3,7 @@ package embedded
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/properties"
 )
 
 // RFC-195 reachability: the clamp must fire on plans a USER can produce, not

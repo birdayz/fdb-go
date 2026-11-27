@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/properties"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 )
 
 // EVERY PHYSICAL LEAF A SQL PLAN PRODUCES MUST NAME ITS RECORD TYPES.

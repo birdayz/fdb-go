@@ -11,7 +11,7 @@ import (
 	"sort"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
 )
 
 func TestOuterThreeWayOracle_HandComputed(t *testing.T) {

@@ -13,8 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 	"fdb.dev/internal/relational/relapi"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // queryPlanCache is what the planner caches plans in: a key's plan is found by

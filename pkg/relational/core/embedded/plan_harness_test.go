@@ -12,19 +12,19 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
 
-	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
+	cascades "fdb.dev/internal/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/relational/core/parser"
 	"fdb.dev/pkg/relational/core/query"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/properties"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 	"fdb.dev/internal/relational/metadata"
 	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 const ordersSchema = `

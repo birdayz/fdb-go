@@ -5,8 +5,8 @@ import (
 	"math"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 )
 
 // sign normalizes a comparator result to -1/0/1.

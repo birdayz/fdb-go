@@ -3,10 +3,10 @@ package query
 import (
 	"fmt"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // readSiblingsThroughRows makes every expression read a source buried under one

@@ -7,9 +7,9 @@ import (
 	"sync"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 	"fdb.dev/internal/relational/conformance/rowdiff"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 

@@ -8,10 +8,10 @@
 package query
 
 import (
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/internal/unicode15"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 

@@ -20,9 +20,9 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/internal/recordlayer/protoscope"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // rematerializeProtoValue copies composite planning values into the target

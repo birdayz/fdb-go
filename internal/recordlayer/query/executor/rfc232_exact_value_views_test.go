@@ -3,8 +3,8 @@ package executor
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 )
 
 // These embedded views deliberately satisfy the sealed interfaces through

@@ -3,7 +3,7 @@ package querycensus
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // mintedSeedOwner is the shape of the identity every call site actually holds at

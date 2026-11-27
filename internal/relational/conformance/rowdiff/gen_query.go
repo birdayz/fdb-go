@@ -10,7 +10,7 @@ import (
 	"math/rand/v2"
 	"strconv"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
 )
 
 // JoinSpec is a SELF-join of the case's table under aliases L and R, joined

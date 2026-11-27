@@ -16,9 +16,9 @@ go_library(
     visibility = ["//:__subpackages__"],
     deps = [
         "//internal/recordlayer/protoname",
+        "//internal/recordlayer/query/plan/cascades/values",
         "//internal/relational/relapi",
         "//internal/unicode15",
-        "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/core/parser/gen",
         "@com_github_google_uuid//:uuid",
         "@org_golang_google_protobuf//reflect/protoreflect",

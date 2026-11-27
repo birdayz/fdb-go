@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"math"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // bindScanComparisonsToRangeSet evaluates a comparison prefix once and returns

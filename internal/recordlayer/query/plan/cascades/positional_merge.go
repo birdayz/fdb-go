@@ -1,0 +1,310 @@
+// Portions derived from FoundationDB Record Layer (PartitionSelectRule.java,
+// Reference.java, EliminateNullOnEmptyRule.java),
+// Copyright 2015-2021 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2026 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
+package cascades
+
+import (
+	"sync"
+	"sync/atomic"
+
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+)
+
+// positionalMergeCase is the Java-aligned merge arm
+// (PartitionSelectRule.java:283-322): a collapse of ≥2 live lowers builds the
+// UNNAMED positional merged
+// row (RC(_i: QOV(live_i)) — Column.unnamedOf per collapsed leg) and rebases
+// every upper reference through a TranslationMap
+// `.When(live_i).Then(ofOrdinalNumber(QOV(merge), i))` — enclosing baked
+// references FUSE into two-step FieldPaths during the rebuild (Java's
+// withNewChild mechanic, the fuse arm).
+//
+// The arm ALWAYS yields (invalid shapes die loudly at the tripwire
+// or the constructors); the caller's nil-check is cheap defense for future
+// decline arms, not a live contract.
+func (r *PartitionSelectRule) positionalMergeCase(
+	call *ExpressionRuleCall,
+	sel *expressions.SelectExpression,
+	resultValue values.Value,
+	aliasToQ map[values.CorrelationIdentifier]expressions.Quantifier,
+	allAliases []values.CorrelationIdentifier,
+	upperAliases map[values.CorrelationIdentifier]struct{},
+	live []values.CorrelationIdentifier,
+	lowerBuilder *GraphExpansionBuilder,
+	upperPredicates []predicates.QueryPredicate,
+) *expressions.SelectExpression {
+	// A null-on-empty leg may collapse into the lower with or without its
+	// partner: it extends per combination of the other legs either way, and
+	// Java's PartitionSelectRule does not distinguish it.
+	legTypes := legRowTypes(resultValue, sel.GetPredicates())
+	fields := make([]values.RecordConstructorField, len(live))
+	mergedFields := make([]values.Field, len(live))
+	for i, a := range live {
+		fov, err := aliasToQ[a].RequireFlowedObjectValue()
+		if err != nil {
+			// The quantifier's own reference has members flowing DIFFERENT row shapes,
+			// so no member is authoritative and there is no honest merge slot type to
+			// pick. Decline the rule rather than choose by insertion order — Java
+			// Verify-fails at the same point (Reference.java:504-513).
+			//
+			// The decline alone would be SILENT, and the error's own doc says a
+			// disagreement is a memo defect that must surface: two members of one
+			// equivalence class flowing different rows is not a shape this arm declines
+			// to handle, it is the memo being wrong. Java crashes here; Go cannot,
+			// because the untyped-member reporting gap means the error is reachable
+			// without a real defect. So it is COUNTED and witnessed instead — the
+			// observation is what turns "this never happens" from an assumption into
+			// something a corpus run can read.
+			recordMergeSlotTypeDisagreement(err)
+			return nil
+		}
+		scavenged := false
+		if _, typed := fov.Type().(*values.RecordType); !typed {
+			if rt := legTypes[a]; rt != nil {
+				fov, err = values.NewQuantifiedObjectValue(a, rt)
+				if err != nil {
+					call.Fail(err)
+					return nil
+				}
+				scavenged = true
+			}
+		} else if rt := legTypes[a]; rt != nil && rt.IsNullable() && !fov.Type().IsNullable() {
+			// The parent states the leg NULLABLE over a plain quantifier: the
+			// null-on-empty flag was eliminated under a predicate that rejects
+			// the null tuple, and the result value kept the leg's nullable row
+			// (EliminateNullOnEmptyRule keeps it, as Java's does). Java's merge
+			// slot narrows to the quantifier's NOT NULL row and its Reference
+			// takes the narrower member; Go's admission refuses a member whose
+			// type differs from its group's, and the planning failed (factory
+			// scenario fc_0000000556_q5, a LEFT JOIN leg under an IN). So the
+			// slot keeps the stated nullable row; the leg's NOT NULL rows are
+			// values of it (the executor's layout attach admits exactly that
+			// widening, PositionalRow.checkLayoutAttachable).
+			fov, err = values.NewQuantifiedObjectValue(a, values.WithNullability(fov.Type(), true))
+			if err != nil {
+				call.Fail(err)
+				return nil
+			}
+		}
+		if h := values.Census(); h != nil {
+			// What this slot ended up stating, counted where it is decided. The
+			// interesting outcome is the MISS — a slot that enters the merged record
+			// constructor stating nothing — because that is the one remaining path by
+			// which a leg's row type is lost here, and it is silent: the reference
+			// degrades to source-relative, a source-relative operand pushed into a
+			// leg's scan evaluates to NULL against the build-bound row, and the join
+			// returns zero rows with no error. It was previously argued to be
+			// unreachable; an argument about which shapes can reach a fallback is what
+			// a change to the fallback invalidates without telling anyone.
+			//
+			// The census classifies FINER than the gate above, which is why it takes
+			// the type rather than the gate's boolean. The gate asks "is this a
+			// RecordType", so an unnest ELEMENT — which flows one array element, a
+			// scalar, and is correct — fails it exactly as a leg that lost its row
+			// does. Inheriting that test would report every unnest element as a defect.
+			h.MergeSlotTyping(a, fov.Type(), scavenged)
+		}
+		fields[i] = values.RecordConstructorField{Name: values.OrdinalFieldName(i), Value: fov}
+		mergedFields[i] = values.Field{Name: values.OrdinalFieldName(i), FieldType: fov.Type(), Ordinal: i}
+	}
+	lowerRC := values.NewRawRecordConstructorValue(fields...)
+	lowerSelectExpr, err := lowerBuilder.Build().Seal().BuildSelectWithResultValue(lowerRC)
+	if err != nil {
+		call.Fail(err)
+		return nil
+	}
+
+	// Per-plan deterministic merge alias (NextMergeAlias, RFC-077 7.5:
+	// stable plan hash; alias-aware
+	// interning collapses same-shape merges across bipartitions).
+	var mergeAlias values.CorrelationIdentifier
+	if call.memo != nil {
+		mergeAlias = call.memo.NextMergeAlias()
+	} else {
+		mergeAlias = values.UniqueCorrelationIdentifier()
+	}
+	newLowerQ := expressions.NamedForEachQuantifier(
+		mergeAlias,
+		call.MemoizeExpression(lowerSelectExpr),
+	)
+
+	// The rebase map: every reference to a collapsed leg becomes a PLAIN
+	// ofOrdinalNumber over the merge quantifier (PartitionSelectRule.java:302
+	// — composition with enclosing references is the rebuild's job).
+	mergedType := &values.RecordType{Fields: mergedFields}
+	upperQOV, err := values.NewQuantifiedObjectValue(mergeAlias, mergedType)
+	if err != nil {
+		call.Fail(err)
+		return nil
+	}
+	upperSlots := make([]values.Value, len(live))
+	for i := range live {
+		upperSlots[i], err = values.ResolveFieldOrdinals(upperQOV, []int{i})
+		if err != nil {
+			call.Fail(err)
+			return nil
+		}
+	}
+	b := values.NewTranslationMapBuilder()
+	for i, a := range live {
+		idx := i
+		b = b.When(a).Then(func(_ values.CorrelationIdentifier, _ values.Value) values.Value {
+			return upperSlots[idx]
+		})
+	}
+	m := b.Build()
+
+	upperBuilder := NewGraphExpansionBuilder()
+	upperBuilder.AddQuantifier(newLowerQ)
+	for _, a := range allAliases {
+		if _, inUpper := upperAliases[a]; inUpper {
+			upperBuilder.AddQuantifier(aliasToQ[a])
+		}
+	}
+	for _, p := range upperPredicates {
+		translatedPredicate, err := predicates.TranslateLeafPredicatesChecked(p, m)
+		if err != nil {
+			call.Fail(err)
+			return nil
+		}
+		upperBuilder.AddPredicate(translatedPredicate)
+	}
+	translatedResult, err := values.TranslateCorrelationsChecked(resultValue, m)
+	if err != nil {
+		call.Fail(err)
+		return nil
+	}
+	upperSelect, err := upperBuilder.Build().Seal().
+		BuildSelectWithResultValue(translatedResult)
+	if err != nil {
+		call.Fail(err)
+		return nil
+	}
+	return upperSelect
+}
+
+// legRowTypes recovers each quantifier's flowed ROW type from a select's value
+// surfaces (result value + predicates): every QOV embedded in a baked/fused
+// reference is a copy of the ONE planner-constructed typed leg QOV (seed-baked,
+// or a previous merge round's typed merge QOV), so first-found is authoritative.
+//
+// It used to be described as NEEDED "because Go's Quantifier.GetFlowedObjectValue
+// flows an UNTYPED QOV". That has not been true since the accessor was typed —
+// the sentence outlived the thing it explained, over a channel still carrying
+// live traffic, which is the failure class this branch keeps finding. What
+// legRowTypes actually is now is a FALLBACK for a quantifier whose reference
+// carries no typed result value yet, exactly as the caller above states.
+//
+// How much traffic it carries is now MEASURED rather than argued, because an
+// argument about which shapes can reach a fallback is what a change to the
+// fallback invalidates silently (see querycensus.recordMergeSlotTyping). Measured over the
+// whole real-FDB corpus, one run: 22394 merge slots — 21736 typed by the
+// quantifier, 0 recovered here, 658 stating a non-row scalar, 0 stating nothing
+// at all.
+//
+// THE TOTAL IS A MAGNITUDE, NOT A PIN. These are rule FIRINGS, and the memo may
+// explore a rule once or many times for one query depending on exploration
+// order, so the denominator moves run to run — sibling readings of the same
+// corpus report 22,354 and 22,362. Quote it as ~22.4k or quote nothing. The
+// load-bearing number is the one that does NOT move: Untyped stays 0.
+//
+// THE RESIDUAL COLLAPSED, AND THAT IS WHY THE COUNTER IS NOW ASSERTED AT ZERO
+// RATHER THAN REPORTED. An earlier reading of this same site recorded 750 slots
+// stating NOTHING, every distinct witness an unnest ELEMENT alias — UNKNOWN
+// because Go did not infer array element types that far — and concluded the
+// counter could only be an upper bound, since an element and a leg that lost its
+// row are not separable from the type alone. It also named the thing that would
+// end it: typing the unnest element quantifier. That happened. Those slots now
+// state a real scalar type and land in the SCALAR class, which is separable, and
+// the UNTYPED class is empty.
+//
+// So the hard zero in querycensus.AssertMergeSlotTypingCensus is not a tightened guess; it is
+// the new expected value, and a non-zero now means a leg genuinely lost its row.
+// The SCALAR count is deliberately NOT floored at zero — an unnest element over
+// an array is a correct scalar slot, and demanding a record there would report
+// every unnest as a defect.
+func legRowTypes(resultValue values.Value, preds []predicates.QueryPredicate) map[values.CorrelationIdentifier]*values.RecordType {
+	types := make(map[values.CorrelationIdentifier]*values.RecordType)
+	collect := func(v values.Value) bool {
+		if qov, isQOV := values.AsQuantifiedObjectValue(v); isQOV {
+			if rt, isRT := qov.Type().(*values.RecordType); isRT {
+				if _, seen := types[qov.Correlation()]; !seen {
+					types[qov.Correlation()] = rt
+				}
+			}
+		}
+		return true
+	}
+	values.WalkValue(resultValue, collect)
+	for _, p := range preds {
+		predicates.ReplaceValues(p, func(v values.Value) values.Value {
+			collect(v)
+			return v
+		})
+	}
+	return types
+}
+
+// The positional merge's member-disagreement OBSERVATION.
+//
+// positionalMergeCase declines when a live leg's quantifier ranges over a
+// Reference whose members flow different row types
+// (expressions.MemberResultTypeDisagreementError). The decline is right — picking
+// a member would choose a row shape by memo insertion order — but a bare `return
+// nil` makes a memo defect indistinguishable from the ordinary "this arm does not
+// apply", and the error's own documentation says a disagreement must surface as
+// one.
+//
+// It is ALWAYS ON, unlike the gated censuses in this package. Those instrument
+// decisions the planner makes on every candidate, so an unconditional counter
+// would sit on a hot path; this one increments only where the memo is already
+// inconsistent, so a healthy run pays nothing and never touches the mutex.
+const mergeSlotTypeDisagreementSampleCap = 16
+
+var (
+	mergeSlotTypeDisagreementCount atomic.Int64
+
+	// mergeSlotTypeDisagreementMu guards the witness slice only.
+	mergeSlotTypeDisagreementMu        sync.Mutex
+	mergeSlotTypeDisagreementWitnesses []string
+)
+
+// recordMergeSlotTypeDisagreement counts one declined merge and retains the
+// error's own message as the witness — it names the quantifier and both row
+// types, which is what identifies the offending equivalence class.
+func recordMergeSlotTypeDisagreement(err error) {
+	mergeSlotTypeDisagreementCount.Add(1)
+	if err == nil {
+		return
+	}
+	mergeSlotTypeDisagreementMu.Lock()
+	defer mergeSlotTypeDisagreementMu.Unlock()
+	if len(mergeSlotTypeDisagreementWitnesses) >= mergeSlotTypeDisagreementSampleCap {
+		return
+	}
+	w := err.Error()
+	for _, seen := range mergeSlotTypeDisagreementWitnesses {
+		if seen == w {
+			return
+		}
+	}
+	mergeSlotTypeDisagreementWitnesses = append(mergeSlotTypeDisagreementWitnesses, w)
+}
+
+// MergeSlotTypeDisagreements returns how many positional merges declined because
+// a leg quantifier's reference members disagreed on their row type, plus the
+// distinct witnesses retained (capped). A nonzero count over any corpus is a memo
+// defect: either a rule inserted an expression flowing a different row into an
+// existing equivalence class, or a leg's row type is being derived two ways.
+func MergeSlotTypeDisagreements() (int64, []string) {
+	mergeSlotTypeDisagreementMu.Lock()
+	defer mergeSlotTypeDisagreementMu.Unlock()
+	out := make([]string, len(mergeSlotTypeDisagreementWitnesses))
+	copy(out, mergeSlotTypeDisagreementWitnesses)
+	return mergeSlotTypeDisagreementCount.Load(), out
+}

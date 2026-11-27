@@ -996,14 +996,14 @@ These are the dangerous entries, because nothing tells the tenant.
 - **`LIKE` does not treat a trailing newline as content.** `WHERE name LIKE 'abc'` matches the
   stored value `"abc\n"` — no DOTALL, and `$` matches before one final line terminator. Deliberate
   Java parity, derived against a live JDK. `_` and `%` do *not* match a line terminator. Pinned:
-  `pkg/recordlayer/query/plan/cascades/values/like_match_test.go:130`, `:127`, `:128`, `:143`; the
+  `internal/recordlayer/query/plan/cascades/values/like_match_test.go:130`, `:127`, `:128`, `:143`; the
   semantics are spelled out at
-  `pkg/recordlayer/query/plan/cascades/values/like_match.go:23-31`.
+  `internal/recordlayer/query/plan/cascades/values/like_match.go:23-31`.
 - **NaN is a total order, not IEEE.** `WHERE (v/z) = (v/z)` returns **every** row, and NaN sorts
   above `+Infinity`. This matches PostgreSQL and Java's boxed comparison path (which is the path the
   SQL layer uses); it diverges from IEEE and from Java's direct `RelOpValue` path. Pinned:
   `pkg/relational/sqldriver/nan_comparison_semantics_test.go:100-107`, `:111-115`; derivation at
-  `pkg/recordlayer/query/plan/cascades/values/coercion.go:26-46`.
+  `internal/recordlayer/query/plan/cascades/values/coercion.go:26-46`.
 
 ### Type-system limits
 
@@ -1080,7 +1080,7 @@ Two narrowings worth knowing, both **refuting** the corresponding watch-list phr
 
 `UPPER`, `LOWER`, `SUBSTRING`, `TRIM`, `CONCAT`, `REPLACE`, `POSITION`, `REVERSE`, the `*_LENGTH`
 family and the `L/RTRIM` pair all work here
-(`pkg/recordlayer/query/plan/cascades/values/scalar_function_catalog.go:363-370`, rows pinned in
+(`internal/recordlayer/query/plan/cascades/values/scalar_function_catalog.go:363-370`, rows pinned in
 `internal/relational/conformance/yamsql/testdata/string_functions.yaml`, real-FDB at
 `pkg/relational/sqldriver/embedded_fdb_test.go:3866`). **This refutes the "unsupported on both
 engines" claim for string functions** — Java's `BuiltInFunction` registry has no entries and rejects

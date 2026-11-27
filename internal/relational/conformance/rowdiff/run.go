@@ -12,8 +12,8 @@ import (
 	"strings"
 	"sync"
 
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 	"fdb.dev/internal/relational/relapi"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 

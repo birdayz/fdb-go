@@ -11,8 +11,8 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/internal/recordlayer/query/executor"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 type readPathStubBinder map[values.CorrelationIdentifier]any

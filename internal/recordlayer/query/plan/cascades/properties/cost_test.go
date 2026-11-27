@@ -1,0 +1,744 @@
+package properties
+
+import (
+	"math"
+	"testing"
+
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+)
+
+// scan returns a Reference holding a single FullUnorderedScan over
+// the given record types.
+func scan(t testing.TB, types ...string) *expressions.Reference {
+	t.Helper()
+	return expressions.InitialOf(mustFullUnorderedScanExpression(t, types, propertyTestFlowedType()))
+}
+
+// scanQ wraps `scan(types...)` in a ForEach Quantifier.
+func scanQ(t testing.TB, types ...string) expressions.Quantifier {
+	t.Helper()
+	return expressions.ForEachQuantifier(scan(t, types...))
+}
+
+func costFormulaRange(t *testing.T, comparisonType predicates.ComparisonType) *predicates.ComparisonRange {
+	t.Helper()
+	comparison := predicates.NewLiteralComparison(comparisonType, int64(7))
+	merge := predicates.EmptyComparisonRange().Merge(&comparison)
+	if !merge.Complete() {
+		t.Fatalf("failed to build %v comparison range", comparisonType)
+	}
+	return merge.Range
+}
+
+func TestEqualityBoundsCoverKey(t *testing.T) {
+	t.Parallel()
+
+	eq := costFormulaRange(t, predicates.ComparisonEquals)
+	rng := costFormulaRange(t, predicates.ComparisonGreaterThan)
+	tests := []struct {
+		name     string
+		comps    []*predicates.ComparisonRange
+		keyArity int
+		want     bool
+	}{
+		{name: "unknown key arity", comps: []*predicates.ComparisonRange{eq}, keyArity: 0},
+		{name: "partial composite prefix", comps: []*predicates.ComparisonRange{eq}, keyArity: 2},
+		{name: "full composite equality", comps: []*predicates.ComparisonRange{eq, eq}, keyArity: 2, want: true},
+		{name: "range", comps: []*predicates.ComparisonRange{eq, rng}, keyArity: 2},
+		{name: "nil gap", comps: []*predicates.ComparisonRange{eq, nil}, keyArity: 2},
+		{name: "all-equality overcoverage", comps: []*predicates.ComparisonRange{eq, eq, eq}, keyArity: 2, want: true},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := EqualityBoundsCoverKey(test.comps, test.keyArity); got != test.want {
+				t.Fatalf("EqualityBoundsCoverKey(%d comparisons, arity %d) = %v, want %v",
+					len(test.comps), test.keyArity, got, test.want)
+			}
+		})
+	}
+}
+
+func TestCost_Less_OrdersByTotalThenCardinality(t *testing.T) {
+	t.Parallel()
+	cheap := Cost{Cardinality: 100, CPU: 10}
+	pricy := Cost{Cardinality: 1000, CPU: 50}
+	if !cheap.Less(pricy) {
+		t.Fatalf("cheap=%+v should be Less than pricy=%+v", cheap, pricy)
+	}
+	if pricy.Less(cheap) {
+		t.Fatalf("pricy=%+v should NOT be Less than cheap=%+v", pricy, cheap)
+	}
+	// Tie on Total, break on Cardinality (lower wins).
+	a := Cost{Cardinality: 100, CPU: 50}
+	b := Cost{Cardinality: 50, CPU: 100}
+	if a.Total() != b.Total() {
+		t.Fatalf("setup error: totals differ %v vs %v", a.Total(), b.Total())
+	}
+	if !b.Less(a) {
+		t.Fatal("on Total tie, lower-cardinality b should win")
+	}
+	if a.Less(b) {
+		t.Fatal("on Total tie, higher-cardinality a should not win")
+	}
+}
+
+func TestEstimateCost_NilReturnsZero(t *testing.T) {
+	t.Parallel()
+	c := EstimateCost(nil)
+	if c.Total() != 0 {
+		t.Fatalf("nil cost = %+v, want zero", c)
+	}
+}
+
+func TestEstimateCost_FullScanIsLeafCardinality(t *testing.T) {
+	t.Parallel()
+	e := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
+	c := EstimateCost(e)
+	if c.Cardinality != LeafScanCardinality {
+		t.Fatalf("scan cardinality=%v, want %v", c.Cardinality, LeafScanCardinality)
+	}
+	// A scan's CPU is card·ScanCPU (reading N rows costs ~N) — NOT zero
+	// (RFC-041): a free scan made the nested-loop join cost order-symmetric,
+	// so the planner could not pick the drive-from-smaller join order.
+	if want := LeafScanCardinality * ScanCPU; c.CPU != want {
+		t.Fatalf("scan CPU=%v, want %v (card·ScanCPU)", c.CPU, want)
+	}
+}
+
+func TestEstimateCost_FilterReducesCardinalityBySelectivity(t *testing.T) {
+	t.Parallel()
+	// Filter([P], scan(T)) — single predicate.
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	filter := mustLogicalFilterExpression(t,
+		[]predicates.QueryPredicate{pred},
+		scanQ(t, "T"))
+
+	c := EstimateCost(filter)
+	want := LeafScanCardinality * FilterSelectivity
+	if math.Abs(c.Cardinality-want) > 1e-6 {
+		t.Fatalf("filter cardinality=%v, want %v", c.Cardinality, want)
+	}
+	if c.CPU < LeafScanCardinality*FilterCPU*0.99 {
+		t.Fatalf("filter CPU=%v too low", c.CPU)
+	}
+}
+
+func TestEstimateCost_FilterMultiPredicateExponentialSelectivity(t *testing.T) {
+	t.Parallel()
+	// Two predicates → selectivity^2; cardinality is smaller than
+	// single-predicate filter.
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	one := mustLogicalFilterExpression(t,
+		[]predicates.QueryPredicate{pred},
+		scanQ(t, "T"))
+
+	two := mustLogicalFilterExpression(t,
+		[]predicates.QueryPredicate{pred, pred},
+		scanQ(t, "T"))
+
+	c1 := EstimateCost(one)
+	c2 := EstimateCost(two)
+	if c2.Cardinality >= c1.Cardinality {
+		t.Fatalf("two-predicate filter cardinality=%v should be < one-predicate %v", c2.Cardinality, c1.Cardinality)
+	}
+}
+
+func TestEstimateCost_SortIsExpensive(t *testing.T) {
+	t.Parallel()
+	// Sort beats Filter on cardinality (both pass-through under
+	// Sort, only Filter drops rows), but Sort costs more CPU.
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	filterCost := EstimateCost(mustLogicalFilterExpression(t,
+		[]predicates.QueryPredicate{pred},
+		scanQ(t, "T")))
+	sortCost := EstimateCost(mustLogicalSortExpression(t,
+		nil,
+		scanQ(t, "T")))
+	if sortCost.CPU <= filterCost.CPU {
+		t.Fatalf("sort CPU=%v should exceed filter CPU=%v", sortCost.CPU, filterCost.CPU)
+	}
+}
+
+func TestEstimateCost_DistinctOverSortBeatsSortOverDistinct(t *testing.T) {
+	t.Parallel()
+	// A Distinct with no sort under it costs less than one over a sort.
+	scanRef := scan(t, "T")
+
+	// d := Distinct(scan)  — no sort
+	d := mustLogicalDistinctExpression(t, expressions.ForEachQuantifier(scanRef))
+
+	// ds := Distinct(Sort(scan))  — distinct over sort
+	sortQ := expressions.ForEachQuantifier(expressions.InitialOf(
+		mustLogicalSortExpression(t, nil, expressions.ForEachQuantifier(scan(t, "T"))),
+	))
+	ds := mustLogicalDistinctExpression(t, sortQ)
+
+	cd := EstimateCost(d)
+	cds := EstimateCost(ds)
+
+	if !cd.Less(cds) {
+		t.Fatalf("Distinct(scan)=%+v should beat Distinct(Sort(scan))=%+v", cd, cds)
+	}
+}
+
+func TestEstimateCost_PushFilterThroughSortBeatsSortOverFilter(t *testing.T) {
+	t.Parallel()
+	// PushFilterThroughSort: Sort(Filter(P, scan)) vs Filter(P, Sort(scan)).
+	// Pushing Filter under Sort means the sort runs on a smaller
+	// row set — the rewrite is the lower-cost shape. Calibration
+	// target: Sort(Filter(...)) < Filter(Sort(...)).
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+
+	// Sort(Filter(P, scan)) — Filter pushed under Sort.
+	filterUnderSort := mustLogicalFilterExpression(t,
+		[]predicates.QueryPredicate{pred},
+		scanQ(t, "T"))
+
+	pushed := mustLogicalSortExpression(t,
+		nil,
+		expressions.ForEachQuantifier(expressions.InitialOf(filterUnderSort)))
+
+	// Filter(P, Sort(scan)) — Filter above Sort.
+	sortInside := mustLogicalSortExpression(t, nil, scanQ(t, "T"))
+	pulled := mustLogicalFilterExpression(t,
+		[]predicates.QueryPredicate{pred},
+		expressions.ForEachQuantifier(expressions.InitialOf(sortInside)))
+
+	cPushed := EstimateCost(pushed)
+	cPulled := EstimateCost(pulled)
+
+	if !cPushed.Less(cPulled) {
+		t.Fatalf("Sort(Filter)=%+v should beat Filter(Sort)=%+v — PushFilterThroughSort's calibration target", cPushed, cPulled)
+	}
+}
+
+func TestEstimateCost_UnionSumsChildren(t *testing.T) {
+	t.Parallel()
+	// Union of two scans: cardinality = sum of children.
+	u := mustLogicalUnionExpression(t, []expressions.Quantifier{
+		scanQ(t, "T"),
+		scanQ(t, "U"),
+	})
+
+	c := EstimateCost(u)
+	if c.Cardinality != 2*LeafScanCardinality {
+		t.Fatalf("union cardinality=%v, want %v", c.Cardinality, 2*LeafScanCardinality)
+	}
+}
+
+func TestEstimateCost_IntersectionBoundedByMin(t *testing.T) {
+	t.Parallel()
+	// Intersection cardinality is bounded by the smallest child.
+	// Two scans of the same record type → both 1e6 → output = 1e6.
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+
+	smaller := mustLogicalFilterExpression(t,
+		[]predicates.QueryPredicate{pred, pred, pred},
+		scanQ(t, "T"))
+
+	bigger := mustLogicalFilterExpression(t,
+		[]predicates.QueryPredicate{pred},
+		scanQ(t, "U"))
+
+	inter := mustLogicalIntersectionExpression(t,
+		[]expressions.Quantifier{
+			expressions.ForEachQuantifier(expressions.InitialOf(smaller)),
+			expressions.ForEachQuantifier(expressions.InitialOf(bigger)),
+		},
+		nil)
+
+	c := EstimateCost(inter)
+	cs := EstimateCost(smaller)
+	if c.Cardinality > cs.Cardinality {
+		t.Fatalf("intersection cardinality=%v should be ≤ smallest child %v", c.Cardinality, cs.Cardinality)
+	}
+}
+
+func TestBestRefCost_ReturnsCheapest(t *testing.T) {
+	t.Parallel()
+	// Build a Reference with two members: Filter(scan) and Sort(scan).
+	// Filter is cheaper (drops rows AND less CPU). BestRefCost returns
+	// Filter's cost.
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	innerScan := scan(t, "T")
+	filterMember := mustLogicalFilterExpression(t,
+		[]predicates.QueryPredicate{pred},
+		expressions.ForEachQuantifier(innerScan))
+
+	sortMember := mustLogicalSortExpression(t,
+		nil,
+		expressions.ForEachQuantifier(innerScan))
+
+	// Filter and Sort are NOT semantically equivalent, but Reference.Insert
+	// allows multiple distinct members.
+	ref := expressions.InitialOf(filterMember)
+	if inserted := ref.Insert(sortMember); !inserted {
+		t.Fatal("setup error: Insert(sortMember) should have succeeded")
+	}
+	if len(ref.Members()) != 2 {
+		t.Fatalf("setup error: members=%d, want 2", len(ref.Members()))
+	}
+
+	best := BestRefCost(ref)
+	wantFilter := EstimateCost(filterMember)
+	if best.Total() != wantFilter.Total() {
+		t.Fatalf("BestRefCost=%+v, want filter's cost %+v", best, wantFilter)
+	}
+}
+
+func TestBestRefCost_NilOrEmptyReturnsZero(t *testing.T) {
+	t.Parallel()
+	if c := BestRefCost(nil); c.Total() != 0 {
+		t.Fatalf("nil ref cost=%+v, want zero", c)
+	}
+	r := &expressions.Reference{}
+	if c := BestRefCost(r); c.Total() != 0 {
+		t.Fatalf("empty ref cost=%+v, want zero", c)
+	}
+}
+
+func TestEstimateCost_FinalOnlyChildUsesPinnedFinal(t *testing.T) {
+	t.Parallel()
+
+	stats := FixedStatistics{Cardinality: 100}
+	scanExpr := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
+	parent := func(ref *expressions.Reference) expressions.RelationalExpression {
+		return mustLogicalSortExpression(t,
+			nil,
+			expressions.ForEachQuantifier(ref))
+	}
+
+	want := EstimateCostWith(parent(expressions.InitialOf(scanExpr)), stats)
+	got := EstimateCostWith(
+		parent(expressions.FinalOfAtStage(scanExpr, expressions.StageCanonical)),
+		stats,
+	)
+	if got != want {
+		t.Fatalf("final-only child cost = %+v, want pinned child cost %+v", got, want)
+	}
+}
+
+func TestEstimateCost_ExploratoryMemberPrecedesFinalFallback(t *testing.T) {
+	t.Parallel()
+
+	stats := MapStatistics{PerType: map[string]float64{"BIG": 1_000, "SMALL": 1}}
+	big := mustFullUnorderedScanExpression(t, []string{"BIG"}, propertyTestFlowedType())
+	small := mustFullUnorderedScanExpression(t, []string{"SMALL"}, propertyTestFlowedType())
+	mixed := expressions.InitialOf(big)
+	if !mixed.InsertFinal(small) {
+		t.Fatal("failed to add distinct final member")
+	}
+	parent := func(ref *expressions.Reference) expressions.RelationalExpression {
+		return mustLogicalFilterExpression(t,
+			nil,
+			expressions.ForEachQuantifier(ref))
+	}
+
+	want := EstimateCostWith(parent(expressions.InitialOf(big)), stats)
+	got := EstimateCostWith(parent(mixed), stats)
+	if got != want {
+		t.Fatalf("mixed-reference child cost = %+v, want exploratory-first cost %+v", got, want)
+	}
+
+	finalOnly := expressions.FinalOfAtStage(big, expressions.StageCanonical)
+	if !finalOnly.InsertFinal(small) {
+		t.Fatal("failed to add second distinct final member")
+	}
+	if got := EstimateCostWith(parent(finalOnly), stats); got != want {
+		t.Fatalf("multi-final child cost = %+v, want first-final cost %+v", got, want)
+	}
+}
+
+func TestBestCostWalks_IncludeFinalOnlyMembers(t *testing.T) {
+	t.Parallel()
+
+	stats := FixedStatistics{Cardinality: 100}
+	scanExpr := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
+	finalRef := expressions.FinalOfAtStage(scanExpr, expressions.StageCanonical)
+	wantLeaf := EstimateCostWith(scanExpr, stats)
+	if got := BestRefCostWith(finalRef, stats); got != wantLeaf {
+		t.Fatalf("BestRefCostWith(final-only) = %+v, want %+v", got, wantLeaf)
+	}
+
+	finalParent := mustLogicalFilterExpression(t,
+		nil,
+		expressions.ForEachQuantifier(finalRef))
+
+	exploratoryParent := mustLogicalFilterExpression(t,
+		nil,
+		expressions.ForEachQuantifier(expressions.InitialOf(scanExpr)))
+
+	wantParent := EstimateCostWith(exploratoryParent, stats)
+	if got := BestRefCostWith(expressions.InitialOf(finalParent), stats); got != wantParent {
+		t.Fatalf("BestRefCostWith(parent over final-only child) = %+v, want %+v", got, wantParent)
+	}
+	if got := BestMemberCostWith(finalParent, stats); got != wantParent {
+		t.Fatalf("BestMemberCostWith(final-only child) = %+v, want %+v", got, wantParent)
+	}
+}
+
+func TestBestCostWalks_ConsiderCheaperFinalAlongsideExploratory(t *testing.T) {
+	t.Parallel()
+
+	stats := MapStatistics{PerType: map[string]float64{"BIG": 1_000, "SMALL": 1}}
+	big := mustFullUnorderedScanExpression(t, []string{"BIG"}, propertyTestFlowedType())
+	small := mustFullUnorderedScanExpression(t, []string{"SMALL"}, propertyTestFlowedType())
+	mixed := expressions.InitialOf(big)
+	if !mixed.InsertFinal(small) {
+		t.Fatal("failed to add distinct final member")
+	}
+
+	wantLeaf := EstimateCostWith(small, stats)
+	if got := BestRefCostWith(mixed, stats); got != wantLeaf {
+		t.Fatalf("BestRefCostWith(mixed) = %+v, want cheaper final %+v", got, wantLeaf)
+	}
+
+	parent := mustLogicalFilterExpression(t,
+		nil,
+		expressions.ForEachQuantifier(mixed))
+
+	wantParent := EstimateCostWith(
+		mustLogicalFilterExpression(t,
+			nil,
+			expressions.ForEachQuantifier(expressions.InitialOf(small))),
+
+		stats,
+	)
+	if got := BestMemberCostWith(parent, stats); got != wantParent {
+		t.Fatalf("BestMemberCostWith(mixed child) = %+v, want cheaper final path %+v", got, wantParent)
+	}
+}
+
+func TestEstimateCost_DMLCardinalityEqualsInner(t *testing.T) {
+	t.Parallel()
+	// Insert/Update/Delete: cardinality equals inner (one effect per
+	// input row). Build a Delete with a Filter inner: cardinality
+	// matches the filtered count.
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	filter := mustLogicalFilterExpression(t,
+		[]predicates.QueryPredicate{pred},
+		scanQ(t, "T"))
+
+	cf := EstimateCost(filter)
+	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(filter))
+	del := mustDeleteExpression(t, innerQ, "T")
+	cd := EstimateCost(del)
+	if math.Abs(cd.Cardinality-cf.Cardinality) > 1e-6 {
+		t.Fatalf("delete cardinality=%v, want filter's %v", cd.Cardinality, cf.Cardinality)
+	}
+	// CPU should EXCEED filter CPU (Delete adds per-row write).
+	if cd.CPU <= cf.CPU {
+		t.Fatalf("delete CPU=%v should exceed filter CPU=%v", cd.CPU, cf.CPU)
+	}
+}
+
+func TestCostLess_AsClosure(t *testing.T) {
+	t.Parallel()
+	// CostLess is the comparator passed to Reference.GetBest.
+	// Verify it's a stable total order over the typed expressions.
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	cheap := mustLogicalFilterExpression(t,
+		[]predicates.QueryPredicate{pred, pred},
+		scanQ(t, "T"))
+
+	pricy := mustLogicalSortExpression(t, nil, scanQ(t, "T"))
+	if !CostLess(cheap, pricy) {
+		t.Fatalf("CostLess(filter, sort) should be true")
+	}
+	if CostLess(pricy, cheap) {
+		t.Fatalf("CostLess(sort, filter) should be false")
+	}
+	// Self-comparison is not Less (irreflexive).
+	if CostLess(cheap, cheap) {
+		t.Fatal("CostLess is not irreflexive")
+	}
+}
+
+func TestReferenceGetBest_PicksCheapestMember(t *testing.T) {
+	t.Parallel()
+	// Build a Reference with three members of different costs;
+	// GetBest(CostLess) returns the cheapest.
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	filter := mustLogicalFilterExpression(t,
+		[]predicates.QueryPredicate{pred},
+		scanQ(t, "T"))
+
+	sort := mustLogicalSortExpression(t, nil, scanQ(t, "T"))
+	dist := mustLogicalDistinctExpression(t, scanQ(t, "T"))
+
+	ref := expressions.InitialOf(sort)
+	ref.Insert(dist)
+	ref.Insert(filter)
+
+	best := ref.GetBest(CostLess)
+	if best == nil {
+		t.Fatal("GetBest returned nil")
+	}
+	// Filter has the lowest cost among the three (highest selectivity,
+	// cheap CPU).
+	if best != filter {
+		t.Fatalf("GetBest=%T, want *LogicalFilterExpression", best)
+	}
+}
+
+func TestReferenceGetBest_EmptyReturnsNil(t *testing.T) {
+	t.Parallel()
+	r := &expressions.Reference{}
+	if got := r.GetBest(CostLess); got != nil {
+		t.Fatalf("GetBest on empty Reference = %v, want nil", got)
+	}
+}
+
+func TestReferenceGetBest_SingleMember(t *testing.T) {
+	t.Parallel()
+	e := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
+	ref := expressions.InitialOf(e)
+	if got := ref.GetBest(CostLess); got != e {
+		t.Fatalf("GetBest single-member returned %v, want %v", got, e)
+	}
+}
+
+// suppress unused-import warnings if values is dropped from a future
+// edit. Keeping the import is cheaper than re-deriving constructors.
+var _ = values.UnknownType
+
+// TestEstimateCostWith_FixedStatistics pins that a non-default
+// StatisticsProvider drives leaf-scan cardinality. With a 1000-row
+// FixedStatistics, a single Filter over a scan emits 500 rows
+// (FilterSelectivity * 1000), not LeafScanCardinality * 0.5.
+func TestEstimateCostWith_FixedStatistics(t *testing.T) {
+	t.Parallel()
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	filter := mustLogicalFilterExpression(t,
+		[]predicates.QueryPredicate{pred},
+		scanQ(t, "T"))
+
+	stats := FixedStatistics{Cardinality: 1000}
+	c := EstimateCostWith(filter, stats)
+	want := 1000.0 * FilterSelectivity
+	if c.Cardinality != want {
+		t.Fatalf("filter cardinality=%v, want %v", c.Cardinality, want)
+	}
+}
+
+// TestEstimateCostWith_MapStatisticsPerTypeFlipsCheapest demonstrates
+// the high-leverage stats use case: when a Reference holds two
+// scan-shaped alternatives (Filter(scan(big_table)) vs Filter(scan(
+// small_table))), the cheapest extracted plan should depend on which
+// table is actually smaller — driven by stats.
+func TestEstimateCostWith_MapStatisticsPerTypeFlipsCheapest(t *testing.T) {
+	t.Parallel()
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	bigScan := mustLogicalFilterExpression(t,
+		[]predicates.QueryPredicate{pred},
+		scanQ(t, "BigTable"))
+
+	smallScan := mustLogicalFilterExpression(t,
+		[]predicates.QueryPredicate{pred},
+		scanQ(t, "SmallTable"))
+
+	statsBigSmaller := MapStatistics{
+		PerType: map[string]float64{
+			"BigTable":   100,
+			"SmallTable": 10000,
+		},
+	}
+	if !EstimateCostWith(bigScan, statsBigSmaller).Less(EstimateCostWith(smallScan, statsBigSmaller)) {
+		t.Fatal("with BigTable=100 SmallTable=10000, BigTable filter should win")
+	}
+
+	statsSmallSmaller := MapStatistics{
+		PerType: map[string]float64{
+			"BigTable":   10000,
+			"SmallTable": 100,
+		},
+	}
+	if !EstimateCostWith(smallScan, statsSmallSmaller).Less(EstimateCostWith(bigScan, statsSmallSmaller)) {
+		t.Fatal("with BigTable=10000 SmallTable=100, SmallTable filter should win")
+	}
+}
+
+// TestCostLessWith_BindsStats ensures CostLessWith captures the
+// stats provider in its closure — the returned comparator routes
+// scan cost through the bound stats.
+func TestCostLessWith_BindsStats(t *testing.T) {
+	t.Parallel()
+	scanT := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
+	scanU := mustFullUnorderedScanExpression(t, []string{"U"}, propertyTestFlowedType())
+	stats := MapStatistics{
+		PerType: map[string]float64{"T": 10, "U": 1000000},
+	}
+	less := CostLessWith(stats)
+	if !less(scanT, scanU) {
+		t.Fatal("CostLessWith(stats): T(10) should beat U(1M)")
+	}
+	if less(scanU, scanT) {
+		t.Fatal("CostLessWith(stats): U(1M) should not beat T(10)")
+	}
+}
+
+// TestStatistics_FallbackToLeafScan covers the unknown-name case in
+// MapStatistics: PerType lookup misses → Fallback. Empty Fallback →
+// LeafScanCardinality.
+func TestStatistics_FallbackToLeafScan(t *testing.T) {
+	t.Parallel()
+	s := MapStatistics{PerType: map[string]float64{"T": 10}}
+	if got := s.RecordTypeCardinality("Unknown"); got != LeafScanCardinality {
+		t.Fatalf("Unknown name fell through to %v, want LeafScanCardinality (%v)", got, LeafScanCardinality)
+	}
+	s2 := MapStatistics{
+		PerType:  map[string]float64{"T": 10},
+		Fallback: 50000,
+	}
+	if got := s2.RecordTypeCardinality("Unknown"); got != 50000 {
+		t.Fatalf("Unknown name + Fallback=50000 returned %v", got)
+	}
+}
+
+func TestStatistics_ZeroCountClampsToOne(t *testing.T) {
+	t.Parallel()
+	s := MapStatistics{PerType: map[string]float64{"T": 0}}
+	if got := s.RecordTypeCardinality("T"); got != 1 {
+		t.Fatalf("Zero count should clamp to 1, got %v", got)
+	}
+	s2 := MapStatistics{PerType: map[string]float64{"T": -5}}
+	if got := s2.RecordTypeCardinality("T"); got != 1 {
+		t.Fatalf("Negative count should clamp to 1, got %v", got)
+	}
+	s3 := MapStatistics{PerType: map[string]float64{"T": 42}}
+	if got := s3.RecordTypeCardinality("T"); got != 42 {
+		t.Fatalf("Positive count should return as-is, got %v", got)
+	}
+}
+
+// TestEstimateCost_ScanOverMultipleRecordTypesSums pins the Union-
+// across-record-types semantics of FullUnorderedScan: scan over
+// {A, B} emits stats(A) + stats(B) rows.
+func TestEstimateCost_ScanOverMultipleRecordTypesSums(t *testing.T) {
+	t.Parallel()
+	scan := mustFullUnorderedScanExpression(t, []string{"A", "B"}, propertyTestFlowedType())
+	stats := MapStatistics{
+		PerType: map[string]float64{"A": 100, "B": 200},
+	}
+	c := EstimateCostWith(scan, stats)
+	if c.Cardinality != 300 {
+		t.Fatalf("scan(A,B) with A=100 B=200 cardinality=%v, want 300", c.Cardinality)
+	}
+}
+
+// TestBestRefCost_MemoisationConsistency pins that BestRefCost
+// returns the same answer as the un-memoised path. Builds a wide
+// Reference (10 distinct members all sharing the same inner scan
+// Reference) and asserts BestRefCost picks the same minimum the
+// for-loop would.
+func TestBestRefCost_MemoisationConsistency(t *testing.T) {
+	t.Parallel()
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	innerScan := scan(t, "T")
+	innerQ := func() expressions.Quantifier { return expressions.ForEachQuantifier(innerScan) }
+
+	// 10 distinct Filter members with 1, 2, ..., 10 predicates so
+	// each has a different cost.
+	r := expressions.InitialOf(mustLogicalFilterExpression(t,
+		[]predicates.QueryPredicate{pred},
+		innerQ()))
+	for i := 2; i <= 10; i++ {
+		preds := make([]predicates.QueryPredicate, i)
+		for j := range preds {
+			preds[j] = pred
+		}
+		r.Insert(mustLogicalFilterExpression(t, preds, innerQ()))
+	}
+
+	// Memoised path.
+	memoised := BestRefCost(r)
+
+	// Un-memoised path: walk every member and EstimateCost (no memo).
+	unmemoised := EstimateCost(r.Members()[0])
+	for _, m := range r.Members()[1:] {
+		c := EstimateCost(m)
+		if c.Less(unmemoised) {
+			unmemoised = c
+		}
+	}
+
+	if memoised.Total() != unmemoised.Total() {
+		t.Fatalf("memoised %+v != un-memoised %+v", memoised, unmemoised)
+	}
+}
+
+// BenchmarkBestRefCost_WideRef pins the memoisation win on a
+// Reference with many members all sharing the same deep inner
+// sub-Reference. Without memoisation the inner walk is repeated N
+// times (once per member); with memoisation it's walked once.
+func BenchmarkBestRefCost_WideRef(b *testing.B) {
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	// Deep inner: Filter over Filter over Filter over Scan.
+	d := scanQ(b, "T")
+	for i := 0; i < 8; i++ {
+		f := mustLogicalFilterExpression(b, []predicates.QueryPredicate{pred}, d)
+		d = expressions.ForEachQuantifier(expressions.InitialOf(f))
+	}
+
+	// 20 distinct members all over the same deep inner Reference.
+	r := expressions.InitialOf(mustLogicalFilterExpression(b,
+		[]predicates.QueryPredicate{pred},
+		d))
+	for i := 2; i <= 20; i++ {
+		preds := make([]predicates.QueryPredicate, i)
+		for j := range preds {
+			preds[j] = pred
+		}
+		r.Insert(mustLogicalFilterExpression(b, preds, d))
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = BestRefCost(r)
+	}
+}
+
+// TestBestMemberCostWith_RecursesBestMember pins RFC-041 step 1: the
+// best-member cost walk costs a sub-Reference at its CHEAPEST member,
+// recursively — unlike EstimateCostWith, which uses the first member.
+func TestBestMemberCostWith_RecursesBestMember(t *testing.T) {
+	t.Parallel()
+	stats := MapStatistics{PerType: map[string]float64{"BIG": 1000, "SMALL": 1}}
+	// child Reference: first member scans BIG (1000), second scans SMALL (1).
+	child := scan(t, "BIG")
+	child.Insert(mustFullUnorderedScanExpression(t, []string{"SMALL"}, propertyTestFlowedType()))
+	parent := mustLogicalFilterExpression(t, nil, expressions.ForEachQuantifier(child))
+
+	first := EstimateCostWith(parent, stats)  // first member → BIG
+	best := BestMemberCostWith(parent, stats) // best member → SMALL
+	if !(best.Cardinality < first.Cardinality) {
+		t.Fatalf("best-member cost cardinality (%v) must be < first-member (%v)", best.Cardinality, first.Cardinality)
+	}
+}
+
+// TestBestMemberCostWith_MemberOrderStable pins the member-order-stability
+// invariant: PR-A's union-find merge changes member slice order,
+// so the best-member result must not depend on it.
+func TestBestMemberCostWith_MemberOrderStable(t *testing.T) {
+	t.Parallel()
+	stats := MapStatistics{PerType: map[string]float64{"BIG": 1000, "SMALL": 1}}
+
+	// childA: BIG first, SMALL second. childB: SMALL first, BIG second.
+	childA := scan(t, "BIG")
+	childA.Insert(mustFullUnorderedScanExpression(t, []string{"SMALL"}, propertyTestFlowedType()))
+	childB := scan(t, "SMALL")
+	childB.Insert(mustFullUnorderedScanExpression(t, []string{"BIG"}, propertyTestFlowedType()))
+
+	pA := mustLogicalFilterExpression(t, nil, expressions.ForEachQuantifier(childA))
+	pB := mustLogicalFilterExpression(t, nil, expressions.ForEachQuantifier(childB))
+
+	cA := BestMemberCostWith(pA, stats)
+	cB := BestMemberCostWith(pB, stats)
+	if cA.Cardinality != cB.Cardinality || cA.CPU != cB.CPU {
+		t.Fatalf("best-member cost must be invariant to member order: A=%v B=%v", cA, cB)
+	}
+}

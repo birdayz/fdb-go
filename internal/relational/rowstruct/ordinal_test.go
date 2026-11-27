@@ -3,7 +3,7 @@ package rowstruct
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // testOrdinalRow is a positional row with a stated record type and kind, the

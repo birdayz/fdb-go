@@ -14,7 +14,7 @@ import (
 	"os"
 	"time"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
+	"fdb.dev/internal/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 

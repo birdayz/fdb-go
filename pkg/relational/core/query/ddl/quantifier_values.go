@@ -9,9 +9,9 @@ package ddl
 import (
 	"fmt"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/internal/relational/relapi"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // quantifierValues is Java's QuantifierValues (QuantifierValues.java) over the

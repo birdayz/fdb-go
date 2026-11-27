@@ -40,7 +40,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 )
 
 // indexScanOfNode returns the concrete index scan a node denotes, seeing

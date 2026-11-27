@@ -29,12 +29,13 @@ go_library(
     ],
     importpath = "fdb.dev/internal/testinstruments/querycensus",
     visibility = [
+        "//internal/recordlayer:__subpackages__",
         "//internal/relational:__subpackages__",
         "//pkg:__subpackages__",
         "//tests/relational:__subpackages__",
         "//tests/sql:__subpackages__",
     ],
-    deps = ["//pkg/recordlayer/query/plan/cascades/values"],
+    deps = ["//internal/recordlayer/query/plan/cascades/values"],
 )
 
 go_test(
@@ -60,5 +61,5 @@ go_test(
         "unresolved_result_type_census_test.go",
     ],
     embed = [":querycensus"],
-    deps = ["//pkg/recordlayer/query/plan/cascades/values"],
+    deps = ["//internal/recordlayer/query/plan/cascades/values"],
 )

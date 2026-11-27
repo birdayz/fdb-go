@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // TestExecuteMap_ProjectionOutputNames drives a query block's Map through

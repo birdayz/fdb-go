@@ -16,9 +16,9 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	cursorpb "fdb.dev/internal/pb/cursor"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // flatMapCursor implements RecordCursor[QueryResult] matching Java's

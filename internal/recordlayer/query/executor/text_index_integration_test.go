@@ -10,11 +10,11 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/internal/pb/demopb"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 func textTestPlan(t *testing.T, typ predicates.ComparisonType, query any, grouped bool, reverse bool) plans.RecordQueryPlan {

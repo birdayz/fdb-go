@@ -11,8 +11,8 @@ package executor
 import (
 	"fmt"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/internal/unicode15"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // This file is the ordinal-join executor machinery: the primitives the

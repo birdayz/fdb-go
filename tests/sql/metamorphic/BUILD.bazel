@@ -41,6 +41,7 @@ go_test(
     ],
     deps = [
         "//internal/recordlayer/query/executor",
+        "//internal/recordlayer/query/plan/cascades/values",
         "//internal/relational/metadata",
         "//internal/relational/relapi",
         "//internal/relational/sqltest/testkit",
@@ -49,7 +50,6 @@ go_test(
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
-        "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/core/embedded",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protoreflect",

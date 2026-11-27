@@ -12,11 +12,11 @@ import (
 	"strings"
 
 	"fdb.dev/internal/recordlayer/query/executor"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // resultValueString renders a column value as a string for the api.ResultSet

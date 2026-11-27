@@ -17,8 +17,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // childRow builds a child result of the given width, as an aggregate-index

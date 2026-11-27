@@ -6,15 +6,15 @@ import (
 	"strings"
 	"testing"
 
-	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	cascades "fdb.dev/internal/recordlayer/query/plan/cascades"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/relational/core/parser"
 	"fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/logical"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 )
 
 const derivedExistsSchema = `CREATE TABLE t1 (id BIGINT, v BIGINT, PRIMARY KEY (id))

@@ -20,13 +20,13 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/internal/recordlayer/protoname"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/internal/relational/functions"
 	"fdb.dev/internal/relational/metadata"
 	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/internal/relational/rowstruct"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // DirectAccess returns the connection's primary-key-direct access to its

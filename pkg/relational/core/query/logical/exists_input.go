@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"slices"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // ExistsInput owns the lowered child of an existential edge. Its exact row is

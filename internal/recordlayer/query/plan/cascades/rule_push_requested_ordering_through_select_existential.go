@@ -1,0 +1,76 @@
+// Portions derived from FoundationDB Record Layer (
+// PushRequestedOrderingThroughSelectExistentialRule.java),
+// Copyright 2015-2019 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
+package cascades
+
+import (
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/properties"
+)
+
+// PushRequestedOrderingThroughSelectExistentialRule is a PLANNING-phase
+// ImplementationRule that pushes a preserve RequestedOrdering to the
+// child of an existential quantifier within a SelectExpression.
+//
+// Existential quantifiers (EXISTS subqueries) don't need specific
+// orderings — they only check for the existence of at least one row.
+// This rule unconditionally pushes preserve ordering to their child
+// Reference so downstream rules know the ordering is unconstrained.
+//
+// Ports Java's PushRequestedOrderingThroughSelectExistentialRule.
+type PushRequestedOrderingThroughSelectExistentialRule struct {
+	preOrderMarker
+	matcher matching.BindingMatcher
+}
+
+func NewPushRequestedOrderingThroughSelectExistentialRule() *PushRequestedOrderingThroughSelectExistentialRule {
+	return &PushRequestedOrderingThroughSelectExistentialRule{
+		matcher: NewExpressionMatcher[*expressions.SelectExpression]("push_req_ord_select_existential").WithRootPredicate(
+			func(sel *expressions.SelectExpression) bool {
+				for _, q := range sel.GetQuantifiers() {
+					if q.Kind() == expressions.QuantifierExistential {
+						return true
+					}
+				}
+				return false
+			},
+		),
+	}
+}
+
+func (r *PushRequestedOrderingThroughSelectExistentialRule) Matcher() matching.BindingMatcher {
+	return r.matcher
+}
+
+// ConstraintDependencies is Java's ImmutableSet.of(REQUESTED_ORDERING).
+func (r *PushRequestedOrderingThroughSelectExistentialRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
+}
+
+func (r *PushRequestedOrderingThroughSelectExistentialRule) OnMatch(call *ImplementationRuleCall) {
+	if !call.IsConstraintOnly() {
+		return
+	}
+
+	sel := call.Bindings.Get(r.matcher).(*expressions.SelectExpression)
+
+	// Find the first existential quantifier. Java's matcher structure
+	// binds exactly one existential; we iterate the quantifiers.
+	for _, q := range sel.GetQuantifiers() {
+		if q.Kind() != expressions.QuantifierExistential {
+			continue
+		}
+		childRef := q.GetRangesOver()
+		if childRef == nil {
+			continue
+		}
+		// Push preserve ordering — existential children are
+		// unconstrained in ordering.
+		call.PushConstraint(childRef, []*properties.RequestedOrdering{properties.PreserveOrdering()})
+	}
+}
+
+var _ ImplementationRule = (*PushRequestedOrderingThroughSelectExistentialRule)(nil)

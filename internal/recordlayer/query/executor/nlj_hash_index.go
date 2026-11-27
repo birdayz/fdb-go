@@ -11,8 +11,8 @@ package executor
 import (
 	"math"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // tryBuildHashIndex attempts to build a hash index on the inner rows

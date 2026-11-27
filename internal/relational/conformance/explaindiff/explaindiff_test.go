@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades"
 	"fdb.dev/internal/relational/conformance/explaindiff"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 )
 
 // corpusDir is the yamsql corpus, relative to this package. Bazel stages it

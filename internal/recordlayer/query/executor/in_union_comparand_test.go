@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 func comparandInUnion(t *testing.T, comparand values.Value) *plans.RecordQueryInUnionPlan {

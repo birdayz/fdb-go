@@ -518,7 +518,7 @@ disjunctions in `conformance/or_union_merge_java_probe_test.go`.
 
 Java's `Type.Record.equals` returns true for the same object before it compares
 fields (Type.java:2400-2402). Go's `RecordType.Equals`
-(`pkg/recordlayer/query/plan/cascades/values/type.go`) always compares field by
+(`internal/recordlayer/query/plan/cascades/values/type.go`) always compares field by
 field. For acyclic record types, the only kind Go builds, the answers agree and
 only the cost differs. Go omits the check on purpose: a record type that reached
 itself would then fail at its first comparison, even with itself, which is why
@@ -4032,7 +4032,7 @@ Go writes no key that Java would not.
 
 ### An INT long-arithmetic key at the edge of its lane answers where the record's expression overflows (RFC-257 WS-J)
 
-The non-integer half of the old entry is now "Long-arithmetic key candidates (WS-J 3.5)". What remains is the INT case. Go matches such a key only when every operand is INT or LONG (`functionKeyToValue`, `pkg/recordlayer/query/plan/cascades/key_expression_expansion.go:616-639`). So an INT operand stays a match, as it does in the target.
+The non-integer half of the old entry is now "Long-arithmetic key candidates (WS-J 3.5)". What remains is the INT case. Go matches such a key only when every operand is INT or LONG (`functionKeyToValue`, `internal/recordlayer/query/plan/cascades/key_expression_expansion.go:616-639`). So an INT operand stays a match, as it does in the target.
 
 The key stores `i + 1` in long arithmetic, so the entry for `i = 2147483647` is the LONG 2147483648. The query's `i + 1` is an INT-lane value, and it overflows on that row. In both engines, a read served from the index can answer where the same read over the record fails. The two engines serve different reads from the index, so their answers differ. Spec "WS-J long arithmetic key functions over non-integer operands" pins the target's answers (`int_max_plus_one`, `conformance/ws_j_index_fidelity_conformance_test.go:1998-2016`, `:2040-2056`) and Go's (`wsjNonIntGoPins`, `:2200-2227`):
 
@@ -4069,7 +4069,7 @@ This mostly records parity. The target never serves a function-key value, or an 
 - An index-served equality fetches the record and recomputes. `SELECT i + 1 FROM T WHERE i + 1 = 6` plans `ISCAN(IX [EQUALS ...]) | MAP (_.I + @c9 AS _0)`, and `SELECT d FROM T WHERE d + d = 2` plans `ISCAN(ARITH_D [EQUALS ...]) | MAP (_.D AS D)`.
 - `COVERING` appears only when the query reads nothing but the primary key.
 
-Go does the same. Its logical record reads from an entry only what `ExtractFromIndexEntry` can match: a field, or an order-wrapped field read back through the inverse (`computeIndexEntryToLogicalRecord`, `pkg/recordlayer/query/plan/cascades/match_candidate_index.go:178-215`; `values/index_entry_extraction.go:9-40`). An arithmetic Value is neither, so such an index covers only its primary-key columns. Go's pins show the same plan shape: `Map(IndexScan(IX, [=]), {_0: (_current.I#1 + 1)})` (`wsjNonIntGoPins`, `:2217`).
+Go does the same. Its logical record reads from an entry only what `ExtractFromIndexEntry` can match: a field, or an order-wrapped field read back through the inverse (`computeIndexEntryToLogicalRecord`, `internal/recordlayer/query/plan/cascades/match_candidate_index.go:178-215`; `values/index_entry_extraction.go:9-40`). An arithmetic Value is neither, so such an index covers only its primary-key columns. Go's pins show the same plan shape: `Map(IndexScan(IX, [=]), {_0: (_current.I#1 + 1)})` (`wsjNonIntGoPins`, `:2217`).
 
 One read differs. Take `SELECT i + 1 FROM T ORDER BY i + 1` over an index on `i + 1`. The target cannot plan it: 0AF00 "Cascades planner could not plan query", for EXPLAIN as well. Go plans it as `Map(IndexScan(IX, [*]), {_0: (_current.I#1 + 1)})`, recomputing the value per record. With `i = 2147483647` stored, Go fails on that row with 22003 (spec "WS-J long arithmetic key functions over non-integer operands", `int_max_plus_one`).
 
@@ -4097,7 +4097,7 @@ The target's DDL creates no second version of a template, so it never meets this
 
 ### An arithmetic function key with no lane is refused when hand-built metadata is saved as a template (RFC-257 WS-J)
 
-Take an index key of the ArithmeticValue family (the arithmetic, bit and bitmap functions) whose operand types name no row of Java's operator table. The table has 107 rows (ArithmeticValue.java:406-522, `values.LookupArithmeticLane`, `pkg/recordlayer/query/plan/cascades/values/arithmetic_lanes.go:184`). The target cannot plan such a key, and every query of its record type fails.
+Take an index key of the ArithmeticValue family (the arithmetic, bit and bitmap functions) whose operand types name no row of Java's operator table. The table has 107 rows (ArithmeticValue.java:406-522, `values.LookupArithmeticLane`, `internal/recordlayer/query/plan/cascades/values/arithmetic_lanes.go:184`). The target cannot plan such a key, and every query of its record type fails.
 
 Each operand is typed by the result type of the Value the target builds for it:
 - an order-wrapped or collated operand is BYTES, so `bitand(order_desc(a), 1)` is refused;
@@ -4295,7 +4295,7 @@ which declines the index instead (`tryAggregateIndexCandidate` in
 
 Java has no such guard: a compensation filter over a data-access match is explored and
 implemented whatever its residual references. Go's `compensationResidualCorrelationSafe`
-(`pkg/recordlayer/query/plan/cascades/planner.go:1589-1640`, reached from
+(`internal/recordlayer/query/plan/cascades/planner.go:1589-1640`, reached from
 `compensationSafeForYield`, `:1462`, at `:1506` and `:1511`) refuses a compensation whose residual
 is correlated to an outer alias the compensation's own probe does not feed
 (`compensationProbeCorrelations`, `:1736`). It guards the case where the bound-prefix signal
@@ -4441,7 +4441,7 @@ separates those two names. The stored records file is never rewritten: Go writes
 bytes. Every name Go reports is Java's. `protoscope.JavaFullName` and `JavaName`
 (`protoscope.go:177`, `:187`) read it back from the holder. The metadata type
 (`pkg/relational/core/metadata/proto_types.go:224`,
-`pkg/recordlayer/query/plan/cascades/values/proto_field_type.go:264`), the evolution validator's
+`internal/recordlayer/query/plan/cascades/values/proto_field_type.go:264`), the evolution validator's
 messages (`pkg/recordlayer/metadata_evolution_validator.go:1380`) and the executor's enum errors
 (`internal/recordlayer/query/executor/executor.go:6090`) use them.
 
@@ -4581,7 +4581,7 @@ engines' answers, so the specs redden if the target is fixed or if Go moves. The
   reaches a bare `Verify.verify` past its primitive arm (`PromoteValue.java:382`; XX000 "null").
   Go refuses it as INCOMPATIBLE_TYPE, 22000, as the target refuses every other unpromotable
   assignment (`values.CheckPromotionsTrie`,
-  `pkg/recordlayer/query/plan/cascades/values/promotions_trie.go:47`).
+  `internal/recordlayer/query/plan/cascades/values/promotions_trie.go:47`).
 - A string array into an enum array, once a row matches (`UPDATE t SET ms = ['SAD']`): the target
   admits it while planning, then casts with a null enum descriptor (XXXXX "null"). Go stores the
   names.
@@ -4598,7 +4598,7 @@ engines' answers, so the specs redden if the target is fixed or if Go moves. The
 **Where Go's type derivation leaves an operand UNKNOWN, two checks fail open.** Java types every
 Value it plans. Go's derivation does not yet reach every Value, and an unresolved operand is
 `UNKNOWN`. Then `values.NewArithmeticValue`
-(`pkg/recordlayer/query/plan/cascades/values/values.go:3732-3740`) resolves no lane: the value
+(`internal/recordlayer/query/plan/cascades/values/values.go:3732-3740`) resolves no lane: the value
 types by promotion and takes its arithmetic from the runtime operands. And
 `values.CheckPromotionsTrie` admits the assignment (`promotions_trie.go:56-57`): the converter
 checks the value when it is written. Neither is a verdict Java would give on a typed operand. A
@@ -4724,7 +4724,7 @@ A lateral derived table reading a chain's LAST element (`FROM q, q.bs AS b AT o,
 compared, not declared, in the join spec (`ws_f_join_unnest_conformance_test.go:175`, `:321`).
 
 The existential lowering in the nested-loop join rule declines when the inner quantifier is
-null-on-empty (`pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:123-127`):
+null-on-empty (`internal/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:123-127`):
 it wraps only a null-on-empty outer in DefaultOnEmpty, and an inner one would lose its
 null-extended row. Java's `planPartitionToPhysical` (`ImplementNestedLoopJoinRule.java:311-320`)
 wraps any null-on-empty quantifier in DefaultOnEmpty and then lowers. The FlatMap route Go takes
@@ -4777,7 +4777,7 @@ star join (the join row's leg `A` becomes the body's `W`, `G`). The other dissol
 body by renaming (`FROM (SELECT * FROM w WHERE w.f > 1) AS a, h AS d, g AS e`: the lower {a, d}
 states legs A, D; the merge states W, D). The rule asks the reference itself
 (`expressions.LegTableConflictsWith`,
-`pkg/recordlayer/query/plan/cascades/expressions/quantifier.go:552`, called at
+`internal/recordlayer/query/plan/cascades/expressions/quantifier.go:552`, called at
 `rule_select_merge.go:355`), the member-agreement scan's own derivation. Java's merge meets no such
 refusal, since its member types carry no leg table, so Go's search is narrower here: the join
 orders Java reaches only through the merged select (the dissolved body's table placed between the

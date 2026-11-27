@@ -238,7 +238,7 @@ func TestGetRecordTypeMisResolvesAnAmbiguousPair(t *testing.T) {
 //
 // WHERE -race runs, because the obvious guess is wrong there too: ci.yml's
 // "Race detector" lane covers //pkg/relational/..., three //pkg/fdbgo/... trees
-// and //pkg/recordlayer/query/plan/cascades/... -- NOT this package.
+// and //internal/recordlayer/query/plan/cascades/... -- NOT this package.
 // nightly-coverage.yml's race step names //pkg/recordlayer:recordlayer_test
 // explicitly. A regression here is caught by the nightly, one day late, not by
 // the PR.

@@ -3,7 +3,7 @@ package rowdiff
 import (
 	"fmt"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 

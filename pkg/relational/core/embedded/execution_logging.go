@@ -11,7 +11,7 @@ import (
 	"context"
 	"time"
 
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 )
 
 // ExecutionStats is the diagnostic record emitted once per statement

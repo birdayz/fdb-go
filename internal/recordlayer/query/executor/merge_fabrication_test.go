@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	sortingpb "fdb.dev/internal/pb/sorting"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"google.golang.org/protobuf/proto"
 )
 

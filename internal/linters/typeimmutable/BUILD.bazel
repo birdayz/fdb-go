@@ -19,7 +19,7 @@ go_test(
         # test fails — it may not skip, because a skipped constructor check leaves
         # every name on the allowlist unverified under a green target.
         "//:MODULE.bazel",
-        "//pkg/recordlayer/query/plan/cascades/values:type.go",
+        "//internal/recordlayer/query/plan/cascades/values:type.go",
     ],
     embed = [":typeimmutable"],
     deps = ["@org_golang_x_tools//go/analysis"],

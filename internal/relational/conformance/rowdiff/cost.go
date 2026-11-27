@@ -1,6 +1,6 @@
 package rowdiff
 
-import "fdb.dev/pkg/recordlayer/query/plan/plans"
+import "fdb.dev/internal/recordlayer/query/plan/plans"
 
 // Cost/ordering invariants extend the row-soundness harness onto the axis a
 // pure row-multiset diff is blind to. The ordinal-binding family of bugs lived

@@ -293,8 +293,8 @@ var compatibilityFiles = []struct {
 	{"fdb.dev/pkg/recordlayer", "pkg/recordlayer/collate_function_key_expression.go"},
 	{"fdb.dev/pkg/recordlayer", "pkg/recordlayer/keystore_key_manager.go"},
 	{"fdb.dev/pkg/recordlayer", "pkg/recordlayer/java_parse.go"},
-	{"fdb.dev/pkg/recordlayer/query/plan/cascades/values", "pkg/recordlayer/query/plan/cascades/values/values.go"},
-	{"fdb.dev/pkg/recordlayer/query/plan/cascades/values", "pkg/recordlayer/query/plan/cascades/values/uuid_parse.go"},
+	{"fdb.dev/internal/recordlayer/query/plan/cascades/values", "internal/recordlayer/query/plan/cascades/values/values.go"},
+	{"fdb.dev/internal/recordlayer/query/plan/cascades/values", "internal/recordlayer/query/plan/cascades/values/uuid_parse.go"},
 	{"fdb.dev/pkg/relational/core/parser", "pkg/relational/core/parser/case_insensitive.go"},
 }
 
@@ -400,7 +400,7 @@ func TestCompatibilityCallerBoundaries(t *testing.T) {
 		{"fdb.dev/pkg/recordlayer", "pkg/recordlayer/unrelated.go", 0},
 		{"fdb.dev/pkg/recordlayer", "pkg/recordlayer/text_tokenizer_test.go", 0},
 		{"fdb.dev/pkg/unrelated", "pkg/unrelated/text_tokenizer.go", 0},
-		{"fdb.dev/pkg/recordlayer/query/plan/plans", "pkg/recordlayer/query/plan/plans/values.go", 0},
+		{"fdb.dev/internal/recordlayer/query/plan/plans", "internal/recordlayer/query/plan/plans/values.go", 0},
 		// Future internal/... and top-level recordlayer/... / relational/... paths:
 		{"fdb.dev/internal/recordlayer", "internal/recordlayer/text_tokenizer.go", 2},
 		{"fdb.dev/internal/recordlayer", "internal/recordlayer/text_index_maintainer.go", 2},

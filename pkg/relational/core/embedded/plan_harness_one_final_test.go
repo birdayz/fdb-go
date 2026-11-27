@@ -1,6 +1,6 @@
 package embedded
 
-import cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
+import cascades "fdb.dev/internal/recordlayer/query/plan/cascades"
 
 // planAndVerifyExtraction plans sql and returns RFC-224's report for the exact
 // Reference path selector-based extraction dereferences. Unlike the retired

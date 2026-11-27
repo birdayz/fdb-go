@@ -1,0 +1,1875 @@
+// Portions derived from FoundationDB Record Layer (CascadesRuleCall.java,
+// CascadesPlanner.java, RecordQueryPlanComplexityException.java,
+// ImplementFilterRule.java, and others),
+// Copyright 2015-2018 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2019 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2026 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
+package cascades
+
+import (
+	"context"
+	"fmt"
+	"reflect"
+	"sort"
+	"sync/atomic"
+
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/properties"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
+	"fdb.dev/internal/unicode15"
+)
+
+type matchConsumption struct {
+	requestedOrderings []*properties.RequestedOrdering
+	matches            map[PartialMatch]struct{}
+}
+
+type intersectionConsumption struct {
+	requestedOrderings []*properties.RequestedOrdering
+	matches            []PartialMatch
+}
+
+// Planner is the task-stack driven cascades planner.
+//
+// The Java equivalent is `CascadesPlanner` — a task-stack driver over
+// two phases (REWRITING → PLANNING) that explores the expression DAG
+// bottom-up (leaves fire rules first, ancestors after), tracks
+// per-Reference exploration rounds for convergence, and fires rules at
+// per-(group, expression, rule) task granularity. PlanWithContext drives
+// both phases and extracts the cost-cheapest plan via
+// ExtractBestPlanFromSelector.
+//
+// Convergence: a Reference whose member set stops growing is committed
+// (Reference.CommitExploration); the stack drains; the planner returns.
+// MaxTasks optionally bounds the run; like Java it is unbounded by default.
+//
+// A Planner is single-use for non-nil planning runs.
+// PlanWithContext(ctx, nil) remains a zero-work no-op; the first non-nil call
+// claims the Planner and every later non-nil call fails with
+// ErrPlannerAlreadyUsed, including a retry after an error or cancellation.
+// Planning mutates both Planner-owned state and the entire Reference DAG, so a
+// fresh Planner is required for every attempt. Configuration methods must
+// therefore be called before the non-nil planning call.
+//
+// The planning run itself is single-threaded (Java's is too). The one-way
+// claim is atomic so two accidental concurrent callers cannot both enter the
+// stateful task driver.
+type Planner struct {
+	taskObserver func(Task)
+	trace        *PlannerTrace
+
+	// planStarted is a one-way lifecycle latch. It is deliberately never reset:
+	// every non-nil planning exit (success, cap, task error, cancellation, or
+	// extraction error, or a rejected nil context) leaves this Planner
+	// consumed. PlanWithContext(ctx, nil) does no work and does not claim the
+	// latch. Resetting Planner fields alone cannot make retry safe because
+	// planning also mutates the caller-owned Reference DAG.
+	planStarted atomic.Bool
+
+	// stack MUST be LIFO: PlanWithContext pushes InitiatePlannerPhaseTask →
+	// ExploreGroupTask/OptimizeGroupTask → ExploreExprTask/
+	// TransformExprTask/TransformImplTask/OptimizeInputsTask, and
+	// depends on LIFO pop order for bottom-up exploration (children
+	// before parents).
+	stack                 []Task
+	pendingExploreGroups  map[exploreGroupTaskKey]int
+	pendingExploreExprs   map[exploreExprTaskKey]struct{}
+	pendingDataAccess     map[*expressions.Reference]struct{}
+	pendingOptimizeGroups map[exploreGroupTaskKey]struct{}
+	rules                 []ExpressionRule
+	ctx                   PlanContext
+	memo                  *Memo
+
+	// rewritingImplRules run during PhaseRewriting. They yield
+	// final expressions (FinalizeExpressionsRule promotes exploratory
+	// to final for OptimizeGroup selection).
+	rewritingImplRules []ImplementationRule
+
+	// implementationRules run during PhasePlanning after the
+	// REWRITING phase converges. They yield physical expressions
+	// into FinalMembers via InsertFinal.
+	implementationRules []ImplementationRule
+
+	// planningExpressionRules are ExpressionRules that fire during
+	// PLANNING (not EXPLORE). They yield into InsertFinal so their
+	// results go to finalMembers and are authoritative for plan
+	// selection: the scan/filter/agg rules that produce physical
+	// wrappers (BatchAExpressionRules in production) fire here, with
+	// full constraint and ordering information available.
+	planningExpressionRules []ExpressionRule
+
+	// MaxTasks is Java's maxTotalTaskCount: past it planning fails with
+	// ErrPlannerCapHit. 0, the default as in Java, is unbounded.
+	MaxTasks int
+
+	// MaxTaskQueueSize caps the task stack's depth; 0 disables (Java
+	// RecordQueryPlannerConfiguration.getMaxTaskQueueSize default). Hitting
+	// it returns ErrPlannerQueueCapHit — Java throws
+	// RecordQueryPlanComplexityException("Maximum task queue size...").
+	MaxTaskQueueSize int
+
+	// MaxNumMatchesPerRuleCall caps one rule call's bindings (Java's count where the rule
+	// reports one, else Go's; see DIVERGENCES.md) with ErrPlannerRuleMatchCapHit; 0 disables.
+	MaxNumMatchesPerRuleCall int
+
+	// DisabledRules holds rule names excluded from selection — Java's
+	// PlannerRuleSet filtering via configuration.isRuleEnabled(rule).
+	// nil/empty = all rules enabled.
+	//
+	// Names are the SIMPLE type name ("PredicatePushDownRule"), not the %T
+	// spelling ("*cascades.PredicatePushDownRule"): Java keys the same set by
+	// `rule.getClass().getSimpleName()`, so this is the one spelling a
+	// DISABLED_PLANNER_RULES value can carry across both engines, and it is
+	// already the rule registry's key. An unrecognized name is ignored rather
+	// than rejected — also Java's behaviour
+	// (setDisabledTransformationRuleNames copies the strings verbatim and
+	// never resolves them against the rule set).
+	DisabledRules map[string]struct{}
+
+	// capErr carries a complexity-guard trip or a violated planner invariant
+	// raised inside a task (tasks have no error channel — Java throws
+	// instead); the planning loop checks it after every task. One channel, not
+	// two: both are "a task decided planning cannot legitimately continue",
+	// and Java surfaces them the same way.
+	capErr error
+
+	// verifyExtractionUnambiguous turns on RFC-224's post-drain check of
+	// the exact Reference path extraction selects. The report records reach,
+	// dead ends, and retained-property coherence. Off by default because it
+	// performs a second selected-path traversal.
+	verifyExtractionUnambiguous bool
+	extractionVerification      ExtractionVerificationReport
+
+	// reach is the optional RFC-183 plan-reachability tally, scoped to this
+	// Planner so two concurrent planning runs cannot sum into one number.
+	// nil = collect nothing, which is the production path and costs one nil
+	// compare per yield. See plan_reachability.go.
+	reach *ReachabilityCollector
+
+	// ruleObserver, when set, is told of every rule call (see ObservedRuleCall). Nil in
+	// production: one nil compare per rule call.
+	ruleObserver func(ObservedRuleCall)
+
+	// withoutPlanningMerges keeps equivalent PLANNING groups apart: the
+	// control that measures what merging them changes.
+	withoutPlanningMerges bool
+
+	tasksRun int
+
+	// costModel is the comparator for OptimizeGroupTask. Defaults
+	// to PlanningCostModelLess. Set to RewritingCostModelLess for the
+	// REWRITING phase. Matches Java's per-phase cost model architecture.
+	costModel func(a, b expressions.RelationalExpression) bool
+
+	// stats is the optional table-level cardinality statistics. When
+	// set, the cost model uses real record counts instead of the
+	// default 1e6 constant.
+	stats properties.StatisticsProvider
+
+	// extractPlan is an invocation-local extraction seam. Production leaves it
+	// nil and uses ExtractBestPlanFromSelectorContext; focused lifecycle tests
+	// replace it to exercise post-drain error and cancellation exits without
+	// admitting foreign expression implementations into the closed memo
+	// manifest. It is planner-owned, so parallel planning tests share no state.
+	extractPlan plannerPlanExtractor
+
+	// maxObservedExplRounds records the maximum exploration rounds any
+	// Reference started this planning run — the WS-P round-cap retirement
+	// evidence (exported via MaxObservedExplorationRounds; the epoch
+	// model makes maxRoundsPerRef obsolete at stage (d)).
+	maxObservedExplRounds int
+
+	// activePhase is the phase whose tasks are currently draining —
+	// maintained by InitiatePlannerPhaseTask (phases run sequentially on
+	// the one stack). Out-of-band re-exploration tasks scheduled through
+	// the memo hook carry it.
+	activePhase PlannerPhase
+
+	// constraintMap holds ordering constraints propagated during
+	// PLANNING's preorder rules. Shared across all tasks.
+	constraintMap *ConstraintMap
+
+	// Reconsume only when match identities or ordering requirements change.
+	dataAccessConsumed map[*expressions.Reference][]matchConsumption
+	// Union alternatives depend on eligible OR identities, not ordering requests.
+	unionExploredOrs map[expressions.RelationalExpression]map[predicates.QueryPredicate]struct{}
+
+	// intersectionConsumed is the corresponding growth guard for the
+	// cross-candidate intersection path. It is keyed additionally by the
+	// requested-ordering set: an ordering can arrive after an unordered
+	// consumption at the same match count and unlock a different merge
+	// direction. The old "any intersection final exists" guard permanently
+	// hid later 3/4-way combinations when matches arrived incrementally.
+	intersectionConsumed map[*expressions.Reference][]intersectionConsumption
+
+	// exprRuleIdx / implRuleIdx bucket each phase's rules by their
+	// matcher's typed root operator (ruleIndex), so ExploreExprTask only
+	// pushes transform tasks for rules that can possibly match an
+	// expression. Built lazily per phase; reset per planning run so a
+	// reconfigured planner (DisabledRules, With*Rules) re-indexes.
+	exprRuleIdx map[PlannerPhase]*ruleIndex[ExpressionRule]
+	implRuleIdx map[PlannerPhase]*ruleIndex[ImplementationRule]
+
+	// Candidate traversals and PlanContext metadata are immutable during a run.
+	leafCandidateTypes map[reflect.Type]struct{}
+}
+
+type exploreGroupTaskKey struct {
+	phase PlannerPhase
+	ref   *expressions.Reference
+	// stage is captured for exploration tasks because a task that advances a
+	// group into the next stage must enqueue its convergence continuation at
+	// the new stage. A pre-transition task for a group later forwarded into the
+	// same canonical Reference is not equivalent: it can sit below a parent
+	// optimizer on the LIFO stack.
+	stage expressions.PlannerStage
+}
+
+type exploreExprTaskKey struct {
+	phase PlannerPhase
+	ref   *expressions.Reference
+	expr  expressions.RelationalExpression
+}
+
+type plannerPlanExtractor func(
+	context.Context,
+	*expressions.Reference,
+	BestMemberSelector,
+	properties.StatisticsProvider,
+) (expressions.RelationalExpression, error)
+
+// NewPlanner builds a planner with the given rule set + context.
+// Pass DefaultExpressionRules() for the standard rule set.
+//
+// Pass nil ctx to use the empty PlanContext.
+func NewPlanner(rules []ExpressionRule, ctx PlanContext) *Planner {
+	if ctx == nil {
+		ctx = EmptyPlanContext()
+	}
+	p := &Planner{
+		rules:              rules,
+		rewritingImplRules: RewritingImplementationRules(),
+		ctx:                ctx,
+		memo:               nil,
+	}
+	// The comparator ranks with the planner's configuration and metadata
+	// whatever the statistics, as Java's PlanningCostModel does (RFC-257 WS-F
+	// F-7a); WithStatistics replaces it with the statistics-aware one.
+	p.costModel = NewPlanningCostModelLessWithContext(nil, ctx)
+	return p
+}
+
+// Memo returns the planner's Memo structure. Available after
+// PlanWithContext has been called (returns nil before that).
+func (p *Planner) Memo() *Memo {
+	return p.memo
+}
+
+// BestMember returns the OPTIMIZE-chosen best member for `ref`,
+// or nil if the Reference wasn't optimized.
+func (p *Planner) BestMember(ref *expressions.Reference) expressions.RelationalExpression {
+	if ref == nil {
+		return nil
+	}
+	return ref.Winner()
+}
+
+// HasBestMember reports whether a winner exists for `ref`.
+func (p *Planner) HasBestMember(ref *expressions.Reference) bool {
+	if ref == nil {
+		return false
+	}
+	return ref.HasWinner()
+}
+
+// OrderedChildWinner returns the cheapest physical member of childRef whose
+// derived rich ordering satisfies the requested ordering, stated in
+// childRef's own current-row space, or nil when none does (the sort must
+// then be materialised). Implements the sort-elision hook of
+// ExtractBestPlanFromSelector: satisfaction runs on the full
+// Value + four-state sort-order representation (RichOrdering.Satisfies), so
+// an ASC_NULLS_LAST sort is never elided against a natural-order ASC scan.
+func (p *Planner) OrderedChildWinner(requested *properties.RequestedOrdering, childRef *expressions.Reference) expressions.RelationalExpression {
+	if requested == nil || requested.IsPreserve() {
+		return nil
+	}
+	return bestSatisfyingMember(childRef, requested, p.costModel)
+}
+
+// OrderedChildWinnerForSort is OrderedChildWinner asked for a sort
+// expression's keys as spelled; a delegating member on the way down restates
+// them through its result value (requestedOrderingBelow).
+func (p *Planner) OrderedChildWinnerForSort(sortExpr *expressions.LogicalSortExpression, childRef *expressions.Reference) expressions.RelationalExpression {
+	return p.OrderedChildWinner(sortExpressionToRequestedOrdering(sortExpr), childRef)
+}
+
+// OrderingSourceRef reports whether expr is an order-PRESERVING wrapper
+// (orderingDelegator) and returns the child group its ordering flows
+// from. Implements the second half of the sort-elision seam: extraction
+// must pin that group to a satisfying member when it elides a sort —
+// rebuilding through the group's overall winner could relink the spine
+// to a cheaper UNORDERED member after the sort is already gone.
+func (p *Planner) OrderingSourceRef(expr expressions.RelationalExpression) (*expressions.Reference, bool) {
+	d, ok := expr.(orderingDelegator)
+	if !ok {
+		return nil, false
+	}
+	return d.OrderingSourceRef(), true
+}
+
+// TieBrokenCostLess supplies extraction's fallback GetBest with a
+// TOTAL-ORDER comparator (TieBrokenCostSelector): the scalar
+// cost comparator ties routinely and GetBest would otherwise resolve by
+// member insertion order, flipping picks across plannings.
+func (p *Planner) TieBrokenCostLess(stats properties.StatisticsProvider) func(a, b expressions.RelationalExpression) bool {
+	base := lessWithHashTieBreak(properties.CostLessWith(stats))
+	return func(a, b expressions.RelationalExpression) bool {
+		// Structural recursive-CTE precedence before cost (see tieBrokenLess in
+		// plan_extraction.go): DFS's charge-once beats LevelUnion's double-charge
+		// as a memory-safety invariant, not a cost margin. Inert for every
+		// non-recursive pair (compareRecursiveCTE returns 0).
+		if c := compareRecursiveCTE(a, b); c != 0 {
+			return c < 0
+		}
+		return base(a, b)
+	}
+}
+
+// WithImplementationRules adds rules for PhasePlanning. These run
+// after the REWRITING phase converges. Returns p for chaining.
+func (p *Planner) WithImplementationRules(rules []ImplementationRule) *Planner {
+	p.implementationRules = rules
+	return p
+}
+
+// WithPlanningExpressionRules adds ExpressionRules that fire during
+// PLANNING's bottom-up implementation pass. Unlike EXPLORE-phase
+// expression rules (which yield to members via Insert), these yield
+// to finalMembers via InsertFinal: physical scan/filter/agg wrappers
+// are produced during PLANNING, where constraint and ordering
+// information is available. Production passes BatchAExpressionRules.
+func (p *Planner) WithPlanningExpressionRules(rules []ExpressionRule) *Planner {
+	p.planningExpressionRules = append(PlanningExplorationRules(), rules...)
+	return p
+}
+
+// WithCostModel sets the comparator used by OptimizeGroupTask.
+// Use RewritingCostModelLess for the REWRITING phase, PlanningCostModelLess
+// for the PLANNING phase. Matches Java's per-phase cost model. Returns p.
+func (p *Planner) WithCostModel(less func(a, b expressions.RelationalExpression) bool) *Planner {
+	p.costModel = less
+	return p
+}
+
+// WithStatistics sets the table-level cardinality statistics for the cost
+// model. Stats flow through EstimateCost and HintCost to give scan/index
+// wrappers real cardinality instead of the default 1e6 constant.
+// Replaces the cost model — call after WithCostModel if both are used.
+func (p *Planner) WithStatistics(stats properties.StatisticsProvider) *Planner {
+	p.stats = stats
+	p.costModel = NewPlanningCostModelLessWithContext(stats, p.ctx)
+	return p
+}
+
+// WithTaskObserver installs a synchronous diagnostic callback before each task.
+func (p *Planner) WithTaskObserver(observer func(Task)) *Planner {
+	p.taskObserver = observer
+	return p
+}
+
+// Statistics returns the planner's statistics provider, or nil if none set.
+func (p *Planner) Statistics() properties.StatisticsProvider { return p.stats }
+
+// MaxObservedExplorationRounds reports the maximum exploration rounds
+// any Reference started during planning — round-cap retirement evidence
+// (RFC-181 WS-P).
+func (p *Planner) MaxObservedExplorationRounds() int { return p.maxObservedExplRounds }
+
+// WithMaxTasks overrides the task cap. Returns p for chaining.
+func (p *Planner) WithMaxTasks(n int) *Planner {
+	p.MaxTasks = n
+	return p
+}
+
+// PlanWithContext runs the unified two-phase REWRITING → PLANNING pipeline
+// under ctx and returns the cost-cheapest extracted plan tree. It is the only
+// planning entry point production code can reach; the context-less variant is
+// declared in a test file so cancellation and deadlines always have a
+// caller-scoped context to travel on.
+func (p *Planner) PlanWithContext(ctx context.Context, rootRef *expressions.Reference) (expressions.RelationalExpression, int, error) {
+	return p.plan(ctx, rootRef)
+}
+
+// plan is the single lifecycle authority behind PlanWithContext. Keeping the
+// claim, initialization, task loop, and cleanup in one function means every
+// entry point — including the test-only background-context one — observes the
+// identical lifecycle and cannot drift from it.
+//
+// It returns the cost-cheapest extracted plan tree.
+//
+// Pushes InitiatePlannerPhaseTask{PhaseRewriting} which chains to
+// PhasePlanning via the unified task types (ExploreGroupTask,
+// TransformExprTask, TransformImplTask, OptimizeGroupTask,
+// OptimizeInputsTask). After the stack drains, extracts the best
+// plan via ExtractBestPlanFromSelector.
+//
+// Returns:
+//   - plan: the extracted RelationalExpression; nil if rootRef is empty.
+//   - tasks: total tasks executed across both phases.
+//   - err: nil on success; ctx.Err() when planning is canceled;
+//     ErrPlannerCapHit if EXPLORE hit MaxTasks (no OPTIMIZE attempted);
+//     ErrPlannerAlreadyUsed on a later non-nil call; extraction error otherwise.
+//
+// ctx must be non-nil. The context is passed down the task driver and
+// extraction recursion; it is never retained on Planner after this call.
+func (p *Planner) plan(ctx context.Context, rootRef *expressions.Reference) (expressions.RelationalExpression, int, error) {
+	if rootRef == nil {
+		return nil, 0, nil
+	}
+	if !p.planStarted.CompareAndSwap(false, true) {
+		return nil, 0, ErrPlannerAlreadyUsed
+	}
+	// The latch is claimed BEFORE the context is validated, so a nil-context or
+	// already-canceled call consumes the Planner. That is deliberate: those are
+	// planning attempts, and letting them leave the Planner reusable would make
+	// the single-use contract depend on how an attempt failed.
+	if ctx == nil {
+		return nil, 0, ErrPlannerNilContext
+	}
+	if err := plannerContextErr(ctx); err != nil {
+		return nil, 0, err
+	}
+	if p.memo == nil {
+		p.memo = NewMemo(rootRef)
+	}
+	if p.trace != nil {
+		p.trace.attach(p.memo)
+	}
+	// Out-of-band member growth (Absorb, raw inserts into existing
+	// groups) must schedule the re-round its epoch re-arm requires —
+	// dirtiness without a task is silently never explored.
+	p.memo.SetReExploreScheduler(func(ref *expressions.Reference) {
+		p.push(&ExploreGroupTask{Phase: p.activePhase, Ref: ref, forceNew: true})
+	})
+	// The scheduler closes over this Planner's mutable task stack and is useful
+	// only while the run is actively draining it. Memo is observable after the
+	// run; detach the hook on every exit so later Memo operations cannot enqueue
+	// orphaned work into a consumed Planner.
+	defer p.memo.SetReExploreScheduler(nil)
+	p.constraintMap = NewConstraintMap()
+	p.dataAccessConsumed = make(map[*expressions.Reference][]matchConsumption)
+	p.intersectionConsumed = make(map[*expressions.Reference][]intersectionConsumption)
+	p.unionExploredOrs = nil
+	p.pendingDataAccess = nil
+	p.exprRuleIdx = nil
+	p.implRuleIdx = nil
+	p.capErr = nil
+	p.extractionVerification = ExtractionVerificationReport{}
+
+	// One task-stack drives both REWRITING and PLANNING phases.
+	// InitiatePlannerPhase(REWRITING) pushes ExploreGroup + OptimizeGroup
+	// for REWRITING, then chains to InitiatePlannerPhase(PLANNING).
+	p.push(&InitiatePlannerPhaseTask{Phase: PhaseRewriting, RootRef: rootRef})
+
+	// Cancellation and the caps sit on deliberately opposite sides of a task:
+	// before Run, ctx wins over the caps, because tripping a cap is a decision
+	// to do no further work and there is no point minting that diagnosis for a
+	// run the caller has already abandoned. After Run, capErr wins over ctx,
+	// because a task that actually executed and concluded planning cannot
+	// legitimately continue carries strictly more diagnostic value than
+	// "someone canceled" — losing it to a concurrent cancel would hide a real
+	// invariant violation. Do not "harmonize" the two orderings. The queue
+	// bound guards the next task, so it sits after the post-Run ctx check.
+	for len(p.stack) > 0 {
+		if err := plannerContextErr(ctx); err != nil {
+			return nil, p.tasksRun, err
+		}
+		// Java's isTaskTotalCountExceeded: checked before a task starts, against
+		// the tasks already started, so a bound of N runs N+1 tasks before it trips.
+		if p.MaxTasks > 0 && p.tasksRun > p.MaxTasks {
+			return nil, p.tasksRun, newTaskCapError(p.MaxTasks, p.tasksRun)
+		}
+		task := p.pop()
+		if p.taskObserver != nil {
+			p.taskObserver(task)
+		}
+		if p.trace != nil {
+			p.runTraced(ctx, task)
+		} else {
+			task.Run(ctx, p)
+		}
+		p.tasksRun++
+		// A memo admission failure is an invariant violation, so it ends the run
+		// exactly as a rule failure does. It is drained here rather than reported
+		// at its origin because memoization is the RULE-FACING api: no rule can
+		// act on "this expression is outside the repository manifest", so making
+		// MemoizeExpression fallible would push a decision no caller can make
+		// onto every caller. This is the Go spelling of Java's Verify.verify,
+		// which throws out of the same situation.
+		if p.capErr == nil && p.memo != nil {
+			if err := p.memo.AdmissionErr(); err != nil {
+				p.capErr = err
+			}
+		}
+		if p.capErr != nil {
+			return nil, p.tasksRun, p.capErr
+		}
+		if err := plannerContextErr(ctx); err != nil {
+			return nil, p.tasksRun, err
+		}
+		// Java's isTaskQueueSizeExceeded runs after each executed task.
+		if p.MaxTaskQueueSize > 0 && len(p.stack) > p.MaxTaskQueueSize {
+			return nil, p.tasksRun, newQueueCapError(p.MaxTaskQueueSize, len(p.stack))
+		}
+	}
+
+	// After the task stack drains, extraction must have one physical answer
+	// at every Reference it dereferences. Go obtains that answer from the
+	// stamped winner or a cheapest compatible physical fallback; it does not
+	// require Java's singleton-final mechanism because OptimizeGroup legally
+	// retains one member per required physical property.
+	//
+	// RFC-224 verifies that selected path, including positional ordinal-layout
+	// requirements and coherence of every retained multi-final alternative.
+	if p.verifyExtractionUnambiguous {
+		if err := plannerContextErr(ctx); err != nil {
+			return nil, p.tasksRun, err
+		}
+		p.extractionVerification = VerifyExtractionIsUnambiguous(rootRef, p, p.stats)
+	}
+	if err := plannerContextErr(ctx); err != nil {
+		return nil, p.tasksRun, err
+	}
+	extractor := p.extractPlan
+	if extractor == nil {
+		extractor = ExtractBestPlanFromSelectorContext
+	}
+	plan, err := extractor(ctx, rootRef, p, p.stats)
+	if err != nil {
+		// Return an explicit nil, not the extracted plan value: on error there is
+		// no valid plan to hand back, and forwarding the callee's value would make
+		// correctness depend on the unenforced convention (every WithChildren
+		// implementer in plans/*.go happens to return nil alongside its own
+		// errors) rather than on this signature's own contract.
+		return nil, p.tasksRun, err
+	}
+	if err := plannerContextErr(ctx); err != nil {
+		return nil, p.tasksRun, err
+	}
+	// Catch-all backstop: reject any PHYSICAL plan that carries an index-only
+	// predicate as a residual filter (a vector K-NN DistanceRank that no index
+	// serves — e.g. a metric-mismatched distance, which can reach a physical filter
+	// via ImplementSimpleSelectRule / the NLJ residual builder, NOT just the gated
+	// ImplementFilterRule). Surfaces the clean UnplannableIndexOnlyResidualError
+	// instead of an execution-time panic in Comparison.EvalAgainst.
+	if perr := validateNoIndexOnlyResidual(plan); perr != nil {
+		return nil, p.tasksRun, perr
+	}
+	if err := plannerContextErr(ctx); err != nil {
+		return nil, p.tasksRun, err
+	}
+	// When the Java !isIndexOnly() ImplementFilterRule gate instead left the best
+	// plan NON-physical (or, after RFC-224's physical-only extraction, NIL
+	// because no producer realized the index-only LogicalFilter), the physical
+	// walk above sees nothing — surface the same clean error from the logical
+	// side rather than letting the caller report the internal type / generic
+	// "no plan found".
+	if plan == nil || !isPhysical(plan) {
+		if bad := findIndexOnlyLogicalResidual(rootRef); bad != nil {
+			return nil, p.tasksRun, &UnplannableIndexOnlyResidualError{Predicate: bad.Explain()}
+		}
+	}
+	if err := plannerContextErr(ctx); err != nil {
+		return nil, p.tasksRun, err
+	}
+	return plan, p.tasksRun, nil
+}
+
+// ErrPlannerAlreadyUsed signals that PlanWithContext was called more than once
+// on the same Planner. A Planner owns one planning attempt; callers must
+// construct a fresh Planner to retry after either success or failure.
+var ErrPlannerAlreadyUsed = plannerErr("planner: PlanWithContext may be called only once; construct a new Planner for each planning attempt")
+
+// ErrPlannerNilContext signals a programmer error at the planning API
+// boundary. Callers that intentionally have no deadline should pass
+// context.Background rather than nil.
+var ErrPlannerNilContext = plannerErr("planner: nil context; use context.Background when no cancellation is required")
+
+// plannerContextErr preserves the standard context classification and, for
+// WithCancelCause callers, the underlying cause. Go permits multiple wrapped
+// errors, so errors.Is matches both context.Canceled/DeadlineExceeded and the
+// custom cause.
+func plannerContextErr(ctx context.Context) error {
+	if ctx == nil {
+		return ErrPlannerNilContext
+	}
+	err := ctx.Err()
+	if err == nil {
+		return nil
+	}
+	cause := context.Cause(ctx)
+	if cause == nil || cause == err {
+		return err
+	}
+	return fmt.Errorf("%w: %w", err, cause)
+}
+
+// ErrPlannerCapHit signals that PlanWithContext exited via the MaxTasks
+// cap rather than convergence. Callers should treat this as a
+// non-termination indicator and report.
+var ErrPlannerCapHit = plannerErr("planner: MaxTasks cap hit before convergence")
+
+// ErrPlannerQueueCapHit mirrors Java's "Maximum task queue size was exceeded"
+// RecordQueryPlanComplexityException (CascadesPlanner.isTaskQueueSizeExceeded).
+var ErrPlannerQueueCapHit = plannerErr("planner: MaxTaskQueueSize cap hit — task queue exceeded the configured bound")
+
+// ErrPlannerRoundCapHit signals a Reference still inserting new exploratory
+// members after the round cap — a rule-cycle divergence the memo dedup should
+// have collapsed (RFC-180 I2). A planner bug indicator, never load.
+var ErrPlannerRoundCapHit = plannerErr("planner: exploration round cap hit — a Reference kept producing new members after 100 rounds (rule-cycle divergence)")
+
+// RewritingCrossingError is Java's Verify(finalMembers.size() == 1) in
+// Reference.advancePlannerStage: a group reached the next planner stage with
+// other than exactly one final member, so REWRITING did not prune it to its
+// winner. A planner defect, never a property of the query.
+type RewritingCrossingError struct {
+	Finals int
+	// Members names the group's exploratory members, for diagnosis.
+	Members []string
+}
+
+func (e *RewritingCrossingError) Error() string {
+	return fmt.Sprintf("planner: a group crossed into the next planner stage with %d final members, want exactly 1 (exploratory members: %v)",
+		e.Finals, e.Members)
+}
+
+// ErrPlannerRuleMatchCapHit mirrors Java's "Maximum number of matches per rule
+// call has been exceeded" (CascadesPlanner.isMaxNumMatchesPerRuleCallExceeded).
+var ErrPlannerRuleMatchCapHit = plannerErr("planner: MaxNumMatchesPerRuleCall cap hit — one rule invocation produced more matches than the configured bound")
+
+// plannerErr is a string-error type local to the planner.
+type plannerErr string
+
+// Error returns the message.
+func (e plannerErr) Error() string { return string(e) }
+
+// PlannerBudgetExceededError reports WHICH planning budget was exhausted and
+// how far the run got before it tripped. Java attaches the same pair to its
+// RecordQueryPlanComplexityException via addLogInfo (MAX_TASK_COUNT/TASK_COUNT
+// and the queue and rule-match equivalents), and the SQL layer propagates them
+// as error context; without the numbers a user cannot tell a near-miss from a
+// query that is orders of magnitude past the bound. The rule-match budget is the
+// exception: like Java, it reports bound+1, that it tripped but not by how much.
+//
+// Error and Unwrap both delegate to the cap sentinel, so every existing
+// errors.Is check and every message assertion keeps working unchanged — this
+// type only adds the numbers.
+type PlannerBudgetExceededError struct {
+	// Budget names the configured bound, matching the Planner field.
+	Budget string
+	// Limit is the configured bound.
+	Limit int
+	// Observed is the value that exceeded it; for MaxNumMatchesPerRuleCall it is
+	// the bound+1 Java reports, since Java stops at the first binding past it.
+	Observed int
+
+	sentinel plannerErr
+}
+
+// Error returns the cap sentinel's message.
+func (e *PlannerBudgetExceededError) Error() string { return e.sentinel.Error() }
+
+// Unwrap returns the cap sentinel so errors.Is identifies which cap tripped.
+func (e *PlannerBudgetExceededError) Unwrap() error { return e.sentinel }
+
+// newTaskCapError reports the MaxTasks budget.
+func newTaskCapError(limit, observed int) *PlannerBudgetExceededError {
+	return &PlannerBudgetExceededError{
+		Budget: "MaxTasks", Limit: limit, Observed: observed, sentinel: ErrPlannerCapHit,
+	}
+}
+
+func (*PlannerBudgetExceededError) JavaRecordCoreException() {}
+
+// newQueueCapError reports the MaxTaskQueueSize budget.
+func newQueueCapError(limit, observed int) *PlannerBudgetExceededError {
+	return &PlannerBudgetExceededError{
+		Budget: "MaxTaskQueueSize", Limit: limit, Observed: observed, sentinel: ErrPlannerQueueCapHit,
+	}
+}
+
+// newRuleMatchCapError reports the MaxNumMatchesPerRuleCall budget. Java
+// throws at the first binding past the bound, so it observes bound+1.
+func newRuleMatchCapError(limit int) *PlannerBudgetExceededError {
+	return &PlannerBudgetExceededError{
+		Budget: "MaxNumMatchesPerRuleCall", Limit: limit, Observed: limit + 1, sentinel: ErrPlannerRuleMatchCapHit,
+	}
+}
+
+// push appends a task to the stack (LIFO). Equivalent group exploration,
+// expression exploration, and group optimization already waiting on the stack
+// are coalesced. The running task is removed from the pending set by pop,
+// before Run can schedule fresh work that observes newly admitted members or
+// constraints.
+func (p *Planner) push(t Task) {
+	switch typed := t.(type) {
+	case *OptimizeInputsTask:
+		if !typed.hasWork() {
+			return
+		}
+		if n := len(p.stack); n > 0 {
+			if adjacent, ok := p.stack[n-1].(*OptimizeInputsTask); ok && adjacent.absorbLeafPrepass(typed) {
+				return
+			}
+		}
+	case *ExploreGroupTask:
+		key := exploreGroupTaskKey{
+			phase: typed.Phase,
+			ref:   typed.Ref.Canonical(),
+			stage: typed.Ref.Stage(),
+		}
+		if p.pendingExploreGroups == nil {
+			p.pendingExploreGroups = make(map[exploreGroupTaskKey]int)
+		}
+		if !typed.forceNew {
+			for pendingKey := range p.pendingExploreGroups {
+				if pendingKey.phase == key.phase && pendingKey.stage == key.stage &&
+					pendingKey.ref.Canonical() == key.ref {
+					return
+				}
+			}
+		}
+		p.pendingExploreGroups[key]++
+		typed.pendingKey = key
+		typed.pending = true
+	case *ExploreExprTask:
+		if !typed.hasWork(p) {
+			return
+		}
+		key := exploreExprTaskKey{phase: typed.Phase, ref: typed.Ref.Canonical(), expr: typed.Expr}
+		if p.pendingExploreExprs == nil {
+			p.pendingExploreExprs = make(map[exploreExprTaskKey]struct{})
+		}
+		for pendingKey := range p.pendingExploreExprs {
+			if pendingKey.phase == key.phase && pendingKey.expr == key.expr && pendingKey.ref.Canonical() == key.ref {
+				if !typed.ReExplore {
+					for _, task := range p.stack {
+						if pending, ok := task.(*ExploreExprTask); ok && pending.pendingKey == pendingKey {
+							pending.ReExplore = false
+							break
+						}
+					}
+				}
+				return
+			}
+		}
+		p.pendingExploreExprs[key] = struct{}{}
+		typed.pendingKey = key
+		typed.pending = true
+	case *OptimizeGroupTask:
+		key := exploreGroupTaskKey{phase: typed.Phase, ref: typed.Ref.Canonical()}
+		if p.pendingOptimizeGroups == nil {
+			p.pendingOptimizeGroups = make(map[exploreGroupTaskKey]struct{})
+		}
+		for pendingKey := range p.pendingOptimizeGroups {
+			if pendingKey.phase == key.phase && pendingKey.ref.Canonical() == key.ref {
+				return
+			}
+		}
+		p.pendingOptimizeGroups[key] = struct{}{}
+		typed.pendingKey = key
+		typed.pending = true
+	}
+	p.stack = append(p.stack, t)
+}
+
+// scheduleExploreGroupsBeforeBatch makes child exploration a real LIFO
+// dependency without duplicating work. If a stage-transition task is already
+// pending below the parent batch, move that exact task to the top; moving the
+// whole parent batch below it would also cross unrelated work and needlessly
+// expand the search. Children already in the target stage use ordinary global
+// coalescing. Children with no pending task are pushed normally and run first.
+func (p *Planner) scheduleExploreGroupsBeforeBatch(
+	phase PlannerPhase,
+	refs []*expressions.Reference,
+	batchFloor int,
+) {
+	if len(refs) == 0 {
+		return
+	}
+	if batchFloor < 0 {
+		batchFloor = 0
+	}
+	if batchFloor > len(p.stack) {
+		batchFloor = len(p.stack)
+	}
+
+	seen := make(map[*expressions.Reference]struct{}, len(refs))
+	for _, ref := range refs {
+		if ref == nil {
+			continue
+		}
+		canonical := ref.Canonical()
+		if _, duplicate := seen[canonical]; duplicate {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		// A pending match partition can still add child access paths. Keep
+		// the entire unfinished child batch above its parent's pruning tasks.
+		for i := 0; i < batchFloor; i++ {
+			var pendingRef *expressions.Reference
+			switch pending := p.stack[i].(type) {
+			case *ConsumeMatchPartitionTask:
+				pendingRef = pending.Ref
+			case *ExploreGroupTask:
+				if pending.Phase == phase && !pending.superseded {
+					pendingRef = pending.Ref
+				}
+			}
+			if pendingRef == nil || pendingRef.Canonical() != canonical {
+				continue
+			}
+			childBatch := append([]Task(nil), p.stack[i:batchFloor]...)
+			copy(p.stack[i:], p.stack[batchFloor:])
+			copy(p.stack[len(p.stack)-len(childBatch):], childBatch)
+			batchFloor = i
+			break
+		}
+		stage := ref.Stage()
+		// Once a child is already in this phase's stage, an existing pending
+		// task may safely absorb the request: its current finals are visible to
+		// the parent and any constraint-driven follow-up is independently
+		// re-armed. The load-bearing ordering case is the stage boundary itself;
+		// parent implementation must not run while the child is still canonical
+		// (the nested-UNION no-plan regression).
+		if !stage.Precedes(phase.TargetStage()) {
+			constraints := ref.ConstraintsMap()
+			if constraints.IsExplored() && !constraints.IsExploring() {
+				continue
+			}
+			p.push(&ExploreGroupTask{Phase: phase, Ref: ref})
+			continue
+		}
+		found := -1
+		for i := batchFloor - 1; i >= 0; i-- {
+			pending, ok := p.stack[i].(*ExploreGroupTask)
+			if !ok || pending.superseded || pending.Phase != phase || pending.pendingKey.stage != stage {
+				continue
+			}
+			if pending.Ref.Canonical() == canonical {
+				found = i
+				break
+			}
+		}
+		if found < 0 {
+			p.push(&ExploreGroupTask{Phase: phase, Ref: ref})
+			continue
+		}
+		if found != len(p.stack)-1 {
+			pending := p.stack[found]
+			copy(p.stack[found:], p.stack[found+1:])
+			p.stack[len(p.stack)-1] = pending
+		}
+	}
+}
+
+// pop removes and returns the top of stack. Caller must check
+// len(stack) > 0.
+func (p *Planner) pop() Task {
+	n := len(p.stack)
+	t := p.stack[n-1]
+	p.stack = p.stack[:n-1]
+	switch typed := t.(type) {
+	case *ExploreGroupTask:
+		if typed.pending {
+			if remaining := p.pendingExploreGroups[typed.pendingKey] - 1; remaining > 0 {
+				p.pendingExploreGroups[typed.pendingKey] = remaining
+			} else {
+				delete(p.pendingExploreGroups, typed.pendingKey)
+			}
+			typed.pending = false
+		}
+	case *ExploreExprTask:
+		if typed.pending {
+			delete(p.pendingExploreExprs, typed.pendingKey)
+			typed.pending = false
+		}
+	case *OptimizeGroupTask:
+		if typed.pending {
+			delete(p.pendingOptimizeGroups, typed.pendingKey)
+			typed.pending = false
+		}
+	}
+	return t
+}
+
+// rulesForPhase returns the expression and implementation rules for the
+// given planner phase.
+func (p *Planner) rulesForPhase(phase PlannerPhase) ([]ExpressionRule, []ImplementationRule) {
+	var er []ExpressionRule
+	var ir []ImplementationRule
+	switch phase {
+	case PhaseRewriting:
+		er, ir = p.rules, p.rewritingImplRules
+	case PhasePlanning:
+		er, ir = p.planningExpressionRules, p.implementationRules
+	default:
+		return nil, nil
+	}
+	// Java's configuration.isRuleEnabled filtering (PlannerRuleSet.getRules
+	// passes the predicate): a rule named in DisabledRules is never
+	// selected. Keyed by the simple type name, matching Java's
+	// `rule.getClass().getSimpleName()`.
+	if len(p.DisabledRules) > 0 {
+		return enabledExpressionRules(er, p.DisabledRules), enabledImplementationRules(ir, p.DisabledRules)
+	}
+	return er, ir
+}
+
+// ruleIndexesForPhase returns the phase's rule indexes, building them from
+// rulesForPhase on first use (per planning run — the run resets the maps).
+func (p *Planner) ruleIndexesForPhase(phase PlannerPhase) (*ruleIndex[ExpressionRule], *ruleIndex[ImplementationRule]) {
+	if p.exprRuleIdx == nil {
+		p.exprRuleIdx = make(map[PlannerPhase]*ruleIndex[ExpressionRule])
+	}
+	if p.implRuleIdx == nil {
+		p.implRuleIdx = make(map[PlannerPhase]*ruleIndex[ImplementationRule])
+	}
+	ei, ok := p.exprRuleIdx[phase]
+	ii, ok2 := p.implRuleIdx[phase]
+	if !ok || !ok2 {
+		er, ir := p.rulesForPhase(phase)
+		ei = newRuleIndex(er)
+		ii = newRuleIndex(ir)
+		p.exprRuleIdx[phase] = ei
+		p.implRuleIdx[phase] = ii
+	}
+	return ei, ii
+}
+
+// costModelForPhase returns the cost model comparator for the given phase and
+// the invariant violation it found, if any. REWRITING compares over each child
+// group's one final (rewritingComparator); a child with other than one is a
+// RewritingPruneError.
+func (p *Planner) costModelForPhase(phase PlannerPhase) (func(a, b expressions.RelationalExpression) bool, func() error) {
+	if phase == PhaseRewriting {
+		comparator := &rewritingComparator{}
+		return func(a, b expressions.RelationalExpression) bool {
+				return comparator.compare(a, b) < 0
+			}, func() error {
+				return comparator.err
+			}
+	}
+	return p.costModel, func() error { return nil }
+}
+
+// pushDataAccessTasks generates data access expressions (index scans)
+// from PartialMatches on the Reference. This is the Go equivalent of
+// Java's TransformMatchPartition tasks. Four phases, one function
+// each: collect the consumable candidates, look up the propagated
+// ordering constraints, run the (growth-guarded) standalone
+// consumption, then attempt the cross-candidate PK intersection.
+//
+// Join-leg refs take the same standalone consumption path as any other
+// ref. What makes that safe is structural, not a guard here:
+// OptimizeInputsTask is pushed only for PHYSICAL parent members
+// (unified_tasks.go, Java CascadesPlanner.java:524), so a correlated
+// leg's group is pruned to a winner only as the inner child of the
+// binding physical join — never free-standing — and a correlated
+// SUBSEL scan cannot be stamped a standalone winner.
+// compensationSafeForYield's outer-correlation guard is
+// defense-in-depth for the same property (RFC-150 §8).
+func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, expr expressions.RelationalExpression) {
+	if ref == nil {
+		return
+	}
+	candidates := dataAccessCandidates(ref)
+	if len(candidates) == 0 {
+		return
+	}
+	start := len(p.stack)
+	defer p.moveMatchTasksAfterTransforms(ref, expr, start)
+	// Incomplete OR-term matches can trigger union exploration, but not scans.
+	p.pushPredicateUnionTasks(ref)
+	requestedOrderings := p.dataAccessOrderings(ref)
+	if !p.matchesNeedConsumption(ref, candidates, requestedOrderings, false) {
+		return
+	}
+	p.queueDataAccessTask(ref)
+}
+
+// Java runs match-partition rules after the expression's transformations.
+// A match discovered mid-batch must not move consumption ahead of those rules.
+func (p *Planner) moveMatchTasksAfterTransforms(ref *expressions.Reference, expr expressions.RelationalExpression, start int) {
+	if start == len(p.stack) {
+		return
+	}
+	floor := start
+	for i, task := range p.stack[:start] {
+		var pendingRef *expressions.Reference
+		var pendingExpr expressions.RelationalExpression
+		var phase PlannerPhase
+		switch task := task.(type) {
+		case *TransformExprTask:
+			pendingRef, pendingExpr, phase = task.Ref, task.Expr, task.Phase
+		case *TransformImplTask:
+			pendingRef, pendingExpr, phase = task.Ref, task.Expr, task.Phase
+		default:
+			continue
+		}
+		if phase == PhasePlanning && pendingRef != nil && pendingRef.Canonical() == ref.Canonical() && pendingExpr == expr {
+			floor = i
+			break
+		}
+	}
+	if floor == start {
+		return
+	}
+	queued := append([]Task(nil), p.stack[start:]...)
+	copy(p.stack[floor+len(queued):], p.stack[floor:start])
+	copy(p.stack[floor:], queued)
+}
+
+func (p *Planner) queueDataAccessTask(ref *expressions.Reference) {
+	if ref == nil {
+		return
+	}
+	for pending := range p.pendingDataAccess {
+		if pending.Canonical() == ref.Canonical() {
+			return
+		}
+	}
+	if p.pendingDataAccess == nil {
+		p.pendingDataAccess = make(map[*expressions.Reference]struct{})
+	}
+	key := ref.Canonical()
+	p.pendingDataAccess[key] = struct{}{}
+	p.push(&ConsumeMatchPartitionTask{Ref: key})
+}
+
+func (p *Planner) dataAccessOrderings(ref *expressions.Reference) []*properties.RequestedOrdering {
+	if p.constraintMap != nil {
+		if orderings, ok := Get(p.constraintMap, ref, RequestedOrderingConstraintKey); ok {
+			return orderings
+		}
+	}
+	return nil
+}
+
+func (p *Planner) consumeDataAccessPartitions(ref *expressions.Reference) {
+	candidates := dataAccessCandidates(ref)
+	if len(candidates) == 0 {
+		return
+	}
+	requestedOrderings := p.dataAccessOrderings(ref)
+	// Matches can grow while this deferred task waits beneath exploration.
+	if !p.shouldConsumeMatches(ref, candidates, requestedOrderings) {
+		return
+	}
+	realizations := make(accessRealizations)
+	p.consumeMatchPartitions(ref, candidates, requestedOrderings, realizations)
+	p.pushCrossCandidateIntersection(ref, candidates, requestedOrderings, realizations)
+}
+
+// dataAccessCandidates adjusts this ref's partial matches and returns
+// the match candidates the standalone data-access path may consume.
+//
+// The AdjustPartialMatchesForRef call absorbs candidate-side parent
+// expressions (Select → MatchableSort) onto this ref's matches before
+// they are consumed. PLANNING-phase matches are seeded during
+// exploration, after the phase-start AdjustMatches walk, so their
+// matched ordering parts (which let an index scan satisfy a requested
+// ordering and eliminate an in-memory sort) are only computed here, at
+// consumption time. Java's AdjustMatchRule is event-driven and fires
+// on each new match; this is the Go equivalent at the data-access
+// boundary.
+//
+// Aggregate-index candidates are dropped: they are consumed by
+// AggregateDataAccessRule (which matches the GroupByExpression and
+// reads the pre-aggregated value), NOT by the regular value-index
+// data-access path. An aggregate index stores aggregated rows, not
+// base records — matching its underlying scan here yields
+// IndexScan(agg_index, [=]) which a StreamingAgg then re-aggregates,
+// counting the single group row as 1 (or reading the wrong column for
+// SUM). The match infra seeds these matches once the regular path is
+// active; they must not be realized as record scans
+// (TestFDB_AggregateIndexUsage count/sum_with_eq_filter).
+func dataAccessCandidates(ref *expressions.Reference) []MatchCandidate {
+	AdjustPartialMatchesForRef(ref)
+
+	candidates := GetPartialMatchCandidatesTyped(ref)
+	if len(candidates) == 0 {
+		return nil
+	}
+	filtered := candidates[:0]
+	for _, c := range candidates {
+		if _, isAgg := c.(*AggregateIndexMatchCandidate); isAgg {
+			continue
+		}
+		filtered = append(filtered, c)
+	}
+	return filtered
+}
+
+// Match partitions depend on both exact matches and propagated orderings.
+// Replaying unchanged inputs remints compensations during their own exploration.
+func (p *Planner) shouldConsumeMatches(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*properties.RequestedOrdering) bool {
+	return p.matchesNeedConsumption(ref, candidates, requestedOrderings, true)
+}
+
+func (p *Planner) matchesNeedConsumption(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*properties.RequestedOrdering, record bool) bool {
+	matches := make(map[PartialMatch]struct{})
+	for _, c := range candidates {
+		for _, match := range completeMatchesForCandidate(ref, c) {
+			matches[match] = struct{}{}
+		}
+	}
+	if len(matches) == 0 {
+		return false
+	}
+	key := ref.Canonical()
+	for _, previous := range p.dataAccessConsumed[key] {
+		if len(previous.matches) != len(matches) || !requestedOrderingSetsEqual(previous.requestedOrderings, requestedOrderings) {
+			continue
+		}
+		same := true
+		for match := range matches {
+			if _, ok := previous.matches[match]; !ok {
+				same = false
+				break
+			}
+		}
+		if same {
+			return false
+		}
+	}
+	if !record {
+		return true
+	}
+	if p.dataAccessConsumed == nil {
+		p.dataAccessConsumed = make(map[*expressions.Reference][]matchConsumption)
+	}
+	p.dataAccessConsumed[key] = append(p.dataAccessConsumed[key], matchConsumption{matches: matches, requestedOrderings: append([]*properties.RequestedOrdering(nil), requestedOrderings...)})
+	return true
+}
+
+// shouldConsumeIntersection admits each exact maximum-coverage input once for
+// each requested-ordering set. Requested orderings are part of the key because
+// they can be propagated after the first unordered pass and determine
+// scan/comparison direction. Match identity — not merely count — is part of the
+// key because an adjusted match can replace a raw match at the same cardinality
+// and unlock a previously unavailable merge ordering.
+func (p *Planner) shouldConsumeIntersection(
+	ref *expressions.Reference,
+	accesses []Vectored[*SingleMatchedAccess],
+	requestedOrderings []*properties.RequestedOrdering,
+) bool {
+	if p.intersectionConsumed == nil {
+		p.intersectionConsumed = make(map[*expressions.Reference][]intersectionConsumption)
+	}
+	key := ref.Canonical()
+	entries := p.intersectionConsumed[key]
+	for _, entry := range entries {
+		if requestedOrderingSetsEqual(entry.requestedOrderings, requestedOrderings) &&
+			intersectionMatchSetsEqual(entry.matches, accesses) {
+			return false
+		}
+	}
+	matches := make([]PartialMatch, 0, len(accesses))
+	for _, access := range accesses {
+		matches = append(matches, access.Value.GetPartialMatch())
+	}
+	p.intersectionConsumed[key] = append(entries, intersectionConsumption{
+		requestedOrderings: append([]*properties.RequestedOrdering(nil), requestedOrderings...),
+		matches:            matches,
+	})
+	return true
+}
+
+func intersectionMatchSetsEqual(
+	seen []PartialMatch,
+	current []Vectored[*SingleMatchedAccess],
+) bool {
+	if len(seen) != len(current) {
+		return false
+	}
+	used := make([]bool, len(current))
+	for _, left := range seen {
+		found := false
+		for i, right := range current {
+			if !used[i] && left == right.Value.GetPartialMatch() {
+				used[i] = true
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func requestedOrderingSetsEqual(a, b []*properties.RequestedOrdering) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	used := make([]bool, len(b))
+	for _, left := range a {
+		found := false
+		for i, right := range b {
+			if used[i] {
+				continue
+			}
+			if left == nil || right == nil {
+				if left == right {
+					used[i] = true
+					found = true
+					break
+				}
+				continue
+			}
+			if left.GetDistinctness() != right.GetDistinctness() ||
+				left.IsExhaustive() != right.IsExhaustive() ||
+				!properties.PartsEqual(left.GetParts(), right.GetParts()) {
+				continue
+			}
+			used[i] = true
+			found = true
+			break
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// consumeMatchPartitions realizes each candidate's match partition
+// into data-access expressions and routes every result by safety:
+// physical plans and SAFE logical compensations go through
+// yieldUnknown; UNSAFE logical compensations go to InsertFinal.
+func (p *Planner) consumeMatchPartitions(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*properties.RequestedOrdering, realizations accessRealizations) {
+	for _, candidate := range candidates {
+		matches := completeMatchesForCandidate(ref, candidate)
+		if len(matches) == 0 {
+			continue
+		}
+		memoizer := &ExpressionRuleCall{Reference: ref, memo: p.memo}
+		exprs := dataAccessForMatchPartition(memoizer, requestedOrderings, matches, p.ctx, nil, realizations)
+		for _, expr := range exprs {
+			// An UNSAFE logical compensation — one whose inner scan is a vector
+			// top-K / aggregate — is NOT narrowable by a post-filter (a residual
+			// applied after the top-K / grouping changes the result). It goes to
+			// InsertFinal: it stays logical, and the query correctly fails to plan
+			// when no physical alternative exists rather than being re-optimized
+			// into a wrong plan. Index-only residuals are handled elsewhere — the
+			// ImplementFilterRule !isIndexOnly() gate plus the
+			// validateNoIndexOnlyResidual backstop in the planning run
+			// (RFC-151 §5).
+			if !isPhysical(expr) && !compensationSafeForYield(expr) {
+				// NO exploration task: an unsafe final exists only so the
+				// query FAILS to plan when no alternative lands — running
+				// rules on it would physicalize the top-K-before-filter
+				// shape this arm exists to prevent (silent wrong rows;
+				// the finals loop's PLANNING gate skips it for the same
+				// reason).
+				if ref.InsertFinal(expr) && p.memo != nil {
+					p.memo.AddExpression(ref, expr)
+				}
+				continue
+			}
+			// Physical plan → final set (competes now). A SAFE logical compensation →
+			// exploratory set, re-optimized by the normal ExploreExprTask loop
+			// (ImplementFilterRule / InComparisonToExplodeRule / …) until it yields a
+			// RecordQueryPlan (Java CascadesRuleCall.yieldUnknownExpression;
+			// RFC-148 §3a). The re-entry this creates is bounded by
+			// shouldConsumeMatches' match-growth guard.
+			p.yieldUnknown(ref, expr)
+		}
+	}
+}
+
+// pushCrossCandidateIntersection aggregates matches from different
+// indexes and creates physical intersection plans during PLANNING.
+// Creates RecordQueryIntersectionPlan directly (not logical) because
+// there's only one intersection strategy (PK-based). If merge or
+// hash intersection is added, this should yield LogicalIntersectionExpression
+// and let ImplementIntersectionRule choose the strategy.
+//
+// The restricted candidate/match caps (4/8) bound MaximumCoverageMatches and
+// ChooseK enumeration for queries with many indexes. Do not cap the raw
+// candidate list: it includes an unrestricted primary candidate, so a four-
+// secondary-index query naturally presents five candidates before the useless
+// full-scan match is filtered out. shouldConsumeIntersection prevents
+// re-creation at an unchanged match/ordering input while still allowing
+// incrementally discovered or adjusted matches to unlock larger intersections.
+func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*properties.RequestedOrdering, realizations accessRealizations) {
+	if len(candidates) < 2 {
+		return
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].CandidateName() < candidates[j].CandidateName()
+	})
+	var allMatches []PartialMatch
+	for _, candidate := range candidates {
+		allMatches = append(allMatches, completeMatchesForCandidate(ref, candidate)...)
+	}
+	// An intersection combines matches of ONE query expression (Java's
+	// MatchPartition is per expression): members of a group can carry different
+	// residuals, and intersecting their compensations would drop the ones they
+	// do not share.
+	byExpression := make(map[expressions.RelationalExpression][]PartialMatch)
+	for _, m := range allMatches {
+		byExpression[m.GetQueryExpression()] = append(byExpression[m.GetQueryExpression()], m)
+	}
+	for _, member := range ref.AllMembers() {
+		if matches := byExpression[member]; len(matches) >= 2 {
+			p.pushExpressionIntersection(ref, matches, requestedOrderings, realizations)
+		}
+	}
+}
+
+// pushExpressionIntersection builds the primary-key intersections over the
+// complete matches of one query expression.
+func (p *Planner) pushExpressionIntersection(
+	ref *expressions.Reference,
+	allMatches []PartialMatch,
+	requestedOrderings []*properties.RequestedOrdering,
+	realizations accessRealizations,
+) {
+	// Only include matches with non-empty bound parameter prefix
+	// (i.e., matches that actually restrict the scan). Zero-coverage
+	// matches produce full index scans that don't help with intersection.
+	//
+	// Also exclude CORRELATED matches: a leg whose bound prefix references
+	// an outer quantifier (a join predicate like customer_id = c.id) is not
+	// independently evaluable and must not be folded into a primary-key
+	// intersection. Java resolves such a predicate via the FlatMap/NLJ
+	// correlation plus a residual filter, never an index intersection;
+	// folding it in produces a plan whose correlated binding the
+	// intersection cursor cannot evaluate, yielding 0 rows (RFC-069).
+	var restrictedMatches []PartialMatch
+	restrictedCandidates := make(map[string]struct{})
+	for _, m := range allMatches {
+		// A vector scan must NEVER be a primary-key intersection arm — in
+		// EITHER of its two forms:
+		//   - ORDERED-STREAM (un-partitioned, RFC-156 Phase B): the residual
+		//     must compose ABOVE the un-limited distance-ordered stream
+		//     (Limit → Filter → ordered scan); folding it into the SELF-LIMITING
+		//     intersection combinator would self-limit the scan BELOW the
+		//     residual, the very thing that phase forbids.
+		//   - SELF-LIMITING (partitioned per-partition top-k, RFC-046): the scan
+		//     emits (partition, distance) order, which is NOT primary-key-
+		//     monotonic, so the pk-keyed sorted-merge (merge_cursor.go max-key/
+		//     advance) would drop rows whose distance rank disagrees with their
+		//     pk order (wrong rows for k>1). The safe shape is a Filter above the
+		//     un-intersected scan (compensationSafeForYield's partition-residual
+		//     exception, residualSelectsWholePartitions).
+		// Both reduce to the same invariant — a distance-ordered scan cannot be a
+		// pk-keyed intersection leg — so exclude ALL vector candidates here, the
+		// single home for the rule (RFC-167 Phase 4).
+		if _, ok := m.GetMatchCandidate().(*VectorIndexScanMatchCandidate); ok {
+			continue
+		}
+		if hasRestrictedScan(m) && !matchBoundPrefixIsCorrelated(m) {
+			restrictedMatches = append(restrictedMatches, m)
+			restrictedCandidates[m.GetMatchCandidate().CandidateName()] = struct{}{}
+			if len(restrictedCandidates) > 4 {
+				return
+			}
+		}
+	}
+	if len(restrictedMatches) < 2 {
+		return
+	}
+	if len(restrictedMatches) < 2 || len(restrictedMatches) > 8 {
+		return
+	}
+	bestMatches := MaximumCoverageMatches(restrictedMatches, requestedOrderings, p.ctx)
+	if len(bestMatches) < 2 {
+		return
+	}
+	if !p.shouldConsumeIntersection(ref, bestMatches, requestedOrderings) {
+		return
+	}
+	memoizer := &ExpressionRuleCall{Reference: ref, memo: p.memo}
+	result := withPrimaryKeyIntersector(memoizer, p.ctx)(bestMatches, requestedOrderings, realizations)
+	if result == nil || !result.IsViable() {
+		return
+	}
+	for _, expr := range result.GetExpressions() {
+		if ref.InsertFinal(expr) {
+			if p.memo != nil {
+				p.memo.AddExpression(ref, expr)
+			}
+			if isPhysical(expr) {
+				p.push(&OptimizeInputsTask{Phase: PhasePlanning, Ref: ref, Expr: expr})
+			}
+			p.push(&ExploreExprTask{Phase: PhasePlanning, Ref: ref, Expr: expr})
+		}
+	}
+}
+
+// yieldUnknown routes a data-access result by physicality, mirroring Java's
+// CascadesRuleCall.yieldUnknownExpression (CascadesRuleCall.java:211-219): a
+// physical RecordQueryPlan lands in the FINAL set (competes in winner selection
+// immediately); a logical compensation lands in the EXPLORATORY set and is
+// re-optimized by the normal ExploreExprTask loop (ImplementFilterRule,
+// InComparisonToExplodeRule, …) until it yields a physical plan (RFC-148 §3a).
+// Called only from pushDataAccessTasks, under its match-growth re-entry guard.
+func (p *Planner) yieldUnknown(ref *expressions.Reference, expr expressions.RelationalExpression) {
+	if isPhysical(expr) {
+		if ref.InsertFinal(expr) {
+			if p.memo != nil {
+				p.memo.AddExpression(ref, expr)
+			}
+			// Insert-driven exploration (Java executeRuleCall
+			// :1064-1070): under epoch convergence the group does NOT
+			// re-round on member growth, so every insert site owns its
+			// new expression's tasks.
+			p.push(&OptimizeInputsTask{Phase: PhasePlanning, Ref: ref, Expr: expr})
+			p.push(&ExploreExprTask{Phase: PhasePlanning, Ref: ref, Expr: expr})
+		}
+		return
+	}
+	if ref.Insert(expr) {
+		p.integratePlanningYield(ref, expr)
+		if ref.ContainsExactly(expr) {
+			p.push(&ExploreExprTask{Phase: PhasePlanning, Ref: ref, Expr: expr})
+		}
+	}
+}
+
+// compensationSafeForYield reports whether a standalone logical data-access
+// compensation may be routed through yieldUnknown's exploratory re-optimization.
+// It is UNSAFE (routed to InsertFinal instead) when its inner scan is a vector
+// top-K or aggregate scan: a residual applied AFTER the top-K / grouping changes
+// the result (you would post-filter the K rows, not the underlying set), so
+// re-optimizing it would mint a wrong plan.
+//
+// An index-only predicate (a vector DistanceRank that no index serves) is
+// deliberately NOT guarded here. Java's `ImplementFilterRule` `!isIndexOnly()`
+// matcher gate (rule_implement_filter.go) stops THAT producer from building such
+// a physical filter, and the legitimate vector scan is consumed by the
+// partial-match re-trigger in TransformExprTask (the Java getNewPartialMatches()
+// reaction). But Go has OTHER physical-filter builders the gate does not cover
+// (ImplementSimpleSelectRule, the NLJ residual builder, ImplementIndexScanRule),
+// so the catch-all validateNoIndexOnlyResidual backstop in the planning run is
+// RETAINED —
+// it, not this function, is the authority that rejects an index-only physical
+// residual (pinned by TestVectorPlan_MetricMismatchInJoinDoesNotLeak). Do NOT
+// remove that net until every such builder is gated/retired (RFC-151 §5;
+// registered as RFC-175 §2 C4).
+// Sentinels: TestVectorPlan_QualifyPlansToVectorScan (must still plan) +
+// TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual (must stay
+// unplannable, via the inner-scan guard).
+func compensationSafeForYield(expr expressions.RelationalExpression) bool {
+	if unique, ok := expr.(*expressions.LogicalUniqueExpression); ok {
+		// Required Unique is an enforcer emitted by cardinality compensation,
+		// not an optional query rewrite. Routing it to the logical-final
+		// fail-to-plan sentinel strands it forever: ImplementUniqueRule never
+		// gets to freeze the exact PK-carrying physical child. It is safe to
+		// explore when every current child alternative is either already
+		// physical or itself a compensation shape this guard authorizes.
+		// Ordinary query Unique does not enter through data-access
+		// compensation and remains outside this exception.
+		if !unique.IsRequired() {
+			return false
+		}
+		innerRef := unique.GetInner().GetRangesOver()
+		if innerRef == nil {
+			return false
+		}
+		innerMembers := innerRef.AllMembers()
+		if len(innerMembers) == 0 {
+			return false
+		}
+		for _, member := range innerMembers {
+			if isPhysical(member) {
+				continue
+			}
+			if !compensationSafeForYield(member) {
+				return false
+			}
+		}
+		return true
+	}
+
+	// Java yields every logical compensation (CascadesRuleCall
+	// yieldUnknownExpression): a residual filter, or a Select carrying the
+	// matched query's result value. The residual guards below are Go's own; a
+	// Select without residual predicates only reshapes rows and needs none.
+	// Anything else stays final.
+	switch f := expr.(type) {
+	case *expressions.LogicalFilterExpression:
+		// A residual filter with no predicates is not a yield candidate
+		// (ForMatchCompensation.ApplyAllNeeded never produces one; reject defensively).
+		if len(f.GetPredicates()) == 0 {
+			return false
+		}
+		return compensationInnerScanSafe(f) && compensationResidualCorrelationSafe(f)
+	case *expressions.SelectExpression:
+		if !f.ChildrenAsSet() || hasStrictSingleQuantifier(f.GetQuantifiers()) {
+			return false
+		}
+		if len(f.GetPredicates()) > 0 && !(compensationInnerScanSafe(f) && compensationResidualCorrelationSafe(f)) {
+			return false
+		}
+		// Reshaping rows is only as safe as what it ranges over: exploring this
+		// Select explores the residual compensation beneath it too.
+		for _, q := range f.GetQuantifiers() {
+			if ref := q.GetRangesOver(); ref != nil {
+				for _, member := range ref.AllMembers() {
+					if !isPhysical(member) && isCompensationShape(member) && !compensationSafeForYield(member) {
+						return false
+					}
+				}
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// isCompensationShape reports whether expr is a compensation a block's Select
+// compensation nests: the residual filter or the required Unique over the scan.
+func isCompensationShape(expr expressions.RelationalExpression) bool {
+	switch expr.(type) {
+	case *expressions.LogicalFilterExpression, *expressions.LogicalUniqueExpression:
+		return true
+	}
+	return false
+}
+
+// compensationInnerScanSafe is the inner-scan half of
+// compensationSafeForYield: it rejects a residual filter whose inner
+// scan is a vector top-k or aggregate scan.
+//
+// A residual applied AFTER a self-limiting top-k vector scan changes
+// the result (you would post-filter the K rows, not the underlying
+// set) — UNSAFE, route to InsertFinal. But a residual over an
+// ORDERED-STREAM scan (RFC-156 Phase B) is SAFE and CORRECT: the scan
+// emits its full re-ranked horizon in distance order, so a Filter
+// culls non-matching rows BEFORE the Limit(k) above takes k — the
+// VBASE "filter-during-traversal" shape (Limit → Filter → ordered
+// scan). Route it through yieldUnknown so ImplementFilterRule realizes
+// the physical Filter over the ordered scan (the residual is
+// non-index-only; the index-only distance marker lives only inside the
+// scan binding).
+//
+// SELF-LIMITING (partitioned) exception: a residual over ONLY the
+// PARTITION-key columns is ALSO safe over a self-limiting
+// per-partition top-k scan. Such a filter selects WHOLE partitions
+// (drops entire regions), never within-partition rows, so the
+// per-partition top-k the maintainer already enforced is preserved:
+// survivors are exactly top-k per surviving partition. This yields the
+// correct Filter → VectorScan(self-limiting) plan instead of the
+// pk-keyed intersection (which drops rows for k>1 because the vector
+// cursor delivers distance order, not pk order). Positions in the
+// partition prefix do not matter for the safety property — see
+// residualSelectsWholePartitions.
+func compensationInnerScanSafe(f expressions.RelationalExpressionWithPredicates) bool {
+	for _, q := range f.GetQuantifiers() {
+		cref := q.GetRangesOver()
+		if cref == nil {
+			continue
+		}
+		for _, m := range cref.AllMembers() {
+			switch v := m.(type) {
+			// The vector scan is its own Cascades expression now (RFC-184 W2).
+			case *plans.RecordQueryVectorIndexPlan:
+				if !v.IsOrderedStream() && !residualSelectsWholePartitions(f, v) {
+					return false
+				}
+			// The aggregate-index plan is its own Cascades expression now (RFC-184 W2).
+			case *plans.RecordQueryAggregateIndexPlan:
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// compensationResidualCorrelationSafe is the OUTER-correlation half of
+// compensationSafeForYield (0-row safety). A residual correlated to a
+// non-local (OUTER) quantifier belongs at the JOIN, not a standalone
+// leg filter. The bound-prefix correlation signal
+// (matchBoundPrefixIsCorrelated) only inspects the PREFIX, so a leg
+// whose correlation lives in the RESIDUAL — e.g. an unindexed
+// `t.fk = o.id` alongside an indexed `t.k = 5` — is invisible to it;
+// realizing such a compensation as a physical leg filter severs the
+// join's correlation feed → Fetch(<nil>) / 0 rows. Kept as
+// defense-in-depth even with the task-graph invariant in place
+// (RFC-150 §8). Query-parameter ConstantObjectValue aliases are
+// execution constants, not row correlations.
+//
+// No predicate-SHAPE restriction here: compound/OR and IN residuals
+// yield through yieldUnknown and re-optimize to an index plan
+// (RFC-150 §8) — the guard is correlation SAFETY, not shape.
+// Index-only predicates (vector DistanceRank) are likewise not guarded
+// here — the !isIndexOnly() ImplementFilterRule gate is the single
+// structural authority for that property; a second guard here would be
+// a redundant second authority (RFC-151 §5).
+func compensationResidualCorrelationSafe(f expressions.RelationalExpressionWithPredicates) bool {
+	local := make(map[values.CorrelationIdentifier]struct{}, len(f.GetQuantifiers()))
+	for _, q := range f.GetQuantifiers() {
+		local[q.GetAlias()] = struct{}{}
+	}
+	// Bound-prefix correlations carried by the compensation's own scan probe(s) —
+	// the outer aliases the probe already feeds (see the EXCEPTION below).
+	// Computed once: the data-access scan hides these at
+	// GetCorrelatedToWithoutChildren, so they are recovered from the scan's
+	// ComparisonRanges directly.
+	probeCorr := compensationProbeCorrelations(f)
+	for _, pred := range f.GetPredicates() {
+		corr := predicates.GetCorrelatedToOfPredicate(pred)
+		for alias := range corr {
+			if _, isLocal := local[alias]; isLocal {
+				continue
+			}
+			// EXCEPTION: a residual correlated to an OUTER alias is SAFE when the
+			// compensation's own bound-prefix SCAN is already correlated to that
+			// same alias — the probe establishes the join's correlation feed
+			// (e.g. the inner U-leg `Scan(U,[id=t.fk])` is a T-driven PK probe),
+			// so this residual (`u.c = t.a`) is a SECONDARY filter on the
+			// already-bound probe, not the severed primary join key. When the
+			// join key itself lives in the residual (`t.fk = o.id` over a
+			// constant-bound `Scan(T,[k=5])`, whose probe carries NO correlation)
+			// `o ∉ probeCorr` and the reject stands. Without the exception, the
+			// data-access path could never produce the cheap correlated
+			// index-nested-loop inner whenever a second, non-sargable
+			// cross-correlation predicate rides along (RFC-150 §8).
+			if _, fedByProbe := probeCorr[alias]; fedByProbe {
+				continue
+			}
+			return false
+		}
+	}
+	return true
+}
+
+// residualSelectsWholePartitions reports whether every field the residual
+// filter f references is a LOCAL PARTITION-key column of the vector scan.
+// Such a residual selects WHOLE partitions — it can only admit or drop an
+// entire (zone, region, …) partition, never rows WITHIN one — so it
+// composes safely as a Filter above a self-limiting per-partition top-k
+// scan (compensationSafeForYield): dropping entire partitions never
+// disturbs the per-partition top-k the maintainer already enforced. The
+// LOCAL qualifier is enforced here (the field-locality reject below) so
+// the guarantee is self-contained — an outer-correlated field sharing a
+// partition column's name is not misattributed.
+//
+// Positions do NOT matter for safety: a bound-prefix GAP (WHERE
+// region='r1' with zone unbound — the scan fans out over every partition
+// and the Filter keeps whole region='r1' partitions,
+// TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual), a
+// leading inequality (zone>'z1'), and the contiguous post-prefix run
+// (zone='z1' AND region>'r1') all commute identically. The former
+// contiguity anchor was an RFC-046 SCOPE limit, not a correctness
+// discriminator; the epoch convergence materializes the gap case's
+// fan-out plan and its exact-rows pin proves it. What is NOT certified
+// here — and stays a fail-to-plan sentinel — is any residual touching a
+// NON-partition column (it filters within partitions, so top-K-then-
+// filter would silently drop rows: the unsafe-residual pin's shape).
+func residualSelectsWholePartitions(
+	f expressions.RelationalExpressionWithPredicates,
+	plan *plans.RecordQueryVectorIndexPlan,
+) bool {
+	partCols := plan.GetPartitionColumns()
+	if len(partCols) == 0 {
+		return false
+	}
+	colIndex := make(map[string]int, len(partCols))
+	for i, c := range partCols {
+		colIndex[unicode15.ToUpperString(c)] = i
+	}
+
+	// Field-locality: every residual field must belong to THIS filter's own scan.
+	// The field-name matching below is by bare name (FieldValue.Field), which is
+	// blind to the correlation root (FieldValue.Child) — so an OUTER-correlated
+	// field that coincidentally shares a partition column's name (e.g. a join
+	// residual `outer.region = ...` over a scan partitioned by `region`) would be
+	// misattributed as this scan's partition column, silently breaking the
+	// whole-partition guarantee. Reject any residual correlated to a non-local
+	// alias here so this function's safety is SELF-CONTAINED, not dependent on the
+	// separate OUTER-correlation guard later in compensationSafeForYield.
+	local := make(map[values.CorrelationIdentifier]struct{}, len(f.GetQuantifiers()))
+	for _, q := range f.GetQuantifiers() {
+		local[q.GetAlias()] = struct{}{}
+	}
+	for _, pred := range f.GetPredicates() {
+		corr := predicates.GetCorrelatedToOfPredicate(pred)
+		for alias := range corr {
+			if _, isLocal := local[alias]; !isLocal {
+				return false
+			}
+		}
+	}
+
+	residualFields := map[string]struct{}{}
+	for _, pred := range f.GetPredicates() {
+		collectPredicateFieldValues(pred, residualFields)
+	}
+	if len(residualFields) == 0 {
+		return false
+	}
+
+	for fld := range residualFields {
+		if _, ok := colIndex[unicode15.ToUpperString(fld)]; !ok {
+			return false // residual touches a non-partition column → not safe here
+		}
+	}
+	return true
+}
+
+// Task is the task-stack driver's unit of work. Tasks receive the run-scoped
+// context and may push more tasks. Implementations must stop at their bounded
+// cancellation seams; the driver also checks before and after every task.
+type Task interface {
+	Run(ctx context.Context, p *Planner)
+}
+
+// compensationProbeCorrelations returns the outer aliases that the bound prefix of
+// any scan beneath the compensation filter f is correlated to (the comparands of
+// its ScanComparisons). The data-access scan (scanPlanExpression / the physical
+// scan wrappers) deliberately HIDES these at GetCorrelatedToWithoutChildren — the
+// path can SARG a correlated join key into a bare probe — so they are recovered
+// from the scan's comparison ranges (scanComparisonCorrelations). Used by
+// compensationSafeForYield to tell a probe-fed secondary residual (safe) from a
+// severed primary-join-key residual (RFC-150 §8).
+func compensationProbeCorrelations(f expressions.RelationalExpressionWithPredicates) map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	visited := map[expressions.RelationalExpression]struct{}{}
+	var walk func(m expressions.RelationalExpression)
+	walk = func(m expressions.RelationalExpression) {
+		if m == nil {
+			return
+		}
+		if _, ok := visited[m]; ok {
+			return
+		}
+		visited[m] = struct{}{}
+		if pe, ok := m.(physicalPlanExpression); ok {
+			collectScanPlanCorrelations(pe.GetRecordQueryPlan(), out)
+		}
+		for _, q := range m.GetQuantifiers() {
+			if cref := q.GetRangesOver(); cref != nil {
+				for _, cm := range cref.AllMembers() {
+					walk(cm)
+				}
+			}
+		}
+	}
+	for _, q := range f.GetQuantifiers() {
+		if cref := q.GetRangesOver(); cref != nil {
+			for _, m := range cref.AllMembers() {
+				walk(m)
+			}
+		}
+	}
+	return out
+}
+
+// collectScanPlanCorrelations adds the bound-prefix (ScanComparisons comparand)
+// correlations of every primary or index scan in p's plan subtree into out. The
+// matched data-access plan is wrapped (TypeFilter / Fetch / Covering …) above the
+// bound Scan, so recurse through GetChildren to reach it.
+//
+// The covering scan needs its OWN arm rather than being reached by the descent:
+// it holds its index scan as a FIELD, so GetChildren returns nothing and the
+// recursion stops there. Java delegates the same fact the same way —
+// RecordQueryCoveringIndexPlan implements RecordQueryPlanWithNoChildren and
+// answers getCorrelatedTo() with indexPlan.getCorrelatedTo()
+// (RecordQueryCoveringIndexPlan.java:224) — so a correlation carried by the
+// inner probe is a correlation OF the covering plan, not of a child it has.
+//
+// Without the arm, the probe correlations of a covering data-access scan read as
+// EMPTY, and compensationResidualCorrelationSafe then rejects every residual
+// correlated to the outer leg it is in fact already fed by: the compensation is
+// routed to InsertFinal with no exploration task, ImplementFilterRule never
+// fires on it, and the correlated index probe is never CONSTRUCTED — the join
+// falls back to a materialized full-scan NLJ with identical rows.
+func collectScanPlanCorrelations(p plans.RecordQueryPlan, out map[values.CorrelationIdentifier]struct{}) {
+	if p == nil {
+		return
+	}
+	var ranges []*predicates.ComparisonRange
+	switch sp := p.(type) {
+	case *plans.RecordQueryScanPlan:
+		ranges = sp.GetScanComparisons()
+	case *plans.RecordQueryIndexPlan:
+		ranges = sp.GetScanComparisons()
+	case *plans.RecordQueryCoveringIndexPlan:
+		ranges = sp.GetScanComparisons()
+	}
+	for a := range scanComparisonCorrelations(ranges) {
+		out[a] = struct{}{}
+	}
+	for _, c := range p.GetChildren() {
+		collectScanPlanCorrelations(c, out)
+	}
+}
+
+func (p *Planner) pushPredicateUnionTasks(ref *expressions.Reference) {
+	var changedExpressions []expressions.RelationalExpression
+	queued := make(map[expressions.RelationalExpression]struct{})
+	for _, raw := range ref.GetAllPartialMatches() {
+		match, ok := raw.(*PartialMatchImpl)
+		if !ok {
+			continue
+		}
+		expression := match.GetQueryExpression()
+		switch expression.(type) {
+		case *expressions.SelectExpression, *expressions.LogicalFilterExpression:
+		default:
+			continue
+		}
+		predicateMap := match.GetRegularMatchInfo().GetPredicateMap()
+		if predicateMap == nil {
+			continue
+		}
+		changed := false
+		for _, entry := range predicateMap.entries {
+			for _, mapping := range entry.mappings {
+				if mapping.GetMappingKind() != MappingOrTermImpliesCandidate {
+					continue
+				}
+				if p.unionExploredOrs == nil {
+					p.unionExploredOrs = make(map[expressions.RelationalExpression]map[predicates.QueryPredicate]struct{})
+				}
+				seen := p.unionExploredOrs[expression]
+				if seen == nil {
+					seen = make(map[predicates.QueryPredicate]struct{})
+					p.unionExploredOrs[expression] = seen
+				}
+				predicate := mapping.GetOriginalQueryPredicate()
+				if _, exists := seen[predicate]; !exists {
+					seen[predicate] = struct{}{}
+					changed = true
+				}
+			}
+		}
+		if changed {
+			if _, exists := queued[expression]; !exists {
+				queued[expression] = struct{}{}
+				changedExpressions = append(changedExpressions, expression)
+			}
+		}
+	}
+	if len(changedExpressions) == 0 {
+		return
+	}
+	index, _ := p.ruleIndexesForPhase(PhasePlanning)
+	for _, expression := range changedExpressions {
+		for _, rule := range index.rulesFor(expression) {
+			if isPredicateUnionRule(rule) {
+				p.push(&TransformMatchPartitionTask{TransformExprTask{Phase: PhasePlanning, Ref: ref, Expr: expression, Rule: rule}})
+			}
+		}
+	}
+}

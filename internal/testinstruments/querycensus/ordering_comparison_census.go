@@ -3,7 +3,7 @@ package querycensus
 import (
 	"sync/atomic"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // This file is the MEASUREMENT half of the ordering-value comparators. The two

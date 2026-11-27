@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	cascades "fdb.dev/internal/recordlayer/query/plan/cascades"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/internal/relational/metadata"
 	"fdb.dev/internal/relational/relapi"
-	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 

@@ -1,0 +1,331 @@
+// Portions derived from FoundationDB Record Layer (AliasMap.java),
+// Copyright 2015-2020 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
+package cascades
+
+import (
+	"iter"
+
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+)
+
+// AliasMap is an immutable bidirectional mapping between
+// CorrelationIdentifiers. Used during graph traversal to track
+// which alias on the "left" side corresponds to which alias on the
+// "right" side when comparing or rebasing expressions.
+//
+// Ports Java's com.apple.foundationdb.record.query.plan.cascades.AliasMap.
+//
+// Key use cases:
+//   - Subquery decorrelation: rebasing correlated references when
+//     pulling a subquery out of its enclosing context.
+//   - Expression equivalence: determining if two sub-graphs are
+//     semantically equal under an alias mapping.
+//   - Push/pull rules: translating alias references when moving
+//     operators across quantifier boundaries.
+type AliasMap struct {
+	forward  map[values.CorrelationIdentifier]values.CorrelationIdentifier
+	inverse  map[values.CorrelationIdentifier]values.CorrelationIdentifier
+	single   *values.AliasPair
+	identity bool
+}
+
+var emptyAliasMap = &AliasMap{
+	forward:  map[values.CorrelationIdentifier]values.CorrelationIdentifier{},
+	inverse:  map[values.CorrelationIdentifier]values.CorrelationIdentifier{},
+	identity: true,
+}
+
+// EmptyAliasMap returns the shared empty alias map.
+func EmptyAliasMap() *AliasMap { return emptyAliasMap }
+
+// AliasMapOfAliases creates a single-entry alias map.
+func AliasMapOfAliases(source, target values.CorrelationIdentifier) *AliasMap {
+	// Guava's SingletonImmutableBiMap stores the pair without hash tables.
+	singleton := &struct {
+		aliases AliasMap
+		pair    values.AliasPair
+	}{pair: values.AliasPair{Source: source, Target: target}}
+	singleton.aliases.single = &singleton.pair
+	singleton.aliases.identity = source == target
+	return &singleton.aliases
+}
+
+// AliasMapBuilder constructs an AliasMap incrementally.
+type AliasMapBuilder struct {
+	forward map[values.CorrelationIdentifier]values.CorrelationIdentifier
+	inverse map[values.CorrelationIdentifier]values.CorrelationIdentifier
+}
+
+// NewAliasMapBuilder creates an empty builder.
+func NewAliasMapBuilder() *AliasMapBuilder {
+	return &AliasMapBuilder{
+		forward: make(map[values.CorrelationIdentifier]values.CorrelationIdentifier),
+		inverse: make(map[values.CorrelationIdentifier]values.CorrelationIdentifier),
+	}
+}
+
+// Put adds a source→target mapping. Returns false if either source
+// or target is already mapped (would create an inconsistent bi-map).
+func (b *AliasMapBuilder) Put(source, target values.CorrelationIdentifier) bool {
+	if _, exists := b.forward[source]; exists {
+		return false
+	}
+	if _, exists := b.inverse[target]; exists {
+		return false
+	}
+	b.forward[source] = target
+	b.inverse[target] = source
+	return true
+}
+
+// PutAll copies all entries from other into this builder. Each
+// entry is added via Put; conflicts (source or target already
+// mapped) are silently skipped to match Java's Builder.putAll
+// semantics.
+//
+// Ports Java's AliasMap.Builder.putAll.
+func (b *AliasMapBuilder) PutAll(other *AliasMap) {
+	for source, target := range other.entries() {
+		b.Put(source, target)
+	}
+}
+
+// PutChecked adds source→target, returning true if the mapping was added OR was
+// already present IDENTICALLY, and false only on a genuine CONFLICT (source
+// already maps to a different target, or target is already claimed by a
+// different source). Unlike Put — which reports false for any pre-existing
+// source/target, including an identical re-binding — PutChecked treats an
+// identical duplicate as consistent. It is the conflict-aware primitive for
+// composing quantifier bijections, where a child PartialMatch may legitimately
+// re-assert a binding the composition already holds; only a contradictory
+// binding invalidates the permutation.
+func (b *AliasMapBuilder) PutChecked(source, target values.CorrelationIdentifier) bool {
+	if existing, ok := b.forward[source]; ok {
+		return existing == target
+	}
+	if _, ok := b.inverse[target]; ok {
+		return false // target already claimed by a different source
+	}
+	b.forward[source] = target
+	b.inverse[target] = source
+	return true
+}
+
+// PutAllChecked copies all entries from other, returning false if ANY entry
+// CONFLICTS with an existing mapping. It is ATOMIC: on conflict the builder is
+// left UNCHANGED (all entries are verified before any is applied), so a caller
+// that composes child bound maps into a quantifier bijection can try one
+// candidate child match, and on rejection try the next on the SAME builder
+// without a partial mutation leaking through. Unlike PutAll (which silently skips
+// conflicts), this reports them — Java's match() only ever combines COMPATIBLE
+// bound maps, never a contradictory merge.
+func (b *AliasMapBuilder) PutAllChecked(other *AliasMap) bool {
+	// Phase 1: verify every entry is compatible with the CURRENT builder state
+	// (other is itself a bijection, so its entries never conflict among
+	// themselves).
+	for source, target := range other.entries() {
+		if existing, ok := b.forward[source]; ok {
+			if existing != target {
+				return false
+			}
+			continue
+		}
+		if _, ok := b.inverse[target]; ok {
+			return false
+		}
+	}
+	// Phase 2: all compatible — apply.
+	for source, target := range other.entries() {
+		b.forward[source] = target
+		b.inverse[target] = source
+	}
+	return true
+}
+
+// Build creates an immutable AliasMap from the builder's state.
+func (b *AliasMapBuilder) Build() *AliasMap {
+	switch len(b.forward) {
+	case 0:
+		return EmptyAliasMap()
+	case 1:
+		for source, target := range b.forward {
+			return AliasMapOfAliases(source, target)
+		}
+	}
+	fwd := make(map[values.CorrelationIdentifier]values.CorrelationIdentifier, len(b.forward))
+	inv := make(map[values.CorrelationIdentifier]values.CorrelationIdentifier, len(b.inverse))
+	identity := true
+	for k, v := range b.forward {
+		fwd[k] = v
+		if k != v {
+			identity = false
+		}
+	}
+	for k, v := range b.inverse {
+		inv[k] = v
+	}
+	return &AliasMap{forward: fwd, inverse: inv, identity: identity}
+}
+
+// ContainsSource reports whether source is mapped.
+func (m *AliasMap) ContainsSource(source values.CorrelationIdentifier) bool {
+	_, ok := m.GetTargetOrEmpty(source)
+	return ok
+}
+
+// ContainsTarget reports whether target is mapped.
+func (m *AliasMap) ContainsTarget(target values.CorrelationIdentifier) bool {
+	if m.single != nil {
+		return m.single.Target == target
+	}
+	_, ok := m.inverse[target]
+	return ok
+}
+
+// ContainsMapping reports whether source maps to target.
+func (m *AliasMap) ContainsMapping(source, target values.CorrelationIdentifier) bool {
+	if t, ok := m.GetTargetOrEmpty(source); ok {
+		return t == target
+	}
+	return false
+}
+
+// GetTarget returns the target for the given source, or the source
+// itself if not mapped (identity fallback).
+func (m *AliasMap) GetTarget(source values.CorrelationIdentifier) values.CorrelationIdentifier {
+	if target, ok := m.GetTargetOrEmpty(source); ok {
+		return target
+	}
+	return source
+}
+
+// GetTargetOrEmpty returns the target for the given source, or empty
+// if not mapped. Unlike GetTarget, does NOT fall back to identity.
+func (m *AliasMap) GetTargetOrEmpty(source values.CorrelationIdentifier) (values.CorrelationIdentifier, bool) {
+	if m.single != nil {
+		if m.single.Source == source {
+			return m.single.Target, true
+		}
+		return values.CorrelationIdentifier{}, false
+	}
+	target, ok := m.forward[source]
+	return target, ok
+}
+
+// GetSource returns the source for the given target, or the target
+// itself if not mapped (identity fallback).
+func (m *AliasMap) GetSource(target values.CorrelationIdentifier) values.CorrelationIdentifier {
+	if m.single != nil {
+		if m.single.Target == target {
+			return m.single.Source
+		}
+		return target
+	}
+	if source, ok := m.inverse[target]; ok {
+		return source
+	}
+	return target
+}
+
+// IsIdentity reports whether all mappings are identity (source==target)
+// or the map is empty.
+func (m *AliasMap) IsIdentity() bool { return m.identity }
+
+// IsEmpty reports whether the map contains no mappings.
+func (m *AliasMap) IsEmpty() bool { return m.single == nil && len(m.forward) == 0 }
+
+// Size returns the number of mappings.
+func (m *AliasMap) Size() int {
+	if m.single != nil {
+		return 1
+	}
+	return len(m.forward)
+}
+
+func (m *AliasMap) entries() iter.Seq2[values.CorrelationIdentifier, values.CorrelationIdentifier] {
+	return func(yield func(values.CorrelationIdentifier, values.CorrelationIdentifier) bool) {
+		if m.single != nil {
+			yield(m.single.Source, m.single.Target)
+			return
+		}
+		for source, target := range m.forward {
+			if !yield(source, target) {
+				return
+			}
+		}
+	}
+}
+
+// ForwardMap returns a validated immutable values-level alias map suitable for
+// passing to values.RebaseValue. This is the checked bridge between the
+// cascades-level AliasMap and the values-level rebase infrastructure: in
+// particular, it rejects an attempted mapping between the reserved current
+// correlation and an ordinary correlation.
+func (m *AliasMap) ForwardMap() (values.AliasMap, error) {
+	pairs := make([]values.AliasPair, 0, m.Size())
+	for source, target := range m.entries() {
+		pairs = append(pairs, values.AliasPair{Source: source, Target: target})
+	}
+	return values.NewAliasMap(pairs)
+}
+
+// Sources returns all source aliases.
+func (m *AliasMap) Sources() []values.CorrelationIdentifier {
+	result := make([]values.CorrelationIdentifier, 0, m.Size())
+	for k := range m.entries() {
+		result = append(result, k)
+	}
+	return result
+}
+
+// Derived creates a new AliasMap that extends this one with
+// additional mappings. Existing mappings are preserved; new mappings
+// that conflict with existing ones are skipped.
+func (m *AliasMap) Derived(additions *AliasMap) *AliasMap {
+	b := NewAliasMapBuilder()
+	for k, v := range m.entries() {
+		b.Put(k, v)
+	}
+	for k, v := range additions.entries() {
+		b.Put(k, v)
+	}
+	return b.Build()
+}
+
+// Compose creates a new AliasMap where each source maps to the
+// target of the target in `other`. If this maps A→B and other maps
+// B→C, the result maps A→C.
+//
+// NOT THE SAME OPERATION as expressions.AliasMap.Compose, despite the identical
+// method name on an identically-named type. That one is a MERGE — "layers
+// another AliasMap on top of this one", panicking on a conflicting binding,
+// which is Java's combine(). This one is FUNCTION COMPOSITION. Reaching for the
+// wrong one compiles and does something else entirely, so the difference is
+// stated at both sites.
+//
+// The result's domain is THIS map's domain, and lookups fall back to identity
+// (GetTarget returns its argument when unmapped). Those two together make
+// composition NON-ASSOCIATIVE: with m={A→B}, n={}, p={B→E},
+//
+//	(m∘n)∘p = {A→E}   because m∘n is {A→B} and p then rewrites B
+//	m∘(n∘p) = {A→B}   because n∘p is {} — it kept n's domain and dropped p
+//
+// They agree whenever the intermediate is inside n's domain. Measured, and
+// pinned by TestAliasMapCompose_IsNotAssociative.
+//
+// Unreachable today: `git grep 'Compose('` finds no production caller of either
+// AliasMap.Compose — every call site is a test. If one is ever added and chains
+// three maps, the grouping has to be chosen deliberately, or Compose has to
+// start carrying `other`'s mappings for sources outside this map's domain,
+// which is what would make it the identity-extended composition and therefore
+// associative.
+func (m *AliasMap) Compose(other *AliasMap) *AliasMap {
+	b := NewAliasMapBuilder()
+	for source, intermediate := range m.entries() {
+		target := other.GetTarget(intermediate)
+		b.Put(source, target)
+	}
+	return b.Build()
+}

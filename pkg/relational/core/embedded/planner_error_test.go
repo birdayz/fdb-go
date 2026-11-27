@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades"
 	"fdb.dev/internal/relational/relapi"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 )
 
 // TestTranslatePlannerError_SQLSTATEMap pins every classified arm. Before this

@@ -20,11 +20,11 @@ import (
 
 	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/internal/recordlayer/query/executor"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 

@@ -30,42 +30,42 @@ import (
 //   - Go-only: a Go translator fold with its own TODO entry.
 //   - harness: a conformance oracle, not the planner.
 var assignmentTable = []assigned{
-	{"pkg/recordlayer/query/plan/cascades/match_info_merge.go", "collectGroupPullUpCompensations", "values.SimplifyValue", 1, "simplify: GroupByExpression's primitive-value simplification"},
-	{"pkg/recordlayer/query/plan/cascades/pullup.go", "PullUp.PullUpValueMaybeWithEquivalence", "values.SimplifyValue", 1, "simplify: Values.simplify in a pull-up"},
-	{"pkg/recordlayer/query/plan/cascades/predicates/simplifier_predicate_values.go", "SimplifyPredicateValues", "values.SimplifyPredicateValue", 1, "simplify: the predicate value set over every leaf"},
-	{"pkg/recordlayer/query/plan/cascades/rule_constant_folding.go", "ValuePredicateSimplificationRule.OnMatch", "predicates.SimplifyPredicateValues", 1, "simplify: Java's ValuePredicateSimplificationRule"},
-	{"pkg/recordlayer/query/plan/cascades/rule_eliminate_null_on_empty.go", "foldPredicateAtNull", "cascades.Simplify", 1, "simplify: Java's foldPredicateAtNull over ConstantFoldingRuleSet"},
-	{"pkg/recordlayer/query/plan/cascades/rule_query_predicate_simplification.go", "QueryPredicateSimplificationRule.OnMatch", "cascades.Simplify", 1, "simplify: Java's QueryPredicateSimplificationRule"},
-	{"pkg/recordlayer/query/plan/cascades/rule_predicate_to_logical_union.go", "newPredicateUnionLegs", "cascades.Simplify", 1, "simplify: the default predicate rules normalize a union leg's factor"},
+	{"internal/recordlayer/query/plan/cascades/match_info_merge.go", "collectGroupPullUpCompensations", "values.SimplifyValue", 1, "simplify: GroupByExpression's primitive-value simplification"},
+	{"internal/recordlayer/query/plan/cascades/pullup.go", "PullUp.PullUpValueMaybeWithEquivalence", "values.SimplifyValue", 1, "simplify: Values.simplify in a pull-up"},
+	{"internal/recordlayer/query/plan/cascades/predicates/simplifier_predicate_values.go", "SimplifyPredicateValues", "values.SimplifyPredicateValue", 1, "simplify: the predicate value set over every leaf"},
+	{"internal/recordlayer/query/plan/cascades/rule_constant_folding.go", "ValuePredicateSimplificationRule.OnMatch", "predicates.SimplifyPredicateValues", 1, "simplify: Java's ValuePredicateSimplificationRule"},
+	{"internal/recordlayer/query/plan/cascades/rule_eliminate_null_on_empty.go", "foldPredicateAtNull", "cascades.Simplify", 1, "simplify: Java's foldPredicateAtNull over ConstantFoldingRuleSet"},
+	{"internal/recordlayer/query/plan/cascades/rule_query_predicate_simplification.go", "QueryPredicateSimplificationRule.OnMatch", "cascades.Simplify", 1, "simplify: Java's QueryPredicateSimplificationRule"},
+	{"internal/recordlayer/query/plan/cascades/rule_predicate_to_logical_union.go", "newPredicateUnionLegs", "cascades.Simplify", 1, "simplify: the default predicate rules normalize a union leg's factor"},
 	{"pkg/relational/core/query/cascades_translator.go", "cascadesTranslator.foldKnownExists", "cascades.Simplify", 1, "Go-only: the translator's decided-EXISTS fold (TranslatorConstantPredicateRules)"},
 
-	{"pkg/recordlayer/query/plan/cascades/predicates/simplifier_predicate_values.go", "EvaluatePredicateComparands", "values.EvaluateConstantComparand", 1, "comparand: the sparse-index predicate's leaves"},
+	{"internal/recordlayer/query/plan/cascades/predicates/simplifier_predicate_values.go", "EvaluatePredicateComparands", "values.EvaluateConstantComparand", 1, "comparand: the sparse-index predicate's leaves"},
 	{"pkg/relational/core/query/ddl/generator_predicate.go", "generatePredicate", "predicates.EvaluatePredicateComparands", 1, "comparand: the sparse-index predicate stored by DDL"},
-	{"pkg/recordlayer/query/plan/cascades/values/simplifier_value.go", "simplifyValue", "values.EvaluateConstant", 1, "comparand: evaluate mode only"},
-	{"pkg/recordlayer/query/plan/cascades/values/simplifier_value.go", "simplifyChildrenWith", "Evaluate(nil)", 1, "comparand: a PROMOTE over a constant, evaluate mode only"},
-	{"pkg/recordlayer/query/plan/cascades/values/simplifier_value.go", "tryCastConstant", "Evaluate(nil)", 1, "comparand: a CAST over a constant, evaluate mode only"},
+	{"internal/recordlayer/query/plan/cascades/values/simplifier_value.go", "simplifyValue", "values.EvaluateConstant", 1, "comparand: evaluate mode only"},
+	{"internal/recordlayer/query/plan/cascades/values/simplifier_value.go", "simplifyChildrenWith", "Evaluate(nil)", 1, "comparand: a PROMOTE over a constant, evaluate mode only"},
+	{"internal/recordlayer/query/plan/cascades/values/simplifier_value.go", "tryCastConstant", "Evaluate(nil)", 1, "comparand: a CAST over a constant, evaluate mode only"},
 
-	{"pkg/recordlayer/query/plan/cascades/values/values.go", "EvaluateConstant", "Evaluate(nil)", 1, "analysis: the constant evaluator itself"},
-	{"pkg/recordlayer/query/plan/cascades/predicates/comparisons.go", "Comparison.Eval", "Evaluate(nil)", 1, "analysis: a comparison's plan-time RHS, for its callers"},
-	{"pkg/recordlayer/query/plan/cascades/predicates/comparisons.go", "formatComparisonRHS", "values.EvaluateConstant", 1, "analysis: EXPLAIN text of a literal comparand"},
-	{"pkg/recordlayer/query/plan/cascades/predicates/range_enclosure.go", "compileTimeComparand", "Evaluate(nil)", 1, "analysis: range enclosure of compile-time comparands"},
-	{"pkg/recordlayer/query/plan/cascades/properties/physical_equality_shape.go", "LogicalEqualityAtMostOnePhysicalKey", "values.EvaluateConstant", 1, "analysis: equality shape and cardinality"},
-	{"pkg/recordlayer/query/plan/cascades/properties/physical_equality_shape.go", "PhysicalEqualityShapeForComponent", "values.EvaluateConstant", 1, "analysis: equality shape and cardinality"},
-	{"pkg/recordlayer/query/plan/cascades/properties/physical_equality_shape.go", "ProvenFullEqualityMultiplicity", "values.EvaluateConstant", 1, "analysis: equality shape and cardinality"},
-	{"pkg/recordlayer/query/plan/cascades/properties/physical_equality_shape.go", "comparisonHasUnsupportedKnownNaN", "values.EvaluateConstant", 1, "analysis: a known NaN comparand"},
-	{"pkg/recordlayer/query/plan/plans/ordering.go", "EqualityPinsSinglePhysicalKeyOnColumn", "values.EvaluateConstant", 1, "analysis: constant ordering keys"},
-	{"pkg/recordlayer/query/plan/plans/ordering.go", "isZeroFloatEqualityRange", "values.EvaluateConstant", 1, "analysis: constant ordering keys"},
-	{"pkg/recordlayer/query/plan/plans/cost.go", "vectorScanCardinality", "Evaluate(nil)", 1, "analysis: a vector scan's literal K, for its cost"},
-	{"pkg/recordlayer/query/plan/cascades/rule_sink_limit_into_vector_scan.go", "vectorScanAdjustedLimit", "Evaluate(nil)", 1, "analysis: a vector scan's literal K, folding the limit into the scan"},
+	{"internal/recordlayer/query/plan/cascades/values/values.go", "EvaluateConstant", "Evaluate(nil)", 1, "analysis: the constant evaluator itself"},
+	{"internal/recordlayer/query/plan/cascades/predicates/comparisons.go", "Comparison.Eval", "Evaluate(nil)", 1, "analysis: a comparison's plan-time RHS, for its callers"},
+	{"internal/recordlayer/query/plan/cascades/predicates/comparisons.go", "formatComparisonRHS", "values.EvaluateConstant", 1, "analysis: EXPLAIN text of a literal comparand"},
+	{"internal/recordlayer/query/plan/cascades/predicates/range_enclosure.go", "compileTimeComparand", "Evaluate(nil)", 1, "analysis: range enclosure of compile-time comparands"},
+	{"internal/recordlayer/query/plan/cascades/properties/physical_equality_shape.go", "LogicalEqualityAtMostOnePhysicalKey", "values.EvaluateConstant", 1, "analysis: equality shape and cardinality"},
+	{"internal/recordlayer/query/plan/cascades/properties/physical_equality_shape.go", "PhysicalEqualityShapeForComponent", "values.EvaluateConstant", 1, "analysis: equality shape and cardinality"},
+	{"internal/recordlayer/query/plan/cascades/properties/physical_equality_shape.go", "ProvenFullEqualityMultiplicity", "values.EvaluateConstant", 1, "analysis: equality shape and cardinality"},
+	{"internal/recordlayer/query/plan/cascades/properties/physical_equality_shape.go", "comparisonHasUnsupportedKnownNaN", "values.EvaluateConstant", 1, "analysis: a known NaN comparand"},
+	{"internal/recordlayer/query/plan/plans/ordering.go", "EqualityPinsSinglePhysicalKeyOnColumn", "values.EvaluateConstant", 1, "analysis: constant ordering keys"},
+	{"internal/recordlayer/query/plan/plans/ordering.go", "isZeroFloatEqualityRange", "values.EvaluateConstant", 1, "analysis: constant ordering keys"},
+	{"internal/recordlayer/query/plan/plans/cost.go", "vectorScanCardinality", "Evaluate(nil)", 1, "analysis: a vector scan's literal K, for its cost"},
+	{"internal/recordlayer/query/plan/cascades/rule_sink_limit_into_vector_scan.go", "vectorScanAdjustedLimit", "Evaluate(nil)", 1, "analysis: a vector scan's literal K, folding the limit into the scan"},
 	{"pkg/relational/core/embedded/logical_qualify.go", "globalRankVectorLimit", "Evaluate(nil)", 1, "analysis: a distance-rank QUALIFY's literal K (a K that does not evaluate is the runtime cap)"},
-	{"pkg/recordlayer/query/plan/cascades/rule_match_intermediate.go", "narrowPromotedFloatScanBound", "values.EvaluateConstant", 1, "analysis: a FLOAT index scan bound; the residual keeps the promoted predicate"},
+	{"internal/recordlayer/query/plan/cascades/rule_match_intermediate.go", "narrowPromotedFloatScanBound", "values.EvaluateConstant", 1, "analysis: a FLOAT index scan bound; the residual keeps the promoted predicate"},
 
 	{"pkg/relational/core/query/expr/expr.go", "Resolver.resolveInList", "Evaluate(nil)", 1, "IN (4.1(a)): ResolveIn's constant fork"},
 	{"pkg/relational/core/query/expr/expr.go", "Resolver.resolveInList", "values.EvaluateConstant", 1, "IN (4.1(a)): ENUM promotion of a literal item"},
 	{"pkg/relational/core/query/expr/expr.go", "anyInListItemFoldsToNull", "values.EvaluateConstant", 1, "IN (4.1, 5.4(e)): a NULL-typed IN item refused at plan time"},
-	{"pkg/recordlayer/query/plan/cascades/rule_implement_in_join.go", "extractInValues", "Evaluate(nil)", 1, "IN (4.1): the literal values source"},
-	{"pkg/recordlayer/query/plan/cascades/rule_implement_in_union.go", "ImplementInUnionRule.OnMatch", "Evaluate(nil)", 1, "IN (4.1): the IN-union's plan-time sources"},
-	{"pkg/recordlayer/query/plan/cascades/rule_in_to_explode.go", "explodableIn", "Evaluate(nil)", 1, "IN (4.1(b)): the explode's comparand"},
+	{"internal/recordlayer/query/plan/cascades/rule_implement_in_join.go", "extractInValues", "Evaluate(nil)", 1, "IN (4.1): the literal values source"},
+	{"internal/recordlayer/query/plan/cascades/rule_implement_in_union.go", "ImplementInUnionRule.OnMatch", "Evaluate(nil)", 1, "IN (4.1): the IN-union's plan-time sources"},
+	{"internal/recordlayer/query/plan/cascades/rule_in_to_explode.go", "explodableIn", "Evaluate(nil)", 1, "IN (4.1(b)): the explode's comparand"},
 	{"pkg/relational/core/query/expr/expr.go", "Resolver.ResolveStartsWith", "values.EvaluateConstant", 1, "LIKE/STARTS_WITH (section 1): a STARTS_WITH prefix must be constant"},
 	{"pkg/relational/core/query/expr/text_search.go", "Resolver.walkTextFunction", "values.EvaluateConstant", 2, "Go SQL text extension: distance and tokenizer are literal comparison metadata, never folded runtime operands"},
 
@@ -235,7 +235,7 @@ func f(x X, ctx any) {
 			t.Errorf("%s: %d sites, want %d (all: %v)", k, got[k], n, got)
 		}
 	}
-	inValues, err := constfoldcensus.ScanSource("pkg/recordlayer/query/plan/cascades/values/v.go",
+	inValues, err := constfoldcensus.ScanSource("internal/recordlayer/query/plan/cascades/values/v.go",
 		[]byte("package values\nfunc f() { SimplifyValue(v) }"))
 	if err != nil {
 		t.Fatal(err)

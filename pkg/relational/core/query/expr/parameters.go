@@ -3,7 +3,7 @@ package expr
 import (
 	"sync"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"github.com/antlr4-go/antlr/v4"
 )
 

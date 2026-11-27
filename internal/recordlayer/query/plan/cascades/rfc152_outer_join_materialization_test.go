@@ -1,0 +1,411 @@
+package cascades
+
+// RFC-152 — cost-model materialization for the LEFT-OUTER rewrite.
+//
+// `SELECT a.id FROM a LEFT JOIN b ON a.flag = 1` (ON pred references ONLY the
+// preserved leg). RewriteOuterJoinRule ALWAYS fires (Java-faithful, no cross-leg
+// guard) and produces a FlatMap whose inner RE-SCANS b from FDB once per a-row.
+// Go ALSO keeps a materialized RecordQueryNestedLoopJoinPlan that scans b ONCE.
+// The fix is in the COST MODEL, not a rule guard:
+//   (1) nestedLoopJoinCost charges the inner scanned ONCE (materialize-once), so a
+//       materialized NLJ with a non-probe inner is strictly cheaper ON WORK than
+//       the re-scan FlatMap, while a card-1 probe inner keeps the FlatMap cheapest.
+//   (2) compareJoinOrdering ranks same-Reference join candidates by WORK (CPU) —
+//       their true output cardinality is identical (a group property), so the
+//       per-shape cardinality proxy is an unfair discriminator; work is the honest
+//       one.
+//
+// Tests are TYPED: a FireExpressionRule structural assertion on the yielded
+// SelectExpression + nullOnEmpty quantifier, and PlanningCostModelLess / direct
+// compareJoinOrdering comparisons on the typed physical wrappers. NO EXPLAIN
+// string matching.
+
+import (
+	"testing"
+
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/properties"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
+)
+
+func mustRFC152Construct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct RFC-152 fixture: " + err.Error())
+	}
+	return value
+}
+
+func rfc152ARowType() *values.RecordType {
+	return values.NewRecordType("RFC152A", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+		{Name: "flag", FieldType: values.NullableLong},
+	})
+}
+
+func rfc152BRowType() *values.RecordType {
+	return values.NewRecordType("RFC152B", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+	})
+}
+
+func rfc152FlagPredicate(alias values.CorrelationIdentifier) predicates.QueryPredicate {
+	root := mustRFC152Construct(values.NewQuantifiedObjectValue(alias, rfc152ARowType()))
+	flag := mustRFC152Construct(values.ResolveFieldOrdinals(root, []int{1}))
+	return predicates.NewComparisonPredicate(
+		flag,
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
+	)
+}
+
+func rfc152Result(qA, qB expressions.Quantifier) values.Value {
+	return values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "A", Value: mustRFC152Construct(qA.RequireFlowedObjectValue())},
+		values.RecordConstructorField{Name: "B", Value: mustRFC152Construct(qB.RequireFlowedObjectValue())},
+	)
+}
+
+func rfc152PhysicalResult(aliasA, aliasB values.CorrelationIdentifier) values.Value {
+	qovA := mustRFC152Construct(values.NewQuantifiedObjectValue(aliasA, rfc152ARowType()))
+	qovB := mustRFC152Construct(values.NewQuantifiedObjectValue(aliasB, rfc152BRowType()))
+	return values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "A", Value: qovA},
+		values.RecordConstructorField{Name: "B", Value: qovB},
+	)
+}
+
+// --- Rule-level: the rewrite still yields the nullOnEmpty form (unchanged) ---
+
+// TestRFC152_RewriteOuterJoinYieldsNullOnEmpty asserts RewriteOuterJoinRule still
+// rewrites a preserved-correlated LEFT OUTER SelectExpression into an INNER
+// SelectExpression carrying a null-on-empty quantifier — the rule's behavior is
+// UNCHANGED by RFC-152 (the fix is entirely in the cost model). Typed structural
+// assertions on the yielded expression, not plan strings.
+func TestRFC152_RewriteOuterJoinYieldsNullOnEmpty(t *testing.T) {
+	t.Parallel()
+
+	aliasA := values.NamedCorrelationIdentifier("A")
+	aliasB := values.NamedCorrelationIdentifier("B")
+
+	scanA := mustRFC152Construct(expressions.NewFullUnorderedScanExpression([]string{"A"}, rfc152ARowType()))
+	scanB := mustRFC152Construct(expressions.NewFullUnorderedScanExpression([]string{"B"}, rfc152BRowType()))
+	qA := expressions.NamedForEachQuantifier(aliasA, expressions.InitialOf(scanA))
+	qB := expressions.NamedForEachQuantifier(aliasB, expressions.InitialOf(scanB))
+
+	// ON A.flag = 1 — references ONLY the preserved leg A.
+	pred := rfc152FlagPredicate(aliasA)
+
+	sel := mustRFC152Construct(expressions.NewSelectExpressionWithJoinType(
+		rfc152Result(qA, qB),
+		[]expressions.Quantifier{qA, qB},
+		[]predicates.QueryPredicate{pred},
+		[]string{"A", "B"},
+		expressions.JoinLeftOuter,
+	))
+	ref := expressions.InitialOf(sel)
+
+	yielded := mustFireExpressionRule(t, NewRewriteOuterJoinRule(), ref)
+
+	var rewritten *expressions.SelectExpression
+	for _, e := range yielded {
+		s, ok := e.(*expressions.SelectExpression)
+		if !ok {
+			continue
+		}
+		if s.GetJoinType() != expressions.JoinInner {
+			continue
+		}
+		rewritten = s
+	}
+	if rewritten == nil {
+		t.Fatalf("RewriteOuterJoinRule yielded no INNER SelectExpression (got %d expressions)", len(yielded))
+	}
+	quants := rewritten.GetQuantifiers()
+	if len(quants) != 2 {
+		t.Fatalf("rewritten select: want 2 quantifiers, got %d", len(quants))
+	}
+	if len(rewritten.GetPredicates()) != 0 {
+		t.Errorf("rewritten OUTER select must carry NO predicates (they live below the null-extension); got %d", len(rewritten.GetPredicates()))
+	}
+	nullOnEmpty := 0
+	for _, q := range quants {
+		if q.IsNullOnEmpty() {
+			nullOnEmpty++
+		}
+	}
+	if nullOnEmpty != 1 {
+		t.Errorf("rewritten select: want exactly 1 nullOnEmpty quantifier (the LEFT-OUTER semantics carrier), got %d", nullOnEmpty)
+	}
+}
+
+// TestRewriteOuterJoin_RewritesEveryOuterJoin: Java's rule rewrites every
+// OuterJoinExpression (RewriteOuterJoinRule.java:80-113), whatever its ON reads
+// and with no ON at all. Go's rule skipped a LEFT OUTER select whose ON did not
+// read the preserved leg, and one with no ON. Each is rewritten now: an INNER
+// select with no predicate of its own and one null-on-empty quantifier, whose
+// inner select carries the ON conjuncts below the null-extension.
+func TestRewriteOuterJoin_RewritesEveryOuterJoin(t *testing.T) {
+	t.Parallel()
+
+	aliasA := values.NamedCorrelationIdentifier("A")
+	aliasB := values.NamedCorrelationIdentifier("B")
+	scanARef := expressions.InitialOf(mustRFC152Construct(
+		expressions.NewFullUnorderedScanExpression([]string{"A"}, rfc152ARowType())))
+	scanBRef := expressions.InitialOf(mustRFC152Construct(
+		expressions.NewFullUnorderedScanExpression([]string{"B"}, rfc152BRowType())))
+	bRoot := mustRFC152Construct(values.NewQuantifiedObjectValue(aliasB, rfc152BRowType()))
+	bID := mustRFC152Construct(values.ResolveFieldOrdinals(bRoot, []int{0}))
+	nullSupplyingOnly := predicates.NewComparisonPredicate(
+		bID, predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(1)))
+
+	for _, tc := range []struct {
+		name  string
+		preds []predicates.QueryPredicate
+	}{
+		{"ON reads only the null-supplying leg", []predicates.QueryPredicate{nullSupplyingOnly}},
+		{"no ON predicate", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			qA := expressions.NamedForEachQuantifier(aliasA, scanARef)
+			qB := expressions.NamedForEachQuantifier(aliasB, scanBRef)
+			sel := mustRFC152Construct(expressions.NewSelectExpressionWithJoinType(
+				rfc152Result(qA, qB),
+				[]expressions.Quantifier{qA, qB},
+				tc.preds,
+				[]string{"A", "B"},
+				expressions.JoinLeftOuter,
+			))
+			var rewritten *expressions.SelectExpression
+			for _, e := range mustFireExpressionRule(t, NewRewriteOuterJoinRule(), expressions.InitialOf(sel)) {
+				if s, ok := e.(*expressions.SelectExpression); ok && s.GetJoinType() == expressions.JoinInner {
+					rewritten = s
+				}
+			}
+			if rewritten == nil {
+				t.Fatal("the LEFT OUTER select was not rewritten")
+			}
+			if n := len(rewritten.GetPredicates()); n != 0 {
+				t.Errorf("the rewritten select carries %d predicates, want none above the null-extension", n)
+			}
+			var nullOnEmpty []expressions.Quantifier
+			for _, q := range rewritten.GetQuantifiers() {
+				if q.IsNullOnEmpty() {
+					nullOnEmpty = append(nullOnEmpty, q)
+				}
+			}
+			if len(nullOnEmpty) != 1 {
+				t.Fatalf("%d null-on-empty quantifiers, want 1", len(nullOnEmpty))
+			}
+			below := 0
+			for _, m := range nullOnEmpty[0].GetRangesOver().AllMembers() {
+				if inner, ok := m.(*expressions.SelectExpression); ok {
+					below = len(inner.GetPredicates())
+				}
+			}
+			if below != len(tc.preds) {
+				t.Errorf("%d ON conjuncts below the null-extension, want %d", below, len(tc.preds))
+			}
+		})
+	}
+}
+
+func TestRewriteOuterJoin_StrictSingleFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	aliasA := values.NamedCorrelationIdentifier("A")
+	aliasB := values.NamedCorrelationIdentifier("B")
+	scanARef := expressions.InitialOf(mustRFC152Construct(
+		expressions.NewFullUnorderedScanExpression([]string{"A"}, rfc152ARowType())))
+	scanBRef := expressions.InitialOf(mustRFC152Construct(
+		expressions.NewFullUnorderedScanExpression([]string{"B"}, rfc152BRowType())))
+	pred := rfc152FlagPredicate(aliasA)
+
+	for _, strictSide := range []string{"preserved", "null_supplying"} {
+		t.Run(strictSide, func(t *testing.T) {
+			qA := expressions.NamedForEachQuantifier(aliasA, scanARef)
+			qB := expressions.NamedForEachQuantifier(aliasB, scanBRef)
+			if strictSide == "preserved" {
+				qA = expressions.NamedForEachStrictSingleQuantifier(aliasA, scanARef)
+			} else {
+				qB = expressions.NamedForEachStrictSingleQuantifier(aliasB, scanBRef)
+			}
+			sel := mustRFC152Construct(expressions.NewSelectExpressionWithJoinType(
+				rfc152Result(qA, qB),
+				[]expressions.Quantifier{qA, qB},
+				[]predicates.QueryPredicate{pred},
+				[]string{"A", "B"},
+				expressions.JoinLeftOuter,
+			))
+			yielded := mustFireExpressionRule(t, NewRewriteOuterJoinRule(), expressions.InitialOf(sel))
+			if len(yielded) != 0 {
+				t.Fatalf("strict-single LEFT select yielded %d outer-join rewrite(s), want zero", len(yielded))
+			}
+		})
+	}
+}
+
+// TestRewriteOuterJoinDeclinesFullOuter pins that RewriteOuterJoinRule
+// yields NOTHING for a FULL OUTER SelectExpression. The fixture is
+// deliberately the EXACT shape the LEFT-OUTER test above fires on — 2
+// ForEach quantifiers, an ON-predicate correlated to the preserved leg —
+// with ONLY the join type flipped to FULL, so the decline is attributable
+// to the join type alone.
+//
+// This pin is load-bearing for translation-time ordinalization: FULL OUTER
+// boxes are ALWAYS translated into the ordinal (positional) form, on the
+// premise that this rule never rewrites them, so they stay opaque boxes
+// through every planner phase (unlike LEFT/RIGHT boxes, which this rule
+// dissolves post-translation). Extending this rule to FULL would dissolve
+// ordinalized FULL boxes into merge-eligible INNER selects and break that
+// premise — this pin must fail BEFORE the ordinalization logic does.
+func TestRewriteOuterJoinDeclinesFullOuter(t *testing.T) {
+	t.Parallel()
+
+	aliasA := values.NamedCorrelationIdentifier("A")
+	aliasB := values.NamedCorrelationIdentifier("B")
+
+	scanA := mustRFC152Construct(expressions.NewFullUnorderedScanExpression([]string{"A"}, rfc152ARowType()))
+	scanB := mustRFC152Construct(expressions.NewFullUnorderedScanExpression([]string{"B"}, rfc152BRowType()))
+	qA := expressions.NamedForEachQuantifier(aliasA, expressions.InitialOf(scanA))
+	qB := expressions.NamedForEachQuantifier(aliasB, expressions.InitialOf(scanB))
+
+	// Preserved-correlated ON-predicate — the same one the LEFT-OUTER fixture
+	// fires on, so nothing but the join type can explain a decline.
+	pred := rfc152FlagPredicate(aliasA)
+
+	sel := mustRFC152Construct(expressions.NewSelectExpressionWithJoinType(
+		rfc152Result(qA, qB),
+		[]expressions.Quantifier{qA, qB},
+		[]predicates.QueryPredicate{pred},
+		[]string{"A", "B"},
+		expressions.JoinFullOuter,
+	))
+	ref := expressions.InitialOf(sel)
+
+	yielded := mustFireExpressionRule(t, NewRewriteOuterJoinRule(), ref)
+	if len(yielded) != 0 {
+		t.Fatalf("RewriteOuterJoinRule yielded %d expression(s) for a FULL OUTER select, want 0 — "+
+			"the premise that FULL boxes stay opaque through all planner phases (because this rule never rewrites them) is broken; "+
+			"fix the rule or revisit FULL-outer ordinalization BEFORE extending the rewrite", len(yielded))
+	}
+}
+
+// --- Cost-level: the materialized NLJ vs re-scan FlatMap ordering ---
+
+// rfc152Plans builds the two competing physical plans for the preserved-only and
+// the probe shapes, exactly as the planner would: a materialized LEFT-OUTER NLJ
+// (inner = full Scan(B)) vs a re-scan FlatMap (inner = DefaultOnEmpty over a
+// filtered full Scan(B)) for preserved-only; and a card-1 probe FlatMap (inner =
+// DefaultOnEmpty over an equality-bound Scan(B)) vs the materialized NLJ.
+func rfc152Plans() (preservedNLJ, preservedFlatMap, probeNLJ, probeFlatMap plans.RecordQueryPlan) {
+	aliasA := values.NamedCorrelationIdentifier("A")
+	aliasB := values.NamedCorrelationIdentifier("B")
+	resVal := rfc152PhysicalResult(aliasA, aliasB)
+
+	scanA := mustRFC152Construct(plans.NewRecordQueryScanPlan([]string{"A"}, rfc152ARowType(), false))
+	scanB := mustRFC152Construct(plans.NewRecordQueryScanPlan([]string{"B"}, rfc152BRowType(), false))
+
+	pred := rfc152FlagPredicate(aliasA)
+
+	// Preserved-only: materialized NLJ (inner = bare Scan(B), scanned once).
+	preservedNLJ = mustRFC152Construct(plans.NewRecordQueryNestedLoopJoinPlan(
+		scanA, scanB, []predicates.QueryPredicate{pred}, plans.JoinLeftOuter,
+		aliasA, aliasB, resVal))
+	// Preserved-only: re-scan FlatMap (inner re-scans full Scan(B) per outer row).
+	// LEFT-OUTER semantics live in the DefaultOnEmpty wrapper, as in production.
+	innerFilter := mustRFC152Construct(plans.NewRecordQueryPredicatesFilterPlan(
+		scanB, []predicates.QueryPredicate{pred}))
+	innerDoE := mustRFC152Construct(plans.NewRecordQueryDefaultOnEmptyPlan(
+		innerFilter, values.NewNullValue(rfc152BRowType())))
+	preservedFlatMap = mustRFC152Construct(plans.NewRecordQueryFlatMapPlan(
+		scanA, innerDoE, aliasA, aliasB, resVal, false))
+
+	// Probe: card-1 equality-bound Scan(B) inner (a point probe, scanned per outer).
+	eqProbe := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(7))
+	eqRange := predicates.EmptyComparisonRange().Merge(&eqProbe).Range
+	probeRoot := mustRFC152Construct(values.NewQuantifiedObjectValue(aliasB, rfc152BRowType()))
+	probeID := mustRFC152Construct(values.ResolveFieldOrdinals(probeRoot, []int{0}))
+	probeScanB := mustRFC152Construct(plans.NewRecordQueryScanPlan(
+		[]string{"B"}, rfc152BRowType(), false)).
+		WithPrimaryKey([]values.Value{probeID}).
+		WithScanComparisons([]*predicates.ComparisonRange{eqRange}).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong})
+	probeDoE := mustRFC152Construct(plans.NewRecordQueryDefaultOnEmptyPlan(
+		probeScanB, values.NewNullValue(rfc152BRowType())))
+	probeFlatMap = mustRFC152Construct(plans.NewRecordQueryFlatMapPlan(
+		scanA, probeDoE, aliasA, aliasB, resVal, false))
+	probeNLJ = mustRFC152Construct(plans.NewRecordQueryNestedLoopJoinPlan(
+		scanA, scanB, []predicates.QueryPredicate{pred}, plans.JoinLeftOuter,
+		aliasA, aliasB, resVal))
+	return
+}
+
+// wrapJoin wraps a join plan in its physical wrapper with quantifiers ranging over
+// physical scan wrappers (the cost model reads the concrete embedded plan, so the
+// quantifiers only need to be physical — no nil-inner Fetch templates here).
+// Since RFC-184 W2 the join is its own cascades expression carrying its real
+// (SARG'd) leg children directly, and the cost model reads GetRecordQueryPlan()
+// — so the bare plan IS the cost-model-ready expression. The retired wrappers
+// added dummy scan quantifiers only to satisfy the RelationalExpression
+// interface; the bare plan already exposes its concrete children, so it is
+// returned unchanged (a re-quantification over fresh plain scans would drop the
+// probe SARG and mis-rank the probe FlatMap).
+func wrapNLJ(p plans.RecordQueryPlan) *plans.RecordQueryNestedLoopJoinPlan {
+	return p.(*plans.RecordQueryNestedLoopJoinPlan)
+}
+
+func wrapFlatMap(p plans.RecordQueryPlan) *plans.RecordQueryFlatMapPlan {
+	return p.(*plans.RecordQueryFlatMapPlan)
+}
+
+// TestRFC152_CostModelPrefersMaterializedNLJ_PreservedOnly asserts the cost model
+// orders the materialized NLJ STRICTLY BELOW the re-scan FlatMap for a preserved-
+// only inner — via both the full multi-criteria comparator (PlanningCostModelLess)
+// and the join-ordering criterion directly (compareJoinOrdering, which reaches the
+// new CPU-work ranking for this pair). Typed wrapper comparison, no plan strings.
+func TestRFC152_CostModelPrefersMaterializedNLJ_PreservedOnly(t *testing.T) {
+	t.Parallel()
+	nljPlan, fmPlan, _, _ := rfc152Plans()
+	stats := properties.MapStatistics{PerType: map[string]float64{"A": 1_000_000, "B": 1_000_000}}
+	less := NewPlanningCostModelLessWithContext(stats, nil)
+
+	nlj := wrapNLJ(nljPlan)
+	fm := wrapFlatMap(fmPlan)
+
+	if !less(nlj, fm) {
+		t.Errorf("preserved-only: want materialized NLJ < re-scan FlatMap (cost model must prefer scan-B-once)")
+	}
+	if less(fm, nlj) {
+		t.Errorf("preserved-only: re-scan FlatMap must NOT be cheaper than materialized NLJ")
+	}
+
+	// Direct join-ordering criterion: NLJ wins on WORK (CPU), the RFC-152 ranking.
+	if cmp := compareJoinOrdering(nlj, fm, stats, nil); cmp >= 0 {
+		t.Errorf("compareJoinOrdering(NLJ, FlatMap) = %d, want < 0 (NLJ cheaper on work)", cmp)
+	}
+	if cmp := compareJoinOrdering(fm, nlj, stats, nil); cmp <= 0 {
+		t.Errorf("compareJoinOrdering(FlatMap, NLJ) = %d, want > 0", cmp)
+	}
+}
+
+// TestRFC152_CostModelPrefersProbeFlatMap asserts the materialization fix does NOT
+// regress the cross-leg/probe case: a card-1 probe inner keeps the FlatMap strictly
+// cheaper than the materialized NLJ (the probe FlatMap point-probes B once per
+// outer; the materialized NLJ would scan all of B). Typed wrapper comparison.
+func TestRFC152_CostModelPrefersProbeFlatMap(t *testing.T) {
+	t.Parallel()
+	_, _, nljPlan, fmPlan := rfc152Plans()
+	stats := properties.MapStatistics{PerType: map[string]float64{"A": 1_000_000, "B": 1_000_000}}
+	less := NewPlanningCostModelLessWithContext(stats, nil)
+
+	nlj := wrapNLJ(nljPlan)
+	fm := wrapFlatMap(fmPlan)
+
+	if !less(fm, nlj) {
+		t.Errorf("probe: want probe FlatMap < materialized NLJ (FlatMap point-probes once per outer)")
+	}
+	if less(nlj, fm) {
+		t.Errorf("probe: materialized NLJ must NOT be cheaper than the card-1 probe FlatMap")
+	}
+}

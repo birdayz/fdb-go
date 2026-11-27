@@ -27,6 +27,7 @@ go_test(
     deps = [
         "//internal/pb/catalog",
         "//internal/recordlayer/query/executor",
+        "//internal/recordlayer/query/plan/cascades/values",
         "//internal/relational/catalog",
         "//internal/relational/ddl",
         "//internal/relational/metadata",
@@ -36,7 +37,6 @@ go_test(
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
-        "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/core/embedded",
         "//pkg/relational/sqldriver",
         "@org_golang_google_protobuf//proto",

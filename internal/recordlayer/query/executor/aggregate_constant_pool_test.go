@@ -3,7 +3,7 @@ package executor
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // A baked aggregate operand over a layout-less row must still see the

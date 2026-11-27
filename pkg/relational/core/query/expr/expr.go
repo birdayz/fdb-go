@@ -10,7 +10,7 @@
 //
 //   - pkg/relational/core/query/semantic — identifier resolution,
 //     catalog lookup, scope chain.
-//   - pkg/recordlayer/query/plan/cascades — Value / Predicate
+//   - internal/recordlayer/query/plan/cascades — Value / Predicate
 //     hierarchy.
 //
 // Neither semantic nor cascades depends on the other. expr sits
@@ -76,9 +76,9 @@ import (
 	"math"
 	"sync"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/internal/relational/relapi"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query/semantic"
 )

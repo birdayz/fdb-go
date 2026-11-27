@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // TestTranslatePrimaryKeyToValues pins RFC-189 B3's correctness core: a common

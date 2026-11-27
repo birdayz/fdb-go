@@ -3,7 +3,7 @@ package embedded
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
+	"fdb.dev/internal/recordlayer/query/plan/cascades"
 )
 
 // observeRuleCalls plans sql with the given rules disabled and counts the

@@ -3,7 +3,7 @@ package executor
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // The leg binders decide WHICH ROW'S SLOTS a correlated value reads. They answer

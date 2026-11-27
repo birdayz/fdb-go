@@ -1,0 +1,48 @@
+package cascades
+
+import (
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/matching"
+)
+
+// DistinctMergeRule collapses LogicalDistinct(LogicalDistinct(X)) into
+// a single LogicalDistinct(X) — DISTINCT is idempotent.
+//
+// Java equivalent: there's no dedicated rule (the Cascades cost model
+// would naturally prefer the single-Distinct shape); Go applies the
+// uncontroversial static rewrite directly.
+type DistinctMergeRule struct {
+	matcher matching.BindingMatcher
+}
+
+// NewDistinctMergeRule constructs the rule with its pattern matcher
+// pre-built.
+func NewDistinctMergeRule() *DistinctMergeRule {
+	return &DistinctMergeRule{
+		matcher: NewExpressionMatcher[*expressions.LogicalDistinctExpression]("logical_distinct"),
+	}
+}
+
+// Matcher returns the pattern.
+func (r *DistinctMergeRule) Matcher() matching.BindingMatcher { return r.matcher }
+
+// OnMatch examines the matched LogicalDistinct; if its inner is also a
+// LogicalDistinct, yields a single LogicalDistinct over the inner-of-
+// inner. Otherwise, declines.
+func (r *DistinctMergeRule) OnMatch(call *ExpressionRuleCall) {
+	outer := matching.Get[*expressions.LogicalDistinctExpression](call.Bindings, r.matcher)
+	for _, innerExpr := range outer.GetInner().GetRangesOver().AllMembers() {
+		inner, ok := innerExpr.(*expressions.LogicalDistinctExpression)
+		if !ok {
+			continue
+		}
+		rewritten, err := expressions.NewLogicalDistinctExpression(inner.GetInner())
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		call.Yield(rewritten)
+	}
+}
+
+var _ ExpressionRule = (*DistinctMergeRule)(nil)

@@ -6,8 +6,8 @@ import (
 	"sort"
 
 	"fdb.dev/internal/pb/demopb"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"

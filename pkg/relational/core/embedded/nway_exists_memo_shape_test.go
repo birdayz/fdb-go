@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
+	"fdb.dev/internal/recordlayer/query/plan/cascades"
 )
 
 // The N-way projected-EXISTS shape (`SELECT a.v, EXISTS(…) FROM a, b, c WHERE …`,

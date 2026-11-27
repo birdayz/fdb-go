@@ -74,7 +74,7 @@
 // (antlr IExpressionContext). RFC-021 Phase 2 replaces those with
 // `Value` nodes from the Cascades Value hierarchy. RFC-023
 // committed to non-generic interfaces + `any`; the seed lives in
-// `pkg/recordlayer/query/plan/cascades/`. As that package grows
+// `internal/recordlayer/query/plan/cascades/`. As that package grows
 // this one will migrate its text-handle predicates to real Values.
 package logical
 

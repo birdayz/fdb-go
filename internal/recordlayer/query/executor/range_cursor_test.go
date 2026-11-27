@@ -8,7 +8,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	cursorpb "fdb.dev/internal/pb/cursor"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // Java's RangeValue.Cursor: each row's continuation is a

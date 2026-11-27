@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
 )
 
 // A generator restriction is invisible: the sweep stays green because the shape

@@ -25,7 +25,7 @@ package sqltest
 //     qualifier segment and `i.k` renders ["K"], the predicate becomes pushable
 //     with two same-path keys in hand, and the pick goes live. The rule-side
 //     refusal that holds it shut is pinned at its own boundary in
-//     //pkg/recordlayer/query/plan/cascades:
+//     //internal/recordlayer/query/plan/cascades:
 //     TestPredicatePushesBelowGroupBy_TwoKeysOneNamePath_RefusesToPush and
 //     TestRebindGroupKeyRefToInner_TwoKeysOneNamePath_LeavesTheRefAlone.
 //   - An UNQUALIFIED reference is the only spelling that could carry the bare

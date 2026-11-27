@@ -7,8 +7,8 @@
 package embedded
 
 import (
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // translatePrimaryKeyToValues translates a common primary-key KeyExpression into

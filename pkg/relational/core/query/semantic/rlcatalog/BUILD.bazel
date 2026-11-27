@@ -6,8 +6,8 @@ go_library(
     importpath = "fdb.dev/pkg/relational/core/query/semantic/rlcatalog",
     visibility = ["//visibility:public"],
     deps = [
+        "//internal/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer",
-        "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/core/query/semantic",
         "@org_golang_google_protobuf//reflect/protoreflect",
     ],

@@ -1,8 +1,8 @@
 package embedded
 
 import (
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/internal/unicode15"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // bindingAllocator belongs to one query construction and is shared by all of

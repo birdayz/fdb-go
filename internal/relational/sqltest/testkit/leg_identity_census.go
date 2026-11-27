@@ -1,8 +1,8 @@
 package testkit
 
 import (
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/internal/testinstruments/querycensus"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // LegIdentityCounts summarizes leg-identity comparisons at one census site.

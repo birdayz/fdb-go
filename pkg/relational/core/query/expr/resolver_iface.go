@@ -1,7 +1,7 @@
 package expr
 
 import (
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )
 

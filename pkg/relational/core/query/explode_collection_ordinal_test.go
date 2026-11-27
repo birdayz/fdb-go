@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/internal/relational/relapi"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 
@@ -28,7 +28,7 @@ import (
 //
 // The bake states the same fact as the leg's own WINDOW OFFSET, so no qualifier
 // needs encoding and no recovery needs to run. TestGatheredExplodeOwnerEdge…
-// (pkg/recordlayer/query/plan/cascades) is the consumer-side twin: it runs the
+// (internal/recordlayer/query/plan/cascades) is the consumer-side twin: it runs the
 // two rules that read this edge and pins that nothing reconstructs it from a
 // name.
 //

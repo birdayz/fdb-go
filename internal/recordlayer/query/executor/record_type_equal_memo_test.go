@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 func memoRecordType(name string, nullable bool) *values.RecordType {

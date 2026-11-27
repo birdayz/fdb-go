@@ -1,0 +1,1174 @@
+// Portions derived from FoundationDB Record Layer (AbstractDataAccessRule.java,
+// ValueIndexScanMatchCandidate.java, PartialMatch.java, RequestedOrdering.java),
+// Copyright 2015-2020 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2021 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2026 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
+package cascades
+
+import (
+	"bytes"
+	"fmt"
+	"hash/fnv"
+	"sort"
+
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/properties"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
+)
+
+// ---------------------------------------------------------------------------
+// Abstract data access utilities
+// ---------------------------------------------------------------------------
+//
+// This file ports the non-abstract helper methods from Java's
+// AbstractDataAccessRule as package-level functions. Concrete rules
+// (AggregateDataAccessRule and the WithPrimaryKeyIntersector-backed data-access
+// pass) call these directly -- the Go equivalent of extending the abstract
+// class.
+//
+// Ports Java's:
+//   - prepareMatchesAndCompensations
+//   - maximumCoverageMatches
+//   - createScansForMatches
+//   - dataAccessForMatchPartition
+//
+// Compensation and ordering satisfaction are fully wired. Pareto containment
+// pruning in MaximumCoverageMatches IS implemented (findContainingAccess ports
+// Java's AbstractDataAccessRule.findContainingAccess) — a match dominated by
+// another is dropped rather than kept.
+
+// IntersectorFunc is the function type for computing intersections of
+// multiple data accesses. Concrete rules provide their own intersection
+// logic through this callback, replacing Java's abstract method
+// createIntersectionAndCompensation.
+type IntersectorFunc func(
+	accesses []Vectored[*SingleMatchedAccess],
+	requestedOrderings []*properties.RequestedOrdering,
+) *IntersectionResult
+
+// PrepareMatchesAndCompensations compensates and sorts partial matches
+// by coverage (descending bound predicate count). For each
+// PartialMatch:
+//   - assigns a unique candidateTopAlias
+//   - computes compensation via CompensateCompleteMatch
+//   - derives the query-top to candidate-top translation from the MaxMatchMap
+//   - translates requested orderings into the candidate's top scope
+//   - computes satisfying orderings via SatisfiesAnyRequestedOrderings
+//   - creates a forward- or reverse-scan SingleMatchedAccess
+//
+// Returns the accesses sorted by coverage (highest first).
+//
+// Ports Java's AbstractDataAccessRule.prepareMatchesAndCompensations.
+func PrepareMatchesAndCompensations(
+	partialMatches []PartialMatch,
+	requestedOrderings []*properties.RequestedOrdering,
+	_ PlanContext,
+) []*SingleMatchedAccess {
+	if len(partialMatches) == 0 {
+		return nil
+	}
+
+	result := make([]*SingleMatchedAccess, 0, len(partialMatches))
+	for _, pm := range partialMatches {
+		// Defend direct callers too: an incomplete sparse-index match cannot
+		// compensate for records the index deliberately omits.
+		if pmi, isImpl := pm.(*PartialMatchImpl); isImpl {
+			if vc, isSparse := pm.GetMatchCandidate().(*ValueIndexScanMatchCandidate); isSparse && vc.predicateProto != nil {
+				tr := vc.GetTraversal()
+				if tr == nil || pmi.GetCandidateRef() != tr.GetRootReference() {
+					continue
+				}
+			}
+		}
+		topToTopTranslationMap, ok := computeTopToTopTranslationMapMaybe(pm)
+		if !ok {
+			// Java skips a match whose result cannot be expressed at the
+			// candidate top. Keeping it with an identity map would compare
+			// requested ordering Values from different correlation frames.
+			continue
+		}
+
+		translatedRequestedOrderings := make(
+			[]*properties.RequestedOrdering,
+			0,
+			len(requestedOrderings),
+		)
+		for _, requestedOrdering := range requestedOrderings {
+			requestedOrdering = pullUpRequestedOrderingToMatchTop(
+				requestedOrdering,
+				pm.GetQueryExpression(),
+			)
+			translatedRequestedOrderings = append(
+				translatedRequestedOrderings,
+				translateIntersectionRequestedOrdering(
+					requestedOrdering,
+					topToTopTranslationMap,
+				),
+			)
+		}
+
+		candidateTopAlias := values.UniqueCorrelationIdentifier()
+
+		var comp Compensation
+		if pmi, ok := pm.(*PartialMatchImpl); ok {
+			comp = pmi.CompensateCompleteMatch(nil, candidateTopAlias)
+		} else {
+			comp = NoCompensation
+		}
+
+		satisfying, scanDir := SatisfiesAnyRequestedOrderings(
+			pm,
+			translatedRequestedOrderings,
+		)
+		// Java skips a match that satisfies none of the requested orderings
+		// (AbstractDataAccessRule.java:660-662). Go keeps it when a request is
+		// sortable (its consumer sorts in memory, which Java cannot) or when
+		// the reference has no request at all (Go plans correlated join-inner
+		// probes without one).
+		if len(satisfying) == 0 && len(requestedOrderings) > 0 && !anySortable(requestedOrderings) {
+			continue
+		}
+
+		// Required-for-binding gate (Java AbstractDataAccessRule line 665):
+		// skip a match that did not bind every sargable alias the candidate
+		// requires — it can't produce a valid physical plan. For a vector
+		// candidate the index-only distance alias is required, so a
+		// partition-only match (no DistanceRank, e.g. a plain WHERE on the
+		// partition column) is discarded here instead of producing a
+		// nil-query-vector scan.
+		if reqCand, ok := pm.GetMatchCandidate().(interface {
+			GetSargableAliasesRequiredForBinding() []values.CorrelationIdentifier
+		}); ok {
+			if required := reqCand.GetSargableAliasesRequiredForBinding(); len(required) > 0 {
+				if pmi, ok := pm.(*PartialMatchImpl); ok {
+					bound := pmi.GetBoundSargableAliases()
+					allBound := true
+					for _, a := range required {
+						if _, ok := bound[a]; !ok {
+							allBound = false
+							break
+						}
+					}
+					if !allBound {
+						continue
+					}
+				}
+			}
+		}
+
+		reverseScan := scanDir != nil && *scanDir == ScanDirectionReverse
+
+		access := NewSingleMatchedAccess(
+			pm,
+			comp,
+			candidateTopAlias,
+			reverseScan,
+			topToTopTranslationMap,
+			satisfying,
+		)
+		result = append(result, access)
+	}
+
+	// Sort by bound predicate count descending (maximum coverage first).
+	// Ports Java's sort by getBoundPlaceholders().size().
+	sort.SliceStable(result, func(i, j int) bool {
+		iCount := boundPredicateCount(result[i].GetPartialMatch())
+		jCount := boundPredicateCount(result[j].GetPartialMatch())
+		return iCount > jCount
+	})
+
+	return result
+}
+
+// computeTopToTopTranslationMapMaybe expresses the query result at
+// Quantifier.current() through the candidate result at Quantifier.current().
+// This is Java AbstractDataAccessRule.computeTopToTopTranslationMapMaybe:
+//
+//	matchInfo.getMaxMatchMap().pullUpMaybe(current, current)
+//
+// The aliases are intentionally the same canonical name. The translation can
+// still be non-identity when the candidate projects or reshapes the matched
+// query result.
+func computeTopToTopTranslationMapMaybe(
+	pm PartialMatch,
+) (TranslationMap, bool) {
+	if pm == nil || pm.GetMatchInfo() == nil {
+		return nil, false
+	}
+	maxMatchMap := pm.GetMatchInfo().GetMaxMatchMap()
+	if maxMatchMap == nil {
+		return nil, false
+	}
+	current := values.CurrentCorrelation()
+	return maxMatchMap.PullUpMaybe(current, current)
+}
+
+// anySortable reports whether a request in the set is consumed by an
+// in-memory sort (RequestedOrdering.IsSortable).
+func anySortable(requested []*properties.RequestedOrdering) bool {
+	for _, r := range requested {
+		if r != nil && r.IsSortable() {
+			return true
+		}
+	}
+	return false
+}
+
+// pullUpRequestedOrderingToMatchTop expresses a logical request against the
+// query row owned by a partial match before the query-top to candidate-top
+// translation runs. SQL sort keys retain their source quantifier (for example
+// T.SORT_KEY), while ordinal-aware match candidates expose ordering keys from
+// the owner-current physical row. Translating only CurrentCorrelation in the
+// top-to-top map therefore leaves the two exact values in different correlation
+// spaces and makes an otherwise valid ordered scan look unordered.
+//
+// PullUpValue is the exact layout-preserving boundary operation: it resolves
+// every part through the matched query expression's result and reanchors it on
+// the owner-current row. The conversion is all-or-nothing so a partially translated
+// ordering can never mix logical and physical roots.
+func pullUpRequestedOrderingToMatchTop(
+	requested *properties.RequestedOrdering,
+	queryExpression expressions.RelationalExpression,
+) *properties.RequestedOrdering {
+	if requested == nil || requested.IsPreserve() || queryExpression == nil {
+		return requested
+	}
+	queryResult := queryExpression.GetResultValue()
+	if queryResult == nil {
+		return requested
+	}
+
+	// Correlations referenced by node-local predicates but not declared as the
+	// expression's own child edges are genuine outer inputs. They must never be
+	// reinterpreted as an alias for this group's result merely because their row
+	// happens to have the same exact type.
+	external := make(map[values.CorrelationIdentifier]struct{})
+	for alias := range queryExpression.GetCorrelatedToWithoutChildren() {
+		external[alias] = struct{}{}
+	}
+	for _, quantifier := range queryExpression.GetQuantifiers() {
+		delete(external, quantifier.GetAlias())
+	}
+
+	parts := requested.GetParts()
+	pulled := make([]properties.RequestedOrderingPart, len(parts))
+	for i, part := range parts {
+		value, err := values.PullUpValue(
+			part.Value,
+			queryResult,
+			values.CurrentCorrelation(),
+		)
+		if err != nil {
+			return requested
+		}
+		if value == nil {
+			// A requested ordering is attached to a GROUP, while a partial match
+			// is attached to one expression in that group. The request can
+			// therefore be rooted at the parent's alias for the group output
+			// (T.ID), even when this particular expression passes through a fresh
+			// child alias (q$2.ID). Translate output -> expression input first,
+			// then use the ordinary PullUpValue path to reach owner-current.
+			//
+			// This is exact and fail-closed: only an admitted field rooted at a
+			// non-external QOV with the expression result's exact whole-row type
+			// may cross. An outer correlation, a foreign layout, or a value whose
+			// path cannot be rebuilt leaves the original request untouched.
+			field, isField := values.AsFieldValue(part.Value)
+			if !isField {
+				return requested
+			}
+			root, isRoot := values.AsQuantifiedObjectValue(field.ChildValue())
+			if !isRoot || root == nil || root.Correlation() == values.CurrentCorrelation() ||
+				!values.FlowedTypeEquals(root, queryResult.Type()) {
+				return requested
+			}
+			if _, isExternal := external[root.Correlation()]; isExternal {
+				return requested
+			}
+			down := values.PushDownValue(part.Value, queryResult, root.Correlation())
+			if down == nil {
+				return requested
+			}
+			value, err = values.PullUpValue(
+				down,
+				queryResult,
+				values.CurrentCorrelation(),
+			)
+			if err != nil || value == nil {
+				return requested
+			}
+		}
+		pulled[i] = properties.RequestedOrderingPart{
+			Value:     value,
+			SortOrder: part.SortOrder,
+		}
+	}
+	return properties.NewRequestedOrdering(
+		pulled,
+		requested.GetDistinctness(),
+		requested.IsExhaustive(),
+	).CarrySortable(requested)
+}
+
+// MaximumCoverageMatches eliminates PartialMatches whose coverage is
+// entirely contained in other matches from the same MatchCandidate,
+// then wraps survivors in Vectored with ascending position indices.
+//
+// The Pareto filtering logic (findContainingAccess) prunes dominated
+// matches: if match A from candidate C binds {x, y, z} and match B
+// from the same candidate C binds {x, y}, then B is dominated by A
+// (A covers everything B covers plus more) and B is pruned.
+//
+// Ports Java's AbstractDataAccessRule.maximumCoverageMatches.
+func MaximumCoverageMatches(
+	partialMatches []PartialMatch,
+	requestedOrderings []*properties.RequestedOrdering,
+	ctx PlanContext,
+) []Vectored[*SingleMatchedAccess] {
+	accesses := PrepareMatchesAndCompensations(partialMatches, requestedOrderings, ctx)
+	if len(accesses) == 0 {
+		return nil
+	}
+
+	var result []Vectored[*SingleMatchedAccess]
+	idx := 0
+	for i := range accesses {
+		if !findContainingAccess(accesses, accesses[i]) {
+			result = append(result, NewVectored(accesses[i], idx))
+			idx++
+		}
+	}
+	return result
+}
+
+// findContainingAccess checks whether `probe` is dominated by another
+// access from the same MatchCandidate in the list. A probe is
+// dominated if another match from the same candidate has strictly more
+// bound sargable aliases that include all of the probe's.
+//
+// Ports Java's AbstractDataAccessRule.findContainingAccess.
+func findContainingAccess(accesses []*SingleMatchedAccess, probe *SingleMatchedAccess) bool {
+	probeMatch := probe.partialMatch
+	probePMI, ok := probeMatch.(*PartialMatchImpl)
+	if !ok {
+		return false
+	}
+	probeBoundAliases := probePMI.GetBoundSargableAliases()
+
+	for _, access := range accesses {
+		if access == probe {
+			continue
+		}
+		// Same MatchCandidate?
+		if access.partialMatch.GetMatchCandidate() != probeMatch.GetMatchCandidate() {
+			continue
+		}
+		accessPMI, ok := access.partialMatch.(*PartialMatchImpl)
+		if !ok {
+			continue
+		}
+		accessBoundAliases := accessPMI.GetBoundSargableAliases()
+
+		// If probe has more or equal bindings, it can't be contained by this one.
+		if len(probeBoundAliases) >= len(accessBoundAliases) {
+			continue
+		}
+
+		// Check if access's bindings contain all of probe's.
+		if containsAll(accessBoundAliases, probeBoundAliases) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsAll reports whether `super` contains all keys in `sub`.
+func containsAll(super, sub map[values.CorrelationIdentifier]struct{}) bool {
+	for k := range sub {
+		if _, ok := super[k]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// CreateScansForMatches converts each SingleMatchedAccess into a
+// physical scan plan by calling MatchCandidate.ToScanPlan with the
+// bound parameter prefix and reverse flag.
+//
+// Returns a map from PartialMatch to RecordQueryPlan. The map uses
+// the PartialMatch identity (pointer equality) as key.
+//
+// Ports Java's AbstractDataAccessRule.createScansForMatches.
+func CreateScansForMatches(
+	accesses []Vectored[*SingleMatchedAccess],
+	ctx PlanContext,
+) map[PartialMatch]plans.RecordQueryPlan {
+	result := make(map[PartialMatch]plans.RecordQueryPlan, len(accesses))
+	for _, v := range accesses {
+		access := v.Value
+		pm := access.GetPartialMatch()
+		plan := createScanForAccess(ctx, access)
+		result[pm] = plan
+	}
+	return result
+}
+
+// DataAccessForMatchPartition orchestrates data access planning from
+// a collection of PartialMatches. This is the main entry point that
+// concrete rules call.
+//
+// Steps:
+//  1. Compute maximum-coverage matches (with Pareto filtering)
+//  2. Create scan plans for each viable match
+//  3. For single match: wrap as expression with compensation
+//  4. For multiple matches: try intersections via the provided
+//     intersector callback
+//
+// The intersector is a function parameter so concrete rules can
+// provide their own intersection logic (replaces Java's abstract
+// createIntersectionAndCompensation method).
+//
+// Ports Java's AbstractDataAccessRule.dataAccessForMatchPartition.
+func DataAccessForMatchPartition(
+	memoizer Memoizer,
+	requestedOrderings []*properties.RequestedOrdering,
+	partialMatches []PartialMatch,
+	ctx PlanContext,
+	intersector IntersectorFunc,
+) []expressions.RelationalExpression {
+	return dataAccessForMatchPartition(memoizer, requestedOrderings, partialMatches, ctx, intersector, make(accessRealizations))
+}
+
+func dataAccessForMatchPartition(
+	memoizer Memoizer,
+	requestedOrderings []*properties.RequestedOrdering,
+	partialMatches []PartialMatch,
+	ctx PlanContext,
+	intersector IntersectorFunc,
+	realizations accessRealizations,
+) []expressions.RelationalExpression {
+	if len(partialMatches) == 0 {
+		return nil
+	}
+
+	// Step 1: maximum coverage matches.
+	bestMatches := MaximumCoverageMatches(partialMatches, requestedOrderings, ctx)
+	if len(bestMatches) == 0 {
+		return nil
+	}
+
+	var resultExprs []expressions.RelationalExpression
+	for _, v := range bestMatches {
+		access := v.Value
+		pm := access.GetPartialMatch()
+		expr := realizations.single(ctx, memoizer, access)
+		if expr == nil {
+			continue
+		}
+		if pmi, ok := pm.(*PartialMatchImpl); ok &&
+			!exactDataAccessResultTypesAgree(expr, pmi.GetQueryExpression()) {
+			continue
+		}
+		resultExprs = append(resultExprs, expr)
+	}
+
+	// Step 4: if multiple matches and an intersector is provided, try
+	// intersections.
+	if len(bestMatches) > 1 && intersector != nil {
+		intersectionResult := intersector(bestMatches, requestedOrderings)
+		if intersectionResult != nil && intersectionResult.IsViable() {
+			resultExprs = append(resultExprs, intersectionResult.GetExpressions()...)
+		}
+	}
+	return resultExprs
+}
+
+// exactDataAccessResultTypesAgree checks the contract of the complete physical
+// alternative after every required compensation has been applied. A candidate
+// scan realizes the candidate traversal's top row, which need not be the row
+// produced by a non-root candidate expression that happened to match. Such a
+// partial match is usable only when compensation reshapes the realized scan to
+// the matched query expression's exact result type. Otherwise yielding it into
+// that query Reference crosses two different memo equivalence classes.
+func exactDataAccessResultTypesAgree(realized, matched expressions.RelationalExpression) bool {
+	realizedType, err := admitMemoExpression(realized)
+	if err != nil {
+		return false
+	}
+	matchedType, err := admitMemoExpression(matched)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(realizedType.CanonicalBytes(), matchedType.CanonicalBytes())
+}
+
+// candidateScanProps returns the unique flag and index column order for a
+// match's candidate, for propagation onto the scan wrapper.
+func candidateScanProps(cand MatchCandidate) (unique bool, columnNames []string) {
+	if cand == nil {
+		return false, nil
+	}
+	if u, ok := cand.(interface{ IsUnique() bool }); ok {
+		unique = u.IsUnique()
+	}
+	return unique, cand.GetColumnNames()
+}
+
+// candidateUnique reports the candidate's UNIQUE flag, or false when the
+// candidate does not expose one.
+func candidateUnique(cand MatchCandidate) bool {
+	if u, ok := cand.(interface{ IsUnique() bool }); ok {
+		return u.IsUnique()
+	}
+	return false
+}
+
+// stampIndexMetadata returns idxPlan carrying the candidate's index key
+// columns, primary-key columns, and UNIQUE flag. Stamped at plan-creation
+// time (inside ToScanPlan) so that the SINGLE index-plan object shared by
+// the Fetch's inner quantifier and by the physical wrapper above it both
+// see the same metadata — stamping later would fork the two into copies
+// that disagree.
+func stampIndexMetadata(cand MatchCandidate, idxPlan *plans.RecordQueryIndexPlan) *plans.RecordQueryIndexPlan {
+	if cand == nil || idxPlan == nil {
+		return idxPlan
+	}
+	stamped := idxPlan.WithIndexMetadata(cand.GetColumnNames(), candidatePKColumns(cand), candidateUnique(cand))
+	if typedCandidate, ok := cand.(interface{ GetKeyComponentTypes() []values.Type }); ok {
+		stamped = stamped.WithKeyComponentTypes(typedCandidate.GetKeyComponentTypes())
+	}
+	if typedPKCandidate, ok := cand.(interface{ GetPrimaryKeyComponentTypes() []values.Type }); ok {
+		stamped = stamped.WithPrimaryKeyComponentTypes(typedPKCandidate.GetPrimaryKeyComponentTypes())
+	}
+	if valueCandidate, ok := cand.(*ValueIndexScanMatchCandidate); ok {
+		if keyPaths, valuePaths := valueCandidate.columnPaths(); keyPaths != nil || valuePaths != nil {
+			stamped = stamped.WithColumnPaths(keyPaths, valuePaths)
+		}
+		if valueCandidate.CreatesDuplicates() {
+			stamped = stamped.WithKeyColumnDuplicates(valueCandidate.duplicateProducingColumns())
+		}
+		if valueCols := valueCandidate.GetValueColumnNames(); len(valueCols) > 0 {
+			// The KeyWithValue VALUE part rides onto the plan so the covering
+			// rules can extend the covered surface and the executor knows to
+			// read these columns from the entry VALUE tuple.
+			stamped = stamped.WithValueColumnNames(valueCols)
+		}
+		if _, safe := valueCandidate.plainFieldColumnsForShortcut(); !safe {
+			// RecordQueryIndexPlan carries flat column names, not semantic key
+			// Values: an order-wrapped column orders by its field in the
+			// function's direction and a CARDINALITY column by the cardinality
+			// of its field, while any other expression key keeps its names for
+			// row layout/costing only.
+			if columns, ordered := valueCandidate.orderingColumns(); ordered {
+				stamped = stamped.WithOrderingColumns(columns)
+			} else {
+				stamped = stamped.WithOrderingKeyNamesUnavailable()
+			}
+		}
+	}
+	if sig := candidateDistinctSignal(cand); sig != nil {
+		stamped = stamped.WithDistinctRecordsSignal(*sig)
+	}
+	// Index entries carry the structural PK even with fan-out; missing metadata
+	// leaves PrimaryKeyProperty abstaining, independently of ordering claims.
+	if pk := candidateCommonPrimaryKey(cand); pk != nil {
+		stamped = stamped.WithCommonPrimaryKey(pk)
+	}
+	return stamped
+}
+
+// candidateCommonPrimaryKey returns the candidate's structural common primary
+// key (RFC-189 B3), or nil when the candidate carries none.
+func candidateCommonPrimaryKey(cand MatchCandidate) []values.Value {
+	if c, ok := cand.(interface {
+		GetCommonPrimaryKeyValues() []values.Value
+	}); ok {
+		return c.GetCommonPrimaryKeyValues()
+	}
+	return nil
+}
+
+// candidateDistinctSignal returns the candidate's fan-out signal for the
+// DistinctRecords property, or nil when the candidate does not KNOW its fan-out
+// status (Java's empty-candidate default → the plan stays not-distinct). A
+// candidate whose IndexDef omitted the signal reports nil here rather than a
+// hardcoded false, so a fan-out index is never mis-stamped as distinct.
+func candidateDistinctSignal(cand MatchCandidate) *bool {
+	if sig, ok := cand.(interface{ DistinctRecordsSignal() *bool }); ok {
+		return sig.DistinctRecordsSignal()
+	}
+	return nil
+}
+
+// candidatePKColumns returns the coordinate-safe visible PK list used by both
+// covering reconstruction and ordering. Fan-out retains coverage; suffix
+// ordering additionally requires physically equality-pinned element columns.
+func candidatePKColumns(cand MatchCandidate) []string {
+	if c, ok := cand.(interface{ GetPKColumnNames() []string }); ok {
+		return c.GetPKColumnNames()
+	}
+	return nil
+}
+
+// wrapAccessScan wraps a per-access scan plan, propagating the access's
+// candidate unique flag + column order (used by the intersection branches).
+func wrapAccessScan(access *SingleMatchedAccess, plan plans.RecordQueryPlan) (expressions.RelationalExpression, error) {
+	cand := access.GetPartialMatch().GetMatchCandidate()
+	unique, columnNames := candidateScanProps(cand)
+	return wrapScanPlanWithCoverage(plan, unique, columnNames, candidatePKColumns(cand), candidateDistinctSignal(cand))
+}
+
+// wrapScanPlanWithCoverage wraps a scan plan as the properly-typed physical
+// RelationalExpression.
+//
+// For a Fetch(IndexScan) whose scan carries an entry reader — what a value
+// candidate's ToScanPlan returns when an entry reads into its logical record —
+// this emits Fetch(Covering(IndexScan)), mirroring
+// ValueIndexScanMatchCandidate.tryFetchCoveringIndexScan
+// (ValueIndexScanMatchCandidate.java:250-282), which builds exactly that shape
+// whenever the index entry can be turned into a partial record and never
+// consults the projection. Without a reader the bare index scan is the plan, as
+// Java's toEquivalentPlan falls back to it.
+//
+// It used to emit a bare Fetch(IndexScan) and leave coveringness to a
+// downstream projection-and-fetch merge, on the argument that a rule comparing
+// the actual projection against the covered columns is "strictly more precise".
+// That argument compared against the wrong Java operation. Java separates
+// CONSTRUCTING the covering plan (here, unconditional, needs no knowledge of the
+// projection) from DECIDING the projection is covered (downstream, by removing
+// the fetch). Doing both downstream turned coveringness into a subtree
+// RECOGNITION problem, so any operator pushed between the fetch and the scan —
+// a residual filter, for one — defeated it; and the set of such operators is not
+// enumerable, which is why patching recognisers could not close it.
+//
+// The covering plan holds the index scan as a FIELD and only the covering plan
+// is memoized, exactly as Java does (:280). Nothing here is a quantifier over
+// the index scan.
+func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, unique bool, columnNames []string, pkColumnNames []string, distinctSignal *bool) (expressions.RelationalExpression, error) {
+	if fetchPlan, ok := plan.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
+		if innerIdx, ok := fetchPlan.GetInner().(*plans.RecordQueryIndexPlan); ok && innerIdx.GetEntryReader() == nil {
+			plan = innerIdx
+		} else if ok {
+			// The index scan carries its index metadata (columns/pk/unique) on
+			// the plan, which is what the covering wrapper derives its covered
+			// entry columns from — so the metadata must be stamped BEFORE the
+			// wrap, not after.
+			idxLeaf := innerIdx.WithIndexMetadata(columnNames, pkColumnNames, unique)
+			if distinctSignal != nil {
+				idxLeaf = idxLeaf.WithDistinctRecordsSignal(*distinctSignal)
+			}
+			covering, err := plans.NewRecordQueryCoveringIndexPlan(idxLeaf)
+			if err != nil {
+				return nil, err
+			}
+			covRef := expressions.FinalOfAtStage(covering, expressions.StagePlanned)
+			fetchQ := expressions.NewPhysicalQuantifier(covRef)
+			// The fetch is its own cascades expression carrying the live covRef
+			// edge (RFC-184 W2).
+			return plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+				fetchQ,
+				fetchPlan.GetTranslateValueFunction(),
+				fetchPlan.GetResultType(),
+				fetchPlan.GetFetchIndexRecords(),
+			)
+		}
+	}
+	if idxPlan, ok := plan.(*plans.RecordQueryIndexPlan); ok {
+		// A BARE index scan with no fetch above it (e.g. an ordered-scan rule's
+		// output). It stays non-covering: there is no entry→partial-record
+		// mapping being claimed here, and the covering shape is built only where
+		// Java builds it, at the Fetch(IndexScan) branch above.
+		//
+		// Index metadata (columns/pk/unique) is threaded onto the plan so its
+		// HintRichOrdering and the cost model read the same facts the wrapper
+		// used to carry separately.
+		idxPlan = idxPlan.WithIndexMetadata(columnNames, pkColumnNames, unique)
+		if distinctSignal != nil {
+			idxPlan = idxPlan.WithDistinctRecordsSignal(*distinctSignal)
+		}
+		return idxPlan, nil
+	}
+	if vecPlan, ok := plan.(*plans.RecordQueryVectorIndexPlan); ok {
+		// The vector scan is its own Cascades expression now (RFC-184 W2) — a bare
+		// leaf plan carrying a stable per-instance result value, no
+		// physicalVectorIndexScanWrapper adapter needed.
+		return vecPlan, nil
+	}
+	// A BARE primary-key scan is its own Cascades expression now (RFC-184 W2):
+	// RecordQueryScanPlan implements RelationalExpression directly and carries a
+	// stable per-instance result value, so it needs no adapter — yielding it
+	// bare gives its child edge a single memo storage location. Composite
+	// data-access shapes (TypeFilter(Scan), FlatMap) still ride the
+	// scanPlanExpression adapter, which reports no quantifiers while wrapping a
+	// plan that HAS children and compares them deeply (plans.Equals) — the
+	// identity a bare plan cannot yet provide for a multi-node subtree.
+	if bareScan, ok := plan.(*plans.RecordQueryScanPlan); ok {
+		return bareScan, nil
+	}
+	return &scanPlanExpression{plan: plan}, nil
+}
+
+// ---------------------------------------------------------------------------
+// scanPlanExpression — wraps a RecordQueryPlan as a RelationalExpression
+// ---------------------------------------------------------------------------
+
+// scanPlanExpression is a thin wrapper that adapts a RecordQueryPlan to
+// the RelationalExpression interface. Used by DataAccessForMatchPartition
+// to yield scan plans as expressions into the memo.
+//
+// This mirrors the role of Java's physicalPlanExpression wrappers but is
+// minimal — the full wrapper hierarchy (physicalIndexScanWrapper etc.)
+// exists in physical_wrapper.go and handles the real planner flow. This
+// type is used only by the abstract data access utilities when they need
+// to return expressions.
+type scanPlanExpression struct {
+	plan plans.RecordQueryPlan
+}
+
+func (s *scanPlanExpression) GetResultValue() values.Value {
+	if s == nil || s.plan == nil {
+		return nil
+	}
+	return s.plan.GetResultValue()
+}
+
+func (s *scanPlanExpression) GetQuantifiers() []expressions.Quantifier {
+	return nil
+}
+
+func (s *scanPlanExpression) CanCorrelate() bool  { return false }
+func (s *scanPlanExpression) ChildrenAsSet() bool { return false }
+
+// HashCodeWithoutChildren mixes a class discriminator with the wrapped plan's
+// hash, matching every sibling adapter ("physcanwrap|", "physfilterwrap|",
+// "physmultiintersectionwrap|"). Without the tag this adapter hashed
+// identically to the bare plan and to any other adapter over the same node.
+//
+// That was sound but needlessly noisy: extra collisions are always safe here
+// (equality decides, and this adapter's equality is the deep plans.Equals
+// above), yet colliding BY CONSTRUCTION with unrelated expressions makes the
+// bucket longer for no reason and invites the next reader to conclude the
+// coarse hash is load-bearing.
+//
+// Node-local on purpose. Equality compares children deeply; the hash does not.
+// Equal objects still hash equal — the only direction that matters — and a
+// finer hash would repartition every memo bucket for no gain.
+func (s *scanPlanExpression) HashCodeWithoutChildren() uint64 {
+	h := fnv.New64a()
+	h.Write([]byte("scanplanexpr|"))
+	if s.plan != nil {
+		writeHash64(h, s.plan.HashCodeWithoutChildren())
+	}
+	return h.Sum64()
+}
+
+// TieBreakHashCodeWithoutChildren preserves the adapter's historical
+// scanplanexpr framing while delegating its wrapped node to the schema-neutral
+// tie-break hash. A recursive-DFS leg can wrap a top-level physical Projection;
+// forwarding HashCodeWithoutChildren there would leak that projection's
+// schema-aware memo identity back into REWRITING/extraction ranking.
+func (s *scanPlanExpression) TieBreakHashCodeWithoutChildren() uint64 {
+	h := fnv.New64a()
+	h.Write([]byte("scanplanexpr|"))
+	if s.plan != nil {
+		writeHash64(h, tieBreakNodeHash(s.plan))
+	}
+	return h.Sum64()
+}
+
+// The adapter has no quantifiers, so its own correlations include the wrapped tree.
+func (s *scanPlanExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return expressions.GetCorrelatedToOfExpression(s.plan)
+}
+
+// EqualsWithoutChildren compares the wrapped plans DEEPLY (plans.Equals), not
+// node-locally.
+//
+// Excluding children is the correct Cascades identity only when the children
+// are modelled as quantifiers, because the child GROUPS then carry that part
+// of the identity. This adapter reports NO quantifiers (GetQuantifiers above)
+// while wrapping a plan that has children, so a node-local compare leaves
+// nothing anywhere to tell two of them apart: TypeFilter([EMP], Scan(EMP, X))
+// and TypeFilter([EMP], Scan(EMP, Y)) differ only below the modelled surface,
+// compare EQUAL, and MemoizeExpression interns them into ONE group. The group
+// keeps whichever arrived first while the plan carries the other — so the memo
+// prices a key range that is not the one being scanned, and EXPLAIN cannot
+// show it because it never prints the comparison operand.
+//
+// The bare RecordQueryScanPlan expression, with the same no-quantifier shape,
+// already uses plans.Equals for precisely this reason; this was the outlier.
+//
+// Equality-only, deliberately: HashCodeWithoutChildren stays node-local.
+// Finer equality against a coarser hash is sound — equal objects still hash
+// equal, and the extra collisions simply fall through to this comparison —
+// whereas a finer hash would repartition every memo bucket for no gain.
+func (s *scanPlanExpression) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	o, ok := other.(*scanPlanExpression)
+	if !ok {
+		return false
+	}
+	return plans.Equals(s.plan, o.plan)
+}
+
+func (s *scanPlanExpression) WithQuantifiers(quantifiers []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(quantifiers) != 0 {
+		return nil, fmt.Errorf("%w: scanPlanExpression requires 0, got %d", expressions.ErrQuantifierArity, len(quantifiers))
+	}
+	return s, nil
+}
+
+// GetRecordQueryPlan returns the underlying plan.
+func (s *scanPlanExpression) GetRecordQueryPlan() plans.RecordQueryPlan {
+	return s.plan
+}
+
+// pkScanFromDataAccessPlan unwraps the plan shapes scanPlanExpression
+// carries down to the ACCESS PLAN, looking through the TypeFilter the primary
+// candidate adds when available and queried record types differ (a type filter
+// preserves its inner's order).
+//
+// It used to narrow to a *RecordQueryScanPlan and return nil for anything else,
+// which made this adapter report every INDEX access as unordered. That is the
+// same gap the primary-scan arm was written to close, one plan type over: a
+// data-access-memoized `IndexScan(IDX, [=, =])` read as orderless, so a sort it
+// satisfies could not be elided and — worse — the ordered REVERSE alternative
+// beside it could not be told apart from the forward one at the sort boundary,
+// since both answered "no ordering". `ORDER BY <equality-bound float> DESC` over
+// a correlated range set lost its reverse composite probe to an InMemorySort
+// that way.
+//
+// Nothing here re-derives an ordering: the wrapped plan owns that, and the two
+// hints below simply ask it. A second hand-coded copy of a derivation is
+// precisely the shape that let the plain and rich forms in plans/ordering.go
+// disagree once already.
+func orderingSourceOfDataAccessPlan(plan plans.RecordQueryPlan) plans.RecordQueryPlan {
+	if tf, ok := plan.(*plans.RecordQueryTypeFilterPlan); ok {
+		return tf.GetInner()
+	}
+	return plan
+}
+
+// HintOrdering: a data-access scan produces rows in its access path's order,
+// exactly like the bare plan expression would. Without this the SARGed scan the
+// data-access path memoizes (as this plan-backed leaf) reads as unordered and
+// ImplementSortRule cannot elide a sort it satisfies.
+func (s *scanPlanExpression) HintOrdering() properties.Ordering {
+	if hinter, ok := orderingSourceOfDataAccessPlan(s.plan).(properties.OrderingHinter); ok {
+		return hinter.HintOrdering()
+	}
+	return properties.Ordering{}
+}
+
+// HintCost delegates the wrapped data-access plan's REAL cost (via
+// concretePlanCost) instead of letting the adapter fall through to the
+// pessimistic default arm, which costs a fully-equality-bound (point-lookup)
+// scan at the full-table-scan cardinality (LeafScanCardinality = 1e6). That
+// latent mis-cost made an `id IN (...)` inner leg plan as a full scan +
+// residual filter when the correct plan is a point lookup per IN value. The
+// recursive-CTE operator choice this cost also feeds is held STRUCTURALLY
+// (compareRecursiveCTE, now consulted at extraction too), so correcting the
+// point-lookup cost cannot regress DFS→LevelUnion.
+func (s *scanPlanExpression) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return concretePlanCost(s.plan, stats, nil)
+}
+
+// HintRichOrdering delegates to the unwrapped access plan's own derivation
+// (plans/ordering.go) rather than re-deriving a FIXED-equality prefix here. A
+// second hand-coded copy of that derivation is exactly the shape that let
+// plans/ordering.go's plain and rich forms disagree on a resumed-equality-after-
+// gap comparison array; delegating means there is nothing here to drift out of
+// sync with the helper the plan itself uses.
+//
+// The rich form is where the delegation matters most: it is the only one that
+// carries the FIXED bindings, and those are what tell an equality-bound index
+// probe apart from an unbounded scan of the same index.
+func (s *scanPlanExpression) HintRichOrdering() *properties.RichOrdering {
+	if hinter, ok := orderingSourceOfDataAccessPlan(s.plan).(properties.RichOrderingHinter); ok {
+		return hinter.HintRichOrdering()
+	}
+	return properties.EmptyOrdering()
+}
+
+// compile-time check
+var _ expressions.RelationalExpression = (*scanPlanExpression)(nil)
+
+// ---------------------------------------------------------------------------
+// Ordering satisfaction
+// ---------------------------------------------------------------------------
+
+// boundPredicateCount returns the number of bound sargable aliases
+// for a PartialMatch. For PartialMatchImpl, uses GetBoundSargableAliases;
+// for test stubs, falls back to matched ordering parts count.
+func boundPredicateCount(pm PartialMatch) int {
+	if pmi, ok := pm.(*PartialMatchImpl); ok {
+		return len(pmi.GetBoundSargableAliases())
+	}
+	return len(pm.GetMatchInfo().GetMatchedOrderingParts())
+}
+
+// hasRestrictedScan reports whether the PartialMatch produces a scan
+// plan with a non-empty bound parameter prefix (i.e., the scan
+// actually restricts the key range). Full index scans (empty prefix)
+// provide no selectivity advantage and should not be accepted as
+// unordered alternatives.
+func hasRestrictedScan(pm PartialMatch) bool {
+	// Interface-based (not *PartialMatchImpl) so it also works for test
+	// doubles. The bound parameter prefix map = the regular match info's
+	// parameter binding map, fed through the candidate's prefix computer.
+	rmi := pm.GetRegularMatchInfo()
+	if rmi == nil {
+		return false
+	}
+	bindings := rmi.GetParameterBindingMap()
+	prefix := pm.GetMatchCandidate().ComputeBoundParameterPrefixMap(bindings)
+	return len(prefix) > 0
+}
+
+// matchBoundPrefixIsCorrelated reports whether the PartialMatch's bound
+// parameter prefix is restricted by a value that references an outer
+// quantifier — i.e., the scan it produces is a CORRELATED access (a join
+// predicate such as customer_id = c.id), not a local constant-bound
+// predicate (status <> 'cancelled').
+//
+// Primary-key index intersections combine multiple independently-evaluable
+// index scans by their shared primary key. A correlated leg is NOT
+// independently evaluable: it depends on the FlatMap/NLJ outer binding, and
+// Java never folds a correlated join predicate into an index intersection —
+// it resolves the correlation via the FlatMap/NLJ and applies any remaining
+// local predicate as a residual filter. Folding a correlated leg into a PK
+// intersection yields a plan whose per-leg correlated binding the
+// intersection cursor cannot evaluate, returning 0 rows (RFC-069). Such
+// matches must therefore be excluded from intersection candidacy.
+func matchBoundPrefixIsCorrelated(pm PartialMatch) bool {
+	pmi, ok := pm.(*PartialMatchImpl)
+	if !ok {
+		return false
+	}
+	for _, cr := range pmi.GetBoundParameterPrefixMap() {
+		if cr == nil || cr.IsEmpty() {
+			continue
+		}
+		if cr.IsEquality() {
+			if comparisonRowCorrelated(cr.GetEqualityComparison()) {
+				return true
+			}
+		}
+		if cr.IsInequality() {
+			for _, ineq := range cr.GetInequalityComparisons() {
+				if comparisonRowCorrelated(ineq) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// Row-dependent bounds disqualify independently evaluated intersection legs.
+func comparisonRowCorrelated(c *predicates.Comparison) bool {
+	return c != nil && len(c.GetCorrelatedTo()) > 0
+}
+
+// SatisfiesRequestedOrdering checks if a PartialMatch's matched
+// ordering parts satisfy a RequestedOrdering. Returns the scan
+// direction needed, or nil if the ordering is not satisfied.
+//
+// Ports Java's AbstractDataAccessRule.satisfiesRequestedOrdering.
+func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrdering) *ScanDirection {
+	if ro.IsPreserve() {
+		both := ScanDirectionBoth
+		return &both
+	}
+
+	resolved := ScanDirectionBoth
+	mi := pm.GetMatchInfo()
+	orderingParts := mi.GetMatchedOrderingParts()
+	candidate := pm.GetMatchCandidate()
+
+	var equalityBound []values.Value
+	for _, op := range orderingParts {
+		shape := candidatePhysicalEqualityShape(
+			candidate,
+			op.GetParameterId(),
+			op.GetComparisonRange(),
+		)
+		if shape.EqualityPrefixLength == 1 && shape.PhysicallyFixed {
+			equalityBound = append(equalityBound, op.GetValue())
+		}
+	}
+
+	opIdx := 0
+	for _, reqPart := range ro.GetParts() {
+		reqValue := reqPart.Value
+
+		if orderingValueListContains(equalityBound, reqValue) {
+			continue
+		}
+
+		found := false
+		for opIdx < len(orderingParts) {
+			op := orderingParts[opIdx]
+			opIdx++
+			shape := candidatePhysicalEqualityShape(
+				candidate,
+				op.GetParameterId(),
+				op.GetComparisonRange(),
+			)
+			if shape.EqualityPrefixLength == 1 && shape.PhysicallyFixed {
+				continue
+			}
+
+			if orderingValuesEqualIn(reqValue, op.GetValue()) {
+				reqSort := reqPart.SortOrder
+				if reqSort != properties.RequestedSortOrderAny {
+					matchedSort := op.GetMatchedSortOrder()
+					// Java AbstractDataAccessRule.satisfiesRequestedOrdering
+					// (:820): the matched and requested NULL placement must
+					// agree before the direction pick — a counterflow request
+					// is not satisfied by a natural matched order (and vice
+					// versa). Dropping this gate would let a data-access match
+					// wrongly report "satisfied" for a counterflow request.
+					if matchedSort.IsCounterflowNulls() != reqSort.IsCounterflowNulls() {
+						return nil
+					}
+					reqDesc := reqSort.IsAnyDescending()
+					if matchedSort.IsAnyDescending() == reqDesc {
+						if resolved == ScanDirectionBoth {
+							resolved = ScanDirectionForward
+						} else if resolved != ScanDirectionForward {
+							return nil
+						}
+					} else {
+						if resolved == ScanDirectionBoth {
+							resolved = ScanDirectionReverse
+						} else if resolved != ScanDirectionReverse {
+							return nil
+						}
+					}
+				}
+				found = true
+				break
+			}
+			return nil
+		}
+		if !found {
+			return nil
+		}
+	}
+
+	return &resolved
+}
+
+// orderingValuesEqualIn decides whether a requested ordering key and a match
+// candidate's ordering key are the SAME COLUMN. The two are built by different
+// producers — an SQL sort request against a row layout, a candidate against its
+// index metadata — and never arrive as one node.
+//
+// Dispatch is by VALUE TYPE: a pair of plain FieldValues is decided by column
+// IDENTITY and nothing else — identity-or-decline, no fallthrough. The
+// alternative, dispatching on whether both sides HAPPEN TO STATE an identity
+// and letting the rest fall through to the structural arm, is INTRANSITIVE
+// inside the FieldValue class: a baked path [0] whose layout is UNKNOWN
+// compares EQUAL to [0]-in-D1 and to [0]-in-D2 through the structural arm,
+// while identity keeps D1 and D2 apart
+// (TestOrderingComparatorsAreTransitiveAcrossTheUnknownDomain pins the
+// closure on that triple). A comparator that is not an equivalence relation
+// makes orderingValueListContains answer differently depending on the order
+// the list was built in — insertion-order-dependent ordering sets, a
+// nondeterministic plan.
+//
+// Declining costs nothing in production: over the corpus neither comparator
+// ever sees a FieldValue pair with a non-stating operand, kept honest by the
+// census in querycensus/ordering_comparison_census.go. A key that states no identity is
+// UNADDRESSABLE, and the fix for one belongs at the producer that minted it
+// without the layout its ordinal indexes — never in a fallthrough here.
+//
+// The structural arm remains for values that are not column reads at all — the
+// *RecordTypeValue discriminators, arithmetic and function keys, the
+// CardinalityValue wrapper — followed by the quantifier-root bridge. That
+// bridge is kept rather than deleted because it stays REACHABLE: its
+// FieldValue-pair half cannot fire any more (the arm above returns first), but
+// a CardinalityValue-wrapped pair still crosses it. The census counts how often
+// it is the only arm that decides such a pair, and on today's corpus that count
+// is zero — unexercised, not unreachable, which is why it stays.
+func orderingValuesEqualIn(left, right values.Value) bool {
+	if h := values.OrderingCensus(); h != nil {
+		h.OrderingComparison(
+			values.OrderingSiteRequestedVsCandidate, left, right,
+			values.CanBridgeOrderingValueRoots,
+		)
+	}
+	if values.OrderingFieldPair(left, right) {
+		return values.SameOrderingColumn(left, right)
+	}
+	if values.ValuesStructurallyEqual(left, right) {
+		return true
+	}
+	return values.CanBridgeOrderingValueRoots(left, right)
+}
+
+func orderingValueListContains(haystack []values.Value, needle values.Value) bool {
+	for _, value := range haystack {
+		if orderingValuesEqualIn(value, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// SatisfiesAnyRequestedOrderings filters requestedOrderings to those
+// satisfied by the partial match. Returns the satisfied orderings and
+// the scan direction, or nil if none are satisfied.
+//
+// Ports Java's AbstractDataAccessRule.satisfiesAnyRequestedOrderings.
+func SatisfiesAnyRequestedOrderings(
+	pm PartialMatch,
+	requestedOrderings []*properties.RequestedOrdering,
+) ([]*properties.RequestedOrdering, *ScanDirection) {
+	seenForward := false
+	seenReverse := false
+	seenBoth := false
+	var satisfying []*properties.RequestedOrdering
+
+	for _, ro := range requestedOrderings {
+		dir := SatisfiesRequestedOrdering(pm, ro)
+		if dir != nil {
+			satisfying = append(satisfying, ro)
+			switch *dir {
+			case ScanDirectionForward:
+				seenForward = true
+			case ScanDirectionReverse:
+				seenReverse = true
+			case ScanDirectionBoth:
+				// PreserveOrdering is direction-neutral. It says either scan
+				// direction is acceptable; it must not erase a directional request
+				// satisfied by the same access. Treating BOTH as both votes turns
+				// {preserve, DESC} into BOTH, and PrepareMatches consequently emits
+				// a forward scan — losing the reverse intersection / ordered access
+				// path that satisfied DESC in the first place.
+				seenBoth = true
+			}
+		}
+	}
+
+	if !seenForward && !seenReverse && !seenBoth {
+		return nil, nil
+	}
+
+	var resolved ScanDirection
+	if seenForward && seenReverse {
+		resolved = ScanDirectionBoth
+	} else if seenForward {
+		resolved = ScanDirectionForward
+	} else if seenReverse {
+		resolved = ScanDirectionReverse
+	} else {
+		resolved = ScanDirectionBoth
+	}
+	return satisfying, &resolved
+}

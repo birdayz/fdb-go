@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 )
 
 // Regression pins for a WRONG-ROWS bug: PushFilterThroughFetchRule pushed

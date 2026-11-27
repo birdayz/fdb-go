@@ -1,0 +1,304 @@
+// Portions derived from FoundationDB Record Layer (NullValue.java,
+// ConstantPredicateFoldingUtil.java,
+// CollapseNullStrictValueOverNullValueRule.java, EliminateNullOnEmptyRule.java,
+// and others),
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2026 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
+package cascades
+
+import (
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+)
+
+// EliminateNullOnEmptyRule drops the null-on-empty flag from a SelectExpression's
+// ForEach quantifier when some predicate of the surrounding SELECT PROVABLY
+// REJECTS the null tuple that the null-on-empty quantifier would inject at that
+// quantifier's alias.
+//
+// Ports Java's EliminateNullOnEmptyRule (#4186), which replaces Java's
+// PullUpNullOnEmptyRule. A positional predicate-equality heuristic
+// (predicates.equals(otherPredicates)) is wrong with predicates that ACCEPT the
+// injected null tuple (`… WHERE x IS NULL` over a null-on-empty leg), because it
+// assumes the null tuple is always rejected. The correct test is semantic: substitute a
+// typed NullValue at the quantifier's alias, constant-fold the predicate, and the
+// quantifier is eligible iff the fold is FALSE or NULL (both filter the row out).
+//
+// Per-alias: a null-rejecting predicate over alias A eliminates A's null-on-empty
+// flag while leaving a null-ACCEPTING sibling (`B IS NULL`) over alias B intact.
+//
+// Reachability: RewriteOuterJoinRule dissolves an outer-join box into an INNER
+// select whose null-supplying leg rides a null-on-empty ForEach quantifier, so
+// this rule is live on any LEFT/FULL-box query whose WHERE provably rejects the
+// null tuple at that leg (`... LEFT JOIN b ... WHERE b.k = 110`). Stripping the
+// flag is also what unlocks partitioning: PartitionBinarySelectRule declines to
+// absorb predicates into a null-on-empty leg (post-box WHERE must not move
+// inside the box), so the null-rejecting case flows ENOE-first, then partitions
+// the plain twin.
+type EliminateNullOnEmptyRule struct {
+	matcher matching.BindingMatcher
+}
+
+// NewEliminateNullOnEmptyRule constructs the rule.
+func NewEliminateNullOnEmptyRule() *EliminateNullOnEmptyRule {
+	return &EliminateNullOnEmptyRule{
+		matcher: NewExpressionMatcher[*expressions.SelectExpression]("eliminate_null_on_empty").WithRootPredicate(
+			func(sel *expressions.SelectExpression) bool {
+				for _, q := range sel.GetQuantifiers() {
+					if q.Kind() == expressions.QuantifierForEach && q.IsNullOnEmpty() {
+						return true
+					}
+				}
+				return false
+			},
+		),
+	}
+}
+
+func (r *EliminateNullOnEmptyRule) ConstraintDependencies() []any { return nil }
+
+func (r *EliminateNullOnEmptyRule) Matcher() matching.BindingMatcher { return r.matcher }
+
+func (r *EliminateNullOnEmptyRule) OnMatch(call *ExpressionRuleCall) {
+	sel := matching.Get[*expressions.SelectExpression](call.Bindings, r.matcher)
+	quantifiers := sel.GetQuantifiers()
+	preds := sel.GetPredicates()
+
+	// No predicate ⇒ no quantifier qualifies (an empty WHERE is the TRUE
+	// predicate, which is null-ACCEPTING). Java returns early in this case.
+	if len(preds) == 0 {
+		return
+	}
+
+	// Determine which null-on-empty aliases are eliminable. Collect ALIASES,
+	// not quantifiers: two null-on-empty ForEach quantifiers over structurally
+	// identical references compare equal under Quantifier equality and would be
+	// conflated. A matched alias qualifies if SOME top-level predicate provably
+	// rejects null at it.
+	eligible := map[values.CorrelationIdentifier]struct{}{}
+	for _, q := range quantifiers {
+		if q.Kind() != expressions.QuantifierForEach || !q.IsNullOnEmpty() {
+			continue
+		}
+		alias := q.GetAlias()
+		for _, p := range preds {
+			rejects, err := rejectsNull(p, alias)
+			if err != nil {
+				call.Fail(err)
+				return
+			}
+			if rejects {
+				eligible[alias] = struct{}{}
+				break
+			}
+		}
+	}
+	if len(eligible) == 0 {
+		return
+	}
+
+	// Rebuild: each eligible null-on-empty quantifier becomes a plain ForEach
+	// over the SAME reference, preserving its alias; sibling quantifiers (and
+	// null-ACCEPTING null-on-empty quantifiers) are untouched.
+	changed := false
+	newQuantifiers := make([]expressions.Quantifier, len(quantifiers))
+	for i, q := range quantifiers {
+		if q.Kind() == expressions.QuantifierForEach && q.IsNullOnEmpty() {
+			if _, ok := eligible[q.GetAlias()]; ok {
+				newQuantifiers[i] = expressions.NamedForEachQuantifier(q.GetAlias(), q.GetRangesOver())
+				changed = true
+				continue
+			}
+		}
+		newQuantifiers[i] = q
+	}
+	if !changed {
+		return
+	}
+
+	// Yield a new SelectExpression with identical predicates + result value,
+	// preserving the source aliases and join type.
+	newSelect, err := expressions.NewSelectExpressionWithJoinType(
+		sel.GetResultValue(),
+		newQuantifiers,
+		preds,
+		sel.GetSourceAliases(),
+		sel.GetJoinType(),
+	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.Yield(newSelect)
+}
+
+// rejectsNull reports whether predicate p provably REJECTS the null tuple that a
+// null-on-empty ForEach quantifier injects at `alias`. Ports Java's
+// ConstantPredicateFoldingUtil.rejectsNull: substitute a typed NullValue at the
+// alias, constant-fold, and report true iff the folded outcome is FALSE or NULL
+// (both filter the row out of a WHERE/ON/HAVING). A folded TRUE (accepts the
+// null tuple) or an UNKNOWN (couldn't fold to a constant) does NOT reject.
+func rejectsNull(p predicates.QueryPredicate, alias values.CorrelationIdentifier) (bool, error) {
+	folded, err := foldPredicateAtNull(p, alias)
+	if err != nil {
+		return false, err
+	}
+	cp, ok := folded.(*predicates.ConstantPredicate)
+	if !ok {
+		return false, nil // UNKNOWN — could not fold to a constant.
+	}
+	// FALSE (contradiction) or NULL (UNKNOWN truth value) both reject the row.
+	return cp.Value == predicates.TriFalse || cp.Value == predicates.TriUnknown, nil
+}
+
+// foldPredicateAtNull substitutes a typed NullValue for every leaf correlated to
+// `alias` in predicate p, then constant-folds the result. Ports Java's
+// ConstantPredicateFoldingUtil.foldPredicateAtNull. After substitution, a
+// null-strict Value over a NullValue child is collapsed to NullValue (the
+// CollapseNullStrictValueOverNullValueRule port) so the comparison's operand
+// becomes a NullValue, and Java's ConstantFoldingRuleSet (ConstantFoldingRules,
+// the set QueryPredicateSimplificationRule runs) folds it over effective
+// constants (`NULL = x` → NULL, `NULL IS NULL` → TRUE, …).
+//
+// Per Java's #4222 limitation, `NULL AND <non-constant>` is NOT folded (the
+// simplifier does not assume NULL ≡ FALSE in a filter context), and neither is
+// NOT over a constant predicate or a comparison of non-boolean literals. Such a
+// predicate stays non-constant → UNKNOWN → does not reject (conservative).
+func foldPredicateAtNull(p predicates.QueryPredicate, alias values.CorrelationIdentifier) (predicates.QueryPredicate, error) {
+	return Simplify(substituteNullAtAlias(p, alias), ConstantFoldingRules())
+}
+
+// substituteNullAtAlias replaces every leaf QuantifiedObjectValue correlated to
+// `alias` with a typed NullValue, then collapses any resulting null-strict Value
+// over a NullValue child to NullValue (bottom-up). It is applied to every Value
+// operand of the predicate tree. Returns a new predicate tree (CoW where
+// unchanged).
+func substituteNullAtAlias(p predicates.QueryPredicate, alias values.CorrelationIdentifier) predicates.QueryPredicate {
+	subst := func(v values.Value) values.Value {
+		return substituteAndCollapse(v, alias)
+	}
+	return mapPredicateValues(p, subst)
+}
+
+// substituteAndCollapse rewrites v bottom-up: a QuantifiedObjectValue over
+// `alias` becomes a typed NullValue, and a null-strict Value that ends up with a
+// NullValue child collapses to NullValue. Ports the combination of Java's
+// translateCorrelations(alias → NullValue) + CollapseNullStrictValueOverNullValueRule.
+func substituteAndCollapse(v values.Value, alias values.CorrelationIdentifier) values.Value {
+	if v == nil {
+		return nil
+	}
+	// Leaf QOV over the target alias → typed NullValue.
+	if qov, ok := values.AsQuantifiedObjectValue(v); ok {
+		if qov.Correlation() == alias {
+			return values.NewNullValue(qov.Type())
+		}
+		return v
+	}
+	children := v.Children()
+	if len(children) == 0 {
+		return v
+	}
+	// Recurse bottom-up.
+	newChildren := make([]values.Value, len(children))
+	changed := false
+	for i, c := range children {
+		nc := substituteAndCollapse(c, alias)
+		newChildren[i] = nc
+		if nc != c {
+			changed = true
+		}
+	}
+	// Collapse before rebuilding. An exact FieldValue can only be reconstructed
+	// on another compatible record-shaped root; rebuilding it on the substituted
+	// NullValue correctly fails. Null-strict semantics already determine the
+	// answer at this point, so publishing a typed NULL avoids constructing that
+	// deliberately invalid intermediate Value.
+	if isNullStrictValue(v) && hasNullValue(newChildren) {
+		return values.NewNullValue(v.Type())
+	}
+	rebuilt := v
+	if changed {
+		rebuilt = values.WithChildren(v, newChildren)
+	}
+	// CollapseNullStrictValueOverNullValueRule: a null-strict value with a
+	// NullValue child yields NULL (preserving the result type).
+	if isNullStrictValue(rebuilt) && hasNullValueChild(rebuilt) {
+		return values.NewNullValue(rebuilt.Type())
+	}
+	return rebuilt
+}
+
+func hasNullValue(children []values.Value) bool {
+	for _, child := range children {
+		if _, ok := child.(*values.NullValue); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// mapPredicateValues applies the Value transform `fn` to every Value operand
+// reachable inside ComparisonPredicate / ValuePredicate / ExistentialValuePredicate
+// leaves, recursing through AND/OR/NOT connectives. Returns a new predicate tree.
+// Mirrors the traversal shape of predicates.SimplifyPredicateValues.
+func mapPredicateValues(p predicates.QueryPredicate, fn func(values.Value) values.Value) predicates.QueryPredicate {
+	if p == nil {
+		return nil
+	}
+	switch q := p.(type) {
+	case *predicates.ComparisonPredicate:
+		cmp := q.Comparison
+		cmp.Operand = fn(q.Comparison.Operand)
+		return &predicates.ComparisonPredicate{Operand: fn(q.Operand), Comparison: cmp}
+	case *predicates.PredicateWithValueAndRanges:
+		return predicates.ReplaceValues(q, fn)
+	case *predicates.ValuePredicate:
+		return predicates.NewValuePredicate(fn(q.Value))
+	case *predicates.ExistentialValuePredicate:
+		return predicates.MustNewExistentialValuePredicate(fn(q.Value), q.Comparison)
+	case *predicates.AndPredicate:
+		subs := make([]predicates.QueryPredicate, len(q.SubPredicates))
+		for i, sp := range q.SubPredicates {
+			subs[i] = mapPredicateValues(sp, fn)
+		}
+		return predicates.WithAtomicity(&predicates.AndPredicate{SubPredicates: subs}, predicates.IsAtomic(q))
+	case *predicates.OrPredicate:
+		subs := make([]predicates.QueryPredicate, len(q.SubPredicates))
+		for i, sp := range q.SubPredicates {
+			subs[i] = mapPredicateValues(sp, fn)
+		}
+		return predicates.WithAtomicity(&predicates.OrPredicate{SubPredicates: subs}, predicates.IsAtomic(q))
+	case *predicates.NotPredicate:
+		return predicates.WithAtomicity(&predicates.NotPredicate{Child: mapPredicateValues(q.Child, fn)}, predicates.IsAtomic(q))
+	default:
+		// Conservative passthrough: a predicate type not enumerated above is
+		// returned unmapped. This is correct for the leaf/atom predicates that
+		// carry no mappable Value children. WHEN ADDING A NEW PREDICATE TYPE
+		// THAT CARRIES Value CHILDREN (a new compound or a value-bearing leaf),
+		// add a case here so the null-substitution reaches it — otherwise the
+		// rebase/null-substitution silently skips it.
+		return p
+	}
+}
+
+// isNullStrictValue is values.IsNullStrictValue, the class list of Java's
+// CollapseNullStrictValueOverNullValueRule, whose collapse the value sets now
+// carry (values.collapseNullStrict).
+func isNullStrictValue(v values.Value) bool { return values.IsNullStrictValue(v) }
+
+// hasNullValueChild reports whether any immediate child of v is a NullValue.
+func hasNullValueChild(v values.Value) bool {
+	for _, c := range v.Children() {
+		if _, ok := c.(*values.NullValue); ok {
+			return true
+		}
+	}
+	return false
+}
+
+var _ ExpressionRule = (*EliminateNullOnEmptyRule)(nil)

@@ -23,8 +23,8 @@ import (
 	"context"
 	"fmt"
 
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 type RecursiveCTEDepthExceededError struct {

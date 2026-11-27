@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // TWO NEGATIVE RESULTS FROM THE REFUTED RFC-212 §1.1 ATTEMPT, PINNED BECAUSE

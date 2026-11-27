@@ -1,0 +1,1345 @@
+package predicates
+
+import (
+	"errors"
+	"fmt"
+	"math"
+	"strings"
+	"testing"
+	"time"
+
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+)
+
+var _ QueryPredicate = (*ComparisonPredicate)(nil)
+
+func TestComparisonType_Symbol(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   ComparisonType
+		want string
+	}{
+		{ComparisonEquals, "="},
+		{ComparisonNotEquals, "<>"},
+		{ComparisonLessThan, "<"},
+		{ComparisonLessThanOrEq, "<="},
+		{ComparisonGreaterThan, ">"},
+		{ComparisonGreaterThanEq, ">="},
+		{ComparisonIsNull, "IS NULL"},
+		{ComparisonIsNotNull, "IS NOT NULL"},
+		{ComparisonStartsWith, "STARTS_WITH"},
+		{ComparisonIn, "IN"},
+		{ComparisonIsDistinctFrom, "IS DISTINCT FROM"},
+		{ComparisonNotDistinctFrom, "IS NOT DISTINCT FROM"},
+		{ComparisonLike, "LIKE"},
+		{ComparisonType(999), "?"},
+	}
+	for _, tc := range cases {
+		if got := tc.in.Symbol(); got != tc.want {
+			t.Fatalf("%d: got %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestComparison_Eval_Integers(t *testing.T) {
+	t.Parallel()
+	c := func(ct ComparisonType, rhs any) Comparison {
+		return Comparison{Type: ct, Operand: values.LiteralValue(rhs)}
+	}
+
+	cases := []struct {
+		name string
+		cmp  Comparison
+		left any
+		want TriBool
+	}{
+		// Equality
+		{"1 = 1", c(ComparisonEquals, int64(1)), int64(1), TriTrue},
+		{"1 = 2", c(ComparisonEquals, int64(2)), int64(1), TriFalse},
+		// Inequality
+		{"1 <> 2", c(ComparisonNotEquals, int64(2)), int64(1), TriTrue},
+		{"1 <> 1", c(ComparisonNotEquals, int64(1)), int64(1), TriFalse},
+		// Strict lt/gt
+		{"1 < 2", c(ComparisonLessThan, int64(2)), int64(1), TriTrue},
+		{"2 < 1", c(ComparisonLessThan, int64(1)), int64(2), TriFalse},
+		{"1 < 1", c(ComparisonLessThan, int64(1)), int64(1), TriFalse},
+		{"2 > 1", c(ComparisonGreaterThan, int64(1)), int64(2), TriTrue},
+		{"1 > 2", c(ComparisonGreaterThan, int64(2)), int64(1), TriFalse},
+		// Inclusive lt/gt
+		{"1 <= 1", c(ComparisonLessThanOrEq, int64(1)), int64(1), TriTrue},
+		{"1 <= 2", c(ComparisonLessThanOrEq, int64(2)), int64(1), TriTrue},
+		{"2 <= 1", c(ComparisonLessThanOrEq, int64(1)), int64(2), TriFalse},
+		{"1 >= 1", c(ComparisonGreaterThanEq, int64(1)), int64(1), TriTrue},
+		{"2 >= 1", c(ComparisonGreaterThanEq, int64(1)), int64(2), TriTrue},
+		{"1 >= 2", c(ComparisonGreaterThanEq, int64(2)), int64(1), TriFalse},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, _ := tc.cmp.Eval(tc.left)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestComparison_Eval_NullIsUnknown(t *testing.T) {
+	t.Parallel()
+	c := Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(5))}
+	if got, _ := c.Eval(nil); got != TriUnknown {
+		t.Fatalf("left=NULL: got %v", got)
+	}
+	c2 := Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(nil)}
+	if got, _ := c2.Eval(int64(5)); got != TriUnknown {
+		t.Fatalf("right=NULL: got %v", got)
+	}
+}
+
+func TestComparison_Eval_TypeMismatchErrors(t *testing.T) {
+	t.Parallel()
+	c := Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(5))}
+	_, err := c.Eval("5")
+	if err == nil {
+		t.Fatal("expected error on type mismatch")
+	}
+	var tmErr *TypeMismatchError
+	if !errors.As(err, &tmErr) {
+		t.Fatalf("expected *TypeMismatchError, got %T", err)
+	}
+}
+
+// Numeric promotion: mixed integer widths compare by int64-promoted
+// values, mixed int/float by float64-promoted values. Mirrors Java's
+// `functions.CompareValues` behavior so cross-width WHERE predicates
+// (e.g. `int32_col > 18` with a literal int64) don't degrade to
+// UNKNOWN.
+// Bool equality + ordering: used by the expression resolver's
+// `x IS TRUE` / `x IS FALSE` desugar. SQL orders FALSE < TRUE.
+func TestComparison_Eval_BoolEquality(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		op   ComparisonType
+		l, r any
+		want TriBool
+	}{
+		{"TRUE = TRUE", ComparisonEquals, true, true, TriTrue},
+		{"FALSE = FALSE", ComparisonEquals, false, false, TriTrue},
+		{"TRUE = FALSE", ComparisonEquals, true, false, TriFalse},
+		{"TRUE <> FALSE", ComparisonNotEquals, true, false, TriTrue},
+		{"FALSE < TRUE", ComparisonLessThan, false, true, TriTrue},
+		{"TRUE > FALSE", ComparisonGreaterThan, true, false, TriTrue},
+		{"TRUE = 1: type mismatch", ComparisonEquals, true, int64(1), TriUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, _ := Comparison{Type: tc.op, Operand: values.LiteralValue(tc.r)}.Eval(tc.l)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Bytes are lexicographic (matches SQL BINARY and proto bytes).
+// Mixed bytes/string is a type mismatch → UNKNOWN, not a coerce.
+func TestComparison_Eval_BytesComparison(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		op   ComparisonType
+		l, r any
+		want TriBool
+	}{
+		{"equal bytes", ComparisonEquals, []byte{0x01, 0x02}, []byte{0x01, 0x02}, TriTrue},
+		{"unequal bytes", ComparisonEquals, []byte{0x01, 0x02}, []byte{0x01, 0x03}, TriFalse},
+		{"lt shorter prefix", ComparisonLessThan, []byte{0x01, 0x02}, []byte{0x01, 0x02, 0x00}, TriTrue},
+		{"gt higher byte", ComparisonGreaterThan, []byte{0x02}, []byte{0x01, 0xff}, TriTrue},
+		{"empty vs non-empty", ComparisonLessThan, []byte{}, []byte{0x00}, TriTrue},
+		{"bytes vs string: UNKNOWN", ComparisonEquals, []byte("abc"), "abc", TriUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, _ := Comparison{Type: tc.op, Operand: values.LiteralValue(tc.r)}.Eval(tc.l)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	// IN-list of []byte — membership test through the same cmpAny
+	// path. Verifies the bytes branch also picks up set-membership
+	// semantics, not just pairwise comparators.
+	hit, _ := Comparison{
+		Type:    ComparisonIn,
+		Operand: values.LiteralValue([]any{[]byte{0x01}, []byte{0x02, 0x03}, []byte{0x04}}),
+	}.Eval([]byte{0x02, 0x03})
+	if hit != TriTrue {
+		t.Errorf("bytes IN list hit: got %v, want TRUE", hit)
+	}
+	miss, _ := Comparison{
+		Type:    ComparisonIn,
+		Operand: values.LiteralValue([]any{[]byte{0x01}, []byte{0x02, 0x03}}),
+	}.Eval([]byte{0x99})
+	if miss != TriFalse {
+		t.Errorf("bytes IN list miss: got %v, want FALSE", miss)
+	}
+}
+
+func TestComparison_Eval_NumericPromotion(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		op   ComparisonType
+		rhs  any
+		left any
+		want TriBool
+	}{
+		{"int32 vs int64 eq", ComparisonEquals, int64(18), int32(18), TriTrue},
+		{"int vs int64 lt", ComparisonLessThan, int64(10), int(5), TriTrue},
+		{"int8 vs int64 gt", ComparisonGreaterThan, int64(0), int8(7), TriTrue},
+		{"int16 vs int32 eq", ComparisonEquals, int32(42), int16(42), TriTrue},
+		{"float64 vs int64 gt", ComparisonGreaterThan, int64(10), float64(10.5), TriTrue},
+		{"int32 vs float64 lt", ComparisonLessThan, float64(10.5), int32(10), TriTrue},
+		{"float32 vs float64 eq", ComparisonEquals, float64(1.5), float32(1.5), TriTrue},
+		{"int64 vs float64 eq for whole", ComparisonEquals, float64(18), int64(18), TriTrue},
+		// Genuine mismatch still degrades.
+		{"int64 vs bool: UNKNOWN", ComparisonEquals, true, int64(1), TriUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, _ := Comparison{Type: tc.op, Operand: values.LiteralValue(tc.rhs)}.Eval(tc.left)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// IS [NOT] DISTINCT FROM: SQL null-safe (in)equality — always
+// resolves to TRUE/FALSE, never UNKNOWN. Two NULLs are NOT DISTINCT.
+func TestComparison_Eval_IsDistinctFrom(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		op   ComparisonType
+		left any
+		rhs  any
+		want TriBool
+	}{
+		{"NULL IS DISTINCT FROM NULL", ComparisonIsDistinctFrom, nil, nil, TriFalse},
+		{"NULL IS NOT DISTINCT FROM NULL", ComparisonNotDistinctFrom, nil, nil, TriTrue},
+		{"NULL IS DISTINCT FROM 1", ComparisonIsDistinctFrom, nil, int64(1), TriTrue},
+		{"1 IS DISTINCT FROM NULL", ComparisonIsDistinctFrom, int64(1), nil, TriTrue},
+		{"1 IS NOT DISTINCT FROM NULL", ComparisonNotDistinctFrom, int64(1), nil, TriFalse},
+		{"1 IS DISTINCT FROM 1", ComparisonIsDistinctFrom, int64(1), int64(1), TriFalse},
+		{"1 IS NOT DISTINCT FROM 1", ComparisonNotDistinctFrom, int64(1), int64(1), TriTrue},
+		{"1 IS DISTINCT FROM 2", ComparisonIsDistinctFrom, int64(1), int64(2), TriTrue},
+		{"1 IS NOT DISTINCT FROM 2", ComparisonNotDistinctFrom, int64(1), int64(2), TriFalse},
+		// Numeric promotion works through the distinct-from path.
+		{"int32(5) NOT DISTINCT int64(5)", ComparisonNotDistinctFrom, int32(5), int64(5), TriTrue},
+		// Type mismatch without NULL → treated as distinct (not equal).
+		{"int NOT DISTINCT string", ComparisonNotDistinctFrom, int64(5), "5", TriFalse},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, _ := Comparison{Type: tc.op, Operand: values.LiteralValue(tc.rhs)}.Eval(tc.left)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// IN: membership test against a []any list. SQL semantics: empty
+// list → FALSE; match → TRUE; no match with no NULL element → FALSE;
+// no match but list contains NULL → UNKNOWN; NULL LHS → UNKNOWN.
+func TestComparison_Eval_In(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		left any
+		list []any
+		want TriBool
+	}{
+		{"5 IN (1,5,9)", int64(5), []any{int64(1), int64(5), int64(9)}, TriTrue},
+		{"5 IN (1,2,3)", int64(5), []any{int64(1), int64(2), int64(3)}, TriFalse},
+		{"5 IN ()", int64(5), []any{}, TriFalse},
+		{"NULL IN (1)", nil, []any{int64(1)}, TriUnknown},
+		{"5 IN (1,NULL) no match", int64(5), []any{int64(1), nil}, TriUnknown},
+		{"5 IN (5,NULL) match wins over NULL", int64(5), []any{int64(5), nil}, TriTrue},
+		{"mixed width: int32 vs int64", int32(5), []any{int64(1), int64(5)}, TriTrue},
+		{"'a' IN ('a','b')", "a", []any{"a", "b"}, TriTrue},
+		{"'z' IN ('a','b')", "z", []any{"a", "b"}, TriFalse},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, _ := Comparison{Type: ComparisonIn, Operand: values.LiteralValue(tc.list)}.Eval(tc.left)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestComparison_Eval_In_OnlyNullList pins SQL 3VL: a list containing
+// only NULLs surfaces UNKNOWN (no concrete match found, but a NULL
+// element prevented a definitive miss). Matches the existing 5
+// IN (1,NULL) case but with no non-NULL element at all.
+func TestComparison_Eval_In_OnlyNullList(t *testing.T) {
+	t.Parallel()
+	got, _ := Comparison{Type: ComparisonIn, Operand: values.LiteralValue([]any{nil, nil})}.Eval(int64(5))
+	if got != TriUnknown {
+		t.Fatalf("5 IN (NULL,NULL): got %v, want TriUnknown", got)
+	}
+}
+
+// TestComparison_Eval_In_NonSliceRHS pins the boundary: when the RHS
+// isn't a []any (Cascades author bug, malformed plan), IN degrades to
+// UNKNOWN rather than panicking. Matches the LIKE/STARTS_WITH type-
+// mismatch convention.
+func TestComparison_Eval_In_NonSliceRHS(t *testing.T) {
+	t.Parallel()
+	got, _ := Comparison{Type: ComparisonIn, Operand: values.LiteralValue(int64(5))}.Eval(int64(5))
+	if got != TriUnknown {
+		t.Fatalf("5 IN <non-slice>: got %v, want TriUnknown", got)
+	}
+}
+
+// TestComparison_Eval_In_CrossTypeLHS verifies that a string LHS
+// against a list of int64 returns a TypeMismatchError — matching
+// Java's CANNOT_CONVERT_TYPE for incompatible IN-list types.
+func TestComparison_Eval_In_CrossTypeLHS(t *testing.T) {
+	t.Parallel()
+	_, err := Comparison{Type: ComparisonIn, Operand: values.LiteralValue([]any{int64(1), int64(2), int64(3)})}.Eval("hello")
+	if err == nil {
+		t.Fatal("expected TypeMismatchError")
+	}
+	var tmErr *TypeMismatchError
+	if !errors.As(err, &tmErr) {
+		t.Fatalf("expected *TypeMismatchError, got %T", err)
+	}
+}
+
+// LIKE: SQL pattern matching with `%` / `_`. Anchored both ends.
+// No ESCAPE support yet.
+func TestComparison_Eval_Like(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		pattern string
+		s       string
+		want    TriBool
+	}{
+		{"exact match", "hello", "hello", TriTrue},
+		{"wildcard prefix", "hel%", "hello", TriTrue},
+		{"wildcard suffix", "%llo", "hello", TriTrue},
+		{"wildcard middle", "h%o", "hello", TriTrue},
+		{"only %", "%", "anything", TriTrue},
+		{"empty pattern, empty string", "", "", TriTrue},
+		{"underscore one char", "h_llo", "hello", TriTrue},
+		{"underscore wrong length", "h_llo", "hllo", TriFalse},
+		{"no match", "hel", "hello", TriFalse},
+		{"no match anchored suffix", "llo", "hello", TriFalse},
+		{"multi-wildcard backtrack", "a%b%c", "axbycxyc", TriTrue},
+		{"unmatched literal", "abc", "abd", TriFalse},
+		{"trailing % matches all remaining", "a%", "a", TriTrue},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, _ := likeComparison(tc.pattern).Eval(tc.s)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// likeComparison is `LIKE pattern` with no ESCAPE, as the resolver builds it.
+func likeComparison(pattern any) Comparison {
+	return Comparison{Type: ComparisonLike, Operand: values.NewPatternForLikeValue(values.LiteralValue(pattern), values.LiteralValue(nil))}
+}
+
+// A NULL pattern is UNKNOWN; a bad escape is an error even for a NULL
+// operand, as the pattern is evaluated first (Java's ValueComparison.eval).
+func TestComparison_Eval_Like_NullsAndEscapeErrors(t *testing.T) {
+	t.Parallel()
+	if got, err := likeComparison(nil).Eval("abc"); got != TriUnknown || err != nil {
+		t.Fatalf("NULL pattern: %v, %v", got, err)
+	}
+	if got, err := likeComparison("a%").Eval(nil); got != TriUnknown || err != nil {
+		t.Fatalf("NULL operand: %v, %v", got, err)
+	}
+	badEscape := Comparison{Type: ComparisonLike, Operand: values.NewPatternForLikeValue(values.LiteralValue("a%"), values.LiteralValue("ab"))}
+	var le *values.LikeError
+	if _, err := badEscape.Eval(nil); !errors.As(err, &le) || le.Kind != values.LikeEscapeNotSingleChar {
+		t.Fatalf("a bad escape with a NULL operand: %v", err)
+	}
+	// NewLiteralComparison wraps a LIKE literal as an escape-less pattern.
+	lit := NewLiteralComparison(ComparisonLike, "%eta")
+	if _, ok := lit.Operand.(*values.PatternForLikeValue); !ok {
+		t.Fatalf("NewLiteralComparison(LIKE) operand %T, want a PatternForLikeValue", lit.Operand)
+	}
+	if got, err := lit.Eval("beta"); got != TriTrue || err != nil {
+		t.Fatalf("'beta' LIKE '%%eta': %v, %v", got, err)
+	}
+}
+
+// TestComparisonType_IsEquality is a COMPLETE census: every ComparisonType,
+// with the answer taken from Java's `Comparisons.Type` enum declaration rather
+// than from what Go currently returns. The exhaustiveness guard below is the
+// point — the previous version of this test listed 9 of the 24 types, and the
+// one wrong answer in the tree (IN) was inside those 9, blessed as correct.
+// Fifteen types had no pin at all, including every TEXT_CONTAINS_* and both
+// DISTANCE_RANK bounds.
+//
+// Java's true set is exactly the eight types declared with a leading `true`
+// constructor argument: EQUALS, IS_NULL, TEXT_CONTAINS_ALL,
+// TEXT_CONTAINS_ALL_WITHIN, TEXT_CONTAINS_ANY, TEXT_CONTAINS_PHRASE,
+// NOT_DISTINCT_FROM, DISTANCE_RANK_EQUALS. Everything else takes the no-arg
+// constructor, which chains to `this(false)`.
+func TestComparisonType_IsEquality(t *testing.T) {
+	t.Parallel()
+	// Keyed by type so a missing entry is a compile-visible hole rather than a
+	// silently short list.
+	want := map[ComparisonType]bool{
+		ComparisonEquals:                   true,
+		ComparisonIsNull:                   true,
+		ComparisonNotDistinctFrom:          true,
+		ComparisonTextContainsAll:          true,
+		ComparisonTextContainsAllWithin:    true,
+		ComparisonTextContainsAny:          true,
+		ComparisonTextContainsPhrase:       true,
+		ComparisonDistanceRankEquals:       true,
+		ComparisonNotEquals:                false,
+		ComparisonLessThan:                 false,
+		ComparisonLessThanOrEq:             false,
+		ComparisonGreaterThan:              false,
+		ComparisonGreaterThanEq:            false,
+		ComparisonIsNotNull:                false,
+		ComparisonStartsWith:               false,
+		ComparisonIsDistinctFrom:           false,
+		ComparisonLike:                     false,
+		ComparisonSort:                     false,
+		ComparisonTextContainsPrefix:       false,
+		ComparisonTextContainsAllPrefixes:  false,
+		ComparisonTextContainsAnyPrefix:    false,
+		ComparisonDistanceRankLessThan:     false,
+		ComparisonDistanceRankLessThanOrEq: false,
+		// IN reads like an equality and Java says it is not: `IN,` takes the
+		// no-arg constructor. `x IN (1,2,3)` is a DISJUNCTION of equalities, so a
+		// caller acting on a true here binds one point-lookup key where three are
+		// needed. Go returned true until this census was written, with the old
+		// nine-row table pinning it.
+		ComparisonIn: false,
+	}
+
+	// Exhaustiveness. Without this the table can silently fall behind the enum,
+	// which is exactly how fifteen types came to have no pin. ComparisonEquals is
+	// the first constant (iota) and ComparisonDistanceRankLessThanOrEq the last;
+	// a type added in between lands in the loop and fails here until it is
+	// classified against the Java enum.
+	for c := ComparisonEquals; c <= ComparisonDistanceRankLessThanOrEq; c++ {
+		if _, listed := want[c]; !listed {
+			t.Errorf("ComparisonType %d (%s) is not in the census — classify it against "+
+				"Java's Comparisons.Type declaration before adding it", int(c), c.Symbol())
+		}
+	}
+	if len(want) != int(ComparisonDistanceRankLessThanOrEq)+1 {
+		t.Fatalf("census holds %d types, enum spans %d — the guard above cannot see a type "+
+			"declared outside the iota run", len(want), int(ComparisonDistanceRankLessThanOrEq)+1)
+	}
+
+	trueCount := 0
+	for c, w := range want {
+		if got := c.IsEquality(); got != w {
+			t.Errorf("%s.IsEquality() = %v, want %v (Java's Comparisons.Type)", c.Symbol(), got, w)
+		}
+		if w {
+			trueCount++
+		}
+	}
+	// The size of Java's true set, asserted directly. A change that flipped every
+	// answer the same way would satisfy every row above by construction; this is
+	// the check that does not move with the code under test.
+	if trueCount != 8 {
+		t.Errorf("census marks %d types as equality, Java declares exactly 8", trueCount)
+	}
+}
+
+func TestComparisonType_Negate(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   ComparisonType
+		want ComparisonType
+		ok   bool
+	}{
+		{ComparisonEquals, ComparisonNotEquals, true},
+		{ComparisonLessThan, ComparisonGreaterThanEq, true},
+		{ComparisonLessThanOrEq, ComparisonGreaterThan, true},
+		{ComparisonGreaterThan, ComparisonLessThanOrEq, true},
+		{ComparisonGreaterThanEq, ComparisonLessThan, true},
+		// Java's invertComparisonType rejects these:
+		{ComparisonNotEquals, ComparisonNotEquals, false},
+		{ComparisonIsNull, ComparisonIsNull, false},
+		{ComparisonIsNotNull, ComparisonIsNotNull, false},
+		{ComparisonIsDistinctFrom, ComparisonIsDistinctFrom, false},
+		{ComparisonNotDistinctFrom, ComparisonNotDistinctFrom, false},
+		{ComparisonIn, ComparisonIn, false},
+		{ComparisonStartsWith, ComparisonStartsWith, false},
+		{ComparisonLike, ComparisonLike, false},
+	}
+	for _, tc := range cases {
+		got, ok := tc.in.Negate()
+		if got != tc.want || ok != tc.ok {
+			t.Fatalf("%s: got (%s, %v), want (%s, %v)",
+				tc.in.Symbol(), got.Symbol(), ok, tc.want.Symbol(), tc.ok)
+		}
+	}
+	// Inequality pairs are involutions: Negate(Negate(t)) == t.
+	// EQUALS→NOT_EQUALS is one-way (Java's invertComparisonType
+	// doesn't invert NOT_EQUALS back to EQUALS).
+	involutionPairs := []ComparisonType{
+		ComparisonLessThan, ComparisonLessThanOrEq,
+		ComparisonGreaterThan, ComparisonGreaterThanEq,
+	}
+	for _, ct := range involutionPairs {
+		negated, _ := ct.Negate()
+		back, _ := negated.Negate()
+		if back != ct {
+			t.Fatalf("Negate(Negate(%s)) = %s, want %s",
+				ct.Symbol(), back.Symbol(), ct.Symbol())
+		}
+	}
+}
+
+// STARTS_WITH: string-prefix comparison. Degrades to UNKNOWN on
+// non-string operands (matches numeric type-mismatch behavior).
+func TestComparison_Eval_StartsWith(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		left any
+		rhs  any
+		want TriBool
+	}{
+		{"hello STARTS_WITH hel", "hello", "hel", TriTrue},
+		{"hello STARTS_WITH hello", "hello", "hello", TriTrue},
+		{"hello STARTS_WITH helloworld", "hello", "helloworld", TriFalse},
+		{"empty STARTS_WITH empty", "", "", TriTrue},
+		{"abc STARTS_WITH empty", "abc", "", TriTrue},
+		{"empty STARTS_WITH abc", "", "abc", TriFalse},
+		{"int LHS degrades", int64(5), "5", TriUnknown},
+		{"int RHS degrades", "5", int64(5), TriUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, _ := Comparison{Type: ComparisonStartsWith, Operand: values.LiteralValue(tc.rhs)}.Eval(tc.left)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// IS NULL / IS NOT NULL: unary SQL 2VL comparisons that resolve
+// definitively even on NULL input (unlike ordinary comparisons which
+// degrade to UNKNOWN).
+func TestComparison_Eval_IsNullIsNotNull(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		op   ComparisonType
+		left any
+		want TriBool
+	}{
+		{"NULL IS NULL", ComparisonIsNull, nil, TriTrue},
+		{"5 IS NULL", ComparisonIsNull, int64(5), TriFalse},
+		{"'' IS NULL", ComparisonIsNull, "", TriFalse},
+		{"NULL IS NOT NULL", ComparisonIsNotNull, nil, TriFalse},
+		{"5 IS NOT NULL", ComparisonIsNotNull, int64(5), TriTrue},
+		{"0 IS NOT NULL", ComparisonIsNotNull, int64(0), TriTrue},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			// Operand deliberately nil — unary comparisons must
+			// ignore it (no UNKNOWN degradation).
+			got, _ := Comparison{Type: tc.op}.Eval(tc.left)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// IS NULL / IS NOT NULL with FieldValue LHS — exercise the
+// ComparisonPredicate.Eval path with a row context. Unary
+// comparisons short-circuit the RHS evaluation (Operand stays nil
+// and is never read), so the only signal is the LHS-from-row
+// resolution. Pin the truth table for present-and-non-NULL,
+// present-and-NULL, and missing-from-row.
+func TestComparisonPredicate_IsNull_NonConstantLHS(t *testing.T) {
+	t.Parallel()
+	// The LHS carries its plan-time ordinal (sole column "name" →
+	// slot 0), read positionally from the row.
+	isNull := NewComparisonPredicate(
+		pbake(t, "name", values.TypeString, "name"),
+		Comparison{Type: ComparisonIsNull},
+	)
+	isNotNull := NewComparisonPredicate(
+		pbake(t, "name", values.TypeString, "name"),
+		Comparison{Type: ComparisonIsNotNull},
+	)
+	cases := []struct {
+		name        string
+		row         map[string]any
+		wantNull    TriBool
+		wantNotNull TriBool
+	}{
+		{"present non-NULL", map[string]any{"name": "bob"}, TriFalse, TriTrue},
+		{"present NULL", map[string]any{"name": nil}, TriTrue, TriFalse},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got, _ := isNull.Eval(predRow(tc.row)); got != tc.wantNull {
+				t.Errorf("IS NULL: got %v, want %v", got, tc.wantNull)
+			}
+			if got, _ := isNotNull.Eval(predRow(tc.row)); got != tc.wantNotNull {
+				t.Errorf("IS NOT NULL: got %v, want %v", got, tc.wantNotNull)
+			}
+		})
+	}
+
+	// "Missing from row" is not a silent NULL: an absent column (an
+	// out-of-range ordinal) is a LOUD coded ResolutionError, surfaced by
+	// Eval as (TriUnknown, error) — a malformed plan, not TRUE. This differs
+	// from a sparse name-map lookup, where a missing column reads as SQL NULL.
+	t.Run("missing from row is loud", func(t *testing.T) {
+		t.Parallel()
+		got, err := isNull.Eval(predRow(map[string]any{}))
+		var coded interface {
+			Code() values.ResolutionErrorCode
+		}
+		if !errors.As(err, &coded) || coded.Code() != values.LayoutRuntimeShape {
+			t.Fatalf("missing column must be a loud LayoutRuntimeShape error, got (%v, %v)", got, err)
+		}
+		if got != TriUnknown {
+			t.Fatalf("missing column IS NULL: got %v, want TriUnknown (error swallowed)", got)
+		}
+	})
+}
+
+// Explain of a unary predicate has no RHS literal.
+func TestComparisonPredicate_Explain_Unary(t *testing.T) {
+	t.Parallel()
+	p := NewComparisonPredicate(predicateTestField(t, "middle_name", values.TypeString), Comparison{Type: ComparisonIsNull})
+	if got, want := p.Explain(), "predicate_test_middle_name.middle_name#0 IS NULL"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	p2 := NewComparisonPredicate(predicateTestField(t, "email", values.TypeString), Comparison{Type: ComparisonIsNotNull})
+	if got, want := p2.Explain(), "predicate_test_email.email#0 IS NOT NULL"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// Binary-comparison Explain renders the RHS operand consistently
+// with ExplainValue: strings quoted, NULL rendered as NULL, IN-list
+// rendered as a paren list. Catches silent drift — the previous
+// `%v` fallback rendered `NAME = bob` without quotes, visually
+// indistinguishable from a column reference.
+func TestComparisonPredicate_Explain_Binary(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		pred *ComparisonPredicate
+		want string
+	}{
+		{
+			name: "string RHS is quoted",
+			pred: NewComparisonPredicate(predicateTestField(t, "name", values.TypeString), Comparison{Type: ComparisonEquals, Operand: values.LiteralValue("bob")}),
+			want: "predicate_test_name.name#0 = 'bob'",
+		},
+		{
+			name: "int RHS is bare",
+			pred: NewComparisonPredicate(predicateTestField(t, "id", values.NullableLong), Comparison{Type: ComparisonGreaterThan, Operand: values.LiteralValue(int64(5))}),
+			want: "predicate_test_id.id#0 > 5",
+		},
+		{
+			name: "NULL RHS (rare but possible via constant-fold)",
+			pred: NewComparisonPredicate(predicateTestField(t, "id", values.NullableLong), Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(nil)}),
+			want: "predicate_test_id.id#0 = NULL",
+		},
+		{
+			name: "IN list with mixed types",
+			pred: NewComparisonPredicate(predicateTestField(t, "role", values.TypeString), Comparison{Type: ComparisonIn, Operand: values.LiteralValue([]any{"admin", "owner", nil})}),
+			want: "predicate_test_role.role#0 IN ('admin', 'owner', NULL)",
+		},
+		{
+			name: "IN list of ints",
+			pred: NewComparisonPredicate(predicateTestField(t, "id", values.NullableLong), Comparison{Type: ComparisonIn, Operand: values.LiteralValue([]any{int64(1), int64(2), int64(3)})}),
+			want: "predicate_test_id.id#0 IN (1, 2, 3)",
+		},
+		{
+			name: "bool RHS uppercased",
+			pred: NewComparisonPredicate(predicateTestField(t, "active", values.TypeBool), Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(true)}),
+			want: "predicate_test_active.active#0 = TRUE",
+		},
+		{
+			name: "bool FALSE uppercased",
+			pred: NewComparisonPredicate(predicateTestField(t, "active", values.TypeBool), Comparison{Type: ComparisonNotEquals, Operand: values.LiteralValue(false)}),
+			want: "predicate_test_active.active#0 <> FALSE",
+		},
+		{
+			name: "bytes as SQL hex literal",
+			pred: NewComparisonPredicate(predicateTestField(t, "digest", values.TypeUnknown), Comparison{Type: ComparisonEquals, Operand: values.LiteralValue([]byte{0x01, 0x02, 0xff})}),
+			want: "predicate_test_digest.digest#0 = X'0102ff'",
+		},
+		{
+			name: "empty bytes literal",
+			pred: NewComparisonPredicate(predicateTestField(t, "digest", values.TypeUnknown), Comparison{Type: ComparisonEquals, Operand: values.LiteralValue([]byte{})}),
+			want: "predicate_test_digest.digest#0 = X''",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.pred.Explain(); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// IsUnary flag is correct for each ComparisonType.
+func TestComparisonType_IsUnary(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		t    ComparisonType
+		want bool
+	}{
+		{ComparisonEquals, false},
+		{ComparisonNotEquals, false},
+		{ComparisonLessThan, false},
+		{ComparisonLessThanOrEq, false},
+		{ComparisonGreaterThan, false},
+		{ComparisonGreaterThanEq, false},
+		{ComparisonIsNull, true},
+		{ComparisonIsNotNull, true},
+	}
+	for _, tc := range cases {
+		if got := tc.t.IsUnary(); got != tc.want {
+			t.Fatalf("%v: got %v, want %v", tc.t.Symbol(), got, tc.want)
+		}
+	}
+}
+
+func TestComparison_Eval_Strings(t *testing.T) {
+	t.Parallel()
+	c := Comparison{Type: ComparisonLessThan, Operand: values.LiteralValue("b")}
+	if got, _ := c.Eval("a"); got != TriTrue {
+		t.Fatalf("a < b: got %v", got)
+	}
+	if got, _ := c.Eval("c"); got != TriFalse {
+		t.Fatalf("c < b: got %v", got)
+	}
+}
+
+func TestComparisonPredicate_EndToEnd(t *testing.T) {
+	t.Parallel()
+	// Predicate: field `age >= 18` against a row represented as a
+	// map. FieldValue.Evaluate resolves the column by its plan-time ordinal
+	// (sole column "age" → slot 0); Value.Evaluate drives the predicate.
+	operand := pbake(t, "age", values.NullableLong, "age")
+	cmp := Comparison{Type: ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))}
+	pred := NewComparisonPredicate(operand, cmp)
+
+	row := map[string]any{"age": int64(21)}
+	if got, _ := pred.Eval(predRow(row)); got != TriTrue {
+		t.Fatalf("age=21 >= 18: got %v", got)
+	}
+	row["age"] = int64(15)
+	if got, _ := pred.Eval(predRow(row)); got != TriFalse {
+		t.Fatalf("age=15 >= 18: got %v", got)
+	}
+	row["age"] = nil
+	if got, _ := pred.Eval(predRow(row)); got != TriUnknown {
+		t.Fatalf("age=NULL >= 18: got %v", got)
+	}
+
+	// The baked operand carries its plan-time ordinal, so ExplainValue renders it
+	// with the ordinal suffix ("age#0") — the injective (name, ordinal)
+	// rendering. The predicate still composes as `operand OP rhs`.
+	if got := pred.Explain(); got != "pred_row_age.age#0 >= 18" {
+		t.Fatalf("Explain: got %q", got)
+	}
+}
+
+func TestComparisonPredicate_NilOperand(t *testing.T) {
+	t.Parallel()
+	pred := &ComparisonPredicate{
+		// No Operand set — Eval degrades to UNKNOWN.
+		Comparison: Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(1))},
+	}
+	if got, _ := pred.Eval(nil); got != TriUnknown {
+		t.Fatalf("nil Operand: got %v", got)
+	}
+}
+
+func TestComparisonPredicate_ComposesWithKleeneConnectives(t *testing.T) {
+	t.Parallel()
+	row := map[string]any{"age": int64(21), "rank": int64(3)}
+
+	// (age >= 18) AND (rank < 5) — each ref carries its plan-time
+	// ordinal (sorted {age, rank} → age=0, rank=1).
+	tree := NewAnd(
+		NewComparisonPredicate(pbake(t, "age", values.NullableLong, "age", "rank"),
+			Comparison{Type: ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))}),
+		NewComparisonPredicate(pbake(t, "rank", values.NullableLong, "age", "rank"),
+			Comparison{Type: ComparisonLessThan, Operand: values.LiteralValue(int64(5))}),
+	)
+	if got, _ := tree.Eval(predRow(row)); got != TriTrue {
+		t.Fatalf("AND: got %v", got)
+	}
+	row["rank"] = int64(7)
+	if got, _ := tree.Eval(predRow(row)); got != TriFalse {
+		t.Fatalf("AND with rank=7: got %v", got)
+	}
+}
+
+// ComparisonPredicate's operand can be an ArithmeticValue —
+// exercises Value.Evaluate recursion.
+func TestComparisonPredicate_ArithmeticOperand(t *testing.T) {
+	t.Parallel()
+	// (a + b) > 10 — each operand carries its plan-time ordinal
+	// (sorted {a, b} → a=0, b=1).
+	sum := &values.ArithmeticValue{
+		Op:    values.OpAdd,
+		Left:  pbake(t, "a", values.NullableLong, "a", "b"),
+		Right: pbake(t, "b", values.NullableLong, "a", "b"),
+	}
+	pred := NewComparisonPredicate(sum,
+		Comparison{Type: ComparisonGreaterThan, Operand: values.LiteralValue(int64(10))})
+
+	if got, _ := pred.Eval(predRow(map[string]any{"a": int64(5), "b": int64(7)})); got != TriTrue {
+		t.Fatalf("5+7=12 > 10: got %v", got)
+	}
+	if got, _ := pred.Eval(predRow(map[string]any{"a": int64(3), "b": int64(4)})); got != TriFalse {
+		t.Fatalf("3+4=7 > 10: got %v", got)
+	}
+	// NULL propagation: a=NULL -> a+b=NULL -> UNKNOWN.
+	if got, _ := pred.Eval(predRow(map[string]any{"a": nil, "b": int64(1)})); got != TriUnknown {
+		t.Fatalf("a=NULL: got %v", got)
+	}
+}
+
+// Non-constant RHS: `a = b` evaluates both sides against the row
+// context and dispatches through EvalAgainst. Verifies the
+// symmetric-eval path that the Comparison.Operand → Value change
+// unblocks. Before that change the RHS was a plan-time literal —
+// `a = b` couldn't compose at all.
+func TestComparisonPredicate_NonConstantRHS(t *testing.T) {
+	t.Parallel()
+	// age = rank_cutoff (both FieldValues) — each carries its
+	// plan-time ordinal (sorted {age, cutoff} → age=0, cutoff=1).
+	pred := NewComparisonPredicate(
+		pbake(t, "age", values.NullableLong, "age", "cutoff"),
+		Comparison{Type: ComparisonEquals, Operand: pbake(t, "cutoff", values.NullableLong, "age", "cutoff")},
+	)
+
+	cases := []struct {
+		name string
+		row  map[string]any
+		want TriBool
+	}{
+		{"equal", map[string]any{"age": int64(18), "cutoff": int64(18)}, TriTrue},
+		{"unequal", map[string]any{"age": int64(21), "cutoff": int64(18)}, TriFalse},
+		{"lhs NULL", map[string]any{"age": nil, "cutoff": int64(18)}, TriUnknown},
+		{"rhs NULL", map[string]any{"age": int64(18), "cutoff": nil}, TriUnknown},
+		{"both NULL", map[string]any{"age": nil, "cutoff": nil}, TriUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got, _ := pred.Eval(predRow(tc.row)); got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// `a IS [NOT] DISTINCT FROM b` with both sides as FieldValues —
+// pins the null-safe binary path through ComparisonPredicate.Eval.
+// EvalAgainst's IsDistinctFrom branch treats both sides as
+// already-resolved any-typed values, so a nil from FieldValue
+// (missing-field row) behaves identically to a literal nil.
+func TestComparisonPredicate_IsDistinctFrom_NonConstantRHS(t *testing.T) {
+	t.Parallel()
+	// Each side carries its plan-time ordinal (sorted {a, b} → a=0, b=1).
+	dist := NewComparisonPredicate(
+		pbake(t, "a", values.NullableLong, "a", "b"),
+		Comparison{Type: ComparisonIsDistinctFrom, Operand: pbake(t, "b", values.NullableLong, "a", "b")},
+	)
+	notDist := NewComparisonPredicate(
+		pbake(t, "a", values.NullableLong, "a", "b"),
+		Comparison{Type: ComparisonNotDistinctFrom, Operand: pbake(t, "b", values.NullableLong, "a", "b")},
+	)
+
+	cases := []struct {
+		name        string
+		row         map[string]any
+		wantDist    TriBool
+		wantNotDist TriBool
+	}{
+		{"both NULL", map[string]any{"a": nil, "b": nil}, TriFalse, TriTrue},
+		{"a NULL b 5", map[string]any{"a": nil, "b": int64(5)}, TriTrue, TriFalse},
+		{"a 5 b NULL", map[string]any{"a": int64(5), "b": nil}, TriTrue, TriFalse},
+		{"both 5", map[string]any{"a": int64(5), "b": int64(5)}, TriFalse, TriTrue},
+		{"both 5 vs 6", map[string]any{"a": int64(5), "b": int64(6)}, TriTrue, TriFalse},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got, _ := dist.Eval(predRow(tc.row)); got != tc.wantDist {
+				t.Errorf("IS DISTINCT FROM: got %v, want %v", got, tc.wantDist)
+			}
+			if got, _ := notDist.Eval(predRow(tc.row)); got != tc.wantNotDist {
+				t.Errorf("IS NOT DISTINCT FROM: got %v, want %v", got, tc.wantNotDist)
+			}
+		})
+	}
+}
+
+// `a = b + 1`: RHS is an ArithmeticValue over row columns. Proves
+// arbitrary Value trees compose as RHS, not just FieldValue.
+func TestComparisonPredicate_NonConstantRHS_Arithmetic(t *testing.T) {
+	t.Parallel()
+	// Each ref carries its plan-time ordinal (sorted {a, b} → a=0, b=1).
+	pred := NewComparisonPredicate(
+		pbake(t, "a", values.NullableLong, "a", "b"),
+		Comparison{
+			Type: ComparisonEquals,
+			Operand: &values.ArithmeticValue{
+				Op:    values.OpAdd,
+				Left:  pbake(t, "b", values.NullableLong, "a", "b"),
+				Right: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+			},
+		},
+	)
+	if got, _ := pred.Eval(predRow(map[string]any{"a": int64(5), "b": int64(4)})); got != TriTrue {
+		t.Fatalf("5 = 4+1: got %v", got)
+	}
+	if got, _ := pred.Eval(predRow(map[string]any{"a": int64(5), "b": int64(5)})); got != TriFalse {
+		t.Fatalf("5 = 5+1: got %v", got)
+	}
+}
+
+// Non-constant RHS Explain — formatComparisonRHS routes to
+// ExplainValue when IsConstantValue(Operand) is false. Pins the
+// rendering for FieldValue / ArithmeticValue / CastValue RHS shapes
+// the Operand → Value migration unblocked.
+func TestComparisonPredicate_Explain_NonConstantRHS(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		pred *ComparisonPredicate
+		want string
+	}{
+		{
+			name: "FieldValue RHS",
+			pred: NewComparisonPredicate(predicateTestField(t, "age", values.NullableLong), Comparison{Type: ComparisonEquals, Operand: predicateTestField(t, "cutoff", values.NullableLong)}),
+			want: "predicate_test_age.age#0 = predicate_test_cutoff.cutoff#0",
+		},
+		{
+			name: "Arithmetic RHS over fields",
+			pred: NewComparisonPredicate(predicateTestField(t, "a", values.NullableLong), Comparison{Type: ComparisonLessThan, Operand: &values.ArithmeticValue{
+				Op:    values.OpAdd,
+				Left:  predicateTestField(t, "b", values.NullableLong),
+				Right: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+			}},
+			),
+			want: "predicate_test_a.a#0 < (predicate_test_b.b#0 + 1)",
+		},
+		{
+			// The CAST target is named EXPLICITLY. These two cases used
+			// values.NullableLong, an alias for NullableLong, and asserted "INT" —
+			// so they read as INT coverage while casting to LONG, and only
+			// passed because the renderer collapsed both to "INT". It no
+			// longer does: it feeds sort-key dedup and max_match_map's
+			// identity mapping, and CAST(v AS INTEGER) raises 22F3H above 2^31
+			// where CAST(v AS BIGINT) succeeds, so the two are not the same
+			// operation.
+			name: "CastValue RHS over field",
+			pred: NewComparisonPredicate(predicateTestField(t, "id", values.NullableLong), Comparison{Type: ComparisonEquals, Operand: values.NewCastValue(predicateTestField(t, "raw", values.TypeString), values.NullableLong)}),
+			want: "predicate_test_id.id#0 = CAST(predicate_test_raw.raw#0 AS BIGINT)",
+		},
+		{
+			// A genuine 32-bit INT target, so the two widths are covered as
+			// the distinct renderings they are.
+			name: "CastValue RHS to INT renders distinctly from BIGINT",
+			pred: NewComparisonPredicate(predicateTestField(t, "id", values.NullableLong), Comparison{Type: ComparisonEquals, Operand: values.NewCastValue(predicateTestField(t, "raw", values.TypeString), values.NullableInt)}),
+			want: "predicate_test_id.id#0 = CAST(predicate_test_raw.raw#0 AS INT)",
+		},
+		{
+			// Composite constant RHS (CAST over literal) — Explain
+			// preserves the user-written shape rather than collapsing
+			// to the folded literal. The simplifier handles the fold;
+			// rendering doesn't.
+			name: "CastValue RHS over constant preserves shape",
+			pred: NewComparisonPredicate(predicateTestField(t, "x", values.NullableLong), Comparison{Type: ComparisonEquals, Operand: values.NewCastValue(&values.ConstantValue{Value: int64(5), Typ: values.NullableLong}, values.NullableLong)}),
+			want: "predicate_test_x.x#0 = CAST(5 AS BIGINT)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.pred.Explain(); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// LiteralValue wraps Go-native literals in the matching Value
+// subtype. Pins: nil → NullValue, bool → BooleanValue (with the
+// bool-pointer contract), everything else → ConstantValue.
+func TestLiteralValue(t *testing.T) {
+	t.Parallel()
+	// Nil literal becomes NullValue, NOT ConstantValue{Value: nil}.
+	// The simplifier distinguishes these — NullValue matches the
+	// constant-fold whitelist cleanly, ConstantValue with Value=nil
+	// would too but conflates with typed missing values.
+	if _, ok := values.LiteralValue(nil).(*values.NullValue); !ok {
+		t.Fatalf("nil → %T, want *NullValue", values.LiteralValue(nil))
+	}
+	// Bool → BooleanValue (not ConstantValue{Value: bool}). The
+	// IS TRUE / IS FALSE desugar + the constant-fold rule both
+	// match *BooleanValue specifically.
+	if _, ok := values.LiteralValue(true).(*values.BooleanValue); !ok {
+		t.Fatalf("true → %T, want *BooleanValue", values.LiteralValue(true))
+	}
+	// Everything else → ConstantValue with Value preserved verbatim.
+	cv, ok := values.LiteralValue(int64(42)).(*values.ConstantValue)
+	if !ok {
+		t.Fatalf("int64 → %T, want *ConstantValue", values.LiteralValue(int64(42)))
+	}
+	if cv.Value != int64(42) {
+		t.Fatalf("int64 Value: got %v, want 42", cv.Value)
+	}
+	// String preserved verbatim (no quoting in the stored Value).
+	cs := values.LiteralValue("hello").(*values.ConstantValue)
+	if cs.Value != "hello" {
+		t.Fatalf("string Value: got %v, want hello", cs.Value)
+	}
+	// []any stays []any — IN-list callers depend on this shape.
+	list := values.LiteralValue([]any{int64(1), int64(2), int64(3)}).(*values.ConstantValue)
+	arr, ok := list.Value.([]any)
+	if !ok || len(arr) != 3 {
+		t.Fatalf("[]any Value: got %v", list.Value)
+	}
+}
+
+// NewLiteralComparison is the common-case Comparison constructor.
+// It uses LiteralValue internally; the test pins that the wrapper
+// composes correctly (Type preserved, RHS wrapped).
+func TestNewLiteralComparison(t *testing.T) {
+	t.Parallel()
+	c := NewLiteralComparison(ComparisonGreaterThan, int64(18))
+	if c.Type != ComparisonGreaterThan {
+		t.Fatalf("Type: got %v", c.Type)
+	}
+	cv, ok := c.Operand.(*values.ConstantValue)
+	if !ok {
+		t.Fatalf("Operand: %T", c.Operand)
+	}
+	if cv.Value != int64(18) {
+		t.Fatalf("wrapped Value: %v", cv.Value)
+	}
+	// Unary types also accept a nil literal — Operand becomes
+	// NullValue (ignored at eval time for unary).
+	u := NewLiteralComparison(ComparisonIsNull, nil)
+	if _, ok := u.Operand.(*values.NullValue); !ok {
+		t.Fatalf("unary nil literal → %T, want *NullValue", u.Operand)
+	}
+}
+
+// Float comparisons through ComparisonPredicate.Eval — both operands
+// float, mixed int/float (cmpAny promotion), NULL propagation.
+// Pinned because the float comparison path reaches further than
+// the arithmetic path (ArithmeticValue.Evaluate stays int-only;
+// see handover follow-up "Arithmetic over floats").
+func TestComparisonPredicate_FloatComparisons(t *testing.T) {
+	t.Parallel()
+	// "price" carries its plan-time ordinal (sole column → slot 0).
+	pred := NewComparisonPredicate(
+		pbake(t, "price", values.NullableDouble, "price"),
+		Comparison{Type: ComparisonGreaterThan, Operand: values.LiteralValue(float64(3.14))},
+	)
+	cases := []struct {
+		name string
+		row  map[string]any
+		want TriBool
+	}{
+		{"4.5 > 3.14", map[string]any{"price": float64(4.5)}, TriTrue},
+		{"2.0 > 3.14", map[string]any{"price": float64(2.0)}, TriFalse},
+		{"int 5 > 3.14 (cross-type promotion)", map[string]any{"price": int64(5)}, TriTrue},
+		{"int 2 > 3.14 (cross-type promotion)", map[string]any{"price": int64(2)}, TriFalse},
+		{"NULL > 3.14", map[string]any{"price": nil}, TriUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got, _ := pred.Eval(predRow(tc.row)); got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// LIKE with FieldValue RHS — the Operand→Value migration unlocks
+// dynamic patterns sourced from the row. Each row's `pattern`
+// column drives the LIKE match against that same row's `name`.
+// Non-string operands degrade to UNKNOWN per SQL 3VL.
+func TestComparisonPredicate_Like_FieldValueRHS(t *testing.T) {
+	t.Parallel()
+	// Each ref carries its plan-time ordinal (sorted {name, pattern}
+	// → name=0, pattern=1).
+	pred := NewComparisonPredicate(
+		pbake(t, "name", values.TypeString, "name", "pattern"),
+		Comparison{
+			Type:    ComparisonLike,
+			Operand: values.NewPatternForLikeValue(pbake(t, "pattern", values.TypeString, "name", "pattern"), values.LiteralValue(nil)),
+		},
+	)
+	cases := []struct {
+		row  map[string]any
+		want TriBool
+	}{
+		{map[string]any{"name": "hello", "pattern": "hel%"}, TriTrue},
+		{map[string]any{"name": "hello", "pattern": "world"}, TriFalse},
+		{map[string]any{"name": "hello", "pattern": "%"}, TriTrue},
+		{map[string]any{"name": "abc", "pattern": "_b_"}, TriTrue},
+		// NULL pattern → UNKNOWN per SQL 3VL.
+		{map[string]any{"name": "hello", "pattern": nil}, TriUnknown},
+		// NULL name → UNKNOWN.
+		{map[string]any{"name": nil, "pattern": "hel%"}, TriUnknown},
+	}
+	for _, tc := range cases {
+		if got, _ := pred.Eval(predRow(tc.row)); got != tc.want {
+			t.Errorf("row=%v: got %v, want %v", tc.row, got, tc.want)
+		}
+	}
+}
+
+// cmpAny is the PREDICATE comparator. Java exposes two relevant predicate
+// surfaces: legacy boxed equality uses Double.equals (zero signs distinct, all
+// NaNs equal), while direct RelOpValue EQ_DD uses primitive `==` (zero signs
+// equal, every NaN unequal). Go deliberately combines the useful halves: it
+// checks IEEE numeric equality FIRST (-0.0 == +0.0), then falls to the
+// Double.compare total order for ordering and NaN. Thus -0.0 == +0.0, NaN is
+// unequal to every number, and all NaNs compare equal. It matches Java RelOp
+// for signed zero and boxed equality for NaN, but neither Java surface in full.
+// This deliberately DIFFERS
+// from the SORT total order (values.CompareFloat64, -0.0 < 0.0, tested in
+// values.TestCompareFloat64) — predicate truth may exceed Java; sort order must
+// match the FDB tuple/index. Native `<`/`>` would report every NaN pair as EQUAL.
+// TestCmpAny_UnsignedIntegerDomain pins the predicate tier of the unsigned
+// integer domain: tuple decoding preserves positive integers above
+// math.MaxInt64 as uint64, so filter comparisons reach cmpAny with
+// unsigned operands on valid data. promoteInt (ToInt64) never admitted
+// them — the pair fell through every numeric arm and the comparison
+// failed. Integer pairs now compare EXACTLY via values.CompareExactInts:
+// the adjacent boundary pair (2^63 vs 2^63-1) would TIE under a float
+// promotion.
+func TestCmpAny_UnsignedIntegerDomain(t *testing.T) {
+	t.Parallel()
+	big := uint64(math.MaxInt64) + 1
+	if c, ok := cmpAny(big, uint64(math.MaxUint64)); !ok || c >= 0 {
+		t.Fatalf("2^63 < MaxUint64: c=%d ok=%v", c, ok)
+	}
+	if c, ok := cmpAny(big, int64(math.MaxInt64)); !ok || c <= 0 {
+		t.Fatalf("2^63 > MaxInt64 (float promotion would tie): c=%d ok=%v", c, ok)
+	}
+	if c, ok := cmpAny(uint64(0), int64(-1)); !ok || c <= 0 {
+		t.Fatalf("uint64(0) > int64(-1): c=%d ok=%v", c, ok)
+	}
+	if c, ok := cmpAny(int64(math.MinInt64), uint64(0)); !ok || c >= 0 {
+		t.Fatalf("MinInt64 < uint64(0): c=%d ok=%v", c, ok)
+	}
+	if c, ok := cmpAny(uint64(5), int64(5)); !ok || c != 0 {
+		t.Fatalf("uint64(5) == int64(5): c=%d ok=%v", c, ok)
+	}
+	// Mixed integer/float still promotes to the float path.
+	if c, ok := cmpAny(uint64(3), 3.5); !ok || c >= 0 {
+		t.Fatalf("uint64(3) < 3.5: c=%d ok=%v", c, ok)
+	}
+	// The exported eval surface agrees.
+	gt, err := Comparison{Type: ComparisonGreaterThan}.EvalAgainst(big, int64(math.MaxInt64))
+	if err != nil || gt != TriTrue {
+		t.Fatalf("EvalAgainst(2^63 > MaxInt64) = %v, %v", gt, err)
+	}
+}
+
+func TestCmpAny_FloatTotalOrder(t *testing.T) {
+	t.Parallel()
+	negZero := math.Copysign(0, -1)
+	nan := math.NaN()
+	cases := []struct {
+		name string
+		a, b any
+		want int // sign
+		ok   bool
+	}{
+		{"nan_equals_nan", nan, nan, 0, true},
+		{"nan_greater_than_finite", nan, 5.0, 1, true},
+		{"finite_less_than_nan", 5.0, nan, -1, true},
+		{"nan_greater_than_neg", nan, -5.0, 1, true},
+		{"nan_greater_than_int_mixed", nan, int64(100), 1, true},
+		{"int_less_than_nan_mixed", int64(100), nan, -1, true},
+		// cmpAny is the PREDICATE comparator: -0.0 == +0.0 (IEEE numeric equality),
+		// so `-0.0 >= 0.0` keeps the -0.0 row (matching Java's primitive RelOp path,
+		// differing from its boxed path; RFC-082). The SORT
+		// total order (values.CompareFloat64, -0.0 < 0.0) is tested separately in
+		// values.TestCompareFloat64 — the two deliberately differ on signed zero.
+		{"neg_zero_equals_pos_zero_predicate", negZero, 0.0, 0, true},
+		{"pos_zero_equals_neg_zero_predicate", 0.0, negZero, 0, true},
+		{"neg_zero_equals_itself", negZero, negZero, 0, true},
+		// Normal finite values are unaffected by the edge-value handling.
+		{"finite_ordering_unchanged", 2.5, 10.5, -1, true},
+		{"finite_equal_unchanged", 3.25, 3.25, 0, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := cmpAny(c.a, c.b)
+			if ok != c.ok {
+				t.Fatalf("cmpAny(%v, %v) ok=%v, want %v", c.a, c.b, ok, c.ok)
+			}
+			if (c.want < 0 && got >= 0) || (c.want > 0 && got <= 0) || (c.want == 0 && got != 0) {
+				t.Errorf("cmpAny(%v, %v) = %d, want sign %d", c.a, c.b, got, c.want)
+			}
+		})
+	}
+}
+
+// The `=`/`!=`/`<`/`<=`/`>`/`>=` predicate outcomes on float edge values must
+// match Java: NaN (Comparisons.compareEquals uses Double.equals for `=`,
+// Comparisons.compare uses Double.compareTo for `<`/`>`; the two are
+// consistent) and signed zero.
+func TestComparison_EvalAgainst_FloatEdgeValues(t *testing.T) {
+	t.Parallel()
+	negZero := math.Copysign(0, -1)
+	nan := math.NaN()
+	eval := func(typ ComparisonType, left, right any) TriBool {
+		v, err := Comparison{Type: typ}.EvalAgainst(left, right)
+		if err != nil {
+			t.Fatalf("EvalAgainst(%v, %v, %v) error: %v", typ, left, right, err)
+		}
+		return v
+	}
+	cases := []struct {
+		name        string
+		typ         ComparisonType
+		left, right any
+		want        TriBool
+	}{
+		// NaN vs a number: not equal; NaN is greater.
+		{"nan_eq_num_false", ComparisonEquals, nan, 5.0, TriFalse},
+		{"nan_neq_num_true", ComparisonNotEquals, nan, 5.0, TriTrue},
+		{"nan_lt_num_false", ComparisonLessThan, nan, 5.0, TriFalse},
+		{"nan_le_num_false", ComparisonLessThanOrEq, nan, 5.0, TriFalse},
+		{"nan_gt_num_true", ComparisonGreaterThan, nan, 5.0, TriTrue},
+		{"nan_ge_num_true", ComparisonGreaterThanEq, nan, 5.0, TriTrue},
+		{"num_lt_nan_true", ComparisonLessThan, 5.0, nan, TriTrue},
+		{"num_gt_nan_false", ComparisonGreaterThan, 5.0, nan, TriFalse},
+		// NaN vs NaN: equal under compare; both strict orderings false.
+		{"nan_eq_nan_true", ComparisonEquals, nan, nan, TriTrue},
+		{"nan_neq_nan_false", ComparisonNotEquals, nan, nan, TriFalse},
+		{"nan_lt_nan_false", ComparisonLessThan, nan, nan, TriFalse},
+		{"nan_le_nan_true", ComparisonLessThanOrEq, nan, nan, TriTrue},
+		{"nan_ge_nan_true", ComparisonGreaterThanEq, nan, nan, TriTrue},
+		// Signed zero: -0.0 != 0.0 (Double.equals) and -0.0 < 0.0.
+		// Predicate: -0.0 == +0.0 (IEEE numeric equality), so `=` TRUE, `!=` FALSE,
+		// `<` FALSE, `<=` TRUE, `>` FALSE, `>=` TRUE — Go keeps the -0.0 row on
+		// `v >= 0.0` where Java (Double.compare) drops it (RFC-082 Go-correct).
+		{"negzero_eq_zero_true", ComparisonEquals, negZero, 0.0, TriTrue},
+		{"negzero_neq_zero_false", ComparisonNotEquals, negZero, 0.0, TriFalse},
+		{"negzero_lt_zero_false", ComparisonLessThan, negZero, 0.0, TriFalse},
+		{"negzero_le_zero_true", ComparisonLessThanOrEq, negZero, 0.0, TriTrue},
+		{"negzero_gt_zero_false", ComparisonGreaterThan, negZero, 0.0, TriFalse},
+		{"negzero_ge_zero_true", ComparisonGreaterThanEq, negZero, 0.0, TriTrue},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := eval(c.typ, c.left, c.right)
+			if got != c.want {
+				t.Errorf("%s: EvalAgainst(%v, %v) = %v, want %v",
+					c.name, c.left, c.right, triStr(got), triStr(c.want))
+			}
+		})
+	}
+}
+
+func triStr(t TriBool) string {
+	if t == TriUnknown {
+		return "UNKNOWN"
+	}
+	if *t {
+		return "TRUE"
+	}
+	return "FALSE"
+}
+
+// TestComparison_Eval_DistanceRankReachesRowEval_Errors pins the fail-loud
+// contract for an un-lowered vector K-NN predicate: a DistanceRank comparison
+// reaching row evaluation is a planner bug (the planner must lower it to a
+// vector index scan, RFC-087) and must FAIL THE QUERY with a diagnosis — an
+// error through Eval's error channel — never silently return UNKNOWN (which
+// would drop every row and pass green) and never panic the process.
+func TestComparison_Eval_DistanceRankReachesRowEval_Errors(t *testing.T) {
+	t.Parallel()
+	for _, ct := range []ComparisonType{
+		ComparisonDistanceRankEquals,
+		ComparisonDistanceRankLessThan,
+		ComparisonDistanceRankLessThanOrEq,
+	} {
+		t.Run(fmt.Sprintf("comparison_type_%d", ct), func(t *testing.T) {
+			t.Parallel()
+			cmp := Comparison{Type: ct, Operand: values.LiteralValue(int64(5))}
+			_, err := cmp.Eval(int64(1))
+			if err == nil {
+				t.Fatal("un-lowered DistanceRank at row eval must error, got nil")
+			}
+			if !strings.Contains(err.Error(), "reached row evaluation") {
+				t.Fatalf("error = %v, want the un-lowered K-NN diagnosis", err)
+			}
+		})
+	}
+}
+
+// DATE and TIMESTAMP values are text, so a time.Time operand has no producer;
+// one that arrives anyway is an internal error naming its Value, never a
+// silent comparison.
+func TestComparisonPredicate_TimeOperandRefused(t *testing.T) {
+	t.Parallel()
+	when := &values.ConstantValue{Value: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), Typ: values.NotNullTimestamp}
+	text := &values.ConstantValue{Value: "2024-01-01 00:00:00", Typ: values.NotNullTimestamp}
+	for _, p := range []*ComparisonPredicate{
+		{Operand: when, Comparison: Comparison{Type: ComparisonEquals, Operand: text}},
+		{Operand: text, Comparison: Comparison{Type: ComparisonEquals, Operand: when}},
+	} {
+		_, err := p.Eval(nil)
+		var carrier *TemporalCarrierError
+		if !errors.As(err, &carrier) || !strings.Contains(carrier.Error(), "2024-01-01") {
+			t.Errorf("%s: want a TemporalCarrierError naming the operand, got %v", p.Explain(), err)
+		}
+	}
+}

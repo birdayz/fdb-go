@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"strings"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // existsSQL renders the correlated [NOT] EXISTS clause. tbl is the outer table

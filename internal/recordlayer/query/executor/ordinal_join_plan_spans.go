@@ -9,9 +9,9 @@
 package executor
 
 import (
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 	"fdb.dev/internal/unicode15"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // resolveSpanLeaf resolves one RV field to its LEAF leg (alias, leg type,

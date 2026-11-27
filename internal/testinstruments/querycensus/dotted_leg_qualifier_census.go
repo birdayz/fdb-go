@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // The DOTTED LEG QUALIFIER census — the TRANSLATOR-side twin of the executor's

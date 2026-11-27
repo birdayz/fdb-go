@@ -118,24 +118,9 @@ func TestFreshConstructorsReallyAllocate(t *testing.T) {
 	t.Parallel()
 
 	root := repoRootFromHere(t)
-	var typeFile string
-	var src []byte
-	var err error
-	for _, cand := range []string{
-		"pkg/recordlayer/query/plan/cascades/values/type.go",
-		"internal/recordlayer/query/plan/cascades/values/type.go",
-		"recordlayer/query/plan/cascades/values/type.go",
-	} {
-		p := filepath.Join(root, cand)
-		if b, rerr := os.ReadFile(p); rerr == nil {
-			typeFile = p
-			src = b
-			break
-		} else {
-			err = rerr
-		}
-	}
-	if typeFile == "" {
+	typeFile := filepath.Join(root, "internal/recordlayer/query/plan/cascades/values/type.go")
+	src, err := os.ReadFile(typeFile)
+	if err != nil {
 		t.Fatalf("reading values/type.go under %s: %v.\nUnder Bazel this file must be a `data` dep of "+
 			"this target — a test that cannot find its input must FAIL, not skip: a "+
 			"skip here would leave freshTypeConstructors unverified while the target "+
@@ -421,22 +406,18 @@ func TestValuesPkgAndAllowlistPaths(t *testing.T) {
 		valuesPkg string
 		wantDiags int
 	}{
-		{"fdb.dev/pkg/recordlayer/query/plan/cascades/values", "pkg/recordlayer/query/plan/cascades/values/qov_source_layout.go", "restoreQOVRecordLayout", "fdb.dev/pkg/recordlayer/query/plan/cascades/values", 0},
 		{"fdb.dev/internal/recordlayer/query/plan/cascades/values", "internal/recordlayer/query/plan/cascades/values/qov_source_layout.go", "restoreQOVRecordLayout", "fdb.dev/internal/recordlayer/query/plan/cascades/values", 0},
 		{"fdb.dev/internal/recordlayer/query/plan/cascades/values", "/abs/execroot/internal/recordlayer/query/plan/cascades/values/qov_source_layout.go", "restoreQOVRecordLayout", "fdb.dev/internal/recordlayer/query/plan/cascades/values", 0},
-		{"fdb.dev/pkg/recordlayer/query/plan/cascades/values", "pkg/recordlayer/query/plan/cascades/values/ordinal_layout_test.go", "TestOrdinalLayoutSnapshotsEveryMutableInputAndGetter", "fdb.dev/pkg/recordlayer/query/plan/cascades/values", 0},
 		{"fdb.dev/internal/recordlayer/query/plan/cascades/values", "internal/recordlayer/query/plan/cascades/values/ordinal_layout_test.go", "TestOrdinalLayoutSnapshotsEveryMutableInputAndGetter", "fdb.dev/internal/recordlayer/query/plan/cascades/values", 0},
-		{"fdb.dev/pkg/recordlayer/query/plan/cascades", "pkg/recordlayer/query/plan/cascades/plan_leg_concat_layout_test.go", "TestPlanLegConcatLayout_ReturnsADefensiveCopy", "fdb.dev/pkg/recordlayer/query/plan/cascades/values", 0},
 		{"fdb.dev/internal/recordlayer/query/plan/cascades", "internal/recordlayer/query/plan/cascades/plan_leg_concat_layout_test.go", "TestPlanLegConcatLayout_ReturnsADefensiveCopy", "fdb.dev/internal/recordlayer/query/plan/cascades/values", 0},
-		{"fdb.dev/pkg/relational/core/query", "pkg/relational/core/query/inline_values_translation_test.go", "TestInlineValuesTranslationRejectsCollectionTypeDrift", "fdb.dev/pkg/recordlayer/query/plan/cascades/values", 0},
+		{"fdb.dev/pkg/relational/core/query", "pkg/relational/core/query/inline_values_translation_test.go", "TestInlineValuesTranslationRejectsCollectionTypeDrift", "fdb.dev/internal/recordlayer/query/plan/cascades/values", 0},
 		{"fdb.dev/internal/relational/core/query", "internal/relational/core/query/inline_values_translation_test.go", "TestInlineValuesTranslationRejectsCollectionTypeDrift", "fdb.dev/internal/recordlayer/query/plan/cascades/values", 0},
 		{"fdb.dev/internal/relational/query", "internal/relational/query/inline_values_translation_test.go", "TestInlineValuesTranslationRejectsCollectionTypeDrift", "fdb.dev/internal/recordlayer/query/plan/cascades/values", 0},
-		{"fdb.dev/pkg/recordlayer/query/plan/cascades/values", "pkg/recordlayer/query/plan/cascades/values/proto_field_exact_type_test.go", "TestFieldTypeForProtoFieldReturnsIndependentTypeGraphs", "fdb.dev/pkg/recordlayer/query/plan/cascades/values", 0},
 		{"fdb.dev/internal/recordlayer/query/plan/cascades/values", "internal/recordlayer/query/plan/cascades/values/proto_field_exact_type_test.go", "TestFieldTypeForProtoFieldReturnsIndependentTypeGraphs", "fdb.dev/internal/recordlayer/query/plan/cascades/values", 0},
 		// Negative controls: wrong function, unlisted file, or prefix collision.
 		{"fdb.dev/internal/recordlayer/query/plan/cascades/values", "internal/recordlayer/query/plan/cascades/values/qov_source_layout.go", "otherFunc", "fdb.dev/internal/recordlayer/query/plan/cascades/values", 1},
 		{"fdb.dev/internal/recordlayer/query/plan/cascades/values", "internal/recordlayer/query/plan/cascades/values/unlisted.go", "restoreQOVRecordLayout", "fdb.dev/internal/recordlayer/query/plan/cascades/values", 1},
-		{"fdb.dev/internal/recordlayer/query/plan/cascades/values", "notpkg/recordlayer/query/plan/cascades/values/qov_source_layout.go", "restoreQOVRecordLayout", "fdb.dev/internal/recordlayer/query/plan/cascades/values", 1},
+		{"fdb.dev/internal/recordlayer/query/plan/cascades/values", "notinternal/recordlayer/query/plan/cascades/values/qov_source_layout.go", "restoreQOVRecordLayout", "fdb.dev/internal/recordlayer/query/plan/cascades/values", 1},
 	}
 	for _, tc := range allowCases {
 		t.Run(tc.filename+"/"+tc.fnName, func(t *testing.T) {

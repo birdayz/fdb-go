@@ -6,7 +6,7 @@ go_library(
     importpath = "fdb.dev/cmd/plan-trace",
     visibility = ["//visibility:private"],
     deps = [
-        "//pkg/recordlayer/query/plan/cascades",
+        "//internal/recordlayer/query/plan/cascades",
         "//pkg/relational/core/embedded",
     ],
 )

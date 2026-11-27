@@ -27,12 +27,12 @@ go_test(
         "//internal/fdbwire",
         "//internal/pb/continuations",
         "//internal/recordlayer/query/executor",
+        "//internal/recordlayer/query/plan/plans",
         "//internal/relational/relapi",
         "//internal/relational/sqltest/testkit",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",
-        "//pkg/recordlayer/query/plan/plans",
         "//pkg/relational/core/embedded",
     ],
 )

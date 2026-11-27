@@ -1,0 +1,430 @@
+// Portions derived from FoundationDB Record Layer (
+// VectorIndexScanMatchCandidate.java, CorrelationIdentifier.java,
+// VectorIndexExpansionVisitor.java, VectorIndexMaintainer.java),
+// Copyright 2015-2020 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2026 Apple Inc. and the FoundationDB project authors
+// Copyright 2023 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
+package cascades
+
+import (
+	"sync"
+
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
+)
+
+// VectorIndexScanMatchCandidate represents a vector similarity search
+// index as a match candidate. Recognises K-nearest-neighbour queries
+// driven by distance-based ranking predicates and maps them to a
+// vector index scan.
+//
+// Key differences from ValueIndexScanMatchCandidate:
+//   - Carries ordering aliases separately from sargable parameters
+//     (vector indexes have a different binding discipline).
+//   - Sargable aliases include partition key columns; a subset
+//     (parametersRequiredForBinding) must be bound.
+//   - The scan plan it produces uses a vector distance comparison.
+//
+// Ports Java's
+// `com.apple.foundationdb.record.query.plan.cascades.VectorIndexScanMatchCandidate`.
+type VectorIndexScanMatchCandidate struct {
+	indexName   string
+	recordTypes []string
+	columnNames []string
+
+	// parameters are the sargable aliases. Maps to Java's `parameters`.
+	parameters []values.CorrelationIdentifier
+
+	// orderingAliases define the ordering the index provides. Maps to
+	// Java's `orderingAliases`.
+	orderingAliases []values.CorrelationIdentifier
+
+	// parametersRequiredForBinding is the subset of sargable aliases that
+	// must be bound for the candidate to be valid. Maps to Java's
+	// `parametersRequiredForBinding`.
+	parametersRequiredForBinding map[values.CorrelationIdentifier]struct{}
+
+	// partitionCount is the number of leading (partition-prefix) columns —
+	// the KeyWithValue split point. columnNames[:partitionCount] are the
+	// partition columns; columnNames[partitionCount] is the vector column.
+	partitionCount             int
+	partitionKeyComponentTypes []values.Type
+	// distanceAlias is the sargable alias of the distance placeholder (the
+	// slot the DistanceRank predicate binds to).
+	distanceAlias values.CorrelationIdentifier
+	// metric selects which DistanceRowNumberValue the distance placeholder uses.
+	metric values.DistanceOperator
+
+	flowedType values.Type
+	unique     bool
+	// indexEngine is the engine backing the index ("HNSW" or "GUARDIANN"),
+	// Java's getIndexEngineKind.
+	indexEngine string
+
+	// createsDuplicates mirrors Java's
+	// index.getRootExpression().createsDuplicates().
+	createsDuplicates bool
+
+	traversalOnce sync.Once
+	traversal     *Traversal
+
+	primaryKeyValuesOnce sync.Once
+	primaryKeyValues     []values.Value
+	primaryKeyColumns    []string
+}
+
+// NewVectorIndexScanMatchCandidate constructs a match candidate for a vector
+// similarity search index. columnNames are all index columns in key order
+// (partition columns followed by the single vector column); partitionCount is
+// the KeyWithValue split point; metric selects the distance function. The
+// sargable aliases (one per partition column + one distance alias) and the
+// required-for-binding set (the index-only distance alias) are minted here,
+// mirroring Java's VectorIndexExpansionVisitor.
+func NewVectorIndexScanMatchCandidate(
+	indexName string,
+	recordTypes []string,
+	columnNames []string,
+	partitionCount int,
+	metric values.DistanceOperator,
+	flowedType values.Type,
+	unique bool,
+	primaryKeyColumns []string,
+) *VectorIndexScanMatchCandidate {
+	types := make([]string, len(recordTypes))
+	copy(types, recordTypes)
+	cols := make([]string, len(columnNames))
+	copy(cols, columnNames)
+	pkCols := make([]string, len(primaryKeyColumns))
+	copy(pkCols, primaryKeyColumns)
+	if partitionCount < 0 || partitionCount > len(cols) {
+		partitionCount = 0
+	}
+
+	// One sargable alias per partition column; those are also the ordering
+	// aliases. Plus one distance alias (the DistanceRank slot).
+	ordering := make([]values.CorrelationIdentifier, partitionCount)
+	params := make([]values.CorrelationIdentifier, 0, partitionCount+1)
+	for i := 0; i < partitionCount; i++ {
+		a := values.UniqueCorrelationIdentifier()
+		ordering[i] = a
+		params = append(params, a)
+	}
+	distanceAlias := values.UniqueCorrelationIdentifier()
+	params = append(params, distanceAlias)
+
+	// Only the index-only distance placeholder is required for binding, matching
+	// Java's VectorIndexExpansionVisitor (parametersRequiredForBinding =
+	// placeholders where value.isIndexOnly() — the distance rank, never the
+	// partition columns). A partial partition prefix is legal: the maintainer
+	// fans out over the distinct partitions (prefix skip-scan + per-partition
+	// HNSW search), matching Java's VectorIndexMaintainer.scan (RFC-046).
+	requiredForBinding := map[values.CorrelationIdentifier]struct{}{distanceAlias: {}}
+
+	return &VectorIndexScanMatchCandidate{
+		indexName:                    indexName,
+		recordTypes:                  types,
+		columnNames:                  cols,
+		parameters:                   params,
+		orderingAliases:              ordering,
+		parametersRequiredForBinding: requiredForBinding,
+		partitionCount:               partitionCount,
+		partitionKeyComponentTypes:   physicalTypesFromFlatRow(flowedType, cols[:partitionCount], nil),
+		distanceAlias:                distanceAlias,
+		metric:                       metric,
+		flowedType:                   flowedType,
+		unique:                       unique,
+		primaryKeyColumns:            pkCols,
+	}
+}
+
+// WithPartitionKeyComponentTypes attaches authoritative physical partition-key
+// types to a freshly constructed vector candidate.
+func (c *VectorIndexScanMatchCandidate) WithPartitionKeyComponentTypes(types []values.Type) *VectorIndexScanMatchCandidate {
+	c.partitionKeyComponentTypes = normalizePhysicalKeyTypes(types, c.partitionCount)
+	return c
+}
+
+// WithIndexEngine records the engine backing the index.
+func (c *VectorIndexScanMatchCandidate) WithIndexEngine(engine string) *VectorIndexScanMatchCandidate {
+	c.indexEngine = engine
+	return c
+}
+
+// GetPartitionKeyComponentTypes returns physical types aligned with the
+// partition equality prefix.
+func (c *VectorIndexScanMatchCandidate) GetPartitionKeyComponentTypes() []values.Type {
+	return append([]values.Type(nil), c.partitionKeyComponentTypes...)
+}
+
+// CandidateName returns the index name.
+func (c *VectorIndexScanMatchCandidate) CandidateName() string { return c.indexName }
+
+// EmitsOrderedStream reports whether this candidate's ToScanPlan emits the
+// VBASE distance-ordered (non-self-limiting) form — true for an un-partitioned
+// index (global rank, RFC-156 Phase B). Such a scan must NOT be folded into a
+// primary-key intersection: the residual composes as a Filter ABOVE the ordered
+// stream (Limit → Filter → ordered scan), not as an intersection arm (which
+// would reintroduce the predicate-subset-of-global-top-k wrong answer).
+func (c *VectorIndexScanMatchCandidate) EmitsOrderedStream() bool { return c.partitionCount == 0 }
+
+// GetTraversal returns the Traversal of this candidate's expression
+// tree, built lazily on first access.
+func (c *VectorIndexScanMatchCandidate) GetTraversal() *Traversal {
+	c.traversalOnce.Do(func() {
+		c.traversal = ExpandVectorIndex(c)
+	})
+	return c.traversal
+}
+
+// GetColumnNames returns the ordered column-name list.
+func (c *VectorIndexScanMatchCandidate) GetColumnNames() []string { return c.columnNames }
+
+// GetSargableAliases returns the sargable parameter aliases. Ports
+// Java's VectorIndexScanMatchCandidate.getSargableAliases().
+func (c *VectorIndexScanMatchCandidate) GetSargableAliases() []values.CorrelationIdentifier {
+	return c.parameters
+}
+
+// GetSargableAliasesRequiredForBinding returns the parameter aliases
+// that must be bound for the candidate to be valid.
+func (c *VectorIndexScanMatchCandidate) GetSargableAliasesRequiredForBinding() []values.CorrelationIdentifier {
+	result := make([]values.CorrelationIdentifier, 0, len(c.parametersRequiredForBinding))
+	for a := range c.parametersRequiredForBinding {
+		result = append(result, a)
+	}
+	return result
+}
+
+// GetOrderingAliases returns the ordering aliases.
+func (c *VectorIndexScanMatchCandidate) GetOrderingAliases() []values.CorrelationIdentifier {
+	return c.orderingAliases
+}
+
+// GetRecordTypes returns the record types this index covers.
+func (c *VectorIndexScanMatchCandidate) GetRecordTypes() []string { return c.recordTypes }
+
+// IsUnique reports whether the index enforces uniqueness.
+func (c *VectorIndexScanMatchCandidate) IsUnique() bool { return c.unique }
+
+// GetBaseType returns the base record type.
+func (c *VectorIndexScanMatchCandidate) GetBaseType() values.Type { return c.flowedType }
+
+// GetColumnSize returns the number of key columns.
+func (c *VectorIndexScanMatchCandidate) GetColumnSize() int { return len(c.columnNames) }
+
+// CreatesDuplicates reports whether the index can produce duplicate
+// entries per record.
+func (c *VectorIndexScanMatchCandidate) CreatesDuplicates() bool { return c.createsDuplicates }
+
+// HasAndOrderedByRecordTypeKey reports whether the index key starts
+// with the record type key. Always false for vector indexes.
+func (c *VectorIndexScanMatchCandidate) HasAndOrderedByRecordTypeKey() bool { return false }
+
+// GetPrimaryKeyValues returns the primary key as a list of Values.
+// Lazily computed. Returns nil if no PK columns.
+func (c *VectorIndexScanMatchCandidate) GetPrimaryKeyValues() []values.Value {
+	c.primaryKeyValuesOnce.Do(func() {
+		c.primaryKeyValues = resolvedColumnsInRow(c.flowedType, c.primaryKeyColumns)
+	})
+	return append([]values.Value(nil), c.primaryKeyValues...)
+}
+
+// ComputeBoundParameterPrefixMap collects the bound partition-prefix equality
+// run plus the index-only DistanceRank binding. Unlike a value index, the two
+// are kept separate: Java's toVectorIndexScanComparisons separates the distance
+// rank by TYPE (instanceof DistanceRankValueComparison), never by prefix
+// position, so the distance binding must survive even on a PARTIAL partition
+// prefix (a multi-partition fan-out query). See RFC-046.
+func (c *VectorIndexScanMatchCandidate) ComputeBoundParameterPrefixMap(
+	bindings map[values.CorrelationIdentifier]*predicates.ComparisonRange,
+) map[values.CorrelationIdentifier]*predicates.ComparisonRange {
+	prefix := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange)
+	// Consume the contiguous EQUALITY run of partition columns
+	// (parameters[0:partitionCount]). Stop at the first unbound OR non-equality
+	// column: a partition INEQUALITY must NOT enter the scan prefix — the
+	// executor encodes only an equality prefix tuple (VectorDistanceScanRange-
+	// WithPrefix) and would silently ignore an inequality. Leaving it unconsumed
+	// keeps it as a residual filter (the same mechanism as a filter on any
+	// non-indexed column), and the maintainer fans out over all partitions; an
+	// unbound trailing partition column is likewise fanned out (RFC-046).
+	for i := 0; i < c.partitionCount; i++ {
+		alias := c.parameters[i]
+		cr, ok := bindings[alias]
+		if !ok || cr == nil || cr.IsEmpty() || cr.GetRangeType() != predicates.ComparisonRangeEquality {
+			break
+		}
+		prefix[alias] = cr
+	}
+	// ALWAYS retain the index-only DistanceRank binding, independent of the
+	// partition-prefix length. Without this, a partial prefix would drop the
+	// distance binding (it is last in c.parameters) and ToScanPlan would emit a
+	// nil-query-vector plan (RFC-046; the dropped-query-vector trap).
+	if cr, ok := bindings[c.distanceAlias]; ok && cr != nil && !cr.IsEmpty() {
+		prefix[c.distanceAlias] = cr
+	}
+	return prefix
+}
+
+func (c *VectorIndexScanMatchCandidate) bindingRangesEligible(
+	bindings map[values.CorrelationIdentifier]*predicates.ComparisonRange,
+) bool {
+	// Partitioned vectors are self-limiting per physical partition. Turning a
+	// logical NaN equality into a residual after selecting one NaN payload could
+	// omit whole graphs, so the candidate is ineligible instead.
+	partitionAliases := c.parameters[:c.partitionCount]
+	return !bindingsUseUnknownPhysicalKeyType(
+		bindings,
+		partitionAliases,
+		c.partitionKeyComponentTypes,
+	) && !bindingsContainUnsupportedPhysicalFloatOrdering(
+		bindings,
+		partitionAliases,
+		c.partitionKeyComponentTypes,
+	) && !bindingsContainUnsupportedPhysicalStartsWith(
+		bindings,
+		partitionAliases,
+		c.partitionKeyComponentTypes,
+	) && !bindingsContainKnownConstantNaN(
+		bindings,
+		partitionAliases,
+		c.partitionKeyComponentTypes,
+	)
+}
+
+// ToScanPlan converts the matched bindings into a vector (BY_DISTANCE) scan
+// plan. It separates the partition-key equality bindings (which form the HNSW
+// partition prefix) from the single DistanceRank binding (which carries the
+// query vector + k + ef_search). Ports Java's
+// VectorIndexScanMatchCandidate.toEquivalentPlan / toVectorIndexScanComparisons.
+//
+// A BY_DISTANCE scan never takes the configured fetch method: Java's
+// RecordQueryIndexPlan constructor downgrades it to SCAN_AND_FETCH.
+func (c *VectorIndexScanMatchCandidate) ToScanPlan(
+	_ PlanContext,
+	prefixMap map[values.CorrelationIdentifier]*predicates.ComparisonRange,
+	_ bool,
+) plans.RecordQueryPlan {
+	// Partition prefix: the equality ranges of the partition aliases, in order.
+	prefixComps := make([]*predicates.ComparisonRange, c.partitionCount)
+	for i := 0; i < c.partitionCount; i++ {
+		if cr, ok := prefixMap[c.parameters[i]]; ok && cr != nil {
+			prefixComps[i] = cr
+		} else {
+			prefixComps[i] = predicates.EmptyComparisonRange()
+		}
+	}
+
+	// Distance binding: extract the DistanceRank comparison (query vector + k +
+	// ef_search + the rank operator) bound to the distance alias.
+	var queryVector, k values.Value
+	var efSearch *int
+	var isReturningVectors *bool
+	rankType := predicates.ComparisonDistanceRankLessThanOrEq
+	if cr, ok := prefixMap[c.distanceAlias]; ok {
+		if drc := extractDistanceRankComparison(cr); drc != nil {
+			queryVector = drc.QueryVector
+			k = drc.Operand
+			efSearch = drc.EfSearch
+			isReturningVectors = drc.IsReturningVectors
+			rankType = drc.Type
+		}
+	}
+
+	plan, err := plans.NewRecordQueryVectorIndexPlan(
+		c.indexName,
+		prefixComps,
+		queryVector,
+		k,
+		rankType,
+		efSearch,
+		isReturningVectors,
+		c.recordTypes,
+		c.flowedType,
+	)
+	if err != nil {
+		return nil
+	}
+	plan = plan.WithPartitionKeyComponentTypes(c.partitionKeyComponentTypes).WithIndexEngine(c.indexEngine).
+		WithRecordProperties(c.GetPrimaryKeyValues(), !c.createsDuplicates)
+
+	// Carry the partition-key column names so the planner can certify a
+	// partition-column residual (an unconsumed partition INEQUALITY, e.g.
+	// region > 'r1') as safe to compose as a Filter above this self-limiting
+	// per-partition scan (compensationSafeForYield). Selecting whole partitions
+	// never touches within-partition top-k ordering (RFC-046).
+	if c.partitionCount > 0 {
+		plan = plan.WithPartitionColumns(c.columnNames[:c.partitionCount])
+	}
+
+	// RFC-156 Phase B — canonical form for a GLOBAL-rank vector query (no
+	// PARTITION BY ⇔ an un-partitioned index, partitionCount == 0, e.g. the
+	// un-partitioned SPFresh case in §1): emit the scan in VBASE distance-
+	// ordered mode. It does NOT sink k as a scan-internal limit; instead it
+	// streams its bounded re-ranked horizon in distance order so a residual
+	// Filter and a Limit(k) ABOVE compose the true k nearest MATCHING rows
+	// (Limit(k) → Filter(residual) → ordered scan). SinkLimitIntoVectorScanRule
+	// folds a Limit(k) sitting directly above (no residual) back into the
+	// legacy self-limiting search(k) path. ToScanPlan never introspects the
+	// residual predicates and never emits a DistanceRowNumberValue as a residual
+	// — the index-only distance marker lives ONLY inside this plan's binding
+	// (queryVector/k), never as a free-floating residual the executor cannot
+	// evaluate.
+	//
+	// A PARTITIONED index (partitionCount > 0) keeps the legacy self-limiting
+	// per-partition fan-out (RFC-046): its QUALIFY rank is PER PARTITION, which a
+	// single global Limit cannot express, so extending VBASE ordered-stream to
+	// the multi-partition fan-out is deferred (RFC §4 Phase E generalization).
+	if c.partitionCount == 0 {
+		plan = plan.WithOrderedStream()
+	}
+	return plan
+}
+
+// extractDistanceRankComparison pulls the DistanceRank comparison out of a
+// bound ComparisonRange (it rides as an equality- or inequality-shaped range
+// depending on how ComparisonRange.Merge classified it).
+func extractDistanceRankComparison(cr *predicates.ComparisonRange) *predicates.Comparison {
+	if cr == nil {
+		return nil
+	}
+	switch cr.GetRangeType() {
+	case predicates.ComparisonRangeEquality:
+		if c := cr.GetEqualityComparison(); c != nil && isDistanceRankType(c.Type) {
+			return c
+		}
+	case predicates.ComparisonRangeInequality:
+		for _, c := range cr.GetInequalityComparisons() {
+			if c != nil && isDistanceRankType(c.Type) {
+				return c
+			}
+		}
+	}
+	return nil
+}
+
+func isDistanceRankType(t predicates.ComparisonType) bool {
+	switch t {
+	case predicates.ComparisonDistanceRankEquals,
+		predicates.ComparisonDistanceRankLessThan,
+		predicates.ComparisonDistanceRankLessThanOrEq:
+		return true
+	default:
+		return false
+	}
+}
+
+// String returns a human-readable label for debugging.
+// Mirrors Java's VectorIndexScanMatchCandidate.toString().
+func (c *VectorIndexScanMatchCandidate) String() string {
+	return "vector[" + c.indexName + "]"
+}
+
+var (
+	_ MatchCandidate                   = (*VectorIndexScanMatchCandidate)(nil)
+	_ WithPrimaryKeyMatchCandidate     = (*VectorIndexScanMatchCandidate)(nil)
+	_ WithBaseQuantifierMatchCandidate = (*VectorIndexScanMatchCandidate)(nil)
+	_ ValueIndexLikeMatchCandidate     = (*VectorIndexScanMatchCandidate)(nil)
+)
