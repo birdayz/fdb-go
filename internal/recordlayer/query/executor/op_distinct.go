@@ -20,9 +20,9 @@ import (
 
 	continuationspb "fdb.dev/internal/pb/continuations"
 	cursorpb "fdb.dev/internal/pb/cursor"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 func executeDistinct(

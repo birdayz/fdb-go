@@ -84,7 +84,7 @@ allowlist (file → permitted AST count). Keep the two in sync.
 | `pkg/relational/core/embedded/connection.go` | 2 | public SQL connection API: panic → SQL error (`recoverInto`, deferred by every exported connection, transaction, result-set and DirectAccess entry), and `embeddedTx.abortOnContextGoroutine`, the abort a context's `AfterFunc` runs on its own goroutine; both close the connection |
 | `pkg/relational/sqldriver/driver.go` | 1 | `Connector.Connect`: a panic initializing the connector → SQL internal error; the next `Connect` initializes again |
 | `pkg/recordlayer/merge_cursor.go` | 1 | `tuple.Pack()` on user-derived comparison keys → cursor error |
-| `pkg/recordlayer/query/plan/cascades/values/required_bindings.go` | 1 | RFC-232 binding admission: a hostile implementation of the open `Value` interface → typed `LayoutForeignValue` error |
+| `internal/recordlayer/query/plan/cascades/values/required_bindings.go` | 1 | RFC-232 binding admission: a hostile implementation of the open `Value` interface → typed `LayoutForeignValue` error |
 | `cmd/fdb-stacktester/directory_ops.go` | 1 | binding-tester harness binary (cgo-dependent build) |
 | `internal/relational/conformance/explaindiff/explaindiff.go` | 1 | RFC-183 EXPLAIN-differ: a planner panic on one corpus query → `<PLAN-PANIC: …>` marker, so the corpus-wide dump completes instead of aborting. Surfaced, not swallowed: `TestNoPlanPanics` fails on any marker. |
 | `cmd/dst-hunt/main.go` | 1 | RFC-199 DST overnight hunter: a panicking seed → recorded finding, sweep continues (never aborts an unattended run). Surfaced on the finding, never swallowed. |

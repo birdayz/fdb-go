@@ -6,9 +6,9 @@ import (
 	"testing"
 
 	continuationspb "fdb.dev/internal/pb/continuations"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // stallInner produces NO rows and reports the SAME non-end position every time.

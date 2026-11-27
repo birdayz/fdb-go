@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"fdb.dev/internal/recordlayer/query/executor"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/internal/relational/relapi"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // Each executor failure kind reaches SQL with its SQLSTATE and message.

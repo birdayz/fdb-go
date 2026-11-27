@@ -400,7 +400,7 @@ right rows (that's yamsql + FDB integration tests). Most are pure in-memory (no 
 ```sh
 grep -rE "^func Fuzz" pkg/                                    # enumerate every target
 # Find crashes (in-memory target; DOTTED flags under bazel; anchor -test.fuzz with ^…$)
-bazelisk test //pkg/recordlayer/query/plan/cascades:cascades_test \
+bazelisk test //internal/recordlayer/query/plan/cascades:cascades_test \
   --test_arg='-test.run=^$' --test_arg='-test.fuzz=^FuzzPlanner_Determinism$' \
   --test_arg='-test.fuzztime=30s' --test_arg='-test.fuzzcachedir=/tmp/fuzz-cache' \
   --sandbox_writable_path=/tmp/fuzz-cache
@@ -415,7 +415,7 @@ go test -run='^$' -fuzz='^FuzzUnpack$' -fuzztime=30s ./pkg/fdbgo/fdb/tuple/
   (never panic + `Pack∘Unpack` fixpoint).
 - **Reproduce:** a crash is minimized to `<pkg>/testdata/fuzz/<Fuzz>/<hash>` (two lines: `go test fuzz
   v1` + `type(value)`). Replay with **`-run`, not `-fuzz`**: `go test -run='FuzzX/<hash>' ./pkg/<path>/`.
-  Verified live: `go test -run='FuzzPlanner_Determinism/seed1' ./pkg/recordlayer/query/plan/cascades/`.
+  Verified live: `go test -run='FuzzPlanner_Determinism/seed1' ./internal/recordlayer/query/plan/cascades/`.
 - **Gotchas:** two flag namespaces — `bazelisk` uses **dotted** `-test.fuzz`, plain `go test` uses
   **undotted** `-fuzz`; mixing silently no-ops. `-fuzz` refuses >1 match (anchor `^…$`). On packages
   with a Ginkgo suite add `-test.run='^$'`. Under Bazel, new crashers land in the sandbox — copy into

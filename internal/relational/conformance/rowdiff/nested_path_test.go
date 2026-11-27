@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/internal/relational/conformance/rowdiff"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 )
 
 // TestNestedPathIsNotADot is the pin for the distinction three separate readers

@@ -6,10 +6,10 @@ import (
 	"sort"
 
 	"fdb.dev/internal/recordlayer/protoname"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 )
 
 // RFC-236's read side: decide whether a schema's collected statistics may be

@@ -5,7 +5,7 @@
 package executor
 
 import (
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // PositionalRow is the typed positional runtime row — the SOLE runtime row:

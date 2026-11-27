@@ -24,8 +24,8 @@ import (
 	"strconv"
 	"strings"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/internal/relational/conformance/rowdiff"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 )
 
 // FeatureVector serializes the structural identity of a candidate: everything

@@ -8,8 +8,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/internal/pb/demopb"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // IndexEntry is the entry source the planner's index-entry reader Values read.

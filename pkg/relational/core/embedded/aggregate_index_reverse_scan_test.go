@@ -11,7 +11,7 @@ package embedded
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 )
 
 // aggregateScanDirections reports how many aggregate index scans (and merges

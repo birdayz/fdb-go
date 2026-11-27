@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades"
 	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/internal/relational/sqltest/testkit"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 

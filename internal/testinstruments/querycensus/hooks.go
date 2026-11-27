@@ -4,7 +4,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // hooks routes every production record site to this package's recorders.

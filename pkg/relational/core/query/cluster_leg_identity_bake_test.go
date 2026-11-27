@@ -20,7 +20,7 @@ package query
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // collidingClusterPullUp builds the two legs whose joined spellings collide.

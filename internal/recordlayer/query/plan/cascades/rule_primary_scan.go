@@ -1,0 +1,70 @@
+package cascades
+
+import (
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
+)
+
+// PrimaryScanRule implements a logical FullUnorderedScanExpression as
+// a physical RecordQueryScanPlan.
+//
+//	FullUnorderedScan({records}, type)  →  Scan({records}, type, false)
+//
+// "Implements" rules in Cascades go from logical to physical. The
+// rule output is YIELDED into the same Reference as the logical
+// input, so the Reference holds BOTH alternatives — the logical and
+// the physical — and downstream rule chains operate on whichever
+// members they pattern-match; cost extraction picks the physical
+// (the logical has no Execute path).
+//
+// The rule yields a bare `*plans.RecordQueryScanPlan`, which is its own
+// physical Cascades expression (RFC-184 W2).
+//
+// Java equivalent: `PrimaryScanRule`. This rule is the unindexed
+// fallback; sargable primary-key access goes through
+// PrimaryScanMatchCandidate on the data-access path
+// (primary_scan_match_candidate.go).
+type PrimaryScanRule struct {
+	matcher matching.BindingMatcher
+}
+
+// NewPrimaryScanRule constructs the rule.
+func NewPrimaryScanRule() *PrimaryScanRule {
+	return &PrimaryScanRule{
+		matcher: NewExpressionMatcher[*expressions.FullUnorderedScanExpression]("full_unordered_scan"),
+	}
+}
+
+// Matcher returns the pattern.
+func (r *PrimaryScanRule) Matcher() matching.BindingMatcher { return r.matcher }
+
+// OnMatch fires on every FullUnorderedScanExpression and yields a
+// RecordQueryScanPlan over the same record types.
+func (r *PrimaryScanRule) OnMatch(call *ExpressionRuleCall) {
+	scan := matching.Get[*expressions.FullUnorderedScanExpression](call.Bindings, r.matcher)
+	plan, err := plans.NewRecordQueryScanPlan(scan.GetRecordTypes(), scan.GetFlowedType(), false)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+
+	if call.Context != nil && len(scan.GetRecordTypes()) == 1 {
+		pkCols := call.Context.GetPrimaryKeyColumns(scan.GetRecordTypes()[0])
+		if len(pkCols) > 0 {
+			if pkVals := resolvedColumnsInRow(scan.GetFlowedType(), pkCols); len(pkVals) == len(pkCols) {
+				plan = plan.WithPrimaryKey(pkVals).
+					WithKeyComponentTypes(physicalTypesFromFlatRow(
+						scan.GetFlowedType(), pkCols, nil,
+					)).
+					WithCommonPrimaryKey(commonPrimaryKeyOf(call.Context, scan.GetRecordTypes()))
+			}
+		}
+	}
+
+	// Yield the BARE scan: RecordQueryScanPlan is its own physical Cascades
+	// expression now (RFC-184 W2), so no adapter is needed for a leaf scan.
+	call.Yield(plan)
+}
+
+var _ ExpressionRule = (*PrimaryScanRule)(nil)

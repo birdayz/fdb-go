@@ -29,6 +29,7 @@ go_library(
     visibility = ["//:__subpackages__"],
     deps = [
         "//internal/pb/catalog",
+        "//internal/recordlayer/query/plan/cascades/values",
         "//internal/relational/exceptionutil",
         "//internal/relational/keyspace",
         "//internal/relational/metadata",
@@ -39,7 +40,6 @@ go_library(
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
         "//pkg/recordlayer/metadatapb",
-        "//pkg/recordlayer/query/plan/cascades/values",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protoreflect",
         "@org_golang_google_protobuf//types/descriptorpb",

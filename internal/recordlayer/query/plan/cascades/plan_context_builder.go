@@ -1,0 +1,288 @@
+// Portions derived from FoundationDB Record Layer (
+// ValueIndexExpansionVisitor.java, Index.java),
+// Copyright 2015-2018 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2021 Apple Inc. and the FoundationDB project authors
+// Copyright 2021-2024 Apple Inc. and the FoundationDB project authors
+// Copyright 2021-2025 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
+package cascades
+
+import (
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/metadatapb"
+)
+
+// IndexDef describes a secondary index for PlanContext construction.
+// This is an adapter interface so the cascades package doesn't
+// depend on the recordlayer package directly (avoiding import cycles).
+type IndexDef interface {
+	IndexName() string
+	IndexColumnNames() []string
+	IndexRecordTypes() []string
+	IndexIsUnique() bool
+	IndexPrimaryKeyColumns() []string
+}
+
+// IndexDefWithRowType is an optional extension of IndexDef for defs that
+// can state the flowed row layout of the records the index serves (the
+// descriptor-shaped positional type). Candidates built without one flow
+// UnknownType, which disqualifies them from plans that must bind
+// comparison keys to row slots at plan time (the pk-merge intersection).
+type IndexDefWithRowType interface {
+	IndexDef
+	IndexRowType() values.Type
+}
+
+// IndexDefWithRecordTypeRowTypes is an optional extension of IndexDef for defs
+// that can state the row layout of EACH record type the index serves.
+//
+// IndexRowType above answers only for a single-record-type index and degrades
+// to UnknownType otherwise, because a multi-type index's rows have no one
+// layout. That degradation is correct for anything that needs THE layout, and
+// useless for covering-column resolution, which needs a per-type answer: an
+// ordinal is meaningful against one type's descriptor and meaningless against
+// another's (RFC-197 item 1). Defs that don't implement this leave a multi-type
+// candidate with no layout at all, which fails closed — the push is declined
+// rather than resolved against a layout that does not exist.
+type IndexDefWithRecordTypeRowTypes interface {
+	IndexDef
+	IndexRecordTypeRowTypes() []values.Type
+}
+
+// IndexDefWithColumnFunctions is an optional extension of IndexDef for indexes
+// whose key columns are not all bare fields. IndexColumnFunctions returns a
+// slice parallel to IndexColumnNames: entry i is the function wrapping the i-th
+// column ("" for a plain field, FunctionKindCardinality for a CARDINALITY()
+// column). A nil/empty return means every column is a plain field. Defs that
+// don't implement this interface are treated as all-plain-field.
+type IndexDefWithColumnFunctions interface {
+	IndexDef
+	IndexColumnFunctions() []string
+}
+
+// IndexDefWithKeyComponentTypes is an optional extension for metadata adapters
+// that can derive the authoritative physical tuple type of every index-key
+// component. The slice is parallel to IndexColumnNames.
+type IndexDefWithKeyComponentTypes interface {
+	IndexDef
+	IndexKeyComponentTypes() []values.Type
+}
+
+// IndexDefWithPrimaryKeyComponentTypes optionally supplies authoritative tuple
+// types aligned with IndexPrimaryKeyColumns. These govern the appended PK
+// suffix's ordering congruence; missing metadata conservatively suppresses the
+// suffix rather than inferring a type from its display name.
+type IndexDefWithPrimaryKeyComponentTypes interface {
+	IndexDef
+	IndexPrimaryKeyComponentTypes() []values.Type
+}
+
+// IndexDefWithPrimaryKeyEntryOrdinals optionally supplies, aligned with
+// IndexPrimaryKeyColumns, each column's position in the entry KEY tuple, or -1
+// where the index key already holds it (Index.trimPrimaryKey). The candidate
+// reads the primary key into its logical record from there.
+type IndexDefWithPrimaryKeyEntryOrdinals interface {
+	IndexDef
+	IndexPrimaryKeyEntryOrdinals() []int
+}
+
+// IndexDefWithCreatesDuplicates is an optional extension of IndexDef for indexes
+// that can state whether their root key expression FANS OUT (a repeated/collection
+// field produces multiple entries per record). Ports Java's
+// index.getRootExpression().createsDuplicates(). A fan-out index does NOT produce
+// distinct records; defs that don't implement this interface remain UNKNOWN,
+// so cardinality-sensitive properties and shortcuts abstain.
+type IndexDefWithCreatesDuplicates interface {
+	IndexDef
+	IndexCreatesDuplicates() bool
+}
+
+// IndexDefWithRootKeyExpression is an optional extension of IndexDef for defs
+// that can expose the record-layer key-expression AST. The value-index
+// expansion uses this structure to reproduce Java's fan-out candidate graph
+// (a correlated Explode under an inner Select) instead of flattening a
+// repeated field into an ordinary scalar placeholder. Implementations must
+// return a caller-owned message; NewPlanContextFromIndexDefs defensively
+// clones it again when attaching it to the candidate.
+type IndexDefWithRootKeyExpression interface {
+	IndexDef
+	IndexRootKeyExpression() *metadatapb.KeyExpression
+}
+
+// IndexDefWithCommonPrimaryKey is an optional extension of IndexDef exposing the
+// index's common primary key translated to structure-encoding Values (record-type
+// -key prefixes, nesting) — the input to PrimaryKeyProperty (RFC-189 B3). Defs
+// that don't implement it (or return nil) leave the property abstaining, so the
+// DistinctUnion dedup optimization is disabled rather than risking a wrong one.
+type IndexDefWithCommonPrimaryKey interface {
+	IndexDef
+	IndexCommonPrimaryKeyValues() []values.Value
+}
+
+// IndexDefWithValueColumns is an optional extension of IndexDef for covering
+// (KeyWithValue-rooted) indexes. IndexValueColumnNames returns the columns
+// stored in the FDB VALUE — past the split point — which are available for
+// covering translation but are NOT sargable and do NOT order the scan (the
+// physical entry key ends at the split point followed by the primary key).
+// Java models the same split as the expansion's separate valueValues list
+// (ValueIndexExpansionVisitor.java:109-121). Nil/empty means no value part.
+type IndexDefWithValueColumns interface {
+	IndexDef
+	IndexValueColumnNames() []string
+}
+
+// IndexDefWithPredicate is an optional extension of IndexDef for SPARSE
+// (filtered) indexes — indexes whose metadata carries a WHERE predicate
+// (RecordMetaDataProto.Index.predicate). The candidate must know it: a sparse
+// index holds entries only for records matching the predicate, so matching a
+// query against it as if it were a full index returns silently missing rows.
+// Java attaches the predicate to the candidate graph at expansion
+// (ValueIndexExpansionVisitor.java:138-162). A nil return means a full index.
+type IndexDefWithPredicate interface {
+	IndexDef
+	IndexPredicateProto() *metadatapb.Predicate
+}
+
+// IndexDefWithOpaqueFilter reports an index that FILTERS records but whose
+// predicate the planner cannot see — it has no proto representation, so there
+// is nothing to attach to the candidate graph and nothing a matcher can
+// account for.
+//
+// This exists because sparseness and its SERIALIZED FORM are two different
+// questions, and reading the second as the first fails in the unsafe
+// direction. Go's Index.SetPredicate installs an evaluator CLOSURE and nils the
+// proto; the index maintainers gate entry creation on that closure, so such an
+// index is exactly as sparse on disk as a proto-defined one while presenting
+// `predicateProto == nil` — which every completeness check reads as "full".
+//
+// It is a Go-only hazard: Java's Index.getPredicate() is parsed from
+// RecordMetaDataProto.Index.predicate and cannot exist without it, so Java has
+// no representation-versus-fact gap to fall through. The obligation is entirely
+// on this side, and the answer is to fail closed — an opaque filter can never
+// be proved tautological, so an index carrying one is never complete and never
+// cardinality-preserving.
+type IndexDefWithOpaqueFilter interface {
+	IndexDef
+	IndexHasOpaqueFilter() bool
+}
+
+// NewPlanContextFromIndexDefs builds a PlanContext with one
+// ValueIndexScanMatchCandidate per index definition.
+//
+// Column names pass through VERBATIM. They are PHYSICAL names — the index
+// definition names proto fields — and the candidate's expansion resolves them
+// by exact name against a base type whose slots are named by
+// values.FieldNameForProtoField, i.e. by the same descriptor. Folding either
+// side breaks that identity for every metadata whose descriptor names are not
+// already upper, and it breaks it SILENTLY: the field request misses,
+// expandValueIndex returns nil, the candidate declines, and the planner
+// full-scans a query whose rows are still correct.
+func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
+	candidates := make([]MatchCandidate, 0, len(defs))
+	for _, def := range defs {
+		var rootKeyExpression *metadatapb.KeyExpression
+		if withRoot, ok := def.(IndexDefWithRootKeyExpression); ok {
+			rootKeyExpression = withRoot.IndexRootKeyExpression()
+		}
+		cols := def.IndexColumnNames()
+		if len(cols) == 0 {
+			continue
+		}
+		aliases := make([]values.CorrelationIdentifier, len(cols))
+		for i := range cols {
+			aliases[i] = values.UniqueCorrelationIdentifier()
+		}
+		pkCols := def.IndexPrimaryKeyColumns()
+		// Carry per-column function tags (e.g. CARDINALITY) when the def
+		// provides them, so a function-keyed column matches by its Value, not
+		// a bare field name.
+		var columnFns []string
+		if withFns, ok := def.(IndexDefWithColumnFunctions); ok {
+			columnFns = withFns.IndexColumnFunctions()
+		}
+		flowed := values.Type(values.UnknownType)
+		if withRT, ok := def.(IndexDefWithRowType); ok {
+			if t := withRT.IndexRowType(); t != nil {
+				flowed = t
+			}
+		}
+		// Fan-out (createsDuplicates) drives DistinctRecordsProperty (RFC-188 M4):
+		// a repeated-field index does NOT produce distinct records. Threaded from
+		// the def's root key expression when available. When the def does NOT
+		// supply the signal, pass nil (unknown) — the property abstains to
+		// distinct=false rather than assuming non-fan-out, so a fan-out index is
+		// never mis-stamped as distinct (the safe under-report).
+		var createsDuplicatesSignal *bool
+		if dup, ok := def.(IndexDefWithCreatesDuplicates); ok {
+			v := dup.IndexCreatesDuplicates()
+			createsDuplicatesSignal = &v
+		}
+		// Structural common PK (RFC-189 B3) — for PrimaryKeyProperty; nil unless
+		// the def supplies it, in which case the property abstains.
+		var commonPK []values.Value
+		if pkDef, ok := def.(IndexDefWithCommonPrimaryKey); ok {
+			commonPK = pkDef.IndexCommonPrimaryKeyValues()
+		}
+		candidate := NewValueIndexScanMatchCandidateWithFunctions(
+			def.IndexName(),
+			def.IndexRecordTypes(),
+			cols,
+			columnFns,
+			aliases,
+			flowed,
+			def.IndexIsUnique(),
+			pkCols,
+			createsDuplicatesSignal,
+		).WithCommonPrimaryKey(commonPK)
+		if typed, ok := def.(IndexDefWithKeyComponentTypes); ok {
+			candidate.WithKeyComponentTypes(typed.IndexKeyComponentTypes())
+		}
+		if typedPK, ok := def.(IndexDefWithPrimaryKeyComponentTypes); ok {
+			candidate.WithPrimaryKeyComponentTypes(typedPK.IndexPrimaryKeyComponentTypes())
+		}
+		if pkOrdinals, ok := def.(IndexDefWithPrimaryKeyEntryOrdinals); ok {
+			candidate.WithPrimaryKeyEntryOrdinals(pkOrdinals.IndexPrimaryKeyEntryOrdinals())
+		}
+		if perType, ok := def.(IndexDefWithRecordTypeRowTypes); ok {
+			candidate.WithRecordTypeRowTypes(perType.IndexRecordTypeRowTypes())
+		}
+		if withVals, ok := def.(IndexDefWithValueColumns); ok {
+			candidate.WithValueColumns(withVals.IndexValueColumnNames())
+		}
+		if rootKeyExpression != nil {
+			candidate.WithRootKeyExpression(rootKeyExpression)
+		}
+		if withPred, ok := def.(IndexDefWithPredicate); ok {
+			if pred := withPred.IndexPredicateProto(); pred != nil {
+				candidate.WithPredicateProto(pred)
+			}
+		}
+		if withOpaque, ok := def.(IndexDefWithOpaqueFilter); ok && withOpaque.IndexHasOpaqueFilter() {
+			candidate.WithOpaqueFilter()
+		}
+		candidates = append(candidates, candidate)
+	}
+	return &builtPlanContext{candidates: candidates}
+}
+
+// NewPlanContextFromMatchCandidates builds a PlanContext from pre-built
+// MatchCandidates. Use this when you have a mix of ValueIndexScan and
+// AggregateIndex candidates.
+func NewPlanContextFromMatchCandidates(candidates []MatchCandidate) PlanContext {
+	return &builtPlanContext{candidates: candidates}
+}
+
+type builtPlanContext struct {
+	candidates []MatchCandidate
+}
+
+func (c *builtPlanContext) GetPlannerConfiguration() PlannerConfiguration {
+	return DefaultPlannerConfiguration()
+}
+
+func (c *builtPlanContext) GetMatchCandidates() []MatchCandidate {
+	return c.candidates
+}
+
+func (c *builtPlanContext) GetPrimaryKeyColumns(string) []string { return nil }

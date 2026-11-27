@@ -3,9 +3,9 @@ package metadata
 import (
 	"testing"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades"
 	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 )
 
 // Compile-time check that RecordLayerIndex satisfies cascades.IndexDef.

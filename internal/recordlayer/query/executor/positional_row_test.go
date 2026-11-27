@@ -7,7 +7,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/internal/pb/demopb"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // TestPositionalRow_Basics pins the positional row primitives: ordinal Get/Set,

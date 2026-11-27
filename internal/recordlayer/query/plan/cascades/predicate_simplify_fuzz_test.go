@@ -1,0 +1,84 @@
+package cascades
+
+// Predicate-tree fuzz target for the QueryPredicate-level rule
+// simplifier driver. Lives in root cascades/ because Simplify +
+// ConstantFoldingRules are the rule infrastructure and depend on
+// cascades/predicates + cascades/values.
+
+import (
+	"testing"
+
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+)
+
+// FuzzSimplify_PredicateTree fuzzes the QueryPredicate-level driver
+// over a randomly-shaped boolean tree. The 7 leaf shapes pair an
+// integer LHS with int RHS / NULL / a boolean constant under the 6
+// most-common comparison operators; the tree shape (AND / OR / NOT)
+// is selected via the fuzz bytes. Contract: Simplify must always
+// return a non-nil QueryPredicate, never panic, and the result must
+// be idempotent (a second pass produces the same pointer or shape).
+//
+// Combined with the existing FuzzSimplifyValue_ArithmeticTree this
+// pins both layers (Value-level fold + Predicate-level rule
+// pipeline). Run with bazelisk run //internal/recordlayer/query/plan/cascades:
+// cascades_test -- -test.run='^$' -test.fuzz='^FuzzSimplify_PredicateTree$'
+// -test.fuzztime=60s.
+func FuzzSimplify_PredicateTree(f *testing.F) {
+	f.Add(int64(5), int64(3), uint8(0), uint8(0), uint8(0))
+	f.Add(int64(10), int64(20), uint8(1), uint8(2), uint8(0)) // OR(=, <)
+	f.Add(int64(0), int64(0), uint8(2), uint8(3), uint8(1))   // NOT(AND(=, =))
+	f.Add(int64(-1), int64(0), uint8(3), uint8(4), uint8(2))  // double-NOT, etc.
+
+	f.Fuzz(func(t *testing.T, a, b int64, op1raw, op2raw, shaperaw uint8) {
+		op1 := predicates.ComparisonType(op1raw % 6) // first 6: =, <>, <, <=, >, >=
+		op2 := predicates.ComparisonType(op2raw % 6)
+
+		// Two leaves over a synthetic FieldValue + literal RHS.
+		rowType := values.NewRecordType("PredicateSimplifyFuzzRow", false, []values.Field{
+			{Name: "x", FieldType: values.NullableLong, Ordinal: 0},
+		})
+		root, err := values.NewQuantifiedObjectValue(
+			values.NamedCorrelationIdentifier("predicate_simplify_fuzz"), rowType)
+		if err != nil {
+			t.Fatalf("construct fuzz QOV: %v", err)
+		}
+		field, err := values.ResolveFieldOrdinals(root, []int{0})
+		if err != nil {
+			t.Fatalf("resolve fuzz field: %v", err)
+		}
+		left := predicates.NewComparisonPredicate(field, predicates.Comparison{
+			Type: op1, Operand: &values.ConstantValue{Value: a, Typ: values.NotNullLong},
+		})
+		right := predicates.NewComparisonPredicate(field, predicates.Comparison{
+			Type: op2, Operand: &values.ConstantValue{Value: b, Typ: values.NotNullLong},
+		})
+
+		// Tree shape selector (5 shapes across `shaperaw % 5`).
+		var pred predicates.QueryPredicate
+		switch shaperaw % 5 {
+		case 0:
+			pred = predicates.NewAnd(left, right)
+		case 1:
+			pred = predicates.NewOr(left, right)
+		case 2:
+			pred = predicates.NewNot(predicates.NewAnd(left, right))
+		case 3:
+			pred = predicates.NewNot(predicates.NewOr(left, right))
+		case 4:
+			pred = predicates.NewAnd(predicates.NewNot(left), right)
+		}
+
+		// Java's ConstantFoldingRuleSet, De Morgan included.
+		out := mustSimplify(t, pred, ConstantFoldingRules())
+		if out == nil {
+			t.Fatalf("Simplify returned nil — should always produce a QueryPredicate (a=%d b=%d op1=%v op2=%v shape=%d)", a, b, op1, op2, shaperaw%5)
+		}
+		// Idempotency.
+		again := mustSimplify(t, out, ConstantFoldingRules())
+		if again == nil {
+			t.Fatalf("mustSimplify(t, simplified) returned nil")
+		}
+	})
+}

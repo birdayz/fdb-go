@@ -9,7 +9,7 @@ import (
 
 	"fdb.dev/internal/testinstruments/querycensus"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // TestMain runs this package's corpus under the qualifier recovery census — the

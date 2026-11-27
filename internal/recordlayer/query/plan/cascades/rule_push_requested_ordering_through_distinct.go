@@ -1,0 +1,68 @@
+// Portions derived from FoundationDB Record Layer (
+// PushRequestedOrderingThroughDistinctRule.java),
+// Copyright 2015-2019 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
+package cascades
+
+import (
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/matching"
+)
+
+// PushRequestedOrderingThroughDistinctRule is a PLANNING-phase
+// ImplementationRule that propagates a RequestedOrdering constraint
+// through a LogicalDistinctExpression. Distinct preserves row order,
+// so the requested ordering passes through unchanged to the child
+// Reference.
+//
+// This rule fires during the top-down constraint-propagation pass
+// (constraintOnly=true). During the bottom-up implementation pass
+// (constraintOnly=false) it is a no-op — ImplementDistinctFinalRule
+// handles the actual distinct implementation.
+//
+// Ports Java's PushRequestedOrderingThroughDistinctRule.
+type PushRequestedOrderingThroughDistinctRule struct {
+	preOrderMarker
+	matcher matching.BindingMatcher
+}
+
+func NewPushRequestedOrderingThroughDistinctRule() *PushRequestedOrderingThroughDistinctRule {
+	return &PushRequestedOrderingThroughDistinctRule{
+		matcher: NewExpressionMatcher[*expressions.LogicalDistinctExpression]("push_requested_ordering_through_distinct"),
+	}
+}
+
+func (r *PushRequestedOrderingThroughDistinctRule) Matcher() matching.BindingMatcher {
+	return r.matcher
+}
+
+func (r *PushRequestedOrderingThroughDistinctRule) hasConstraintEffect(cm *ConstraintMap, ref *expressions.Reference, expr expressions.RelationalExpression) bool {
+	return passThroughConstraintHasEffect(cm, ref, expr, RequestedOrderingConstraintKey)
+}
+
+// ConstraintDependencies is Java's ImmutableSet.of(REQUESTED_ORDERING).
+func (r *PushRequestedOrderingThroughDistinctRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
+}
+
+func (r *PushRequestedOrderingThroughDistinctRule) OnMatch(call *ImplementationRuleCall) {
+	if !call.IsConstraintOnly() {
+		return
+	}
+
+	orderings, present := Get(call.Constraints, call.Reference, RequestedOrderingConstraintKey)
+	if !present {
+		return
+	}
+
+	d := call.Bindings.Get(r.matcher).(*expressions.LogicalDistinctExpression)
+	innerRef := d.GetInner().GetRangesOver()
+	if innerRef == nil {
+		return
+	}
+
+	call.PushConstraint(innerRef, orderings)
+}
+
+var _ ImplementationRule = (*PushRequestedOrderingThroughDistinctRule)(nil)

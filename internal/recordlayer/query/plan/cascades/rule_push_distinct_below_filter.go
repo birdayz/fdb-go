@@ -1,0 +1,162 @@
+// Portions derived from FoundationDB Record Layer (
+// PushDistinctBelowFilterRule.java),
+// Copyright 2015-2019 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
+package cascades
+
+import (
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
+)
+
+// PushDistinctBelowFilterRule moves a physical
+// RecordQueryUnorderedPrimaryKeyDistinctPlan below a
+// RecordQueryPredicatesFilterPlan. This ensures generated plans match
+// the form produced by Java's heuristic planner (distinct below filter).
+//
+// Pattern:
+//
+//	Distinct(Filter([P], inner))  →  Filter([P'], Distinct(inner))
+//
+// Predicates P are rebased from the old filter quantifier alias to the
+// new quantifier over the distinct plan.
+//
+// Mirrors Java's `PushDistinctBelowFilterRule`.
+type PushDistinctBelowFilterRule struct {
+	matcher matching.BindingMatcher
+}
+
+func NewPushDistinctBelowFilterRule() *PushDistinctBelowFilterRule {
+	return &PushDistinctBelowFilterRule{
+		// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryDistinctPlan
+		// (no physicalDistinctWrapper).
+		matcher: NewExpressionMatcher[*plans.RecordQueryDistinctPlan]("phys_distinct"),
+	}
+}
+
+func (r *PushDistinctBelowFilterRule) Matcher() matching.BindingMatcher { return r.matcher }
+
+func (r *PushDistinctBelowFilterRule) OnMatch(call *ImplementationRuleCall) {
+	distinctW := matching.Get[*plans.RecordQueryDistinctPlan](call.Bindings, r.matcher)
+
+	innerRef := distinctW.GetInnerQuantifier().GetRangesOver()
+	if innerRef == nil {
+		return
+	}
+
+	// Find a physical filter in the distinct's inner. Since RFC-184 W2 the memo
+	// holds the bare *plans.RecordQueryPredicatesFilterPlan (no wrapper).
+	var filterW *plans.RecordQueryPredicatesFilterPlan
+	for _, m := range innerRef.AllMembers() {
+		if fw, ok := m.(*plans.RecordQueryPredicatesFilterPlan); ok {
+			filterW = fw
+			break
+		}
+	}
+	if filterW == nil {
+		return
+	}
+
+	// Get the filter's inner reference.
+	filterInnerRef := filterW.GetInnerQuantifier().GetRangesOver()
+	if filterInnerRef == nil {
+		return
+	}
+
+	// Build: Distinct(filterInner)
+	filterInnerExpr := findPhysicalExpr(filterInnerRef)
+	if filterInnerExpr == nil {
+		return
+	}
+
+	filterInnerPlan := bakedInnerPlan(filterInnerExpr)
+	if filterInnerPlan == nil {
+		return
+	}
+
+	// Build: Distinct(filterInner) as its own cascades expression (RFC-184 W2, no
+	// physicalDistinctWrapper). Recompute the streaming mode against the NEW inner
+	// (the filter's inner): a filter preserves ordering, so a distinct that
+	// streamed above the filter is still streaming-eligible below it — but a
+	// constructor reset would drop a resume-clean streaming distinct to the
+	// memory-heavy hash-set as a competing memo alternative (TODO C5: cross-page
+	// correctness was fixed 2026-07-20; the hash-set's residual is a loud
+	// high-NDV memory-budget error, never wrong rows — so streaming is preferred
+	// for O(1) memory, not correctness).
+	streaming := distinctStreamingEligible(filterInnerExpr, filterInnerPlan)
+	// The distinct's edge ranges over the BAKED concrete inner frozen in a
+	// detached single-member final reference — the memo-canonical structure
+	// push_filter_through_fetch case-2 uses, NOT the live filterInnerExpr memo
+	// edge (whose children may still be holes). The alias is carried from the
+	// disentangled member ref so the flowed value stays stable.
+	baseQ := expressions.NewPhysicalQuantifier(
+		call.MemoizeFinalExpressionsFromOther(filterInnerRef, []expressions.RelationalExpression{filterInnerExpr}),
+	)
+	newDistinctInnerQ := expressions.NamedPhysicalQuantifier(baseQ.GetAlias(),
+		call.MemoizeFinalExpression(filterInnerPlan))
+	newDistinctPlan, err := plans.NewRecordQueryDistinctPlanFromQuantifier(newDistinctInnerQ, streaming)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+
+	// Memoize the new distinct.
+	distinctRef := call.MemoizeFinalExpression(newDistinctPlan)
+
+	// Create new quantifier over the distinct plan.
+	newQOverDistinct := expressions.NewPhysicalQuantifier(distinctRef)
+
+	// Rebase predicates: translate from old filter's inner alias to new quantifier alias.
+	oldAlias := filterW.GetInnerQuantifier().GetAlias()
+	newAlias := newQOverDistinct.GetAlias()
+	rebasedPreds, err := rebasePredicates(filterW.GetPredicates(), oldAlias, newAlias)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+
+	// Build: Filter([P'], Distinct(inner)) as its own cascades expression carrying
+	// a DISENTANGLED FINAL edge over the concrete newDistinctPlan
+	// (constraint-preserving disentangle, RFC-184 W2). The edge keeps
+	// newQOverDistinct's alias so GetResultValue/derivations are unchanged, but
+	// ranges over a private single-member reference — planFromQuantifier resolves
+	// newDistinctPlan, not the shared-group winner.
+	newFilterInnerQ := expressions.NamedPhysicalQuantifier(newQOverDistinct.GetAlias(),
+		call.MemoizeFinalExpression(newDistinctPlan))
+	newFilterPlan, err := plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(newFilterInnerQ, rebasedPreds)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+
+	call.Yield(newFilterPlan)
+}
+
+// rebasePredicates translates predicate alias references from old to
+// new via a single-entry AliasMap.
+func rebasePredicates(preds []predicates.QueryPredicate, oldAlias, newAlias values.CorrelationIdentifier) ([]predicates.QueryPredicate, error) {
+	if oldAlias == newAlias {
+		return preds, nil
+	}
+	am, err := values.NewAliasMap([]values.AliasPair{{Source: oldAlias, Target: newAlias}})
+	if err != nil {
+		return nil, err
+	}
+	result := make([]predicates.QueryPredicate, len(preds))
+	for i, p := range preds {
+		// CHECKED: the error-less spelling yields nil on failure, and a nil
+		// element in a predicate list is a predicate that silently is not there.
+		rebased, rerr := predicates.RebasePredicateChecked(p, am)
+		if rerr != nil {
+			return nil, rerr
+		}
+		result[i] = rebased
+	}
+	return result, nil
+}
+
+var _ ImplementationRule = (*PushDistinctBelowFilterRule)(nil)

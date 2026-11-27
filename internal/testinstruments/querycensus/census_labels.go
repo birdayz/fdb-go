@@ -1,6 +1,6 @@
 package querycensus
 
-import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+import "fdb.dev/internal/recordlayer/query/plan/cascades/values"
 
 // The census enums' report names, and what each site or class means, live here
 // rather than in production: wrap a value in its Label type where a report prints it.

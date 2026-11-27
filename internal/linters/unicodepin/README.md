@@ -27,7 +27,7 @@ A narrower, direct-use policy applies only to these package/file pairs:
 - `internal/recordlayer/rlcrypto/{framing,jce_cipher,pkcs12}.go`
 - `internal/recordlayer/textcmp/tokenizer.go`
 - `pkg/recordlayer/{text_tokenizer,text_index_maintainer,collate_function_key_expression,keystore_key_manager,java_parse}.go`
-- `pkg/recordlayer/query/plan/cascades/values/{values,uuid_parse}.go`
+- `internal/recordlayer/query/plan/cascades/values/{values,uuid_parse}.go`
 - `pkg/relational/core/parser/case_insensitive.go`
 
 These files reject `unicode`, upstream x/text `cases`, `unicode/norm`, `collate`

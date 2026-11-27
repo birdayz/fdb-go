@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // TestIntersectionCompKeyFunc_Int32Widened pins RFC-092 (TODO-production P0.3-G).

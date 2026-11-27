@@ -7,8 +7,8 @@ package logical
 import (
 	"slices"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/internal/unicode15"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // CTERegistry is a persistent lexical registry. Extending it never changes the

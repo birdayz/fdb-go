@@ -1,0 +1,107 @@
+// Portions derived from FoundationDB Record Layer (LogicalUnionExpression.java,
+// RecordQuerySetPlan.java, DerivedValue.java, CorrelationIdentifier.java,
+// and others),
+// Copyright 2015-2019 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2020 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
+package expressions
+
+import (
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+)
+
+// LogicalUnionExpression represents the bag-union (UNION ALL) of its N
+// children. Java's class is marked `ChildrenAsSet` (so is Go's — see
+// ChildrenAsSet below): the planner may permute children, and
+// SemanticEquals matches ChildrenAsSet operators with dependency-aware
+// permutation search, pruning incompatible prefixes.
+//
+// Ports the structural surface of Java's
+// `com.apple.foundationdb.record.query.plan.cascades.expressions.LogicalUnionExpression`.
+// Java's GetResultValue is `RecordQuerySetPlan.mergeValues(children)`, whose
+// result TYPE is the first non-existential child's flowed object type — not a
+// unified shape reduced across children, despite the name. Go returns that same
+// child's flowed object value, which states that same row; the divergence is in
+// the VALUE (Java's DerivedValue refers to every child) rather than in the row.
+// See GetResultValue.
+type LogicalUnionExpression struct {
+	quantifiers []Quantifier
+	resultValue values.QuantifiedObjectValue
+}
+
+// NewLogicalUnionExpression builds a union of N children. Children
+// list is copied. Empty children list is allowed but pathological —
+// callers should use a no-op scan instead.
+func NewLogicalUnionExpression(quantifiers []Quantifier) (*LogicalUnionExpression, error) {
+	resultValue, err := requireSetOperationResult("LogicalUnionExpression", quantifiers)
+	if err != nil {
+		return nil, err
+	}
+	copied := make([]Quantifier, len(quantifiers))
+	copy(copied, quantifiers)
+	return &LogicalUnionExpression{quantifiers: copied, resultValue: resultValue}, nil
+}
+
+// GetResultValue returns the first non-existential child's flowed object value,
+// and the TYPE it states is Java's answer verbatim — which is worth stating
+// because the citation to `RecordQuerySetPlan.mergeValues` reads at first glance
+// like it is not.
+//
+// Java's LogicalUnionExpression.java:50 is `mergeValues(quantifiers)`, and
+// mergeValues (RecordQuerySetPlan.java:252-261) resolves its result TYPE as the
+// FIRST non-existential quantifier's `getFlowedObjectType()` — under an explicit
+// `// TODO let's just pick the first result type for now`. So child 0's row IS the
+// row Java states here, and typing this site moves Go TOWARDS Java rather than
+// away from it. Freezing it untyped, as the genuinely-divergent DML and group-by
+// sites are frozen, would be a regression against the spec.
+//
+// What DOES diverge is the Value: Java wraps every child's flowed value in a
+// DerivedValue so the union's result carries all of them, where Go returns child
+// 0's object outright. That costs the correlation set of children 1..n on this
+// node, and it is a real difference — but it is a difference in what the value
+// REFERS to, not in the row it claims, and the typing sweep is about the claim.
+//
+// Pinned by TestSetOperationsStoreFirstNonExistentialExactQOV.
+func (e *LogicalUnionExpression) GetResultValue() values.Value {
+	return e.resultValue
+}
+
+// GetQuantifiers returns the children. Read-only.
+func (e *LogicalUnionExpression) GetQuantifiers() []Quantifier { return e.quantifiers }
+
+// CanCorrelate is false — by SQL semantics, evaluating one branch of
+// a UNION cannot bind values seen by another. Java's behaviour
+// matches. This is the discriminating flag versus Select-shaped
+// expressions.
+func (e *LogicalUnionExpression) CanCorrelate() bool { return false }
+
+// ChildrenAsSet is true — Java marks LogicalUnion as
+// ChildrenAsSet, since UNION is commutative.
+func (e *LogicalUnionExpression) ChildrenAsSet() bool { return true }
+
+// GetCorrelatedToWithoutChildren returns the empty set (Java behaviour).
+func (e *LogicalUnionExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return map[values.CorrelationIdentifier]struct{}{}
+}
+
+// EqualsWithoutChildren is true iff `other` is a LogicalUnion. Union
+// carries no node-information of its own — the children's equivalence
+// is the entire content. Java's behaviour matches.
+func (e *LogicalUnionExpression) EqualsWithoutChildren(other RelationalExpression, _ *AliasMap) bool {
+	_, ok := other.(*LogicalUnionExpression)
+	return ok
+}
+
+// HashCodeWithoutChildren is a class-discriminating constant.
+func (e *LogicalUnionExpression) HashCodeWithoutChildren() uint64 { return 37 }
+
+func (e *LogicalUnionExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("LogicalUnionExpression", len(quantifiers), len(e.quantifiers)); err != nil {
+		return nil, err
+	}
+	return NewLogicalUnionExpression(quantifiers)
+}
+
+var _ RelationalExpression = (*LogicalUnionExpression)(nil)

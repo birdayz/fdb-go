@@ -1,0 +1,99 @@
+package cascades
+
+import (
+	"testing"
+
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
+)
+
+func TestPlanChoice_IndexScanChosenOverFullScan(t *testing.T) {
+	t.Parallel()
+
+	scan := planChoiceScan(t, "Product")
+	scanRef := expressions.InitialOf(scan)
+	quantifier := expressions.ForEachQuantifier(scanRef)
+	pred := predicates.NewComparisonPredicate(
+		planChoiceField(t, quantifier, "CATEGORY"),
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, "electronics"),
+	)
+	filter := planChoiceFilter(t,
+		[]predicates.QueryPredicate{pred},
+		quantifier,
+	)
+	rootRef := expressions.InitialOf(filter)
+
+	ctx := NewPlanContextFromIndexDefs([]IndexDef{
+		&planChoiceIndexDef{
+			name:        "idx_category",
+			columns:     []string{"CATEGORY"},
+			recordTypes: []string{"Product"},
+			unique:      false,
+		},
+	})
+
+	rules := DefaultExpressionRules()
+	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
+	bestExpr, _, err := p.Plan(rootRef)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if bestExpr == nil {
+		t.Fatal("Plan returned nil")
+	}
+
+	type planExtractor interface {
+		GetRecordQueryPlan() plans.RecordQueryPlan
+	}
+	ph, ok := bestExpr.(planExtractor)
+	if !ok {
+		t.Fatalf("expected planExtractor, got %T", bestExpr)
+	}
+
+	physicalPlan := ph.GetRecordQueryPlan()
+
+	idxPlan := extractIndexPlan(physicalPlan)
+	if idxPlan == nil {
+		t.Fatalf("optimizer should choose IndexScan for equality on indexed column, got %T: %s",
+			physicalPlan, physicalPlan.Explain())
+	}
+	// Index scan chosen — optimizer correctly preferred index over full scan.
+}
+
+type planChoiceIndexDef struct {
+	name        string
+	columns     []string
+	recordTypes []string
+	unique      bool
+}
+
+func (d *planChoiceIndexDef) IndexName() string                { return d.name }
+func (d *planChoiceIndexDef) IndexColumnNames() []string       { return d.columns }
+func (d *planChoiceIndexDef) IndexRecordTypes() []string       { return d.recordTypes }
+func (d *planChoiceIndexDef) IndexIsUnique() bool              { return d.unique }
+func (d *planChoiceIndexDef) IndexPrimaryKeyColumns() []string { return nil }
+func (d *planChoiceIndexDef) IndexCreatesDuplicates() bool     { return false }
+func (d *planChoiceIndexDef) IndexRowType() values.Type {
+	recordType := "IndexRow"
+	if len(d.recordTypes) == 1 {
+		recordType = d.recordTypes[0]
+	}
+	return planChoiceRowType(recordType)
+}
+
+func (d *planChoiceIndexDef) IndexKeyComponentTypes() []values.Type {
+	row := d.IndexRowType().(*values.RecordType)
+	result := make([]values.Type, len(d.columns))
+	for i, column := range d.columns {
+		field, ok := row.LookupFieldUnique(column)
+		if !ok {
+			panic("unknown plan-choice index column " + column)
+		}
+		result[i] = field.FieldType
+	}
+	return result
+}

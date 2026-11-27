@@ -26,10 +26,10 @@ import (
 	"fdb.dev/internal/recordlayer/protoname"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/internal/relational/functions"
 	"fdb.dev/internal/relational/metadata"
 	"fdb.dev/internal/relational/relapi"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // MessageStruct is an api.Struct over a proto message — Java's

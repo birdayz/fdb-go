@@ -25,8 +25,8 @@ import (
 	"log"
 	"os"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades"
 	"fdb.dev/internal/relational/conformance/explaindiff"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 )
 
 const defaultCorpus = "internal/relational/conformance/yamsql/testdata"

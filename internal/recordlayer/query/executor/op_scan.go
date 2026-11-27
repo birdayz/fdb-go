@@ -18,10 +18,10 @@ import (
 
 	"fdb.dev/internal/recordlayer/indexfetch"
 	"fdb.dev/internal/recordlayer/indexpredicate"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // executeScan stamps each minted row with the layout the scan's output boundary

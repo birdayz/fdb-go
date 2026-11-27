@@ -470,7 +470,7 @@ if [ "$cmd" = query ]; then
     *conformance_java*) scope="java" ;;
     *//pkg/relational/*) scope="relational" ;;
     *//internal/fdbgo/client/*) scope="client" ;;
-    *//pkg/recordlayer/query/plan/cascades/*) scope="cascades" ;;
+    *//internal/recordlayer/query/plan/cascades/*) scope="cascades" ;;
     *) echo "unexpected query: $*" >&2; exit 91 ;;
   esac
   if [ "${FAIL_SCOPE:-}" = "$scope" ]; then

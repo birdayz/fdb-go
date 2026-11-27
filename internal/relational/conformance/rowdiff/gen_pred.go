@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"strings"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // Pred is one comparison leaf: COL <op> literal, COL IS [NOT] NULL,

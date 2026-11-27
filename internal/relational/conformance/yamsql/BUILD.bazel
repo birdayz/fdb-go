@@ -100,12 +100,12 @@ go_test(
         "resources:memory:700",
     ],
     deps = [
+        "//internal/recordlayer/query/plan/cascades/values",
         "//internal/relational/conformance/plandiff",
         "//internal/relational/keyspace",
         "//internal/relational/relapi",
         "//internal/relational/rowstruct",
         "//internal/relational/sqltest/testkit",
-        "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/core/parser",
         "//pkg/relational/core/parser/gen",
         "//pkg/relational/sqldriver",

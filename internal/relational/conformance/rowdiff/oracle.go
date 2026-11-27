@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // OracleRows evaluates a query naively over the case's authoritative rows:

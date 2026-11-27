@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/internal/relational/conformance/factory"
 	"fdb.dev/internal/relational/conformance/rowdiff"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 )
 
 // nestComponent returns the `nest=` component of a feature vector, or "" when

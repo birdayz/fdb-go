@@ -11,7 +11,7 @@
 // It is a LEAF package on purpose. The escaping is needed by the DDL-time
 // emitter (internal/relational/metadata), by pkg/recordlayer itself, and by
 // the plan-time emitter that synthesises a descriptor for a COMPUTED record
-// (pkg/recordlayer/query/plan/cascades/values) — and that last one cannot
+// (internal/recordlayer/query/plan/cascades/values) — and that last one cannot
 // import pkg/recordlayer, which already imports it. One escaping, one
 // implementation: a second copy is a second chance to diverge from Java on
 // bytes that are wire.

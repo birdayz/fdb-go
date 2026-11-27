@@ -9,7 +9,7 @@ import (
 
 	"fdb.dev/internal/relational/sqltest/testkit"
 
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 

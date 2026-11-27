@@ -49,7 +49,7 @@ package sqltest
 //     rule and its decider now decline an ambiguous key set outright; the pins
 //     are `TestFDB_GroupBySameLeafKeys_PushedHavingStaysAboveTheAggregate` (this
 //     package) and the two boundary tests in
-//     `//pkg/recordlayer/query/plan/cascades`.
+//     `//internal/recordlayer/query/plan/cascades`.
 //   - The predicates below reference an AGGREGATE, so they are not pushable and
 //     the output-baked ordinal stays live all the way to the executor. That is
 //     what makes the wrong slot observable as wrong ROWS.

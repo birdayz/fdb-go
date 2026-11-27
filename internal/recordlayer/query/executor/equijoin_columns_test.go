@@ -3,8 +3,8 @@ package executor
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // bakedQovField builds a plan-time-BAKED FieldValue over a QuantifiedObjectValue

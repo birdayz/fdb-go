@@ -1,0 +1,365 @@
+// Portions derived from FoundationDB Record Layer (RecordQueryInJoinPlan.java,
+// RelationalExpression.java),
+// Copyright 2015-2018 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2026 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
+package plans
+
+import (
+	"fmt"
+	"reflect"
+
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+)
+
+// InSourceKind distinguishes the three Java InJoin subclasses.
+type InSourceKind int
+
+const (
+	InSourceValues    InSourceKind = iota // static value list (InValuesJoinPlan)
+	InSourceParameter                     // runtime parameter binding (InParameterJoinPlan)
+	InSourceComparand                     // comparand from correlated subquery (InComparandJoinPlan)
+)
+
+// RecordQueryInJoinPlan executes its inner plan once for each value
+// from an IN-source, binding the value to a correlation variable.
+// The result is the concatenation of all inner executions.
+//
+// Mirrors Java's RecordQueryInJoinPlan hierarchy
+// (InValuesJoin, InParameterJoin, InComparandJoin).
+type RecordQueryInJoinPlan struct {
+	PlanExprBase
+	innerQ       expressions.Quantifier
+	bindingAlias values.CorrelationIdentifier
+	sorted       bool
+	reverse      bool
+	inValues     []any
+	sourceKind   InSourceKind
+	// inComparand is the row-independent source a plan-time extraction could
+	// not evaluate (an array holding a NULL element); the executor evaluates
+	// it when the plan opens, as Java's InComparandJoinPlan.getValues does.
+	inComparand values.Value
+}
+
+func NewRecordQueryInJoinPlan(
+	inner RecordQueryPlan,
+	bindingName string,
+	sorted bool,
+	reverse bool,
+) (*RecordQueryInJoinPlan, error) {
+	return NewRecordQueryInJoinPlanWithBindingAlias(
+		inner, values.NamedCorrelationIdentifier(bindingName), sorted, reverse)
+}
+
+// NewRecordQueryInJoinPlanWithBindingAlias preserves the exact correlation
+// kind of the IN binding. Planner-minted q$ aliases are Unique identifiers; a
+// string round-trip remints them as Named identifiers with the same rendering,
+// which exact QOV lookup correctly treats as a different runtime binding.
+func NewRecordQueryInJoinPlanWithBindingAlias(
+	inner RecordQueryPlan,
+	bindingAlias values.CorrelationIdentifier,
+	sorted bool,
+	reverse bool,
+) (*RecordQueryInJoinPlan, error) {
+	return NewRecordQueryInJoinPlanFromQuantifierWithBindingAlias(
+		QuantifierOverPlan(inner), bindingAlias, sorted, reverse)
+}
+
+// NewRecordQueryInJoinPlanFromQuantifier builds the InJoin over the LIVE inner
+// quantifier the implement rule memoized, rather than over a plan snapshot. The
+// inner is a SHARED group whose per-ordering winner resolves at extraction via
+// ref.Winner() (planFromQuantifier) — the deferred-winner case. The plan carries
+// the inner edge once, with no wrapper snapshot (RFC-184 W2). Callers still
+// replay WithInValues / WithSourceKind afterward (the constructor drops them).
+func NewRecordQueryInJoinPlanFromQuantifier(
+	innerQ expressions.Quantifier,
+	bindingName string,
+	sorted bool,
+	reverse bool,
+) (*RecordQueryInJoinPlan, error) {
+	return NewRecordQueryInJoinPlanFromQuantifierWithBindingAlias(
+		innerQ, values.NamedCorrelationIdentifier(bindingName), sorted, reverse)
+}
+
+func NewRecordQueryInJoinPlanFromQuantifierWithBindingAlias(
+	innerQ expressions.Quantifier,
+	bindingAlias values.CorrelationIdentifier,
+	sorted bool,
+	reverse bool,
+) (*RecordQueryInJoinPlan, error) {
+	base, err := newPlanExprBaseForQuantifier("RecordQueryInJoinPlan", innerQ)
+	if err != nil {
+		return nil, err
+	}
+	return &RecordQueryInJoinPlan{
+		PlanExprBase: base,
+		innerQ:       innerQ,
+		bindingAlias: bindingAlias,
+		sorted:       sorted,
+		reverse:      reverse,
+	}, nil
+}
+
+func (p *RecordQueryInJoinPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
+
+func (p *RecordQueryInJoinPlan) CanCorrelate() bool { return true }
+
+// The IN source binds an alias that is not a child quantifier's alias.
+func (p *RecordQueryInJoinPlan) ComputeCorrelatedTo(childCorrelations func(*expressions.Reference) map[values.CorrelationIdentifier]struct{}) map[values.CorrelationIdentifier]struct{} {
+	result := make(map[values.CorrelationIdentifier]struct{})
+	for alias := range childCorrelations(p.innerQ.GetRangesOver()) {
+		if alias != p.bindingAlias {
+			result[alias] = struct{}{}
+		}
+	}
+	return result
+}
+
+// GetInnerQuantifier returns the live child quantifier — the single memo edge the
+// InJoin ranges over. derivationsForInJoin reads its alias to decorrelate the
+// inner against the IN-source.
+func (p *RecordQueryInJoinPlan) GetInnerQuantifier() expressions.Quantifier {
+	return p.innerQ
+}
+
+// GetResultValue flows the live child quantifier's object value — the InJoin
+// emits its inner's rows once per IN-source value, so its row identity IS the
+// inner's. This is the identity physicalInJoinWrapper.GetResultValue supplied
+// (RFC-184 W2).
+func (p *RecordQueryInJoinPlan) GetResultValue() values.Value {
+	return p.PlanExprBase.GetResultValue()
+}
+
+// GetQuantifiers reports the real child quantifier, overriding
+// PlanExprBase's none.
+func (p *RecordQueryInJoinPlan) GetQuantifiers() []expressions.Quantifier {
+	if p.innerQ.GetRangesOver() == nil {
+		return nil
+	}
+	return quantifierView(&p.innerQ)
+}
+
+// WithInner returns a copy with the inner replaced and EVERY other field
+// preserved — the extraction-relink rebuild path; reconstructing via the
+// constructor risks silently dropping fields the setters carry.
+func (p *RecordQueryInJoinPlan) WithInner(inner RecordQueryPlan) (*RecordQueryInJoinPlan, error) {
+	cp := *p
+	cp.innerQ = QuantifierOverPlan(inner)
+	base, err := newPlanExprBaseForQuantifier("RecordQueryInJoinPlan", cp.innerQ)
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
+	return &cp, nil
+}
+func (p *RecordQueryInJoinPlan) GetBindingName() string { return p.bindingAlias.Name() }
+func (p *RecordQueryInJoinPlan) GetBindingAlias() values.CorrelationIdentifier {
+	return p.bindingAlias
+}
+func (p *RecordQueryInJoinPlan) IsSorted() bool  { return p.sorted }
+func (p *RecordQueryInJoinPlan) IsReverse() bool { return p.reverse }
+
+// GetInValues returns the LIVE slice; callers must not write through it. inValues is
+// in this plan's structuralKey, so an element write rewrites its identity with the
+// pointer unchanged, which the memo's owner check cannot see. It is not copied here
+// because cost.go reads it per costing call in the planner's hot loop; sharing is
+// broken at the write end instead (see WithInValues).
+func (p *RecordQueryInJoinPlan) GetInValues() []any          { return p.inValues }
+func (p *RecordQueryInJoinPlan) GetSourceKind() InSourceKind { return p.sourceKind }
+
+// WithInValues and WithSourceKind return COPIES, because a plan method must never
+// write through its receiver.
+//
+// inValues is in this plan's structuralKey, so an in-place write rewrites the identity
+// of a plan the memo may already hold — under an UNCHANGED owner, which the
+// structural-hash memo's owner check cannot detect, because it compares identity and
+// not content. sourceKind is NOT in the key and was therefore harmless; it copies too,
+// so the rule is "a plan method does not write its receiver" with no per-field
+// exception a reader has to look up.
+func (p *RecordQueryInJoinPlan) WithInValues(vals []any) *RecordQueryInJoinPlan {
+	cp := *p
+	// Copy the slice, not just the header. Returning a fresh plan that shares its
+	// caller's backing array leaves two owners of one identity-bearing array — and
+	// the rule paths really do hand the SAME array to two plans (the push-through-
+	// fetch rules pass one plan's GetInValues straight into another's builder). A
+	// later element write through either would rewrite both plans' structural keys
+	// with their pointers unchanged, which is the one staleness the memo's owner
+	// check cannot see. The sibling constructors already copy; this closes the
+	// builder to match.
+	cp.inValues = copyPreservingNil(vals)
+	return &cp
+}
+
+// copyPreservingNil duplicates an IN-list, keeping a nil slice nil and an EMPTY
+// non-nil slice empty and non-nil.
+//
+// That distinction is not pedantry, it is a cost input: the cost model reads nil as
+// "in-list size UNKNOWN at plan time" and empty-non-nil as "known to be EMPTY",
+// which produce different fanouts and therefore different plans. The idiomatic
+// `append([]any(nil), src...)` gets this wrong in the empty case — appending zero
+// elements to nil yields nil — so it silently converts "known empty" into
+// "unknown". Three arms of TestInUnionHintCost_UsesValueCombinationCount caught
+// exactly that, including the nested case `[][]any{nil, {}}` where one dimension is
+// unknown and its sibling is known-empty.
+//
+// The copy is deep to the SLICE level, not the element level. IN values are `any`,
+// and `[]byte` is a supported IN value type, so two plans still share any `[]byte`
+// payload passed to both. Nothing writes through one today — the same was true of
+// the slice level this closes — so it is the identical class one layer down rather
+// than a live defect. Copying every element would mean type-switching on `any` in a
+// planner path, which is not worth paying for a hazard with no writer.
+func copyPreservingNil(src []any) []any {
+	if src == nil {
+		return nil
+	}
+	dup := make([]any, len(src))
+	copy(dup, src)
+	return dup
+}
+
+// GetInComparand is the runtime-evaluated IN source, nil when the values were
+// extracted at plan time.
+func (p *RecordQueryInJoinPlan) GetInComparand() values.Value { return p.inComparand }
+
+// WithInComparand returns a copy that evaluates v for its IN values at run time.
+func (p *RecordQueryInJoinPlan) WithInComparand(v values.Value) *RecordQueryInJoinPlan {
+	cp := *p
+	cp.inComparand = v
+	return &cp
+}
+
+func (p *RecordQueryInJoinPlan) WithSourceKind(k InSourceKind) *RecordQueryInJoinPlan {
+	cp := *p
+	cp.sourceKind = k
+	return &cp
+}
+
+func (p *RecordQueryInJoinPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
+
+func (p *RecordQueryInJoinPlan) GetChildren() []RecordQueryPlan {
+	inner := p.GetInner()
+	if inner == nil {
+		return nil
+	}
+	return []RecordQueryPlan{inner}
+}
+
+// structuralKey folds the InJoin identity. bindingName is DELIBERATELY excluded:
+// it is an internal correlation alias minted by UniqueCorrelationIdentifier (a
+// process-global counter), so two structurally-identical InJoins differing only
+// in the arbitrary alias are the SAME plan. Including it made every replanned
+// IN-query non-equal and differently-hashed → plan-cache churn + nondeterministic
+// Explain (RFC-164 WS-4). sourceKind is likewise not folded (never was). inValues
+// IS included via inValuesEqual (Equatable): the static IN-list is the join's
+// comparand — an InJoin over (1,2,3) binds different values than one over (4,5,6)
+// and is a DIFFERENT plan; collapsing them is the F21 comparand-blind defect.
+// Java's InValuesJoinPlan.equalsWithoutChildren compares Objects.equals(values).
+// The %#v hash pins Go type + value so inValuesEqual-equal lists fold identically.
+// Drives both Equals and Hash.
+func (p *RecordQueryInJoinPlan) structuralKey() *structuralKey {
+	k := newStructuralKey().
+		Bool(p.sorted).
+		Bool(p.reverse).
+		Equatable(p.inValues, func(other any) bool {
+			o, ok := other.([]any)
+			return ok && inValuesEqual(p.inValues, o)
+		}, []byte(fmt.Sprintf("inv:%d:%#v", len(p.inValues), p.inValues))).
+		Bool(p.inComparand != nil)
+	if p.inComparand != nil {
+		k = k.Value(p.inComparand)
+	}
+	return k
+}
+
+func (p *RecordQueryInJoinPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
+	o, ok := other.(*RecordQueryInJoinPlan)
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
+}
+
+func (p *RecordQueryInJoinPlan) HashCodeWithoutChildren() uint64 {
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.keyFor(p).Hash("injoinplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
+}
+
+// inValuesEqual compares two static IN-list comparands element-wise. The lists
+// hold plan-time-evaluated literals ([]any of int64 / string / []byte / …);
+// reflect.DeepEqual is the safe faithful equivalent of Java List.equals here —
+// it never panics on the non-comparable slice carriers (e.g. []byte) that a raw
+// `==` would, and treats a nil list and an empty list as distinct exactly as
+// Java's null-vs-empty-list does.
+func inValuesEqual(a, b []any) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return (a == nil) == (b == nil)
+	}
+	return reflect.DeepEqual(a, b)
+}
+
+func (p *RecordQueryInJoinPlan) Explain() string {
+	innerLabel := "<nil>"
+	if inner := p.GetInner(); inner != nil {
+		innerLabel = inner.Explain()
+	}
+	dir := ""
+	if p.sorted {
+		if p.reverse {
+			dir = " DESC"
+		} else {
+			dir = " ASC"
+		}
+	}
+	// The binding correlation alias (a process-global unique counter) is NOT
+	// rendered — it varies per planning invocation and would make the Explain
+	// nondeterministic (RFC-164 WS-4); "binding" marks its presence structurally.
+	return fmt.Sprintf("InJoin(%s, binding%s)", innerLabel, dir)
+}
+
+var (
+	_ RecordQueryPlan                  = (*RecordQueryInJoinPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryInJoinPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryInJoinPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns a copy ranging over the given child quantifier —
+// Java's copy-on-write withChild(Reference).
+func (p *RecordQueryInJoinPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryInJoinPlan", len(qs), 1); err != nil {
+		return nil, err
+	}
+	cp := *p
+	base, err := newPlanExprBaseForQuantifier("RecordQueryInJoinPlan", qs[0])
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
+	cp.innerQ = qs[0]
+	return &cp, nil
+}
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface). Because the InJoin carries its child as a single LIVE memo edge,
+// the relink is exactly a quantifier swap: WithQuantifiers preserves every other
+// field (inValues, sourceKind, sorted, reverse, bindingName) and GetInner
+// re-resolves through the new singleton reference. This replaces
+// physicalInJoinWrapper.WithChildren (RFC-184 W2), whose separate snapshot plan
+// field forced a WithInner rebuild gated on isLeafReplaceable — a single live
+// child edge relinks to ref.Winner() unconditionally.
+func (p *RecordQueryInJoinPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("RecordQueryInJoinPlan.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return p.WithQuantifiers(qs)
+}
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryInJoinPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

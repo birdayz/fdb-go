@@ -52,10 +52,10 @@ go_test(
     deps = [
         "//internal/pb/demopb",
         "//internal/pb/storage",
+        "//internal/recordlayer/query/plan/cascades",
         "//internal/relational/relapi",
         "//pkg/recordlayer",
         "//pkg/recordlayer/metadatapb",
-        "//pkg/recordlayer/query/plan/cascades",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protodesc",
         "@org_golang_google_protobuf//reflect/protoreflect",

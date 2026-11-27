@@ -8,7 +8,7 @@
 
 package executor
 
-import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+import "fdb.dev/internal/recordlayer/query/plan/cascades/values"
 
 // legWindowRow is a leg-relative view over the join's merged positional row:
 // leg ordinal i reads merged slot Offset+i. A correlated baked reference

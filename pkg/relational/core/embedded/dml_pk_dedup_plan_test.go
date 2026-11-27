@@ -4,14 +4,14 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 )
 
 // End-to-end plan shape for the primary-key dedup the DML implementation rules
 // interpose, through the real SQL → Cascades → physical path rather than the
 // rule harness. The rule-level arms live in
-// pkg/recordlayer/query/plan/cascades/dml_pk_dedup_test.go; what this file adds
+// internal/recordlayer/query/plan/cascades/dml_pk_dedup_test.go; what this file adds
 // is that the shape survives actual planning, where cost chooses among the
 // access-path alternatives the rules now enumerate.
 //

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // The UNRESOLVED-RESULT-TYPE census (RFC-213 §7).

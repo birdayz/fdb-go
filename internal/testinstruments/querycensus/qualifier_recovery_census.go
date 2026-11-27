@@ -11,7 +11,7 @@ import (
 	"sort"
 	"sync"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 // The QUALIFIER RECOVERY census — the DARK SPLITTERS.

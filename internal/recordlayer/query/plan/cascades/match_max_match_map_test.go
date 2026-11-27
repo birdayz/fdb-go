@@ -1,0 +1,92 @@
+package cascades
+
+import (
+	"testing"
+
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+)
+
+// TestBuildMatchMaxMatchMap_RebasesQueryValueToCandidateAlias pins the
+// load-bearing rebase in buildMatchMaxMatchMap (RFC-076-step-1):
+// the query result value must be translated from the query-side alias to the
+// candidate-side alias (via the bound alias map's source->target) BEFORE
+// MaxMatchMap.compute, and the ranged-over set must be the candidate-side
+// targets. Without the rebase, ComputeMaxMatchMap compares mismatched aliases,
+// produces an empty map, PartialMatch.PullUp returns nil, and the data-access
+// path emits no scan (ImpossibleCompensation).
+func TestBuildMatchMaxMatchMap_RebasesQueryValueToCandidateAlias(t *testing.T) {
+	t.Parallel()
+
+	queryAlias := values.NamedCorrelationIdentifier("q")
+	candidateAlias := values.NamedCorrelationIdentifier("c")
+	boundAliasMap := AliasMapOfAliases(queryAlias, candidateAlias)
+
+	queryResultValue, queryErr := values.NewQuantifiedObjectValue(queryAlias, values.NotNullLong)
+	queryResultValue = mustConstruct(t, queryResultValue, queryErr)
+	candidateResultValue, candidateErr := values.NewQuantifiedObjectValue(candidateAlias, values.NotNullLong)
+	candidateResultValue = mustConstruct(t, candidateResultValue, candidateErr)
+
+	mmm := buildMatchMaxMatchMap(queryResultValue, candidateResultValue, boundAliasMap)
+	if mmm == nil {
+		t.Fatal("buildMatchMaxMatchMap returned nil — PullUp would fail -> ImpossibleCompensation -> no scan")
+	}
+
+	// The query value stored is the REBASED one (query alias -> candidate alias),
+	// so it now references the candidate alias.
+	qv, ok := values.AsQuantifiedObjectValue(mmm.GetQueryValue())
+	if !ok {
+		t.Fatalf("expected query value to be an exact QuantifiedObjectValue, got %T", mmm.GetQueryValue())
+	}
+	if qv.Correlation() != candidateAlias {
+		t.Fatalf("query value should be rebased to the candidate alias %q, got %q",
+			candidateAlias.Name(), qv.Correlation().Name())
+	}
+
+	if mmm.GetCandidateValue() != candidateResultValue {
+		t.Fatal("candidate value should be passed through unchanged")
+	}
+
+	// The rebased query value now equals the candidate value, so the map must
+	// be non-empty (the candidate covers the whole query result).
+	if mmm.Size() == 0 {
+		t.Fatal("expected a non-empty MaxMatchMap (candidate covers the query result value)")
+	}
+}
+
+// TestBuildMatchMaxMatchMap_FieldOverQuantifier pins the realistic index-column
+// shape: a FieldValue over the source quantifier on both sides. The rebase must
+// rewrite the query field's QOV child alias to the candidate alias so the two
+// field accesses match structurally.
+func TestBuildMatchMaxMatchMap_FieldOverQuantifier(t *testing.T) {
+	t.Parallel()
+
+	queryAlias := values.NamedCorrelationIdentifier("q")
+	candidateAlias := values.NamedCorrelationIdentifier("c")
+	boundAliasMap := AliasMapOfAliases(queryAlias, candidateAlias)
+
+	rowType := values.NewRecordType("MatchRow", false, []values.Field{
+		{Name: "COL", FieldType: values.NullableLong, Ordinal: 0},
+	})
+	queryRoot, queryRootErr := values.NewQuantifiedObjectValue(queryAlias, rowType)
+	queryRoot = mustConstruct(t, queryRoot, queryRootErr)
+	queryField, queryFieldErr := values.ResolveFieldOrdinals(queryRoot, []int{0})
+	queryField = mustConstruct(t, queryField, queryFieldErr)
+	candidateRoot, candidateRootErr := values.NewQuantifiedObjectValue(candidateAlias, rowType)
+	candidateRoot = mustConstruct(t, candidateRoot, candidateRootErr)
+	candidateField, candidateFieldErr := values.ResolveFieldOrdinals(candidateRoot, []int{0})
+	candidateField = mustConstruct(t, candidateField, candidateFieldErr)
+
+	mmm := buildMatchMaxMatchMap(queryField, candidateField, boundAliasMap)
+	if mmm == nil {
+		t.Fatal("buildMatchMaxMatchMap returned nil for a field-over-quantifier result value")
+	}
+	// The rebased query field references the candidate alias.
+	for k := range values.GetCorrelatedToOfValue(mmm.GetQueryValue()) {
+		if k == queryAlias {
+			t.Fatal("query value still references the query alias — rebase did not run")
+		}
+	}
+	if mmm.Size() == 0 {
+		t.Fatal("expected a non-empty MaxMatchMap for matching FieldValue-over-quantifier")
+	}
+}

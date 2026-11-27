@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
 )
 
 // oracleJoinRows evaluates a self-join as the textbook nested loop over the

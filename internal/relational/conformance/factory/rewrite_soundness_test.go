@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/internal/relational/conformance/rowdiff"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 )
 
 // The rewrites are checked as LOGIC here, before they are ever allowed to

@@ -22,7 +22,7 @@ package rowdiff
 import (
 	"math/rand/v2"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
 )
 
 // NullsPlacement is an ORDER BY key's NULL position. Default follows the

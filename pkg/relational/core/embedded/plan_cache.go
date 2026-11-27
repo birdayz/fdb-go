@@ -10,7 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 )
 
 // PlanCache caches Cascades query plans keyed by normalized SQL text.

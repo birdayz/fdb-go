@@ -1,0 +1,125 @@
+package predicates
+
+import (
+	"testing"
+
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+)
+
+// FuzzGetCorrelatedToOfPredicate pins three invariants:
+//
+//  1. Nil-safety: never panics on a nil input or nil sub-tree.
+//  2. Empty-on-leaves-without-correlation: a predicate whose
+//     leaves are pure ConstantPredicates returns empty set.
+//  3. Exactness: the returned correlation set is exactly the
+//     CorrelationIdentifiers actually present in the tree.
+//
+// The fuzzer builds small predicate trees from a byte stream;
+// alternates constants, Values, DistanceRank comparisons, ranges, unfamiliar predicate
+// implementations, and And/Or/Not at random nesting levels.
+func FuzzGetCorrelatedToOfPredicate(f *testing.F) {
+	f.Add([]byte{0, 1, 2, 3})
+	f.Add([]byte{0xff, 0x00})
+	f.Add([]byte{2, 7, 3, 7, 4, 7})
+	f.Add(make([]byte, 16))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		t.Parallel()
+		if len(b) < 2 {
+			return
+		}
+		p, expectedAliases := buildFuzzPredicate(t, b, 0, 0)
+		got := GetCorrelatedToOfPredicate(p)
+		// Exactness in both directions catches both fabricated aliases and
+		// under-reporting.
+		if len(got) != len(expectedAliases) {
+			t.Fatalf("correlations = %v, want exactly %v", got, expectedAliases)
+		}
+		for k := range got {
+			if _, ok := expectedAliases[k]; !ok {
+				t.Fatalf("reported alias %v not in constructed set %v", k, expectedAliases)
+			}
+		}
+		for k := range expectedAliases {
+			if _, ok := got[k]; !ok {
+				t.Fatalf("missing constructed alias %v from reported set %v", k, got)
+			}
+		}
+		// If the predicate is a ConstantPredicate (no correlations),
+		// got must be empty.
+		if _, ok := p.(*ConstantPredicate); ok && len(got) != 0 {
+			t.Fatalf("ConstantPredicate yielded correlations: %v", got)
+		}
+	})
+}
+
+// buildFuzzPredicate builds a small QueryPredicate tree from `b`,
+// indexed at `start`, recursion bounded by `depth`. Returns the
+// predicate AND the exact set of CorrelationIdentifiers it references.
+func buildFuzzPredicate(t testing.TB, b []byte, start, depth int) (QueryPredicate, map[values.CorrelationIdentifier]struct{}) {
+	t.Helper()
+	if depth >= 4 || len(b) == 0 {
+		return NewConstantPredicate(TriTrue), map[values.CorrelationIdentifier]struct{}{}
+	}
+	op := b[start%len(b)] % 9
+	switch op {
+	case 0:
+		return NewConstantPredicate(TriTrue), map[values.CorrelationIdentifier]struct{}{}
+	case 1:
+		// ValuePredicate referencing a fresh alias.
+		alias := values.NamedCorrelationIdentifier(string(rune('A' + b[start%len(b)]%26)))
+		v := mustQOV(t, alias)
+		return NewValuePredicate(v), map[values.CorrelationIdentifier]struct{}{alias: {}}
+	case 2:
+		// AndPredicate with two children.
+		c1, set1 := buildFuzzPredicate(t, b, (start+1)%len(b), depth+1)
+		c2, set2 := buildFuzzPredicate(t, b, (start+2)%len(b), depth+1)
+		out := mergeCorrSets(set1, set2)
+		return NewAnd(c1, c2), out
+	case 3:
+		// OrPredicate with two children.
+		c1, set1 := buildFuzzPredicate(t, b, (start+1)%len(b), depth+1)
+		c2, set2 := buildFuzzPredicate(t, b, (start+2)%len(b), depth+1)
+		out := mergeCorrSets(set1, set2)
+		return NewOr(c1, c2), out
+	case 4:
+		// NotPredicate over a child.
+		c, set := buildFuzzPredicate(t, b, (start+1)%len(b), depth+1)
+		return NewNot(c), set
+	case 5:
+		// Compound predicate with a nil subtree. The historical helper skipped
+		// nil children; delegated GetCorrelatedTo implementations must preserve
+		// that compatibility.
+		c, set := buildFuzzPredicate(t, b, (start+1)%len(b), depth+1)
+		if b[(start+1)%len(b)]%2 == 0 {
+			return NewAnd(nil, c), set
+		}
+		return NewOr(c, nil), set
+	case 6:
+		lhs := values.NamedCorrelationIdentifier("lhs")
+		rhs := values.NamedCorrelationIdentifier("rhs")
+		vector := values.NamedCorrelationIdentifier("vector")
+		return NewComparisonPredicate(mustQOV(t, lhs), Comparison{
+			Type: ComparisonDistanceRankLessThan, Operand: mustQOV(t, rhs), QueryVector: mustQOV(t, vector),
+		}), map[values.CorrelationIdentifier]struct{}{lhs: {}, rhs: {}, vector: {}}
+	case 7:
+		return rangeCorrelationPredicate(t), map[values.CorrelationIdentifier]struct{}{
+			values.NamedCorrelationIdentifier("left"): {}, values.NamedCorrelationIdentifier("right"): {},
+			values.NamedCorrelationIdentifier("vector"): {},
+		}
+	default:
+		alias := values.NamedCorrelationIdentifier("custom")
+		return &correlationOnlyTestPredicate{correlations: map[values.CorrelationIdentifier]struct{}{alias: {}}},
+			map[values.CorrelationIdentifier]struct{}{alias: {}}
+	}
+}
+
+func mergeCorrSets(a, b map[values.CorrelationIdentifier]struct{}) map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for k := range a {
+		out[k] = struct{}{}
+	}
+	for k := range b {
+		out[k] = struct{}{}
+	}
+	return out
+}

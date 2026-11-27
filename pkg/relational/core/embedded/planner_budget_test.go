@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 )
 
 // sixTableChainSQL is the six-table FK chain over the star schema whose

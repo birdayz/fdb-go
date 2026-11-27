@@ -8,8 +8,8 @@ package logical
 import (
 	"fmt"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 	"fdb.dev/internal/unicode15"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // LogicalInlineValues is a multi-row VALUES table source in a FROM clause.

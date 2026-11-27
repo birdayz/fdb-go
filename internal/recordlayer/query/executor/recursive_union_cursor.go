@@ -16,8 +16,8 @@ import (
 
 	cursorpb "fdb.dev/internal/pb/cursor"
 	runtimepb "fdb.dev/internal/pb/runtime"
+	"fdb.dev/internal/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // This file ports Java's recursive-union continuation machinery

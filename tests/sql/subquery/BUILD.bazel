@@ -123,6 +123,7 @@ go_test(
     ],
     deps = [
         "//internal/recordlayer/query/executor",
+        "//internal/recordlayer/query/plan/cascades/properties",
         "//internal/relational/metadata",
         "//internal/relational/relapi",
         "//internal/relational/sqltest/testkit",
@@ -130,7 +131,6 @@ go_test(
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
-        "//pkg/recordlayer/query/plan/cascades/properties",
         "//pkg/relational/core/embedded",
         "@com_github_onsi_gomega//:gomega",
         "@org_golang_google_protobuf//proto",

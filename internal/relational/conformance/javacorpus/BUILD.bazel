@@ -25,6 +25,7 @@ go_library(
         "//conformance:__subpackages__",
     ],
     deps = [
+        "//internal/recordlayer/query/plan/cascades/values",
         "//internal/recordlayer/vectorcodec",
         "//internal/relational/conformance/javayamsql",
         "//internal/relational/conformance/yamsql",
@@ -35,7 +36,6 @@ go_library(
         "//pkg/fdbgo/fdb",
         "//pkg/recordlayer",
         "//pkg/recordlayer/metadatapb",
-        "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/core/embedded",
         "//pkg/relational/core/parser",
         "//pkg/relational/core/parser/gen",

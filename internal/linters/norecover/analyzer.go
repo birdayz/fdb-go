@@ -50,7 +50,7 @@ var Allowlist = map[string]int{
 	"pkg/recordlayer/merge_cursor.go": 1,
 	// RFC-232 binding admission: a hostile implementation of the open Value
 	// interface becomes a typed layout error instead of crashing the planner.
-	"pkg/recordlayer/query/plan/cascades/values/required_bindings.go": 1,
+	"internal/recordlayer/query/plan/cascades/values/required_bindings.go": 1,
 	// binding-tester harness binary (cgo-dependent build)
 	"cmd/fdb-stacktester/directory_ops.go": 1,
 	// RFC-183 EXPLAIN-differ: a planner panic on ONE corpus query becomes a

@@ -1,0 +1,715 @@
+// Portions derived from FoundationDB Record Layer (DecorrelateValuesRule.java,
+// ExplorationCascadesRule.java, SelectMergeRule.java, Value.java,
+// and others),
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2025 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2026 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
+package cascades
+
+import (
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+)
+
+// DecorrelateValuesRule is an exploration rule that inlines "values
+// boxes" into the parent SelectExpression. A values box is a
+// quantifier over a SelectExpression whose result value is constant
+// (uncorrelated to its own child quantifier) — typically produced by
+// parameterized function inlining or constant subqueries.
+//
+// Pattern:
+//
+//	SelectExpression(
+//	  ForEach(alias=A) → Ref[SelectExpression(constResult, [ForEach → valuesSource], [])],
+//	  ForEach(alias=B) → Ref[other],
+//	  predicates referencing A
+//	)
+//
+// Rewrite: replace references to alias A with the constant result
+// value from the values box, remove the values box quantifier.
+//
+//	SelectExpression(
+//	  ForEach(alias=B) → Ref[other],
+//	  predicates with A→constResult substitution
+//	)
+//
+// Ports Java's DecorrelateValuesRule (ExplorationCascadesRule).
+type DecorrelateValuesRule struct {
+	matcher matching.BindingMatcher
+}
+
+func NewDecorrelateValuesRule() *DecorrelateValuesRule {
+	return &DecorrelateValuesRule{
+		matcher: NewExpressionMatcher[*expressions.SelectExpression]("decorrelate_values"),
+	}
+}
+
+func (r *DecorrelateValuesRule) Matcher() matching.BindingMatcher { return r.matcher }
+
+func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
+	sel := matching.Get[*expressions.SelectExpression](call.Bindings, r.matcher)
+	// Java matches exploratory expressions only; a final is SelectMergeRule's.
+	if !isExploratoryMember(call.Reference, sel) {
+		return
+	}
+	quantifiers := sel.GetQuantifiers()
+	if len(quantifiers) == 0 {
+		return
+	}
+
+	// Identify values box quantifiers and build per-alias maps.
+	type valuesBoxInfo struct {
+		idx              int
+		alias            values.CorrelationIdentifier
+		resultValue      values.Value
+		quantifierToPush expressions.Quantifier
+	}
+	var valuesBoxes []valuesBoxInfo
+
+	for i, q := range quantifiers {
+		if q.Kind() != expressions.QuantifierForEach {
+			continue
+		}
+		childRef := q.GetRangesOver()
+		if childRef == nil {
+			continue
+		}
+		for _, member := range childRef.AllMembers() {
+			childSel, ok := member.(*expressions.SelectExpression)
+			if !ok {
+				continue
+			}
+			childQs := childSel.GetQuantifiers()
+			if len(childQs) != 1 {
+				continue
+			}
+			if len(childSel.GetPredicates()) > 0 {
+				continue
+			}
+			if !isRangeOneQuantifier(childQs[0]) {
+				continue
+			}
+			rv := childSel.GetResultValue()
+			if rv == nil {
+				continue
+			}
+			childAlias := childQs[0].GetAlias()
+			correlated := values.GetCorrelatedToOfValue(rv)
+			if _, refsChild := correlated[childAlias]; refsChild {
+				continue
+			}
+			hasSidewaysCorrelation := false
+			for j, siblingQ := range quantifiers {
+				if j == i {
+					continue
+				}
+				if _, refs := correlated[siblingQ.GetAlias()]; refs {
+					hasSidewaysCorrelation = true
+					break
+				}
+			}
+			if hasSidewaysCorrelation {
+				continue
+			}
+			valuesBoxes = append(valuesBoxes, valuesBoxInfo{
+				idx:              i,
+				alias:            q.GetAlias(),
+				resultValue:      rv,
+				quantifierToPush: q,
+			})
+			break
+		}
+	}
+
+	if len(valuesBoxes) == 0 {
+		return
+	}
+
+	// Quantifiers to push down, in quantifier order as Java's ImmutableMap keeps them.
+	tmBuilder := NewTranslationMapBuilder()
+	valuesBoxIdxSet := map[int]bool{}
+	qunsToPushDown := make([]expressions.Quantifier, 0, len(valuesBoxes))
+
+	for _, vb := range valuesBoxes {
+		valuesBoxIdxSet[vb.idx] = true
+		capturedResult := vb.resultValue
+		tmBuilder.When(vb.alias).Then(func(_ values.CorrelationIdentifier, _ values.LeafValue) values.Value {
+			return capturedResult
+		})
+		qunsToPushDown = append(qunsToPushDown, vb.quantifierToPush)
+	}
+	tm := tmBuilder.Build()
+
+	// Translate result value and predicates. A failed translation abandons the
+	// whole inlining: this rule rewrites a Select in place, so a half-translated
+	// program would be published as that Select's own.
+	newResultValue := sel.GetResultValue()
+	if newResultValue != nil {
+		translatedResult, ok := translateValueCorrelations(newResultValue, tm)
+		if !ok {
+			return
+		}
+		newResultValue = translatedResult
+	}
+	newPredicates := make([]predicates.QueryPredicate, len(sel.GetPredicates()))
+	for i, p := range sel.GetPredicates() {
+		translated, ok := translatePredicateCorrelations(p, tm)
+		if !ok {
+			return
+		}
+		newPredicates[i] = translated
+	}
+
+	// Push values boxes into child quantifiers and build the new
+	// quantifier list.
+	pushDownAliasSet := pushedAliasSet(qunsToPushDown)
+
+	newQuantifiers := make([]expressions.Quantifier, 0, max(1, len(quantifiers)-len(valuesBoxes)))
+	if len(quantifiers) == len(valuesBoxes) {
+		// All quantifiers are values boxes. Introduce a range(1)
+		// placeholder to avoid creating a Select with no children.
+		rangeOneExpr, err := expressions.NewTableFunctionExpression(
+			values.NewRangeValue(
+				&values.ConstantValue{Value: int64(0)},
+				&values.ConstantValue{Value: int64(1)},
+				&values.ConstantValue{Value: int64(1)},
+			),
+		)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		rangeRef := call.MemoizeExpression(rangeOneExpr)
+		rangeQ := expressions.ForEachQuantifier(rangeRef)
+		newQuantifiers = append(newQuantifiers, rangeQ)
+	}
+
+	for i, q := range quantifiers {
+		if valuesBoxIdxSet[i] {
+			continue
+		}
+
+		childRef := q.GetRangesOver()
+		if childRef == nil {
+			newQuantifiers = append(newQuantifiers, q)
+			continue
+		}
+
+		anyChanged := false
+		var newMembers []expressions.RelationalExpression
+		for _, member := range childRef.AllMembers() {
+			lowerCorrelatedTo := expressionCorrelatedToAliases(member, pushDownAliasSet)
+			if len(lowerCorrelatedTo) == 0 {
+				newMembers = append(newMembers, member)
+			} else {
+				pushed, err := pushValuesIntoExpression(member, qunsToPushDown, tm, call)
+				if err != nil {
+					call.Fail(err)
+					return
+				}
+				newMembers = append(newMembers, pushed)
+				anyChanged = true
+			}
+		}
+		if anyChanged {
+			newRef := call.MemoizeExpressions(newMembers)
+			rebuilt := expressions.RebuildQuantifier(q, newRef)
+			newQuantifiers = append(newQuantifiers, rebuilt)
+		} else {
+			newQuantifiers = append(newQuantifiers, q)
+		}
+	}
+
+	// Preserve source aliases, dropping entries for removed values boxes.
+	oldAliases := sel.GetSourceAliases()
+	var newAliases []string
+	if len(oldAliases) > 0 {
+		for i := range quantifiers {
+			if valuesBoxIdxSet[i] {
+				continue
+			}
+			if i < len(oldAliases) {
+				newAliases = append(newAliases, oldAliases[i])
+			}
+		}
+	}
+
+	merged, err := expressions.NewSelectExpressionWithJoinType(newResultValue, newQuantifiers, newPredicates, newAliases, sel.GetJoinType())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.Yield(merged)
+}
+
+func pushedAliasSet(qs []expressions.Quantifier) map[values.CorrelationIdentifier]struct{} {
+	aliases := make(map[values.CorrelationIdentifier]struct{}, len(qs))
+	for _, q := range qs {
+		aliases[q.GetAlias()] = struct{}{}
+	}
+	return aliases
+}
+
+// expressionCorrelatedToAliases returns the subset of aliases that the
+// given expression (including its transitive children) is correlated to.
+func expressionCorrelatedToAliases(
+	expr expressions.RelationalExpression,
+	aliases map[values.CorrelationIdentifier]struct{},
+) map[values.CorrelationIdentifier]struct{} {
+	allCorr := make(map[values.CorrelationIdentifier]struct{})
+	expressionCorrelationSet(expr, allCorr)
+	result := make(map[values.CorrelationIdentifier]struct{})
+	for alias := range aliases {
+		if _, found := allCorr[alias]; found {
+			result[alias] = struct{}{}
+		}
+	}
+	return result
+}
+
+// pushValuesIntoExpression rewrites a child expression by pushing
+// values box quantifiers into it. Mirrors Java's PushValuesIntoVisitor.
+func pushValuesIntoExpression(
+	expr expressions.RelationalExpression,
+	qunsToPushDown []expressions.Quantifier,
+	tm TranslationMap,
+	call *ExpressionRuleCall,
+) (expressions.RelationalExpression, error) {
+	switch e := expr.(type) {
+	case *expressions.SelectExpression:
+		return selectWithQuantifiersPushed(
+			e,
+			qunsToPushDown,
+			e.GetResultValue(),
+			e.GetQuantifiers(),
+			e.GetPredicates(),
+			e.GetSourceAliases(),
+			e.GetJoinType(),
+		)
+	case *expressions.LogicalFilterExpression:
+		return selectWithQuantifiersPushed(
+			e,
+			qunsToPushDown,
+			e.GetResultValue(),
+			e.GetQuantifiers(),
+			e.GetPredicates(),
+			nil,
+			expressions.JoinInner,
+		)
+	default:
+		return pushValuesDefault(expr, qunsToPushDown, tm, call)
+	}
+}
+
+// selectWithQuantifiersPushed prepends the relevant values box
+// quantifiers into a SelectExpression or LogicalFilterExpression,
+// returning a new SelectExpression. Only pushes values boxes that
+// the expression is actually correlated to.
+func selectWithQuantifiersPushed(
+	expr expressions.RelationalExpression,
+	qunsToPushDown []expressions.Quantifier,
+	resultValue values.Value,
+	quantifierBase []expressions.Quantifier,
+	preds []predicates.QueryPredicate,
+	sourceAliases []string,
+	joinType expressions.JoinType,
+) (*expressions.SelectExpression, error) {
+	exprCorr := make(map[values.CorrelationIdentifier]struct{})
+	expressionCorrelationSet(expr, exprCorr)
+
+	newQs := make([]expressions.Quantifier, 0, len(quantifierBase)+len(qunsToPushDown))
+	for _, q := range qunsToPushDown {
+		if _, found := exprCorr[q.GetAlias()]; found {
+			newQs = append(newQs, q)
+		}
+	}
+	newQs = append(newQs, quantifierBase...)
+	return expressions.NewSelectExpressionWithJoinType(resultValue, newQs, preds, sourceAliases, joinType)
+}
+
+// pushValuesDefault handles the visitDefault case: for each child
+// quantifier that is correlated to a values box, wrap it in a new
+// SelectExpression with the relevant values boxes prepended. Then
+// rebuild the expression with the new quantifiers and translated
+// correlations.
+func pushValuesDefault(
+	expr expressions.RelationalExpression,
+	qunsToPushDown []expressions.Quantifier,
+	tm TranslationMap,
+	call *ExpressionRuleCall,
+) (expressions.RelationalExpression, error) {
+	pushDownAliasSet := pushedAliasSet(qunsToPushDown)
+
+	origQs := expr.GetQuantifiers()
+	newQs := make([]expressions.Quantifier, 0, len(origQs))
+	for _, childQ := range origQs {
+		pushed, err := pushOnTopOfQuantifier(childQ, qunsToPushDown, pushDownAliasSet, call)
+		if err != nil {
+			return nil, err
+		}
+		newQs = append(newQs, pushed)
+	}
+
+	// Rebuild the expression with new quantifiers. For expression types
+	// that carry correlation-bearing node information (result values,
+	// predicates, grouping keys, etc.), translateCorrelations would also
+	// need to be applied. WithQuantifiers preserves node information
+	// (predicates, result values) unchanged — correlations in those
+	// fields still reference the values box aliases, which is correct
+	// because the values boxes have been pushed into the children where
+	// those aliases are now locally available.
+	return expr.WithQuantifiers(newQs)
+}
+
+// pushOnTopOfQuantifier wraps a child quantifier in a SelectExpression
+// with values boxes prepended, if the quantifier is correlated to any
+// values box. Returns the original quantifier if uncorrelated.
+func pushOnTopOfQuantifier(
+	childQ expressions.Quantifier,
+	qunsToPushDown []expressions.Quantifier,
+	pushDownAliasSet map[values.CorrelationIdentifier]struct{},
+	call *ExpressionRuleCall,
+) (expressions.Quantifier, error) {
+	childCorr := quantifierCorrelationSetLocal(childQ)
+	hasCorrelation := false
+	for alias := range pushDownAliasSet {
+		if _, found := childCorr[alias]; found {
+			hasCorrelation = true
+			break
+		}
+	}
+	if !hasCorrelation {
+		return childQ, nil
+	}
+
+	newChild := expressions.ForEachQuantifier(childQ.GetRangesOver())
+
+	exprCorr := make(map[values.CorrelationIdentifier]struct{})
+	ref := newChild.GetRangesOver()
+	if ref != nil {
+		for _, m := range ref.AllMembers() {
+			expressionCorrelationSet(m, exprCorr)
+		}
+	}
+
+	newQs := make([]expressions.Quantifier, 0, 1+len(qunsToPushDown))
+	for _, q := range qunsToPushDown {
+		if _, found := exprCorr[q.GetAlias()]; found {
+			newQs = append(newQs, q)
+		}
+	}
+	newQs = append(newQs, newChild)
+
+	flowed, err := newChild.RequireFlowedObjectValue()
+	if err != nil {
+		return expressions.Quantifier{}, err
+	}
+	newSelect, err := expressions.NewSelectExpression(
+		flowed,
+		newQs,
+		nil,
+	)
+	if err != nil {
+		return expressions.Quantifier{}, err
+	}
+	newRef := call.MemoizeExpression(newSelect)
+	return expressions.RebuildQuantifier(childQ, newRef), nil
+}
+
+// quantifierCorrelationSetLocal computes the correlation set of a
+// quantifier by walking the inner expression tree.
+func quantifierCorrelationSetLocal(q expressions.Quantifier) map[values.CorrelationIdentifier]struct{} {
+	ref := q.GetRangesOver()
+	if ref == nil {
+		return map[values.CorrelationIdentifier]struct{}{}
+	}
+	result := map[values.CorrelationIdentifier]struct{}{}
+	for _, member := range ref.AllMembers() {
+		expressionCorrelationSet(member, result)
+	}
+	return result
+}
+
+// translateValueCorrelations applies the TranslationMap to a Value
+// tree by replacing QuantifiedObjectValue leaves whose correlation is
+// mapped in the TranslationMap.
+// It reports FALSE when the rebuild around a substituted leaf fails — see
+// translatePredicateCorrelations for why that answer may never be softened
+// into "unchanged".
+func translateValueCorrelations(v values.Value, tm TranslationMap) (values.Value, bool) {
+	if v == nil {
+		return nil, true
+	}
+	// Replace all correlation-bearing LEAF values whose alias is in the
+	// translation map. Ports Java's Value.translateCorrelations, which uses
+	// replaceLeavesMaybe(op, visitNewLeaves=false): a leaf replaced with a value
+	// that ITSELF references the same alias must NOT be re-translated (the
+	// self-referential cycle — the source-anchored join RC anchors its right-leg
+	// columns to QOV(B) while the parent quantifier over the join is also aliased
+	// B; re-descending the substituted RC would re-match B forever). Use
+	// ReplaceLeavesOnceMaybe so substituted leaves are skipped on the re-descent.
+	translated := values.ReplaceLeavesOnceMaybe(v, func(val values.Value) values.Value {
+		var alias values.CorrelationIdentifier
+		if qov, ok := values.AsQuantifiedObjectValue(val); ok {
+			alias = qov.Correlation()
+		} else {
+			switch n := val.(type) {
+			case *values.QuantifiedRecordValue:
+				alias = n.Alias
+				// ExistsValue is a transparent composite (RFC-141), not a leaf —
+				// its child QuantifiedObjectValue is the leaf that gets translated
+				// by the *QuantifiedObjectValue case above.
+			case *values.ScalarSubqueryValue:
+				alias = n.Alias
+			case *values.ObjectValue:
+				alias = n.Alias
+			default:
+				return val
+			}
+		}
+		if !tm.ContainsSourceAlias(alias) {
+			return val
+		}
+		lv, ok := val.(values.LeafValue)
+		if !ok {
+			return val
+		}
+		replacement := tm.ApplyTranslationFunction(alias, lv)
+		// A correlation substitution replaces a value denoting a ROW with
+		// another value denoting THE SAME row, so the two must agree on shape.
+		// Nothing else in this walk checks that, and the ordinals in the
+		// surrounding expression are carried across untouched: substituting a
+		// 3-column leg row by the 5-column join box it sits inside leaves every
+		// `#0` addressing a different column, silently and without an error.
+		// Measured on `… LEFT JOIN emp e ON … WHERE e.id IS NULL AND NOT EXISTS
+		// (…)`, where one alias named both the leg and the box: `E.ID#0 IS NULL`
+		// became the box's ordinal 0, which is D.ID, and the query answered no
+		// rows. Returning nil declines the whole translation (see
+		// translateValueCorrelations' contract) rather than publishing a
+		// rewrite whose ordinals moved.
+		if replacement != nil && !values.QuantifiedRowShapesAgree(val.Type(), replacement.Type()) {
+			return nil
+		}
+		return replacement
+	})
+	// ReplaceLeavesOnceMaybe signals a failed rebuild by returning nil, which
+	// is why the ok flag exists at all: the pointer-identity contract above
+	// ("unchanged means unchanged") makes nil indistinguishable from a
+	// legitimate result to a caller that only compares against the input.
+	return translated, translated != nil
+}
+
+// translatePredicateCorrelations applies the TranslationMap to a
+// predicate by walking its Value trees and replacing mapped aliases.
+//
+// It reports FALSE when any embedded Value could not be rebuilt around its
+// substituted leaf, and every caller must abandon its whole rewrite on that
+// answer. The alternative is not "a slightly worse predicate": a Value walk
+// that cannot rebuild returns NIL, and a predicate assembled around a nil
+// operand is structurally impossible — `<nil> = 'alice'`. It survives every
+// later rewrite (each spine copies the nil forward) and first surfaces as an
+// unclassified planner failure at physical construction, arbitrarily far from
+// the rule that minted it. A translation that cannot be performed is a rewrite
+// that must not happen.
+//
+// Reachable whenever a substituted root changes the ordinal domain the
+// reference was resolved in — e.g. PredicatePushDownRule pushing an already
+// resolved `E.FNAME#2` into a Select whose result value is not a
+// quantified object.
+func translatePredicateCorrelations(p predicates.QueryPredicate, tm TranslationMap) (predicates.QueryPredicate, bool) {
+	if p == nil {
+		return nil, true
+	}
+	switch pred := p.(type) {
+	case *predicates.PredicateWithValueAndRanges:
+		translated, err := predicates.TransformEmbeddedValuesChecked(p, func(v values.Value) (values.Value, error) {
+			result, ok := translateValueCorrelations(v, tm)
+			if !ok {
+				return nil, &values.ResolutionError{
+					ErrorCode: values.RewriteInvalidCallbackOutput,
+					Path:      "predicate.range.value",
+					Detail:    "cannot rebuild translated range value",
+				}
+			}
+			return result, nil
+		})
+		return translated, err == nil
+	case *predicates.ComparisonPredicate:
+		newOperand, operandOK := translateValueCorrelations(pred.Operand, tm)
+		newCompOperand, compOK := translateValueCorrelations(pred.Comparison.Operand, tm)
+		if !operandOK || !compOK {
+			return nil, false
+		}
+		if newOperand == pred.Operand && newCompOperand == pred.Comparison.Operand {
+			return p, true
+		}
+		// Copy the whole Comparison and replace ONLY the translated RHS operand,
+		// preserving Escape AND every other Comparison subclass field
+		// (ParameterName, the Text* fields, the DistanceRank vector fields).
+		// A partial {Type, Operand, Escape} reconstruction would drop the rest
+		// and change the comparison's semantics.
+		cmp := pred.Comparison
+		cmp.Operand = newCompOperand
+		return &predicates.ComparisonPredicate{
+			Operand:    newOperand,
+			Comparison: cmp,
+		}, true
+	case *predicates.ValuePredicate:
+		newVal, ok := translateValueCorrelations(pred.Value, tm)
+		if !ok {
+			return nil, false
+		}
+		if newVal == pred.Value {
+			return p, true
+		}
+		return predicates.NewValuePredicate(newVal), true
+	case *predicates.AndPredicate:
+		changed := false
+		newSubs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
+		for i, s := range pred.SubPredicates {
+			translated, ok := translatePredicateCorrelations(s, tm)
+			if !ok {
+				return nil, false
+			}
+			newSubs[i] = translated
+			if newSubs[i] != s {
+				changed = true
+			}
+		}
+		if !changed {
+			return p, true
+		}
+		return predicates.WithAtomicity(predicates.NewAnd(newSubs...), predicates.IsAtomic(p)), true
+	case *predicates.OrPredicate:
+		changed := false
+		newSubs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
+		for i, s := range pred.SubPredicates {
+			translated, ok := translatePredicateCorrelations(s, tm)
+			if !ok {
+				return nil, false
+			}
+			newSubs[i] = translated
+			if newSubs[i] != s {
+				changed = true
+			}
+		}
+		if !changed {
+			return p, true
+		}
+		return predicates.WithAtomicity(predicates.NewOr(newSubs...), predicates.IsAtomic(p)), true
+	case *predicates.NotPredicate:
+		newChild, ok := translatePredicateCorrelations(pred.Child, tm)
+		if !ok {
+			return nil, false
+		}
+		if newChild == pred.Child {
+			return p, true
+		}
+		return predicates.WithAtomicity(predicates.NewNot(newChild), predicates.IsAtomic(p)), true
+	case *predicates.ExistentialValuePredicate:
+		// RFC-141: translate the QuantifiedObjectValue operand's correlation
+		// via the shared value path (which remaps the QOV alias). The
+		// comparison (NOT_NULL) is carried unchanged.
+		newVal, ok := translateValueCorrelations(pred.Value, tm)
+		if !ok {
+			return nil, false
+		}
+		if newVal == pred.Value {
+			return p, true
+		}
+		// MustNew PANICS on a non-QOV operand. Decline first: a substitution
+		// that replaced the existential's quantified object with something else
+		// is the same failed translation as a nil rebuild, and a rule that
+		// merely cannot rewrite must not take the process down.
+		if _, isQOV := values.AsQuantifiedObjectValue(newVal); !isQOV {
+			return nil, false
+		}
+		return predicates.MustNewExistentialValuePredicate(newVal, pred.Comparison), true
+	case *predicates.Placeholder:
+		newVal, ok := translateValueCorrelations(pred.Value, tm)
+		if !ok {
+			return nil, false
+		}
+		newAlias := pred.ParameterAlias
+		if tm.ContainsSourceAlias(newAlias) {
+			if target, targetOK := tm.GetTargetAlias(newAlias); targetOK {
+				newAlias = target
+			}
+		}
+		if newVal == pred.Value && newAlias == pred.ParameterAlias {
+			return p, true
+		}
+		return &predicates.Placeholder{
+			ParameterAlias: newAlias,
+			Value:          newVal,
+			CompRange:      pred.CompRange,
+		}, true
+	case *predicates.ConstantPredicate:
+		return p, true
+	default:
+		return p, true
+	}
+}
+
+// isRangeOneQuantifier checks if a quantifier ranges over a Reference
+// containing a TableFunctionExpression with cardinality exactly 1.
+// Mirrors Java's rangeOneMatcher which checks
+// `CardinalitiesProperty.Cardinalities.exactlyOne()`.
+func isRangeOneQuantifier(q expressions.Quantifier) bool {
+	ref := q.GetRangesOver()
+	if ref == nil {
+		return false
+	}
+	for _, m := range ref.AllMembers() {
+		tfe, ok := m.(*expressions.TableFunctionExpression)
+		if !ok {
+			continue
+		}
+		rv, ok := tfe.GetValue().(*values.RangeValue)
+		if !ok {
+			continue
+		}
+		begin, ok := rv.BeginInclusive.(*values.ConstantValue)
+		if !ok {
+			continue
+		}
+		end, ok := rv.EndExclusive.(*values.ConstantValue)
+		if !ok {
+			continue
+		}
+		step, ok := rv.Step.(*values.ConstantValue)
+		if !ok {
+			continue
+		}
+		b, bOk := toInt64(begin.Value)
+		e, eOk := toInt64(end.Value)
+		s, sOk := toInt64(step.Value)
+		if !bOk || !eOk || !sOk || s <= 0 {
+			continue
+		}
+		rows := (e - b + s - 1) / s
+		if rows == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func toInt64(v any) (int64, bool) {
+	switch x := v.(type) {
+	case int64:
+		return x, true
+	case int32:
+		return int64(x), true
+	case int:
+		return int64(x), true
+	default:
+		return 0, false
+	}
+}
+
+var _ ExpressionRule = (*DecorrelateValuesRule)(nil)

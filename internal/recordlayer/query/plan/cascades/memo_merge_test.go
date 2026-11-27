@@ -1,0 +1,484 @@
+package cascades
+
+import (
+	"testing"
+
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+)
+
+// truePred returns a fresh always-true constant predicate.
+func truePred() predicates.QueryPredicate { return predicates.NewConstantPredicate(predicates.TriTrue) }
+
+// filterOver builds Filter(TRUE, →inner) as a single-member Reference.
+func filterOver(t testing.TB, inner *expressions.Reference) *expressions.Reference {
+	t.Helper()
+	f, err := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{truePred()},
+		expressions.ForEachQuantifier(inner),
+	)
+	return expressions.InitialOf(mustConstruct(t, f, err))
+}
+
+// freshFilterMember builds a standalone Filter(TRUE, →inner) expression
+// (not wrapped in a Reference) — a stand-in for a rule's yielded output.
+func freshFilterMember(t testing.TB, inner *expressions.Reference) expressions.RelationalExpression {
+	t.Helper()
+	filter, err := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{truePred()},
+		expressions.ForEachQuantifier(inner),
+	)
+	return mustConstruct(t, filter, err)
+}
+
+func memoMergeDistinct(
+	t testing.TB,
+	inner *expressions.Reference,
+) *expressions.LogicalDistinctExpression {
+	t.Helper()
+	distinct, err := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(inner))
+	return mustConstruct(t, distinct, err)
+}
+
+// TestMemoMerge_SiblingEquivalentGroupsMerge proves the core optimization:
+// two independently-created sibling References holding structurally-equal
+// members (over the same child) collapse into one when a yield surfaces
+// the equivalence. This is the redundant-subexpression elimination the
+// feature exists for.
+func TestMemoMerge_SiblingEquivalentGroupsMerge(t *testing.T) {
+	t.Parallel()
+	scanRef := expressions.InitialOf(fixtureScan("T"))
+	l := filterOver(t, scanRef) // Filter(TRUE, scanT)
+	r := filterOver(t, scanRef) // structurally identical, distinct Reference
+
+	m := NewMemo(nil)
+	m.RegisterReference(l) // lower id ⇒ survivor
+	m.RegisterReference(r)
+
+	if m.MergeCount() != 0 {
+		t.Fatalf("no merge expected before integration, got %d", m.MergeCount())
+	}
+
+	// A rule yields, into r, an expression equal to l's member.
+	m.Integrate(r, freshFilterMember(t, scanRef))
+
+	if m.MergeCount() != 1 {
+		t.Fatalf("expected exactly 1 merge, got %d", m.MergeCount())
+	}
+	if l.Canonical() != l {
+		t.Fatal("the lower-id Reference (l) must be the survivor")
+	}
+	if r.Canonical() != l {
+		t.Fatal("r must forward to the survivor l after merge")
+	}
+}
+
+// TestMemoMerge_InFlightTaskNotStranded pins a review-found regression: a
+// task still pointing at the merged-away (loser) Reference must keep
+// working via transparent forwarding. A distinct member carried by the
+// loser is preserved (by pointer) in the survivor, so ContainsExactly —
+// the gate every TransformExprTask checks — still returns true.
+func TestMemoMerge_InFlightTaskNotStranded(t *testing.T) {
+	t.Parallel()
+	scanRef := expressions.InitialOf(fixtureScan("T"))
+	l := filterOver(t, scanRef)
+	r := filterOver(t, scanRef)
+	// Give r a distinct extra member that l does not have.
+	extra, extraErr := expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(scanRef))
+	extra = mustConstruct(t, extra, extraErr)
+	r.Insert(extra)
+
+	m := NewMemo(nil)
+	m.RegisterReference(l)
+	m.RegisterReference(r)
+	m.Integrate(r, freshFilterMember(t, scanRef)) // merges r into l
+
+	if m.MergeCount() != 1 {
+		t.Fatalf("expected 1 merge, got %d", m.MergeCount())
+	}
+	// A queued task holding the loser pointer must still see the member.
+	if !r.ContainsExactly(extra) {
+		t.Fatal("forwarded loser must report ContainsExactly(extra) via the survivor — in-flight task would be stranded")
+	}
+	if !l.ContainsExactly(extra) {
+		t.Fatal("survivor must hold the loser's distinct member")
+	}
+}
+
+// TestMemoMerge_RecursiveUpwardReMerge pins upward re-merging: when
+// two groups merge, parents that become equivalent must themselves merge
+// (the paper's bottom-up recursion).
+func TestMemoMerge_RecursiveUpwardReMerge(t *testing.T) {
+	t.Parallel()
+	scanRef := expressions.InitialOf(fixtureScan("T"))
+	l := filterOver(t, scanRef)
+	r := filterOver(t, scanRef)
+	p1 := filterOver(t, l) // Filter(TRUE, →L)
+	p2 := filterOver(t, r) // Filter(TRUE, →R) — equal to p1 once L≡R
+
+	m := NewMemo(nil)
+	m.RegisterReference(p1) // indexes p1, l, scanRef
+	m.RegisterReference(p2) // indexes p2, r
+
+	m.Integrate(r, freshFilterMember(t, scanRef)) // L≡R merge → cascades to P1≡P2
+
+	if m.MergeCount() != 2 {
+		t.Fatalf("expected 2 merges (L/R then P1/P2), got %d", m.MergeCount())
+	}
+	if l.Canonical() != r.Canonical() {
+		t.Fatal("L and R must share a survivor")
+	}
+	if p1.Canonical() != p2.Canonical() {
+		t.Fatal("parents P1 and P2 must merge via the upward worklist")
+	}
+}
+
+// TestMemoMerge_SkipsCyclicMerge guards against the stack-overflow bug:
+// merging a group with its own descendant would create a self-referential
+// member. Such ancestor/descendant equivalences (idempotence rewrites like
+// Distinct(Distinct(x))) must be skipped, leaving the groups separate.
+func TestMemoMerge_SkipsCyclicMerge(t *testing.T) {
+	t.Parallel()
+	scanRef := expressions.InitialOf(fixtureScan("T"))
+	inner := expressions.InitialOf(memoMergeDistinct(t, scanRef))
+	// outer ranges over inner: outer is an ANCESTOR of inner.
+	outer := expressions.InitialOf(memoMergeDistinct(t, inner))
+
+	m := NewMemo(nil)
+	m.RegisterReference(outer) // indexes outer, inner, scanRef
+
+	// Simulate DistinctMerge yielding into outer an expr equal to inner's
+	// member: Distinct(→scanRef). findEquivalentRef would match inner, but
+	// inner is outer's descendant — merging would create a cycle.
+	yielded := memoMergeDistinct(t, scanRef)
+	m.Integrate(outer, yielded)
+
+	if m.MergeCount() != 0 {
+		t.Fatalf("cyclic (ancestor/descendant) merge must be skipped, got %d merges", m.MergeCount())
+	}
+	if outer.Canonical() == inner.Canonical() {
+		t.Fatal("ancestor and descendant must remain distinct groups")
+	}
+}
+
+// TestMemoMerge_SkipsCyclicMergeThroughFinal pins Finding 8 (RFC-189 A1): the
+// merge cycle guard must walk AllMembers() (exploratory + final), not just
+// exploratory Members(). An ancestor→descendant edge existing ONLY through a
+// FINAL member is invisible to a Members()-only reachability walk, so the buggy
+// guard approves a cyclic merge — which later spins GetCorrelatedTo /
+// childRefsMatchInMemo forever (a planner hang). Here outer's EXPLORATORY member
+// ranges over scanRef (never inner); a FINAL member of outer ranges over inner,
+// so outer is inner's ancestor solely through the final edge — exactly the
+// "distinct-final InsertFinal" the invariant forbids.
+func TestMemoMerge_SkipsCyclicMergeThroughFinal(t *testing.T) {
+	t.Parallel()
+	scanRef := expressions.InitialOf(fixtureScan("T"))
+	inner := expressions.InitialOf(memoMergeDistinct(t, scanRef))
+
+	// outer's exploratory member is Filter(→scanRef): reachable(outer, inner)
+	// over Members() alone walks scanRef and never reaches inner.
+	outer := filterOver(t, scanRef)
+
+	m := NewMemo(nil)
+	m.RegisterReference(outer) // indexes outer, scanRef
+	m.RegisterReference(inner) // indexes inner as a parent of scanRef
+
+	// A FINAL member of outer ranges over inner — outer is inner's ancestor
+	// ONLY through this final edge (a final that is not also an exploratory
+	// member). AllMembers() sees it; Members() does not.
+	outer.InsertFinal(memoMergeDistinct(t, inner))
+
+	// Integrate into outer an expr equal to inner's member (Distinct(→scanRef)):
+	// findEquivalentRef matches inner. Merging outer≡inner would make outer's
+	// final member range over the merged group (itself) — a cycle.
+	yielded := memoMergeDistinct(t, scanRef)
+	m.Integrate(outer, yielded)
+
+	if m.MergeCount() != 0 {
+		t.Fatalf("cyclic merge through a FINAL edge must be skipped, got %d merges", m.MergeCount())
+	}
+	if outer.Canonical() == inner.Canonical() {
+		t.Fatal("ancestor (through final) and descendant must remain distinct groups")
+	}
+}
+
+// TestMemoMerge_SkipsWhenWinnersPresent is the §0 scope guard: a Reference
+// carrying PLANNING-phase bookkeeping is never merged (its embedded raw
+// References would not be canonicalized).
+func TestMemoMerge_SkipsWhenWinnersPresent(t *testing.T) {
+	t.Parallel()
+	scanRef := expressions.InitialOf(fixtureScan("T"))
+	l := filterOver(t, scanRef)
+	r := filterOver(t, scanRef)
+	r.SetWinner(fixtureScan("W")) // r is "optimized"
+
+	m := NewMemo(nil)
+	m.RegisterReference(l)
+	m.RegisterReference(r)
+	m.Integrate(r, freshFilterMember(t, scanRef))
+
+	if m.MergeCount() != 0 {
+		t.Fatalf("merge must be skipped when a group carries a winner, got %d", m.MergeCount())
+	}
+}
+
+// TestMemoMerge_Deterministic pins the determinism invariant: the survivor
+// is always the lower-id Reference regardless of run, and a merge fires
+// every time.
+func TestMemoMerge_Deterministic(t *testing.T) {
+	t.Parallel()
+	for i := 0; i < 50; i++ {
+		scanRef := expressions.InitialOf(fixtureScan("T"))
+		l := filterOver(t, scanRef)
+		r := filterOver(t, scanRef)
+		m := NewMemo(nil)
+		m.RegisterReference(l) // registered first ⇒ lower id ⇒ survivor
+		m.RegisterReference(r)
+		m.Integrate(r, freshFilterMember(t, scanRef))
+		if m.MergeCount() != 1 {
+			t.Fatalf("run %d: expected 1 merge, got %d", i, m.MergeCount())
+		}
+		if l.Canonical() != l || r.Canonical() != l {
+			t.Fatalf("run %d: survivor must deterministically be l (lower id)", i)
+		}
+	}
+}
+
+// TestMemoMerge_FiresThroughRealPlanner is the no-fake-checkbox proof: a
+// real Planner run over a real expression tree triggers a cross-group
+// merge. Branch A = Filter(P, Distinct(scan)); branch B = Distinct(Filter
+// (P, scan)). PushFilterThroughDistinctRule rewrites A into B's form;
+// because the inner Filter(P, scan) interns to B's existing Reference, A's
+// yielded Distinct becomes structurally equal to B's member, and the two
+// sibling union branches merge.
+func TestMemoMerge_FiresThroughRealPlanner(t *testing.T) {
+	t.Parallel()
+	rowType := values.NewRecordType("T", false, []values.Field{
+		{Name: "active", FieldType: values.TypeBool, Ordinal: 0},
+	})
+	scan := mustFullUnorderedScan(t, []string{"T"}, rowType)
+	scanRef := expressions.InitialOf(scan)
+
+	// Branch A: Filter(P, Distinct(scan))
+	distinctRef := expressions.InitialOf(memoMergeDistinct(t, scanRef))
+	aDistinctQ := expressions.ForEachQuantifier(distinctRef)
+	aRootValue, aRootErr := aDistinctQ.RequireFlowedObjectValue()
+	aRoot := mustConstruct(t, aRootValue, aRootErr)
+	aActiveValue, aActiveErr := values.ResolveFieldOrdinals(aRoot, []int{0})
+	aActive := mustConstruct(t, aActiveValue, aActiveErr)
+	aFilter, aFilterErr := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{predicates.NewValuePredicate(aActive)}, aDistinctQ)
+	aRef := expressions.InitialOf(mustConstruct(t, aFilter, aFilterErr))
+
+	// Branch B: Distinct(Filter(P, scan))
+	bScanQ := expressions.ForEachQuantifier(scanRef)
+	bRootValue, bRootErr := bScanQ.RequireFlowedObjectValue()
+	bRoot := mustConstruct(t, bRootValue, bRootErr)
+	bActiveValue, bActiveErr := values.ResolveFieldOrdinals(bRoot, []int{0})
+	bActive := mustConstruct(t, bActiveValue, bActiveErr)
+	innerFilter, innerFilterErr := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{predicates.NewValuePredicate(bActive)}, bScanQ)
+	innerFilterRef := expressions.InitialOf(mustConstruct(t, innerFilter, innerFilterErr))
+	bRef := expressions.InitialOf(memoMergeDistinct(t, innerFilterRef))
+
+	unionExpr, unionErr := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+		expressions.ForEachQuantifier(aRef),
+		expressions.ForEachQuantifier(bRef),
+	})
+	union := expressions.InitialOf(mustConstruct(t, unionExpr, unionErr))
+
+	p := NewPlanner(DefaultExpressionRules(), nil)
+	_, conv := exploreRewriting(p, union)
+	if !conv {
+		t.Fatal("planner did not converge")
+	}
+	if got := p.Memo().MergeCount(); got == 0 {
+		t.Fatal("real planner run produced ZERO cross-group merges — the optimization never fired")
+	}
+	// The two equivalent branches must now share one canonical group.
+	if aRef.Canonical() != bRef.Canonical() {
+		t.Fatal("branches A and B rewrote to the same form but did not merge")
+	}
+}
+
+// TestMemoMerge_MemoizeExpressionCanonicalAfterMerge pins the canonical
+// compare in ExpressionRuleCall.MemoizeExpression (expression_rule_call.go):
+// after a merge, the rule-call's Reference may be a forwarded loser while
+// MemoizeExpression resolves an equal expr to the winner. The self-reference
+// guard must compare CANONICAL identities, so it still fires (returns a fresh
+// InitialOf) rather than handing back the winner and creating a cycle.
+func TestMemoMerge_MemoizeExpressionCanonicalAfterMerge(t *testing.T) {
+	t.Parallel()
+	winner := expressions.InitialOf(fixtureScan("T"))
+	loser := expressions.InitialOf(fixtureScan("T")) // structurally equal
+	m := NewMemo(nil)
+	m.RegisterReference(winner)
+	winner.Absorb(loser) // loser now forwards to winner
+
+	// Rule call firing "into" the (now forwarded) loser.
+	c := &ExpressionRuleCall{Reference: loser, memo: m}
+	// MemoizeExpression(equal scan) resolves to winner (leaf interning);
+	// canonical(winner) == canonical(loser) == winner, so the guard fires.
+	got := c.MemoizeExpression(fixtureScan("T"))
+
+	if got == winner {
+		t.Fatal("self-reference guard failed: returned the winner the rule is yielding into (would cycle)")
+	}
+	if got.Canonical() == loser.Canonical() {
+		t.Fatal("returned a Reference canonical-equal to the rule-call's own group")
+	}
+}
+
+// TestMemoMerge_CorrelatedToInvariant pins the correlation-set invariant:
+// equivalent groups have equal correlation sets, so the survivor's
+// GetCorrelatedTo is unchanged by the merge (the cache is invalidated and
+// recomputes to the same value).
+func TestMemoMerge_CorrelatedToInvariant(t *testing.T) {
+	t.Parallel()
+	scanRef := expressions.InitialOf(fixtureScan("T"))
+	l := filterOver(t, scanRef)
+	r := filterOver(t, scanRef)
+	before := len(l.GetCorrelatedTo()) // populate the survivor cache
+
+	m := NewMemo(nil)
+	m.RegisterReference(l)
+	m.RegisterReference(r)
+	m.Integrate(r, freshFilterMember(t, scanRef))
+
+	if got := len(l.GetCorrelatedTo()); got != before {
+		t.Fatalf("survivor correlation set changed across a valid merge: before=%d after=%d", before, got)
+	}
+	if len(r.GetCorrelatedTo()) != before {
+		t.Fatal("forwarded loser must report the survivor's correlation set")
+	}
+}
+
+// TestMemoMerge_PanicsDuringPlanning pins the RFC-037 §0 phase tripwire:
+// once PLANNING is active, the REWRITING merge primitive must panic — the
+// per-ref winners/matches check alone has a blind spot for refs carrying
+// only pushed ConstraintMap entries, which this path does not re-home.
+// PLANNING merges go through Planner.integratePlanningYield.
+func TestMemoMerge_PanicsDuringPlanning(t *testing.T) {
+	t.Parallel()
+	a := expressions.InitialOf(fixtureScan("A"))
+	m := NewMemo(a)
+	b := expressions.InitialOf(fixtureScan("B"))
+	m.MarkPlanningActive()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("the REWRITING merge during PLANNING must panic")
+		}
+	}()
+	m.merge(a, b)
+}
+
+// TestMemoMerge_AliasRenamedSelectsMustNotMergeUngated pins the RFC-077 7.5
+// gate onto the CROSS-GROUP merge path (findEquivalentRef), not just
+// Reference.Insert/InsertFinal. selA and selB are structurally IDENTICAL
+// SelectExpressions (same shape, same predicates — none) that differ ONLY in
+// their OWN quantifier's alias (QA vs QB); the resultValue is a
+// QuantifiedObjectValue over that SAME quantifier, so it references the
+// node's own alias directly. SemanticEquals under EmptyAliasMap (the
+// alias-IDENTITY tiers) does NOT match them — only alias-aware MemoEqual
+// recognizes them as equal up to a consistent renaming. Neither select
+// implements InternsAliasAware() (only merge-selects, i.e.
+// values.IsPositionalMergeRC/IsOrdinalJoinRV result values, opt in), so per
+// the documented reasoning in SelectExpression.InternsAliasAware — "an
+// alias-aware member collapse keeps a survivor whose quantifier aliases
+// differ from the discarded member's; any external structure that captured
+// the discarded member's aliases by identity then mis-resolves" — these two
+// groups must NOT merge. findEquivalentRef currently calls MemoEqual
+// unconditionally with no InternsAliasAware check, so absent the gate this
+// test fails (the two groups merge, the RFC-039 landmine reproduced on the
+// merge path instead of the Insert path it was fenced on).
+func TestMemoMerge_AliasRenamedSelectsMustNotMergeUngated(t *testing.T) {
+	t.Parallel()
+	child := expressions.InitialOf(fixtureScan("T"))
+	aliasA := values.NamedCorrelationIdentifier("QA")
+	aliasB := values.NamedCorrelationIdentifier("QB")
+	qovA, qovAErr := values.NewQuantifiedObjectValue(aliasA, values.NotNullLong)
+	qovA = mustConstruct(t, qovA, qovAErr)
+	qovB, qovBErr := values.NewQuantifiedObjectValue(aliasB, values.NotNullLong)
+	qovB = mustConstruct(t, qovB, qovBErr)
+	selA, selAErr := expressions.NewSelectExpression(qovA,
+		[]expressions.Quantifier{expressions.NamedForEachQuantifier(aliasA, child)}, nil)
+	selA = mustConstruct(t, selA, selAErr)
+	selB, selBErr := expressions.NewSelectExpression(qovB,
+		[]expressions.Quantifier{expressions.NamedForEachQuantifier(aliasB, child)}, nil)
+	selB = mustConstruct(t, selB, selBErr)
+
+	refA := expressions.InitialOf(selA)
+	refB := expressions.InitialOf(selB)
+
+	m := NewMemo(refA)
+	m.Integrate(refA, selA)
+	m.Integrate(refB, selB)
+
+	if refA.Canonical() == refB.Canonical() {
+		t.Fatal("alias-renamed, non-opted-in SelectExpressions merged across groups: " +
+			"findEquivalentRef must gate its MemoEqual tier on InternsAliasAware exactly like Reference.Insert")
+	}
+	if m.MergeCount() != 0 {
+		t.Fatalf("expected 0 merges for non-opted-in expressions, got %d", m.MergeCount())
+	}
+}
+
+// TestMemoMergeable_DeclinesDuringPlanning pins the soft path of the
+// RFC-037 §0 phase gate: the REWRITING Integrate path consulted during
+// PLANNING must DECLINE instead of running into the merge tripwire's panic.
+func TestMemoMergeable_DeclinesDuringPlanning(t *testing.T) {
+	t.Parallel()
+	a := expressions.InitialOf(fixtureScan("A"))
+	m := NewMemo(a)
+	b := expressions.InitialOf(fixtureScan("B"))
+	if !m.mergeable(a, b) {
+		t.Fatal("precondition: refs must be mergeable during REWRITING")
+	}
+	m.MarkPlanningActive()
+	if m.mergeable(a, b) {
+		t.Fatal("mergeable must decline once PLANNING is active")
+	}
+}
+
+// The parent-edge sets candidate lookup tests membership in stay equal to the
+// edge lists through merges, which move, rewrite and deduplicate edges.
+func TestMemoMerge_ParentEdgeSetsFollowEdges(t *testing.T) {
+	t.Parallel()
+	scanRef := expressions.InitialOf(fixtureScan("T"))
+	l := filterOver(t, scanRef)
+	r := filterOver(t, scanRef)
+	p1 := filterOver(t, l)
+	p2 := filterOver(t, r)
+	m := NewMemo(nil)
+	m.RegisterReference(p1)
+	m.RegisterReference(p2)
+	for child := range m.childToParents {
+		m.parentEdgeSet(child)
+	}
+	built := len(m.parentEdgeSets)
+
+	m.Integrate(r, freshFilterMember(t, scanRef))
+	if m.MergeCount() != 2 {
+		t.Fatalf("expected 2 merges, got %d", m.MergeCount())
+	}
+	if built == 0 {
+		t.Fatal("no edge set was built before the merges")
+	}
+	for child := range m.childToParents {
+		set, edges := m.parentEdgeSet(child), m.childToParents[child]
+		if len(set) != len(edges) {
+			t.Errorf("child %p: %d edges, %d in its set", child, len(edges), len(set))
+		}
+		for _, e := range edges {
+			if _, ok := set[e]; !ok {
+				t.Errorf("child %p: edge %v missing from its set", child, e)
+			}
+		}
+	}
+	for child := range m.parentEdgeSets {
+		if _, ok := m.childToParents[child]; !ok && len(m.parentEdgeSets[child]) > 0 {
+			t.Errorf("child %p keeps a set after losing its edges", child)
+		}
+	}
+}

@@ -158,18 +158,14 @@ var (
 // Allowlist maps a repo-relative file path (matched on path segment boundaries)
 // to the function names within it that are permitted to write a Type they did
 // not build. Every entry is a deliberate contract that must be stated at the
-// site, and carries both legacy pkg/... and future internal/... paths.
+// site, and carries internal/... paths for migrated packages (and legacy pkg/... paths where still unmigrated).
 var Allowlist = map[string]map[string]string{
-	"pkg/recordlayer/query/plan/cascades/values/qov_source_layout.go":                qovSourceLayoutAllow,
 	"internal/recordlayer/query/plan/cascades/values/qov_source_layout.go":           qovSourceLayoutAllow,
-	"pkg/recordlayer/query/plan/cascades/values/ordinal_layout_test.go":              ordinalLayoutTestAllow,
 	"internal/recordlayer/query/plan/cascades/values/ordinal_layout_test.go":         ordinalLayoutTestAllow,
-	"pkg/recordlayer/query/plan/cascades/plan_leg_concat_layout_test.go":             planLegConcatLayoutTestAllow,
 	"internal/recordlayer/query/plan/cascades/plan_leg_concat_layout_test.go":        planLegConcatLayoutTestAllow,
 	"pkg/relational/core/query/inline_values_translation_test.go":                    inlineValuesTranslationTestAllow,
 	"internal/relational/core/query/inline_values_translation_test.go":               inlineValuesTranslationTestAllow,
 	"internal/relational/query/inline_values_translation_test.go":                    inlineValuesTranslationTestAllow,
-	"pkg/recordlayer/query/plan/cascades/values/proto_field_exact_type_test.go":      protoFieldExactTypeTestAllow,
 	"internal/recordlayer/query/plan/cascades/values/proto_field_exact_type_test.go": protoFieldExactTypeTestAllow,
 }
 

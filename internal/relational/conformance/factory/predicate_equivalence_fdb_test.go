@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/internal/relational/conformance/rowdiff"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 )
 
 // equivProgressEvery is how often the equivalence sweep reports, in SEEDS.

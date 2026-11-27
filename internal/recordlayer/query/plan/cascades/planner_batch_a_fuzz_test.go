@@ -1,0 +1,239 @@
+package cascades
+
+import (
+	"errors"
+	"testing"
+
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+)
+
+func mustBatchAFuzzConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct Batch-A fuzz fixture: " + err.Error())
+	}
+	return value
+}
+
+func batchAFuzzRowType(columns []string) values.Type {
+	fields := make([]values.Field, 0, len(columns)+1)
+	for i, name := range columns {
+		fields = append(fields, values.Field{
+			Name: name, FieldType: values.NullableLong, Ordinal: i,
+		})
+	}
+	fields = append(fields, values.Field{
+		Name: "id", FieldType: values.NotNullLong, Ordinal: len(fields),
+	})
+	return values.NewRecordType("BatchAFuzzRow", false, fields)
+}
+
+func batchAFuzzRoot(q expressions.Quantifier) values.Value {
+	flowedType := mustBatchAFuzzConstruct(q.GetFlowedObjectType())
+	return mustBatchAFuzzConstruct(values.NewQuantifiedObjectValue(q.GetAlias(), flowedType))
+}
+
+func batchAFuzzField(root values.Value, name string) values.Value {
+	request := mustBatchAFuzzConstruct(values.FieldByName(name))
+	return mustBatchAFuzzConstruct(values.ResolveFieldAccess(
+		root, []values.FieldRequest{request}))
+}
+
+// FuzzPlanner_WithBatchA_NoPanic pins that the Planner with
+// DefaultExpressionRules (EXPLORE) + BatchAExpressionRules (PLANNING)
+// terminates and doesn't panic on random expression trees. The
+// existing FuzzPlanner_PlanFullPipeline drives a smaller logical-
+// only set; this one specifically stresses the implement rules
+// (PrimaryScan / ImplementFilter / ImplementSort /
+// ImplementDistinct / ImplementTypeFilter / ImplementUnion /
+// ImplementIntersection) interacting with the logical-rewrite
+// chain.
+//
+// Why a separate target: the implement rules introduce physical
+// wrappers into References which the logical rewrites must
+// tolerate. The 5-wrapper-symmetry asymmetries that bit us mid-
+// shift would surface here as planner non-termination or panics
+// — not as missed-fire bugs in unit tests.
+//
+// MaxTasks set generously since the combined rule set produces
+// more alternatives than the logical-only set; the seed expression
+// shapes from buildFuzzExpression typically converge in <2k tasks.
+func FuzzPlanner_WithBatchA_NoPanic(f *testing.F) {
+	f.Add([]byte{0, 1, 2, 3, 4, 5, 6, 7})
+	f.Add([]byte{0xFF, 0xFF, 0xFF, 0xFF})
+	f.Add(make([]byte, 16))
+	// Specific seeds exercising shapes the 7-wrapper symmetry fix
+	// enabled — the buildFuzzExpression case selectors map to the
+	// shapes documented in buildFuzzExpression (planner_fuzz_test.go).
+	//   0 → Filter
+	//   5 → Union(2 children)
+	//   7 → Intersection(2 children)
+	// This corpus pre-loads Filter-over-Union, Filter-over-Intersection,
+	// Union-over-Intersection, etc., so the first iteration exercises
+	// the wrapper-symmetry paths.
+	f.Add([]byte{0, 5, 0, 0, 0, 0, 0, 0}) // Filter over Union
+	f.Add([]byte{0, 7, 0, 0, 0, 0, 0, 0}) // Filter over Intersection
+	f.Add([]byte{5, 7, 0, 0, 0, 0, 0, 0}) // Union over Intersection
+	f.Add([]byte{7, 5, 0, 0, 0, 0, 0, 0}) // Intersection over Union
+	// Regression: Union(TypeFilter(TypeFilter(Scan)), TypeFilter(Filter(Scan)))
+	// — ASYMMETRIC union legs. The right leg's group, merged with the left
+	// leg's never-explored inner via constant-true filter elimination,
+	// inherited the right leg's exploration progress, so no rule ran on the
+	// survivor's own member and the union reached PLANNING unfinalized — once
+	// the "root has no BestMember" nightly crash on THIS target (seed
+	// 9bd9b3661b501312, 2026-07-19). Fixed in Reference.Absorb: a survivor that
+	// never explored takes the loser's constraints but not its progress.
+	f.Add([]byte{35, 4, 4, 1})
+	// Regression: Union(TypeFilter(TypeFilter(Scan)), TypeFilter(Projection(Scan)))
+	// over a row whose field names are not upper-case. The implementation rule
+	// read the scan leg's names through a case fold and the projection leg's
+	// exactly, decided the legs differed, and wrapped one in a rename Map the
+	// physical union then rejected for disagreeing with the other leg's type
+	// (RFC-242; corpus entry 4a35dedaab03e663; nightly crashers 455b6e6975d288bc,
+	// 9027cb5e7737c749, d98799d80e18558c).
+	f.Add([]byte{35, 4, 4, 33})
+
+	f.Fuzz(func(t *testing.T, b []byte) {
+		if len(b) < 4 {
+			return
+		}
+		expr := buildFuzzExpression(b, 0, 0)
+		ref := expressions.InitialOf(expr)
+
+		// Combine logical-rewrite rules; Batch A rules fire during PLANNING.
+		rules := DefaultExpressionRules()
+
+		p := NewPlanner(rules, nil).
+			WithPlanningExpressionRules(BatchAExpressionRules()).
+			WithImplementationRules(DefaultImplementationRules())
+		p.MaxTasks = 50_000
+
+		plan, _, err := p.Plan(ref)
+		if err != nil && !errors.Is(err, ErrPlannerCapHit) {
+			t.Fatalf("Plan: unexpected err %v", err)
+		}
+		// Plan succeeded → root must have a BestMember stamp.
+		if err == nil && !p.HasBestMember(ref) {
+			t.Fatal("Plan succeeded but root Reference has no BestMember stamp — invariant break")
+		}
+		// Plan succeeded → returned plan must be non-nil (cost
+		// extraction always picks SOME member from a non-empty
+		// Reference).
+		if err == nil && plan == nil {
+			t.Fatal("Plan succeeded but plan is nil — invariant break")
+		}
+	})
+}
+
+// FuzzPlanner_WithIndexCandidates_NoPanic exercises the full planner
+// (Default + BatchA rules) with actual MatchCandidates so that
+// ImplementIndexScanRule, IndexIntersectionRule, OrderedIndexScanRule,
+// and ImplementSortRule all fire during the same planning run.
+// Catches panics in the index-rule interaction paths that nil-PlanContext
+// targets can't reach.
+func FuzzPlanner_WithIndexCandidates_NoPanic(f *testing.F) {
+	f.Add(byte(2), byte(3), byte(1), byte(0))
+	f.Add(byte(0), byte(0), byte(0), byte(0))
+	f.Add(byte(5), byte(5), byte(3), byte(255))
+	f.Add(byte(2), byte(1), byte(0), byte(128)) // GroupBy path (seed >= 128)
+
+	colPool := []string{"A", "B", "C", "D", "STATUS", "AMOUNT", "DATE"}
+	rowType := batchAFuzzRowType(colPool)
+
+	f.Fuzz(func(t *testing.T, numPreds, numCands, numSort, seed byte) {
+		nPreds := int(numPreds%4) + 1
+		nCands := int(numCands%3) + 1
+		nSort := int(numSort % 3)
+
+		var candidates []MatchCandidate
+		for c := 0; c < nCands; c++ {
+			nCols := int(seed+byte(c*7))%3 + 1
+			cols := make([]string, nCols)
+			aliases := make([]values.CorrelationIdentifier, nCols)
+			for i := range cols {
+				cols[i] = colPool[(int(seed)+c*3+i)%len(colPool)]
+				aliases[i] = values.UniqueCorrelationIdentifier()
+			}
+			candidates = append(candidates, newKnownDistinctValueIndexCandidate(
+				"idx_"+cols[0],
+				[]string{"T"},
+				cols,
+				aliases,
+				rowType,
+				seed%5 == 0,
+				nil,
+			))
+		}
+		ctx := &indexTestPlanContext{candidates: candidates}
+
+		scan := mustBatchAFuzzConstruct(expressions.NewFullUnorderedScanExpression(
+			[]string{"T"}, rowType))
+		scanRef := expressions.InitialOf(scan)
+		q := expressions.ForEachQuantifier(scanRef)
+		scanRoot := batchAFuzzRoot(q)
+
+		preds := make([]predicates.QueryPredicate, nPreds)
+		for i := range preds {
+			col := colPool[(int(seed)+i)%len(colPool)]
+			preds[i] = predicates.NewComparisonPredicate(
+				batchAFuzzField(scanRoot, col),
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(i+1)),
+			)
+		}
+
+		filter := mustBatchAFuzzConstruct(expressions.NewLogicalFilterExpression(preds, q))
+		var topRef *expressions.Reference
+
+		if nSort > 0 {
+			filterRef := expressions.InitialOf(filter)
+			filterQ := expressions.ForEachQuantifier(filterRef)
+			filterRoot := batchAFuzzRoot(filterQ)
+			sortKeys := make([]expressions.SortKey, nSort)
+			for i := range sortKeys {
+				col := colPool[(int(seed)+i*2)%len(colPool)]
+				sortKeys[i] = expressions.SortKey{
+					Value: batchAFuzzField(filterRoot, col),
+				}
+			}
+			sort := mustBatchAFuzzConstruct(expressions.NewLogicalSortExpression(sortKeys, filterQ))
+			topRef = expressions.InitialOf(sort)
+		} else {
+			topRef = expressions.InitialOf(filter)
+		}
+
+		// Optionally wrap with GroupBy (seed >= 128 triggers agg path).
+		if seed >= 128 {
+			topQ := expressions.ForEachQuantifier(topRef)
+			topRoot := batchAFuzzRoot(topQ)
+			nGroupKeys := int(seed%3) + 1
+			groupKeys := make([]values.Value, nGroupKeys)
+			for i := range groupKeys {
+				groupKeys[i] = batchAFuzzField(
+					topRoot, colPool[(int(seed)+i*5)%len(colPool)])
+			}
+			gb := mustBatchAFuzzConstruct(expressions.NewGroupByExpression(
+				groupKeys,
+				[]expressions.AggregateSpec{
+					{Function: expressions.AggCount, Operand: batchAFuzzField(topRoot, "id")},
+				},
+				topQ,
+			))
+			topRef = expressions.InitialOf(gb)
+		}
+
+		rules := DefaultExpressionRules()
+		p := NewPlanner(rules, ctx).
+			WithPlanningExpressionRules(BatchAExpressionRules()).
+			WithImplementationRules(DefaultImplementationRules())
+		p.MaxTasks = 50_000
+
+		plan, _, err := p.Plan(topRef)
+		if err != nil && !errors.Is(err, ErrPlannerCapHit) {
+			t.Fatalf("Plan: unexpected err %v", err)
+		}
+		if err == nil && plan == nil {
+			t.Fatal("Plan succeeded but plan is nil")
+		}
+	})
+}

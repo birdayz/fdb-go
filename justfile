@@ -307,7 +307,7 @@ bench-ci:
     # benches produce output. Track exit codes manually.
     set -uo pipefail
     rm -f bench-raw.txt bench-results.txt
-    bazelisk build //pkg/recordlayer:recordlayer_test //internal/fdbwire/types:types_test //pkg/recordlayer/query/plan/cascades:cascades_test //pkg/recordlayer/query/plan/cascades/expressions:expressions_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/keyspace:keyspace_test //internal/relational/relapi:relapi_test //internal/simfdb/hunt/sqlhunt:sqlhunt_test
+    bazelisk build //pkg/recordlayer:recordlayer_test //internal/fdbwire/types:types_test //internal/recordlayer/query/plan/cascades:cascades_test //internal/recordlayer/query/plan/cascades/expressions:expressions_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/keyspace:keyspace_test //internal/relational/relapi:relapi_test //internal/simfdb/hunt/sqlhunt:sqlhunt_test
     BAZEL_BIN=$(bazelisk info bazel-bin)
     fail_count=0
     {
@@ -334,8 +334,8 @@ bench-ci:
             echo "!!! wire/types bench binary exited with $rc (124 = timeout)"
             fail_count=$((fail_count + 1))
         fi
-        echo "=== Running benchmarks: //pkg/recordlayer/query/plan/cascades:cascades_test ==="
-        timeout 300 "$BAZEL_BIN/pkg/recordlayer/query/plan/cascades/cascades_test_/cascades_test" \
+        echo "=== Running benchmarks: //internal/recordlayer/query/plan/cascades:cascades_test ==="
+        timeout 300 "$BAZEL_BIN/internal/recordlayer/query/plan/cascades/cascades_test_/cascades_test" \
             -test.run='^$' \
             -test.bench=. \
             -test.benchmem \
@@ -345,8 +345,8 @@ bench-ci:
             echo "!!! cascades_test bench binary exited with $rc (124 = timeout) — GATING (no FDB, so this is deterministic)"
             fail_count=$((fail_count + 1))
         fi
-        echo "=== Running benchmarks: //pkg/recordlayer/query/plan/cascades/expressions:expressions_test ==="
-        timeout 300 "$BAZEL_BIN/pkg/recordlayer/query/plan/cascades/expressions/expressions_test_/expressions_test" \
+        echo "=== Running benchmarks: //internal/recordlayer/query/plan/cascades/expressions:expressions_test ==="
+        timeout 300 "$BAZEL_BIN/internal/recordlayer/query/plan/cascades/expressions/expressions_test_/expressions_test" \
             -test.run='^$' \
             -test.bench=. \
             -test.benchmem \
@@ -553,7 +553,7 @@ race:
 # run_sql / yamsql / fault-inject specs split out of conformance_test into
 # conformance_corpora_test are raced wherever conformance_test is.
 race-all:
-    bazelisk --output_base={{race_base}} test //internal/fdbgo/client:client_test //pkg/recordlayer:recordlayer_test //pkg/fdbgo/fdb:fdb_test //internal/recordlayer/chaos:chaos_test //conformance:conformance_test //conformance:conformance_corpora_test //pkg/recordlayer/query/plan/cascades/... --@rules_go//go/config:race --test_timeout=900
+    bazelisk --output_base={{race_base}} test //internal/fdbgo/client:client_test //pkg/recordlayer:recordlayer_test //pkg/fdbgo/fdb:fdb_test //internal/recordlayer/chaos:chaos_test //conformance:conformance_test //conformance:conformance_corpora_test //internal/recordlayer/query/plan/cascades/... --@rules_go//go/config:race --test_timeout=900
 
 # Extended verification: full suite + race detector + bounded fuzz smoke.
 # No CI lane runs active fuzzing; this recipe's smoke is the only routine one.

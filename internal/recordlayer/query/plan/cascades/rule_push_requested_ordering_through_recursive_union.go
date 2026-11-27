@@ -1,0 +1,79 @@
+// Portions derived from FoundationDB Record Layer (
+// PushRequestedOrderingThroughRecursiveUnionRule.java, RequestedOrdering.java),
+// Copyright 2015-2019 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2021 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
+package cascades
+
+import (
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/properties"
+)
+
+// PushRequestedOrderingThroughRecursiveUnionRule is a PLANNING-phase
+// ImplementationRule that pushes a RequestedOrdering constraint through
+// a RecursiveUnionExpression. Currently, it only allows pushing
+// preserve-type orderings to both the initial and recursive legs.
+//
+// Ports Java's PushRequestedOrderingThroughRecursiveUnionRule.
+type PushRequestedOrderingThroughRecursiveUnionRule struct {
+	preOrderMarker
+	matcher matching.BindingMatcher
+}
+
+func NewPushRequestedOrderingThroughRecursiveUnionRule() *PushRequestedOrderingThroughRecursiveUnionRule {
+	return &PushRequestedOrderingThroughRecursiveUnionRule{
+		matcher: NewExpressionMatcher[*expressions.RecursiveUnionExpression]("push_req_ord_recursive_union"),
+	}
+}
+
+func (r *PushRequestedOrderingThroughRecursiveUnionRule) Matcher() matching.BindingMatcher {
+	return r.matcher
+}
+
+// ConstraintDependencies is Java's ImmutableSet.of(REQUESTED_ORDERING).
+func (r *PushRequestedOrderingThroughRecursiveUnionRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
+}
+
+func (r *PushRequestedOrderingThroughRecursiveUnionRule) OnMatch(call *ImplementationRuleCall) {
+	if !call.IsConstraintOnly() {
+		return
+	}
+
+	orderings := call.GetRequestedOrderings()
+	if len(orderings) == 0 {
+		return
+	}
+
+	// Push only the preserve ordering (if any). Java filters the
+	// stream for RequestedOrdering.isPreserve() and takes the first.
+	var preserve *properties.RequestedOrdering
+	for _, o := range orderings {
+		if o.IsPreserve() {
+			preserve = o
+			break
+		}
+	}
+	if preserve == nil {
+		return
+	}
+
+	toBePushed := []*properties.RequestedOrdering{preserve}
+
+	ru := call.Bindings.Get(r.matcher).(*expressions.RecursiveUnionExpression)
+
+	// Push to both legs: initial (index 0) and recursive (index 1).
+	initialRef := ru.GetInitialState().GetRangesOver()
+	if initialRef != nil {
+		call.PushConstraint(initialRef, toBePushed)
+	}
+	recursiveRef := ru.GetRecursiveState().GetRangesOver()
+	if recursiveRef != nil {
+		call.PushConstraint(recursiveRef, toBePushed)
+	}
+}
+
+var _ ImplementationRule = (*PushRequestedOrderingThroughRecursiveUnionRule)(nil)

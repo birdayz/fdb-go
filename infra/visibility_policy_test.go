@@ -461,7 +461,7 @@ var restrictedScopeRoots = []struct {
 	{"internal/recordlayer/keystoretest/", []string{"//conformance:__pkg__", "//internal/relational/conformance/javacorpus:__pkg__", "//pkg/recordlayer:__pkg__", "//pkg/relational/sqldriver:__pkg__"}},
 	{"layers/otel/otelsql/internal/", []string{"//layers/otel/otelsql:__subpackages__"}},
 	{"pkg/internal/", []string{"//pkg:__subpackages__"}},
-	{"pkg/recordlayer/query/plan/cascades/internal/", []string{"//pkg/recordlayer/query/plan/cascades:__subpackages__"}},
+	{"internal/recordlayer/query/plan/cascades/internal/", []string{"//internal/recordlayer/query/plan/cascades:__subpackages__"}},
 	{"tools/clientbench/internal/", []string{"//tools/clientbench:__subpackages__"}},
 	{"tools/unicode15gen/internal/", []string{"//tools/unicode15gen:__subpackages__"}},
 	{"internal/testinstruments/constfoldcensus/", []string{"//visibility:private"}},

@@ -16,10 +16,10 @@ go_library(
         "//cmd/factory-rebless-plan-shapes:__pkg__",
     ],
     deps = [
+        "//internal/recordlayer/query/plan/cascades",
+        "//internal/recordlayer/query/plan/plans",
         "//internal/relational/conformance/yamsql",
         "//internal/relational/relapi",
-        "//pkg/recordlayer/query/plan/cascades",
-        "//pkg/recordlayer/query/plan/plans",
         "//pkg/relational/core/embedded",
     ],
 )
@@ -51,12 +51,12 @@ go_test(
     embed = [":explaindiff"],
     tags = ["resources:cpu:8"],
     deps = [
+        "//internal/recordlayer/query/plan/cascades",
+        "//internal/recordlayer/query/plan/cascades/values",
         "//internal/relational/conformance/yamsql",
         "//internal/relational/keyspace",
         "//internal/relational/relapi",
         "//internal/testinstruments/querycensus",
-        "//pkg/recordlayer/query/plan/cascades",
-        "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/core/embedded",
         "//pkg/relational/core/parser",
         "//pkg/relational/core/parser/gen",

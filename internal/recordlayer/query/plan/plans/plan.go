@@ -1,0 +1,187 @@
+// Portions derived from FoundationDB Record Layer (RecordQueryPlan.java,
+// RelationalExpression.java, QueryPlan.java, PlanHashable.java, and others),
+// Copyright 2015-2018 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2019 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2026 Apple Inc. and the FoundationDB project authors
+// Copyright 2021-2026 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
+// Package plans is the physical-plan ("RecordQueryPlan") hierarchy
+// the Cascades planner emits after Batch A rules implement logical
+// expressions as concrete query operators.
+//
+// Mirrors Java's `com.apple.foundationdb.record.query.plan.plans`
+// package. Java has 74 RecordQueryPlan classes; the seed ports the
+// minimum set Batch A's first rules need:
+//
+//   - RecordQueryScanPlan — primary-key scan over a record type.
+//   - RecordQueryFilterPlan — applies a QueryPredicate to an inner
+//     plan's row stream.
+//   - RecordQueryInMemorySortPlan — sorts an inner plan's row stream in
+//     memory (Go extension; Java's Cascades eliminates the sort via index
+//     ordering, RemoveSortRule/ImplementSortRule).
+//
+// The seed deliberately omits Java's full surface (Execute method,
+// PlanHashable, continuation handling, complex covering-index
+// machinery) — those land as the rule chain that produces these
+// plans starts consuming them. The seed is the type structure +
+// node-info equality so PrimaryScanRule / ImplementFilterRule /
+// ImplementInMemorySortRule have a target to yield into.
+//
+// Why a separate sub-package vs cascades/expressions/: to mirror Java's
+// package layout, so code review across the two languages stays tractable.
+//
+// Java separates the PACKAGE but unifies the HIERARCHY:
+//
+//	QueryPlan<T> extends PlanHashable, RelationalExpression  (QueryPlan.java:51)
+//	RecordQueryPlan extends QueryPlan<…>              (RecordQueryPlan.java:73)
+//
+// so RecordQueryPlan embeds RelationalExpression directly (RFC-183 P5). A
+// separate adapter layer presenting a plan as an expression is the source of
+// the nil-inner "shell" bug class: a wrapper and its wrapped plan each store
+// the parent->child edge and can disagree.
+package plans
+
+import (
+	"fdb.dev/internal/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
+)
+
+// OrdinalLayoutAvailabilityCode classifies why a plan cannot provide a
+// concrete ordinal layout. The dynamic-carrier case is a valid plan that must
+// be refined before ordinal evaluation; malformed-base means construction was
+// bypassed and is never a compatible physical alternative.
+type OrdinalLayoutAvailabilityCode uint8
+
+const (
+	OrdinalLayoutAvailabilityInvalid OrdinalLayoutAvailabilityCode = iota
+	OrdinalLayoutDynamicCarrier
+	OrdinalLayoutMalformedPlan
+)
+
+// OrdinalLayoutUnavailableError is the typed, stable failure returned by
+// ProvidedOutputLayout when no concrete layout can be published. It follows
+// the repository's error-type contract rather than a message-only sentinel.
+type OrdinalLayoutUnavailableError struct {
+	Code OrdinalLayoutAvailabilityCode
+}
+
+func (e *OrdinalLayoutUnavailableError) Error() string {
+	if e != nil && e.Code == OrdinalLayoutDynamicCarrier {
+		return "provided ordinal layout unavailable: exact carrier is dynamic"
+	}
+	return "provided ordinal layout unavailable: plan base is malformed"
+}
+
+// RecordQueryPlan is the root interface for every physical plan
+// node. Mirrors Java's `RecordQueryPlan` interface — implementations
+// produce a record stream when executed against an FDBRecordStore.
+//
+// It exposes node-information accessors (GetResultType,
+// GetChildren, EqualsPlanWithoutChildren, HashCodeWithoutChildren) and
+// an Explain method for diagnostic rendering. Execute is NOT on the
+// interface: the executor package runs plans.
+type RecordQueryPlan interface {
+	// A plan IS a RelationalExpression — Java's
+	// `QueryPlan<T> extends PlanHashable, RelationalExpression`
+	// (QueryPlan.java:51), inherited by RecordQueryPlan
+	// (RecordQueryPlan.java:73). Embedding it here is the Go spelling of
+	// that `extends`, and it is what lets a plan be a memo member and hold
+	// its child as a Quantifier instead of a raw pointer.
+	//
+	// Note this supplies HashCodeWithoutChildren, which both interfaces
+	// declare with the same signature.
+	expressions.RelationalExpression
+
+	// GetResultType returns the rich Type of rows this plan emits.
+	// Always a RelationType.
+	GetResultType() values.Type
+
+	// ProvidedOutputLayout returns the immutable physical ordinal layout of
+	// every row this plan emits. A concrete layout returns (layout, nil). A
+	// valid dynamic carrier returns a typed OrdinalLayoutUnavailableError with
+	// OrdinalLayoutDynamicCarrier; every other nil layout returns the
+	// OrdinalLayoutMalformedPlan code. There is no nil,nil or unknown-layout
+	// state.
+	ProvidedOutputLayout() (values.OrdinalLayout, error)
+
+	// OrdinalPhysicalProperties returns this plan's immutable required input,
+	// evaluation-program, and provided output layout view. It fails with the
+	// same typed availability error as ProvidedOutputLayout when an exact
+	// physical carrier has not yet been selected or construction was bypassed.
+	OrdinalPhysicalProperties() (OrdinalPhysicalProperties, error)
+
+	// GetChildren returns this plan's input plans, in stable order.
+	// Read-only; callers must not mutate.
+	GetChildren() []RecordQueryPlan
+
+	// EqualsPlanWithoutChildren reports whether this plan's node-
+	// information matches `other`'s. Children are not consulted —
+	// caller's job (typically by recursing into GetChildren).
+	EqualsPlanWithoutChildren(other RecordQueryPlan) bool
+
+	// HashCodeWithoutChildren returns the structural hash of this
+	// node's node-information. Must be consistent with
+	// EqualsPlanWithoutChildren: x.Equals(y) implies x.Hash() == y.Hash().
+	HashCodeWithoutChildren() uint64
+
+	// Explain returns a single-line human-readable label for this
+	// plan node. Implementations should match Java's
+	// `Plan.toString()` shape where reasonable.
+	Explain() string
+}
+
+// Equals walks two plan trees and reports semantic equality —
+// node-info match plus pairwise child equality. The plans seed
+// doesn't have alias-aware comparison (no Quantifiers in the
+// physical layer); positional pairing only.
+//
+// Returns true if both nil.
+func Equals(a, b RecordQueryPlan) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if !a.EqualsPlanWithoutChildren(b) {
+		return false
+	}
+	ac := a.GetChildren()
+	bc := b.GetChildren()
+	if len(ac) != len(bc) {
+		return false
+	}
+	for i := range ac {
+		if !Equals(ac[i], bc[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// Walk invokes `visit` on `p` and (if visit returns true) recursively
+// on every reachable RecordQueryPlan via GetChildren. Returning false
+// from `visit` short-circuits the walk for that subtree (siblings
+// + ancestors continue).
+//
+// Counterpart to expressions.Walk for the logical side.
+func Walk(p RecordQueryPlan, visit func(RecordQueryPlan) bool) {
+	if p == nil {
+		return
+	}
+	if !visit(p) {
+		return
+	}
+	for _, c := range p.GetChildren() {
+		Walk(c, visit)
+	}
+}
+
+// Size returns the total node count of the plan tree rooted at `p`,
+// including `p` itself. Returns 0 for nil.
+func Size(p RecordQueryPlan) int {
+	count := 0
+	Walk(p, func(_ RecordQueryPlan) bool {
+		count++
+		return true
+	})
+	return count
+}

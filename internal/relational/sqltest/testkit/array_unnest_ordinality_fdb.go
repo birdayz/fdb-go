@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"fdb.dev/internal/recordlayer/query/executor"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/values"
 )
 
 func UnnestSprint(v any) string {

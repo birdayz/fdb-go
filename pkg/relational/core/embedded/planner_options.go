@@ -15,10 +15,10 @@ import (
 	"strings"
 
 	"fdb.dev/internal/recordlayer/indexfetch"
+	cascades "fdb.dev/internal/recordlayer/query/plan/cascades"
+	"fdb.dev/internal/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
-	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 )
 
 // plannerOptions is the planner-facing projection of api.Options, resolved
