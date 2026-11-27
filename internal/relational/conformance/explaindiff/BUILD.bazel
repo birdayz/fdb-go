@@ -4,7 +4,10 @@ package(default_visibility = ["//:__subpackages__"])
 
 go_library(
     name = "explaindiff",
-    srcs = ["explaindiff.go"],
+    srcs = [
+        "diff.go",
+        "explaindiff.go",
+    ],
     importpath = "fdb.dev/internal/relational/conformance/explaindiff",
     visibility = [
         "//:__subpackages__",

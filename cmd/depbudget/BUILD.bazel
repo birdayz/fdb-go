@@ -9,7 +9,10 @@ go_sdk_binary(
 
 go_library(
     name = "depbudget_lib",
-    srcs = ["main.go"],
+    srcs = [
+        "main.go",
+        "measure.go",
+    ],
     importpath = "fdb.dev/cmd/depbudget",
     visibility = ["//visibility:private"],
 )

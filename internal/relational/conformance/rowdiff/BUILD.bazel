@@ -13,6 +13,7 @@ go_library(
         "gen_sql.go",
         "nested.go",
         "oracle.go",
+        "oracle_compound.go",
         "ordering.go",
         "run.go",
         "templates.go",
