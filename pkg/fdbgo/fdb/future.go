@@ -7,8 +7,9 @@ import (
 	"fdb.dev/internal/fdbgo/client"
 )
 
-// Future represents a value (or error) available at some later time.
-type Future interface {
+// RawFuture represents the low-level readiness and cancellation contract
+// shared by FoundationDB futures.
+type RawFuture interface {
 	BlockUntilReady()
 	IsReady() bool
 	Cancel()
@@ -68,7 +69,7 @@ func runFuture[T any](f *futureBase, val *T, fn func() (T, error)) {
 type FutureByteSlice interface {
 	Get() ([]byte, error)
 	MustGet() []byte
-	Future
+	RawFuture
 }
 
 type futureByteSlice struct {
@@ -213,7 +214,7 @@ func (f *pendingFutureByteSlice) Cancel() {
 type FutureNil interface {
 	Get() error
 	MustGet()
-	Future
+	RawFuture
 }
 
 type futureNil struct {
@@ -266,7 +267,7 @@ func newFutureNilCancel(fn func() error, cancel func()) FutureNil {
 type FutureKey interface {
 	Get() (Key, error)
 	MustGet() Key
-	Future
+	RawFuture
 }
 
 type futureKey struct {
@@ -306,7 +307,7 @@ func newFutureKey(fn func() (Key, error)) FutureKey {
 type FutureInt64 interface {
 	Get() (int64, error)
 	MustGet() int64
-	Future
+	RawFuture
 }
 
 type futureInt64 struct {
@@ -346,7 +347,7 @@ func newFutureInt64(fn func() (int64, error)) FutureInt64 {
 type FutureKeyArray interface {
 	Get() ([]Key, error)
 	MustGet() []Key
-	Future
+	RawFuture
 }
 
 type futureKeyArray struct {
@@ -379,7 +380,7 @@ func newFutureKeyArray(fn func() ([]Key, error)) FutureKeyArray {
 type FutureStringSlice interface {
 	Get() ([]string, error)
 	MustGet() []string
-	Future
+	RawFuture
 }
 
 type futureStringSlice struct {

@@ -45,7 +45,7 @@ func TestFDB_ChainedCursorEmptyContinuation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(rawDB.Close)
+	t.Cleanup(func() { _ = rawDB.Close() })
 	db := NewFDBDatabase(rawDB)
 
 	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)

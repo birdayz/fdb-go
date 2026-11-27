@@ -42,7 +42,7 @@ func TestFDB_RecordLoadConflicts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(rawDB.Close)
+	t.Cleanup(func() { _ = rawDB.Close() })
 	db := NewFDBDatabase(rawDB)
 
 	primaryKey := tuple.Tuple{int64(1)}

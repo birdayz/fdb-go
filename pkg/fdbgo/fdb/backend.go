@@ -43,7 +43,8 @@ type BackendDatabase interface {
 	// LocalityGetBoundaryKeys returns the shard boundary keys within r (a read of
 	// the \xff/keyServers system range). readVersion 0 = use the latest.
 	LocalityGetBoundaryKeys(r ExactRange, limit int, readVersion int64) ([]Key, error)
-	Close()
+	// Close closes the database handle and releases its resources.
+	Close() error
 }
 
 // IsValid reports whether the Database is a live handle (non-zero). A zero

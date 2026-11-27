@@ -995,7 +995,7 @@ func TestRelExporterTemplateMismatchRealFDB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(raw.Close)
+	t.Cleanup(func() { _ = raw.Close() })
 	stale, err := embedded.BuildSchemaTemplateFromDDL("CREATE SCHEMA TEMPLATE " + otelsql.TemplateName + " CREATE TABLE spans (trace_id BYTES, PRIMARY KEY (trace_id))")
 	if err != nil {
 		t.Fatal(err)

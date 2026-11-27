@@ -345,21 +345,22 @@ func (d *database) ReadTransactCtx(ctx context.Context, f func(fdb.ReadTransacti
 // handle; the underlying C handle is destroyed only when the last reference for the
 // cluster file closes. Idempotent: a second Close on the same backend is a no-op
 // (so it never double-decrements the shared refcount).
-func (d *database) Close() {
+func (d *database) Close() error {
 	if d.closed.Swap(true) {
-		return
+		return nil
 	}
 	openMu.Lock()
 	defer openMu.Unlock()
 	s, ok := openRefs[d.clusterFile]
 	if !ok {
-		return
+		return nil
 	}
 	s.refs--
 	if s.refs <= 0 {
 		s.db.Close()
 		delete(openRefs, d.clusterFile)
 	}
+	return nil
 }
 
 // withCancelWatcher runs fn with a goroutine that cancels the cgo transaction (via

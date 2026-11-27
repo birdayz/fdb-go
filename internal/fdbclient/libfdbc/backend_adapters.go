@@ -274,7 +274,7 @@ func (i *rangeIterator) SetTraceLog(func(iteration, requested, returned int, mor
 
 // The MustGet adapters call their OWN Get() (which runs convErr) and panic the
 // converted error — they must NOT delegate to cgofdb's MustGet, which panics a raw
-// cgofdb.Error. A caller using the backend-agnostic fdb.Future interface and
+// cgofdb.Error. A caller using the backend-agnostic fdb.RawFuture interface and
 // recovering/matching fdb.Error must see the same panic type on both backends; the
 // pure-Go future panics the fdb-world error (future.go:66). Inside a Transact callback
 // this fdb.Error panic is bridged back to cgofdb.Error by withCancelWatcher for

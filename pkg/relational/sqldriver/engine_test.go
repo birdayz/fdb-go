@@ -35,9 +35,9 @@ type closeCountingBackend struct {
 	closes atomic.Int32
 }
 
-func (b *closeCountingBackend) Close() {
+func (b *closeCountingBackend) Close() error {
 	b.closes.Add(1)
-	b.BackendDatabase.Close()
+	return b.BackendDatabase.Close()
 }
 
 func setupEngineSchema(t *testing.T, eng *Engine, dbPath, schema, tableDDL string) *sql.DB {

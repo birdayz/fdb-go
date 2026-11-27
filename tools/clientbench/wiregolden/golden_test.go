@@ -50,7 +50,7 @@ func TestGoClientMatchesGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runErr := runBounded(2*time.Minute, func() error { return wgscenarios.Run(db) }, db.Close)
+	runErr := runBounded(2*time.Minute, func() error { return wgscenarios.Run(db) }, func() { _ = db.Close() })
 	db.Close()
 	stop() // nothing writes to log after this
 	if runErr != nil {

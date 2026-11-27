@@ -219,7 +219,7 @@ func TestFDB_CustomIndexCandidacyFallsBackWithoutReadingOpaquePostings(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(raw.Close)
+	t.Cleanup(func() { _ = raw.Close() })
 	ks := keyspace.New(subspace.Sub())
 	cat, err := catalog.NewRecordLayerStoreCatalog(ks.CatalogSubspace())
 	if err != nil {

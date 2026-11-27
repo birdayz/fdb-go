@@ -172,7 +172,7 @@ func startCRCluster(t *testing.T, ctx context.Context, f *crFixture, opts ...tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(backend.Close)
+	t.Cleanup(func() { _ = backend.Close() })
 	f.native, err = cgofdb.OpenWithConnectionString(content)
 	if err != nil {
 		t.Fatal(err)

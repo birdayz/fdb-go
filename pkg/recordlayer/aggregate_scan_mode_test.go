@@ -99,7 +99,7 @@ func TestFDB_AggregateScanModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(rawDB.Close)
+	t.Cleanup(func() { _ = rawDB.Close() })
 	db := NewFDBDatabase(rawDB)
 	for _, maximum := range []bool{false, true} {
 		t.Run(fmt.Sprintf("concurrent_extremum/max=%v", maximum), func(t *testing.T) {

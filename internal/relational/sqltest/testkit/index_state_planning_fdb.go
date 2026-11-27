@@ -61,7 +61,7 @@ func NewIndexStatePlanningFixture(t *testing.T) *IndexStatePlanningFixture {
 	if err != nil {
 		t.Fatalf("open raw FDB: %v", err)
 	}
-	t.Cleanup(rawDB.Close)
+	t.Cleanup(func() { _ = rawDB.Close() })
 	rdb := recordlayer.NewFDBDatabase(rawDB)
 	// DDL stores the database path and the schema under their CANONICAL
 	// (upper-cased) names, so the out-of-band handle must ask for the same

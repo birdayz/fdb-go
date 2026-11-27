@@ -45,7 +45,7 @@ func TestFDB_QueuedVectorIndexIsWriteOnlyToSQL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open raw FDB: %v", err)
 	}
-	t.Cleanup(rawDB.Close)
+	t.Cleanup(func() { _ = rawDB.Close() })
 	rdb := recordlayer.NewFDBDatabase(rawDB)
 	ss, err := relkeyspace.New(subspace.Sub()).LookupSchemaSubspace(context.Background(), rdb, strings.ToUpper(dbPath), strings.ToUpper(schemaName))
 	if err != nil {

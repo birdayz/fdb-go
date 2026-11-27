@@ -145,7 +145,7 @@ func openGRVHoldDB(t *testing.T) (fdb.Database, *grvHoldDialer) {
 	if err != nil {
 		t.Fatalf("OpenDatabaseFromConfig: %v", err)
 	}
-	t.Cleanup(db.Close)
+	t.Cleanup(func() { _ = db.Close() })
 	if err := db.Options().SetTransactionTimeout(10000); err != nil {
 		t.Fatal(err)
 	}
