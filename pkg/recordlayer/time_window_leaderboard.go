@@ -15,7 +15,7 @@ import (
 
 	"fdb.dev/internal/recordlayer/tuplefast"
 
-	"fdb.dev/gen"
+	storagepb "fdb.dev/internal/pb/storage"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -69,7 +69,7 @@ type leaderboardSubDirectory struct {
 }
 
 // newLeaderboardDirectoryFromProto creates a directory from a proto message.
-func newLeaderboardDirectoryFromProto(pb *gen.TimeWindowLeaderboardDirectory) (*leaderboardDirectory, error) {
+func newLeaderboardDirectoryFromProto(pb *storagepb.TimeWindowLeaderboardDirectory) (*leaderboardDirectory, error) {
 	dir := &leaderboardDirectory{
 		HighScoreFirst:  pb.GetHighScoreFirst(),
 		UpdateTimestamp: int64(pb.GetUpdateTimestamp()),
@@ -107,15 +107,15 @@ func newLeaderboardDirectoryFromProto(pb *gen.TimeWindowLeaderboardDirectory) (*
 }
 
 // toProto serializes the directory to a proto message.
-func (d *leaderboardDirectory) toProto() *gen.TimeWindowLeaderboardDirectory {
-	pb := &gen.TimeWindowLeaderboardDirectory{
+func (d *leaderboardDirectory) toProto() *storagepb.TimeWindowLeaderboardDirectory {
+	pb := &storagepb.TimeWindowLeaderboardDirectory{
 		UpdateTimestamp: proto.Uint64(uint64(d.UpdateTimestamp)),
 		HighScoreFirst:  proto.Bool(d.HighScoreFirst),
 		NextKey:         proto.Uint32(uint32(d.NextKey)),
 	}
 	for _, lbs := range d.leaderboards {
 		for _, lb := range lbs {
-			lbpb := &gen.TimeWindowLeaderboard{
+			lbpb := &storagepb.TimeWindowLeaderboard{
 				Type:           proto.Uint32(uint32(lb.Type)),
 				StartTimestamp: proto.Uint64(uint64(lb.StartTimestamp)),
 				EndTimestamp:   proto.Uint64(uint64(lb.EndTimestamp)),
@@ -230,7 +230,7 @@ func loadLeaderboardDirectory(tx fdb.ReadTransaction, extraSubspace subspace.Sub
 	if bytes == nil {
 		return nil, nil
 	}
-	pb := &gen.TimeWindowLeaderboardDirectory{}
+	pb := &storagepb.TimeWindowLeaderboardDirectory{}
 	if err := UnmarshalVTAsJava(pb, bytes); err != nil {
 		return nil, fmt.Errorf("loadLeaderboardDirectory: unmarshal: %w", err)
 	}
@@ -279,7 +279,7 @@ func loadLeaderboardSubDirectory(
 			HighScoreFirst: dir.HighScoreFirst,
 		}
 	} else {
-		pb := &gen.TimeWindowLeaderboardSubDirectory{}
+		pb := &storagepb.TimeWindowLeaderboardSubDirectory{}
 		if err := UnmarshalVTAsJava(pb, bytes); err != nil {
 			return nil, fmt.Errorf("loadSubDirectory: unmarshal: %w", err)
 		}
@@ -305,7 +305,7 @@ func saveLeaderboardSubDirectory(
 	keyTuple = append(keyTuple, sub.Group...)
 	key := extraSubspace.Pack(keyTuple)
 
-	pb := &gen.TimeWindowLeaderboardSubDirectory{
+	pb := &storagepb.TimeWindowLeaderboardSubDirectory{
 		HighScoreFirst: proto.Bool(sub.HighScoreFirst),
 	}
 	data, err := pb.MarshalVT()

@@ -13,7 +13,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/metadatapb"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/pkg/recordlayer"
 )
 

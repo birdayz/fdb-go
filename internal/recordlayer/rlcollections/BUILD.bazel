@@ -22,7 +22,7 @@ go_library(
         "//pkg/recordlayer:__subpackages__",
     ],
     deps = [
-        "//gen",
+        "//internal/pb/storage",
         "//internal/recordlayer/tuplefast",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",

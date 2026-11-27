@@ -24,8 +24,8 @@ go_test(
         "test-full",
     ],
     deps = [
-        "//gen",
         "//internal/fdbwire",
+        "//internal/pb/continuations",
         "//internal/recordlayer/query/executor",
         "//internal/relational/relapi",
         "//internal/relational/sqltest/testkit",

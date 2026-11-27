@@ -11,7 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	configv1 "fdb.dev/cmd/fdb/gen/fdb/config/v1"
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/metadatapb"
 )

@@ -16,7 +16,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/fdbgo/fdb"
 )
 
@@ -198,11 +198,11 @@ func OrElseWithContinuation[T any](
 ) RecordCursor[T] {
 	c := &orElseCursor[T]{
 		alternativeFactory: alternativeFactory,
-		state:              gen.OrElseContinuation_UNDECIDED,
+		state:              cursorpb.OrElseContinuation_UNDECIDED,
 	}
 
 	if len(continuation) > 0 {
-		var cont gen.OrElseContinuation
+		var cont cursorpb.OrElseContinuation
 		if err := UnmarshalVTAsJava(&cont, continuation); err != nil {
 			// Java: throw new RecordCoreException("error parsing continuation", ex)
 			//           .addLogInfo("raw_bytes", ...)  (OrElseCursor's constructor).
@@ -213,12 +213,12 @@ func OrElseWithContinuation[T any](
 		// Java proto2's parsed.getState().
 		c.state = cont.GetState()
 		switch c.state {
-		case gen.OrElseContinuation_UNDECIDED:
+		case cursorpb.OrElseContinuation_UNDECIDED:
 			c.primary = primaryFactory(cont.Continuation)
-		case gen.OrElseContinuation_USE_INNER:
+		case cursorpb.OrElseContinuation_USE_INNER:
 			c.primary = primaryFactory(cont.Continuation)
 			c.active = c.primary
-		case gen.OrElseContinuation_USE_OTHER:
+		case cursorpb.OrElseContinuation_USE_OTHER:
 			c.active = alternativeFactory(cont.Continuation)
 		default:
 			// vtprotobuf assigns any varint to the enum field (no closed-enum
@@ -248,7 +248,7 @@ type orElseCursor[T any] struct {
 	primary            RecordCursor[T]
 	alternativeFactory CursorFactory[T]
 	active             RecordCursor[T]
-	state              gen.OrElseContinuation_State
+	state              cursorpb.OrElseContinuation_State
 	// lastNoNext replays the terminal result on a contract-violating re-call
 	// (Java OrElseCursor's cached no-next result) — never re-pulls the
 	// primary/active cursor.
@@ -260,28 +260,28 @@ func (c *orElseCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], er
 		return *c.lastNoNext, nil
 	}
 	switch c.state {
-	case gen.OrElseContinuation_UNDECIDED:
+	case cursorpb.OrElseContinuation_UNDECIDED:
 		result, err := c.primary.OnNext(ctx)
 		if err != nil {
 			return result, err
 		}
 		if result.HasNext() {
-			c.state = gen.OrElseContinuation_USE_INNER
+			c.state = cursorpb.OrElseContinuation_USE_INNER
 			c.active = c.primary
-			cont := c.wrapContinuation(gen.OrElseContinuation_USE_INNER, result.GetContinuation())
+			cont := c.wrapContinuation(cursorpb.OrElseContinuation_USE_INNER, result.GetContinuation())
 			return NewResultWithValue(result.GetValue(), cont), nil
 		}
 		if !result.GetNoNextReason().IsSourceExhausted() {
-			cont := c.wrapContinuation(gen.OrElseContinuation_UNDECIDED, result.GetContinuation())
+			cont := c.wrapContinuation(cursorpb.OrElseContinuation_UNDECIDED, result.GetContinuation())
 			res := NewResultNoNext[T](result.GetNoNextReason(), cont)
 			c.lastNoNext = &res
 			return res, nil
 		}
-		c.state = gen.OrElseContinuation_USE_OTHER
+		c.state = cursorpb.OrElseContinuation_USE_OTHER
 		_ = c.primary.Close()
 		c.active = c.alternativeFactory(nil)
 		return c.advanceActive(ctx)
-	case gen.OrElseContinuation_USE_INNER, gen.OrElseContinuation_USE_OTHER:
+	case cursorpb.OrElseContinuation_USE_INNER, cursorpb.OrElseContinuation_USE_OTHER:
 		return c.advanceActive(ctx)
 	default:
 		// Matches Java's onNext default arm: throw new UnknownOrElseCursorStateException().
@@ -310,7 +310,7 @@ func (c *orElseCursor[T]) advanceActive(ctx context.Context) (RecordCursorResult
 	return res, nil
 }
 
-func (c *orElseCursor[T]) wrapContinuation(state gen.OrElseContinuation_State, inner RecordCursorContinuation) RecordCursorContinuation {
+func (c *orElseCursor[T]) wrapContinuation(state cursorpb.OrElseContinuation_State, inner RecordCursorContinuation) RecordCursorContinuation {
 	return &orElseContinuationWrapper{state: state, inner: inner}
 }
 
@@ -335,7 +335,7 @@ func (c *orElseCursor[T]) IsClosed() bool {
 }
 
 type orElseContinuationWrapper struct {
-	state gen.OrElseContinuation_State
+	state cursorpb.OrElseContinuation_State
 	inner RecordCursorContinuation
 }
 
@@ -359,7 +359,7 @@ func (w *orElseContinuationWrapper) ToBytes() ([]byte, error) {
 	if len(innerBytes) == 0 {
 		return nil, nil
 	}
-	oc := &gen.OrElseContinuation{
+	oc := &cursorpb.OrElseContinuation{
 		State:        w.state.Enum(),
 		Continuation: innerBytes,
 	}
@@ -399,7 +399,7 @@ func ConcatCursors[T any](first, second CursorFactory[T], continuation []byte) R
 	}
 
 	if len(continuation) > 0 {
-		var cont gen.ConcatContinuation
+		var cont cursorpb.ConcatContinuation
 		if err := UnmarshalVTAsJava(&cont, continuation); err != nil {
 			// Java: throw new RecordCoreException("Error parsing ConcatCursor continuation", ex)
 			//           .addLogInfo("raw_bytes", ...)  (ConcatCursor's constructor).
@@ -488,7 +488,7 @@ type concatContinuationWrapper struct {
 }
 
 func (c *concatContinuationWrapper) ToBytes() ([]byte, error) {
-	cont := &gen.ConcatContinuation{
+	cont := &cursorpb.ConcatContinuation{
 		Second:       proto.Bool(c.onSecond),
 		Continuation: c.inner,
 	}
@@ -643,7 +643,7 @@ func FlatMapPipelinedWithCheck[T, V any](
 	}
 
 	if len(continuation) > 0 {
-		var cont gen.FlatMapContinuation
+		var cont cursorpb.FlatMapContinuation
 		if err := UnmarshalVTAsJava(&cont, continuation); err != nil {
 			// Java: RecordCursor.flatMapPipelined:
 			//   throw new RecordCoreException("error parsing continuation", ex)
@@ -775,7 +775,7 @@ func (c *flatMapCursor[T, V]) wrapOuterStopContinuation(outerCont RecordCursorCo
 	if err != nil {
 		return nil, fmt.Errorf("flatmap outer stop continuation: %w", err)
 	}
-	fm := &gen.FlatMapContinuation{
+	fm := &cursorpb.FlatMapContinuation{
 		OuterContinuation: outerBytes,
 	}
 	// Preserve pending inner continuation across outer-only resumes.
@@ -802,7 +802,7 @@ type flatMapContinuationWrapper[T any] struct {
 }
 
 func (w *flatMapContinuationWrapper[T]) ToBytes() ([]byte, error) {
-	fm := &gen.FlatMapContinuation{}
+	fm := &cursorpb.FlatMapContinuation{}
 
 	if w.innerCont == nil || w.innerCont.IsEnd() {
 		// Inner cursor exhausted — resume from outer's current position (after this value)

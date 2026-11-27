@@ -12,7 +12,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -33,7 +33,7 @@ func executeFlatMap(
 	// Parse FlatMapContinuation if resuming.
 	var outerCont, innerCont, checkValue []byte
 	if len(continuation) > 0 {
-		var fmc gen.FlatMapContinuation
+		var fmc cursorpb.FlatMapContinuation
 		if err := recordlayer.UnmarshalAsJava(continuation, &fmc); err != nil {
 			// Java: RecordCursor.flatMapPipelined —
 			//   throw new RecordCoreException("error parsing continuation", ex).

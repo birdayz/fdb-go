@@ -27,9 +27,10 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
+	sortingpb "fdb.dev/internal/pb/sorting"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -124,7 +125,7 @@ func TestDecodeSortContinuationCorruptRecords(t *testing.T) {
 		{
 			name: "corrupt SortedRecord entry",
 			data: func(t *testing.T) []byte {
-				return mustMarshal(t, &gen.MemorySortContinuation{
+				return mustMarshal(t, &sortingpb.MemorySortContinuation{
 					Records: [][]byte{{0xff, 0xff, 0xff}},
 				})
 			},
@@ -133,21 +134,21 @@ func TestDecodeSortContinuationCorruptRecords(t *testing.T) {
 		{
 			name: "SortedRecord with invalid JSON message",
 			data: func(t *testing.T) []byte {
-				sr := mustMarshal(t, &gen.SortedRecord{Message: []byte("{not json")})
-				return mustMarshal(t, &gen.MemorySortContinuation{Records: [][]byte{sr}})
+				sr := mustMarshal(t, &sortingpb.SortedRecord{Message: []byte("{not json")})
+				return mustMarshal(t, &sortingpb.MemorySortContinuation{Records: [][]byte{sr}})
 			},
 			wantErr: "failed to unmarshal sorted record 0 payload",
 		},
 		{
 			name: "SortedRecord with corrupt primary key",
 			data: func(t *testing.T) []byte {
-				sr := mustMarshal(t, &gen.SortedRecord{
+				sr := mustMarshal(t, &sortingpb.SortedRecord{
 					// Valid strict-format payload so the decode reaches the
 					// PK unpack (the payload parses first now).
 					Message:    []byte(`[null, null, {"n":["A"], "b":"` + validSlotBlobB64(t) + `"}]`),
 					PrimaryKey: []byte{0xff}, // not a valid packed tuple
 				})
-				return mustMarshal(t, &gen.MemorySortContinuation{Records: [][]byte{sr}})
+				return mustMarshal(t, &sortingpb.MemorySortContinuation{Records: [][]byte{sr}})
 			},
 			wantErr: "failed to unpack sorted record 0 primary key",
 		},
@@ -157,8 +158,8 @@ func TestDecodeSortContinuationCorruptRecords(t *testing.T) {
 			// legacy tolerance branches deleted).
 			name: "1-element array (no positional)",
 			data: func(t *testing.T) []byte {
-				sr := mustMarshal(t, &gen.SortedRecord{Message: []byte(`[{"a":1}]`)})
-				return mustMarshal(t, &gen.MemorySortContinuation{Records: [][]byte{sr}})
+				sr := mustMarshal(t, &sortingpb.SortedRecord{Message: []byte(`[{"a":1}]`)})
+				return mustMarshal(t, &sortingpb.MemorySortContinuation{Records: [][]byte{sr}})
 			},
 			wantErr: "want 3",
 		},
@@ -167,8 +168,8 @@ func TestDecodeSortContinuationCorruptRecords(t *testing.T) {
 			// writes — rejected by arity (RFC-180 H6).
 			name: "v2 2-element array (no positional)",
 			data: func(t *testing.T) []byte {
-				sr := mustMarshal(t, &gen.SortedRecord{Message: []byte(`[{"a":1}, null]`)})
-				return mustMarshal(t, &gen.MemorySortContinuation{Records: [][]byte{sr}})
+				sr := mustMarshal(t, &sortingpb.SortedRecord{Message: []byte(`[{"a":1}, null]`)})
+				return mustMarshal(t, &sortingpb.MemorySortContinuation{Records: [][]byte{sr}})
 			},
 			wantErr: "want 3",
 		},
@@ -250,8 +251,8 @@ func FuzzSortContinuation(f *testing.F) {
 	if valid, err := encodeSortContinuation(nil, []QueryResult{dmap(map[string]any{"g": ghost})}, false); err == nil {
 		f.Add(valid)
 	}
-	if sr, err := proto.Marshal(&gen.SortedRecord{Message: []byte("{not json")}); err == nil {
-		if corrupt, err := proto.Marshal(&gen.MemorySortContinuation{Records: [][]byte{sr}}); err == nil {
+	if sr, err := proto.Marshal(&sortingpb.SortedRecord{Message: []byte("{not json")}); err == nil {
+		if corrupt, err := proto.Marshal(&sortingpb.MemorySortContinuation{Records: [][]byte{sr}}); err == nil {
 			f.Add(corrupt)
 		}
 	}
@@ -267,24 +268,24 @@ func FuzzAggregateContinuation(f *testing.F) {
 	f.Add([]byte{})
 	f.Add([]byte{0x00})
 	f.Add([]byte{0xff, 0xff, 0xff})
-	if corruptKey, err := proto.Marshal(&gen.AggregateCursorContinuation{
-		PartialAggregationResults: &gen.PartialAggregationResult{GroupKey: []byte("{not json")},
+	if corruptKey, err := proto.Marshal(&cursorpb.AggregateCursorContinuation{
+		PartialAggregationResults: &cursorpb.PartialAggregationResult{GroupKey: []byte("{not json")},
 	}); err == nil {
 		f.Add(corruptKey)
 	}
 	// A valid group key reaches the per-aggregate min/max decode with a corrupt
 	// MIN typed value (int64 tag, no payload), exercising the deeper error path.
-	if corruptMin, err := proto.Marshal(&gen.AggregateCursorContinuation{
-		PartialAggregationResults: &gen.PartialAggregationResult{
+	if corruptMin, err := proto.Marshal(&cursorpb.AggregateCursorContinuation{
+		PartialAggregationResults: &cursorpb.PartialAggregationResult{
 			GroupKey: mustAggGroupKey(f, "k", nil),
-			AccumulatorStates: []*gen.AccumulatorState{{State: []*gen.OneOfTypedState{
-				{State: &gen.OneOfTypedState_Int64State{Int64State: 1}},
-				{State: &gen.OneOfTypedState_Int64State{Int64State: 1}},
-				{State: &gen.OneOfTypedState_DoubleState{DoubleState: 1}},
-				{State: &gen.OneOfTypedState_Int64State{Int64State: 1}},
-				{State: &gen.OneOfTypedState_Int64State{Int64State: 1}},
-				{State: &gen.OneOfTypedState_BytesState{BytesState: []byte{contValInt64}}},
-				{State: &gen.OneOfTypedState_BytesState{BytesState: mustContValue(f, int64(2))}},
+			AccumulatorStates: []*cursorpb.AccumulatorState{{State: []*cursorpb.OneOfTypedState{
+				{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 1}},
+				{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 1}},
+				{State: &cursorpb.OneOfTypedState_DoubleState{DoubleState: 1}},
+				{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 1}},
+				{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 1}},
+				{State: &cursorpb.OneOfTypedState_BytesState{BytesState: []byte{contValInt64}}},
+				{State: &cursorpb.OneOfTypedState_BytesState{BytesState: mustContValue(f, int64(2))}},
 			}}},
 		},
 	}); err == nil {
@@ -306,23 +307,23 @@ func TestDecodeAggregateContinuationCorruptMinMax(t *testing.T) {
 	// State layout (see encodeAggregateContinuation): count, then per
 	// aggregate: count_i, sum_i, sumsI_i, allInt_i, min_i, max_i. min/max carry
 	// one typed continuation value each (appendContValue).
-	buildStates := func(minBytes, maxBytes []byte) []*gen.OneOfTypedState {
-		return []*gen.OneOfTypedState{
-			{State: &gen.OneOfTypedState_Int64State{Int64State: 3}},
-			{State: &gen.OneOfTypedState_Int64State{Int64State: 3}},
-			{State: &gen.OneOfTypedState_DoubleState{DoubleState: 1.5}},
-			{State: &gen.OneOfTypedState_Int64State{Int64State: 6}},
-			{State: &gen.OneOfTypedState_Int64State{Int64State: 1}},
-			{State: &gen.OneOfTypedState_BytesState{BytesState: minBytes}},
-			{State: &gen.OneOfTypedState_BytesState{BytesState: maxBytes}},
+	buildStates := func(minBytes, maxBytes []byte) []*cursorpb.OneOfTypedState {
+		return []*cursorpb.OneOfTypedState{
+			{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 3}},
+			{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 3}},
+			{State: &cursorpb.OneOfTypedState_DoubleState{DoubleState: 1.5}},
+			{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 6}},
+			{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 1}},
+			{State: &cursorpb.OneOfTypedState_BytesState{BytesState: minBytes}},
+			{State: &cursorpb.OneOfTypedState_BytesState{BytesState: maxBytes}},
 		}
 	}
 	build := func(t *testing.T, minBytes, maxBytes []byte) []byte {
 		t.Helper()
-		data, err := proto.Marshal(&gen.AggregateCursorContinuation{
-			PartialAggregationResults: &gen.PartialAggregationResult{
+		data, err := proto.Marshal(&cursorpb.AggregateCursorContinuation{
+			PartialAggregationResults: &cursorpb.PartialAggregationResult{
 				GroupKey: mustAggGroupKey(t, "k", []any{int64(1)}),
-				AccumulatorStates: []*gen.AccumulatorState{
+				AccumulatorStates: []*cursorpb.AccumulatorState{
 					{State: buildStates(minBytes, maxBytes)},
 				},
 			},
@@ -339,8 +340,8 @@ func TestDecodeAggregateContinuationCorruptMinMax(t *testing.T) {
 
 	t.Run("corrupt group key errors", func(t *testing.T) {
 		t.Parallel()
-		data, err := proto.Marshal(&gen.AggregateCursorContinuation{
-			PartialAggregationResults: &gen.PartialAggregationResult{
+		data, err := proto.Marshal(&cursorpb.AggregateCursorContinuation{
+			PartialAggregationResults: &cursorpb.PartialAggregationResult{
 				GroupKey: []byte("{not json"),
 			},
 		})
@@ -575,11 +576,11 @@ func TestSortContinuation_LegacyTypedSlotBlobRejected_F33(t *testing.T) {
 	t.Parallel()
 	// The pre-F33 3-element form: [null, false, {"n":[...], "s":[...]}] — a `b`-less
 	// positional payload.
-	sr, err := proto.Marshal(&gen.SortedRecord{Message: []byte(`[null, false, {"n":["c"], "s":[1]}]`)})
+	sr, err := proto.Marshal(&sortingpb.SortedRecord{Message: []byte(`[null, false, {"n":["c"], "s":[1]}]`)})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	data, err := proto.Marshal(&gen.MemorySortContinuation{Records: [][]byte{sr}})
+	data, err := proto.Marshal(&sortingpb.MemorySortContinuation{Records: [][]byte{sr}})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -918,23 +919,23 @@ func TestDecodeAggregateContinuation_ProtoPlaceholderRejected_F53(t *testing.T) 
 	flowerVal := mustContValue(t, flower)
 	validOne := mustContValue(t, int64(1))
 
-	buildStates := func(minBytes, maxBytes []byte) []*gen.OneOfTypedState {
-		return []*gen.OneOfTypedState{
-			{State: &gen.OneOfTypedState_Int64State{Int64State: 3}},
-			{State: &gen.OneOfTypedState_Int64State{Int64State: 3}},
-			{State: &gen.OneOfTypedState_DoubleState{DoubleState: 1.5}},
-			{State: &gen.OneOfTypedState_Int64State{Int64State: 6}},
-			{State: &gen.OneOfTypedState_Int64State{Int64State: 1}},
-			{State: &gen.OneOfTypedState_BytesState{BytesState: minBytes}},
-			{State: &gen.OneOfTypedState_BytesState{BytesState: maxBytes}},
+	buildStates := func(minBytes, maxBytes []byte) []*cursorpb.OneOfTypedState {
+		return []*cursorpb.OneOfTypedState{
+			{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 3}},
+			{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 3}},
+			{State: &cursorpb.OneOfTypedState_DoubleState{DoubleState: 1.5}},
+			{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 6}},
+			{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 1}},
+			{State: &cursorpb.OneOfTypedState_BytesState{BytesState: minBytes}},
+			{State: &cursorpb.OneOfTypedState_BytesState{BytesState: maxBytes}},
 		}
 	}
 	build := func(t *testing.T, groupKey []byte, minBytes, maxBytes []byte) []byte {
 		t.Helper()
-		data, err := proto.Marshal(&gen.AggregateCursorContinuation{
-			PartialAggregationResults: &gen.PartialAggregationResult{
+		data, err := proto.Marshal(&cursorpb.AggregateCursorContinuation{
+			PartialAggregationResults: &cursorpb.PartialAggregationResult{
 				GroupKey: groupKey,
-				AccumulatorStates: []*gen.AccumulatorState{
+				AccumulatorStates: []*cursorpb.AccumulatorState{
 					{State: buildStates(minBytes, maxBytes)},
 				},
 			},
@@ -1365,23 +1366,23 @@ func TestContValue_NestingDepthCapped_F54(t *testing.T) {
 func TestDecodeAggregateContinuation_NonScalarMinMaxRejected_F54(t *testing.T) {
 	t.Parallel()
 
-	buildStates := func(minBytes, maxBytes []byte) []*gen.OneOfTypedState {
-		return []*gen.OneOfTypedState{
-			{State: &gen.OneOfTypedState_Int64State{Int64State: 3}},
-			{State: &gen.OneOfTypedState_Int64State{Int64State: 3}},
-			{State: &gen.OneOfTypedState_DoubleState{DoubleState: 1.5}},
-			{State: &gen.OneOfTypedState_Int64State{Int64State: 6}},
-			{State: &gen.OneOfTypedState_Int64State{Int64State: 1}},
-			{State: &gen.OneOfTypedState_BytesState{BytesState: minBytes}},
-			{State: &gen.OneOfTypedState_BytesState{BytesState: maxBytes}},
+	buildStates := func(minBytes, maxBytes []byte) []*cursorpb.OneOfTypedState {
+		return []*cursorpb.OneOfTypedState{
+			{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 3}},
+			{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 3}},
+			{State: &cursorpb.OneOfTypedState_DoubleState{DoubleState: 1.5}},
+			{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 6}},
+			{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 1}},
+			{State: &cursorpb.OneOfTypedState_BytesState{BytesState: minBytes}},
+			{State: &cursorpb.OneOfTypedState_BytesState{BytesState: maxBytes}},
 		}
 	}
 	build := func(t *testing.T, minBytes, maxBytes []byte) []byte {
 		t.Helper()
-		data, err := proto.Marshal(&gen.AggregateCursorContinuation{
-			PartialAggregationResults: &gen.PartialAggregationResult{
+		data, err := proto.Marshal(&cursorpb.AggregateCursorContinuation{
+			PartialAggregationResults: &cursorpb.PartialAggregationResult{
 				GroupKey: mustAggGroupKey(t, "k", []any{int64(1)}),
-				AccumulatorStates: []*gen.AccumulatorState{
+				AccumulatorStates: []*cursorpb.AccumulatorState{
 					{State: buildStates(minBytes, maxBytes)},
 				},
 			},
@@ -1495,12 +1496,12 @@ func TestDecodeAggregateContinuation_ForeignShapeFailsLoud(t *testing.T) {
 
 	// (a) WRONG SLOT COUNT — a foreign layout (e.g. Java's per-aggregate state)
 	// with a different number of typed slots.
-	wrongCount := mustMarshal(&gen.AggregateCursorContinuation{
-		PartialAggregationResults: &gen.PartialAggregationResult{
-			AccumulatorStates: []*gen.AccumulatorState{{
-				State: []*gen.OneOfTypedState{
-					{State: &gen.OneOfTypedState_Int64State{Int64State: 3}},
-					{State: &gen.OneOfTypedState_Int64State{Int64State: 3}},
+	wrongCount := mustMarshal(&cursorpb.AggregateCursorContinuation{
+		PartialAggregationResults: &cursorpb.PartialAggregationResult{
+			AccumulatorStates: []*cursorpb.AccumulatorState{{
+				State: []*cursorpb.OneOfTypedState{
+					{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 3}},
+					{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 3}},
 				}, // 2 slots, not 7
 			}},
 		},
@@ -1511,17 +1512,17 @@ func TestDecodeAggregateContinuation_ForeignShapeFailsLoud(t *testing.T) {
 
 	// (b) CORRECT COUNT, WRONG SLOT TYPE — the count matches Go's layout but a
 	// slot carries the wrong oneof (here: agg-sum slot is int64, not double).
-	states := make([]*gen.OneOfTypedState, 0, 1+6*numAggs)
-	states = append(states, &gen.OneOfTypedState{State: &gen.OneOfTypedState_Int64State{Int64State: 1}}) // count
-	states = append(states, &gen.OneOfTypedState{State: &gen.OneOfTypedState_Int64State{Int64State: 1}}) // agg-count
-	states = append(states, &gen.OneOfTypedState{State: &gen.OneOfTypedState_Int64State{Int64State: 9}}) // agg-sum — WRONG (want double)
-	states = append(states, &gen.OneOfTypedState{State: &gen.OneOfTypedState_Int64State{Int64State: 0}}) // agg-sumI
-	states = append(states, &gen.OneOfTypedState{State: &gen.OneOfTypedState_Int64State{Int64State: 0}}) // agg-allInt
-	states = append(states, &gen.OneOfTypedState{State: &gen.OneOfTypedState_BytesState{}})              // min
-	states = append(states, &gen.OneOfTypedState{State: &gen.OneOfTypedState_BytesState{}})              // max
-	wrongType := mustMarshal(&gen.AggregateCursorContinuation{
-		PartialAggregationResults: &gen.PartialAggregationResult{
-			AccumulatorStates: []*gen.AccumulatorState{{State: states}},
+	states := make([]*cursorpb.OneOfTypedState, 0, 1+6*numAggs)
+	states = append(states, &cursorpb.OneOfTypedState{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 1}}) // count
+	states = append(states, &cursorpb.OneOfTypedState{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 1}}) // agg-count
+	states = append(states, &cursorpb.OneOfTypedState{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 9}}) // agg-sum — WRONG (want double)
+	states = append(states, &cursorpb.OneOfTypedState{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 0}}) // agg-sumI
+	states = append(states, &cursorpb.OneOfTypedState{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 0}}) // agg-allInt
+	states = append(states, &cursorpb.OneOfTypedState{State: &cursorpb.OneOfTypedState_BytesState{}})              // min
+	states = append(states, &cursorpb.OneOfTypedState{State: &cursorpb.OneOfTypedState_BytesState{}})              // max
+	wrongType := mustMarshal(&cursorpb.AggregateCursorContinuation{
+		PartialAggregationResults: &cursorpb.PartialAggregationResult{
+			AccumulatorStates: []*cursorpb.AccumulatorState{{State: states}},
 		},
 	})
 	if _, _, _, err := decodeAggregateContinuation(wrongType, nil, make([]expressions.AggregateSpec, numAggs), nil); err == nil {

@@ -10,7 +10,7 @@ syntax = "proto2";
 
 package com.apple.foundationdb.relational.cursors;
 
-option go_package = "fdb.dev/gen";
+option go_package = "fdb.dev/internal/pb/continuations";
 
 // DistinctHashContinuation is the resume state of executeDistinct's non-
 // streaming (hash) path: the inner cursor position plus the identity of the

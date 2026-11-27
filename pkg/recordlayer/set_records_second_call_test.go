@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 )
 
 // A SECOND SetRecords IS REFUSED, matching Java, which is ONE of several routes

@@ -5,7 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/metadatapb"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"google.golang.org/protobuf/proto"
 )
 

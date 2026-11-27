@@ -16,7 +16,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/recordlayer"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"

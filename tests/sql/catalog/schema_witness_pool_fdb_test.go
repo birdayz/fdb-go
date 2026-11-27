@@ -17,7 +17,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	catalogpb "fdb.dev/internal/pb/catalog"
 	"fdb.dev/internal/relational/catalog"
 	"fdb.dev/internal/relational/ddl"
 	"fdb.dev/internal/relational/metadata"
@@ -157,7 +157,7 @@ func TestFDB_PooledConnectionSeesAnotherConnectionsSchemaChange(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			_, err = store.SaveRecord(&gen.Templates{
+			_, err = store.SaveRecord(&catalogpb.Templates{
 				TEMPLATE_NAME: proto.String(tmplName), TEMPLATE_VERSION: proto.Int32(1), META_DATA: md,
 			})
 			return err

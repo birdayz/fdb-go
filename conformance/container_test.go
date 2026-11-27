@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"os"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"

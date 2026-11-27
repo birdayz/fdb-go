@@ -124,7 +124,7 @@ need scan/time limiters and continuations; large values need split records.
 - `pkg/recordlayer/`: records, indexes, cursors and query planning.
 - `pkg/relational/`: embedded SQL engine, driver and cross-engine tests.
 - `conformance/`: Java record-layer harness.
-- `gen/`, `proto/apple/`: generated Go and upstream protobuf definitions.
+- `internal/pb/`, `pkg/recordlayer/metadatapb/`, `proto/apple/`: generated Go and upstream protobuf definitions.
 - `.claude/`: retained agent skills; `AGENTS.md`: repository workflow rules.
 - `.bruh/review/`: lenses and config for the `bruh-code-review` skill, installed with bruh
   (`just install` or `just install-skills` in the bruh repository puts it in `~/.bruh/skills`).

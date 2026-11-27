@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/internal/recordlayer/rlcollections"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
@@ -110,8 +110,8 @@ func TestProbableIntersectionValidatesAllFiltersBeforeOpeningChildren(t *testing
 	key := func(v int64) (tuple.Tuple, error) { return tuple.Tuple{v}, nil }
 	encode := func(second []byte) []byte {
 		t.Helper()
-		data, err := (&gen.ProbableIntersectionContinuation{
-			ChildState: []*gen.ProbableIntersectionContinuation_CursorState{
+		data, err := (&cursorpb.ProbableIntersectionContinuation{
+			ChildState: []*cursorpb.ProbableIntersectionContinuation_CursorState{
 				{BloomFilter: valid}, {BloomFilter: second},
 			},
 		}).MarshalVT()
@@ -244,8 +244,8 @@ func TestProbableIntersectionRejectsInvalidHashCounts(t *testing.T) {
 
 	// This is the zero byte that an overflowing 256-hash filter used to write.
 	encoded := []byte{rlcollections.BloomStrategyMitz64, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0}
-	continuation := &gen.ProbableIntersectionContinuation{
-		ChildState: []*gen.ProbableIntersectionContinuation_CursorState{
+	continuation := &cursorpb.ProbableIntersectionContinuation{
+		ChildState: []*cursorpb.ProbableIntersectionContinuation_CursorState{
 			{BloomFilter: encoded},
 			{BloomFilter: encoded},
 		},

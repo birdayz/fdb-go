@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"google.golang.org/protobuf/proto"
@@ -28,34 +28,34 @@ func encodeLegacyAggregateContinuation(
 		}
 	}
 
-	msg := &gen.AggregateCursorContinuation{
+	msg := &cursorpb.AggregateCursorContinuation{
 		Continuation: innerBytes,
 	}
 
 	if gs != nil {
-		var states []*gen.AccumulatorState
-		as := &gen.AccumulatorState{}
+		var states []*cursorpb.AccumulatorState
+		as := &cursorpb.AccumulatorState{}
 
 		// Pack: count, then per-aggregate (count_i, sum_i, sumsI_i, allInt_i, min_i, max_i)
-		as.State = append(as.State, &gen.OneOfTypedState{
-			State: &gen.OneOfTypedState_Int64State{Int64State: gs.count},
+		as.State = append(as.State, &cursorpb.OneOfTypedState{
+			State: &cursorpb.OneOfTypedState_Int64State{Int64State: gs.count},
 		})
 		for i := range aggregates {
-			as.State = append(as.State, &gen.OneOfTypedState{
-				State: &gen.OneOfTypedState_Int64State{Int64State: gs.counts[i]},
+			as.State = append(as.State, &cursorpb.OneOfTypedState{
+				State: &cursorpb.OneOfTypedState_Int64State{Int64State: gs.counts[i]},
 			})
-			as.State = append(as.State, &gen.OneOfTypedState{
-				State: &gen.OneOfTypedState_DoubleState{DoubleState: gs.sums[i]},
+			as.State = append(as.State, &cursorpb.OneOfTypedState{
+				State: &cursorpb.OneOfTypedState_DoubleState{DoubleState: gs.sums[i]},
 			})
-			as.State = append(as.State, &gen.OneOfTypedState{
-				State: &gen.OneOfTypedState_Int64State{Int64State: gs.sumsI[i]},
+			as.State = append(as.State, &cursorpb.OneOfTypedState{
+				State: &cursorpb.OneOfTypedState_Int64State{Int64State: gs.sumsI[i]},
 			})
 			allIntVal := int64(0)
 			if gs.allInt[i] {
 				allIntVal = 1
 			}
-			as.State = append(as.State, &gen.OneOfTypedState{
-				State: &gen.OneOfTypedState_Int64State{Int64State: allIntVal},
+			as.State = append(as.State, &cursorpb.OneOfTypedState{
+				State: &cursorpb.OneOfTypedState_Int64State{Int64State: allIntVal},
 			})
 			// min_i / max_i: one typed value each (nil → a lone nil tag). The
 			// typed codec preserves int64/float64 exactly — JSON collapsed both to
@@ -70,11 +70,11 @@ func encodeLegacyAggregateContinuation(
 			if err != nil {
 				return nil, fmt.Errorf("failed to encode MAX state for aggregate continuation: %w", err)
 			}
-			as.State = append(as.State, &gen.OneOfTypedState{
-				State: &gen.OneOfTypedState_BytesState{BytesState: minBytes},
+			as.State = append(as.State, &cursorpb.OneOfTypedState{
+				State: &cursorpb.OneOfTypedState_BytesState{BytesState: minBytes},
 			})
-			as.State = append(as.State, &gen.OneOfTypedState{
-				State: &gen.OneOfTypedState_BytesState{BytesState: maxBytes},
+			as.State = append(as.State, &cursorpb.OneOfTypedState{
+				State: &cursorpb.OneOfTypedState_BytesState{BytesState: maxBytes},
 			})
 		}
 		// ARRAY_AGG elements ride one trailing slot per ARRAY_AGG, after the
@@ -91,14 +91,14 @@ func encodeLegacyAggregateContinuation(
 			if err != nil {
 				return nil, fmt.Errorf("failed to encode ARRAY_AGG state for aggregate continuation: %w", err)
 			}
-			as.State = append(as.State, &gen.OneOfTypedState{
-				State: &gen.OneOfTypedState_BytesState{BytesState: b},
+			as.State = append(as.State, &cursorpb.OneOfTypedState{
+				State: &cursorpb.OneOfTypedState_BytesState{BytesState: b},
 			})
 		}
 		// Bitmap partials use separate trailing slots; existing aggregate layouts stay unchanged.
 		for i, agg := range aggregates {
 			if agg.Function == expressions.AggBitmapConstructAgg {
-				as.State = append(as.State, &gen.OneOfTypedState{State: &gen.OneOfTypedState_BytesState{BytesState: gs.bitmaps[i]}})
+				as.State = append(as.State, &cursorpb.OneOfTypedState{State: &cursorpb.OneOfTypedState_BytesState{BytesState: gs.bitmaps[i]}})
 			}
 		}
 		states = append(states, as)
@@ -107,7 +107,7 @@ func encodeLegacyAggregateContinuation(
 		if err != nil {
 			return nil, fmt.Errorf("failed to encode group key for aggregate continuation: %w", err)
 		}
-		msg.PartialAggregationResults = &gen.PartialAggregationResult{
+		msg.PartialAggregationResults = &cursorpb.PartialAggregationResult{
 			GroupKey:          gkBytes,
 			AccumulatorStates: states,
 		}

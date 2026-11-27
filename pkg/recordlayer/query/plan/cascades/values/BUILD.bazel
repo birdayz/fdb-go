@@ -115,7 +115,7 @@ go_library(
     importpath = "fdb.dev/pkg/recordlayer/query/plan/cascades/values",
     visibility = ["//visibility:public"],
     deps = [
-        "//gen",
+        "//internal/pb/storage",
         "//internal/recordlayer/javanum",
         "//internal/recordlayer/protoname",
         "//internal/recordlayer/protoscope",
@@ -605,7 +605,7 @@ go_test(
         "unicode15_case_test.go",
     ],
     deps = [
-        "//gen",
+        "//internal/pb/planner",
         "//internal/recordlayer/indexfetch",
         "//internal/recordlayer/protoname",
         "//internal/recordlayer/tupleordering",

@@ -9,10 +9,11 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"fdb.dev/gen"
+	sortingpb "fdb.dev/internal/pb/sorting"
+	storagepb "fdb.dev/internal/pb/storage"
 	"fdb.dev/pkg/recordlayer/metadatapb"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/internal/relational/relapi"
 )
 
@@ -488,7 +489,7 @@ func BenchmarkRoundTrip_String(b *testing.B) {
 // =============================================================================
 
 func sortSectionFD(name string) protoreflect.FieldDescriptor {
-	msg := &gen.SortSectionHeader{}
+	msg := &sortingpb.SortSectionHeader{}
 	return msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(name))
 }
 
@@ -775,7 +776,7 @@ func TestIsUUIDMessageField_WrongMessage(t *testing.T) {
 
 func TestUUIDRoundTrip(t *testing.T) {
 	t.Parallel()
-	uuidMsgDesc := (&gen.UUID{}).ProtoReflect().Descriptor()
+	uuidMsgDesc := (&storagepb.UUID{}).ProtoReflect().Descriptor()
 	mostFD := uuidMsgDesc.Fields().ByName("most_significant_bits")
 	leastFD := uuidMsgDesc.Fields().ByName("least_significant_bits")
 
@@ -793,7 +794,7 @@ func TestUUIDRoundTrip(t *testing.T) {
 
 func TestUUIDProtoMessageToString_ZeroUUID(t *testing.T) {
 	t.Parallel()
-	uuidMsgDesc := (&gen.UUID{}).ProtoReflect().Descriptor()
+	uuidMsgDesc := (&storagepb.UUID{}).ProtoReflect().Descriptor()
 	dynMsg := dynamicpb.NewMessage(uuidMsgDesc)
 	mostFD := uuidMsgDesc.Fields().ByName("most_significant_bits")
 	leastFD := uuidMsgDesc.Fields().ByName("least_significant_bits")
@@ -807,7 +808,7 @@ func TestUUIDProtoMessageToString_ZeroUUID(t *testing.T) {
 
 func TestUUIDProtoMessageToString_MaxBits(t *testing.T) {
 	t.Parallel()
-	uuidMsgDesc := (&gen.UUID{}).ProtoReflect().Descriptor()
+	uuidMsgDesc := (&storagepb.UUID{}).ProtoReflect().Descriptor()
 	dynMsg := dynamicpb.NewMessage(uuidMsgDesc)
 	mostFD := uuidMsgDesc.Fields().ByName("most_significant_bits")
 	leastFD := uuidMsgDesc.Fields().ByName("least_significant_bits")

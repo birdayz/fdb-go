@@ -14,7 +14,7 @@ import (
 	"slices"
 	"time"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
 	"github.com/google/uuid"

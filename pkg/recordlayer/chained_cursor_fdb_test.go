@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -127,7 +127,7 @@ func TestFDB_ChainedCursorEmptyContinuation(t *testing.T) {
 		if err != nil || continuation == nil || result.GetContinuation().IsEnd() {
 			t.Fatalf("page %d: want non-terminal continuation, got %v (err=%v)", page, continuation, err)
 		}
-		var wrapped gen.ConcatContinuation
+		var wrapped cursorpb.ConcatContinuation
 		if err := wrapped.UnmarshalVT(continuation); err != nil {
 			t.Fatalf("page %d: decode Concat continuation: %v", page, err)
 		}

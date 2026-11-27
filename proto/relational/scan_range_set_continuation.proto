@@ -8,7 +8,7 @@ syntax = "proto2";
 
 package com.apple.foundationdb.relational.cursors;
 
-option go_package = "fdb.dev/gen";
+option go_package = "fdb.dev/internal/pb/continuations";
 
 // ScanRangeSetContinuation records one flat odometer position plus the active
 // leaf cursor's continuation. Its range-set framing is O(number of range

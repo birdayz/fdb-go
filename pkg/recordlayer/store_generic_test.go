@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"testing"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 )
 
 // Test helper to create a typed Order store using the new API

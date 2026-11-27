@@ -6,7 +6,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -101,7 +101,7 @@ func TestFlatMapKeptArmed_WrapCarriesCheckValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ToBytes: %v", err)
 	}
-	fmc := &gen.FlatMapContinuation{}
+	fmc := &cursorpb.FlatMapContinuation{}
 	if err := proto.Unmarshal(b, fmc); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}

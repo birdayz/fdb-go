@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"math"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"google.golang.org/protobuf/proto"
@@ -43,52 +43,52 @@ func aggregateLane(agg expressions.AggregateSpec, allInt bool) values.TypeCode {
 	return values.TypeCodeDouble
 }
 
-func typedState(lane values.TypeCode, v any) (*gen.OneOfTypedState, error) {
+func typedState(lane values.TypeCode, v any) (*cursorpb.OneOfTypedState, error) {
 	switch lane {
 	case values.TypeCodeInt:
 		n, ok := asInt64(v)
 		if !ok || n < math.MinInt32 || n > math.MaxInt32 {
 			return nil, fmt.Errorf("aggregate state %v (%T) is not an INT", v, v)
 		}
-		return &gen.OneOfTypedState{State: &gen.OneOfTypedState_Int32State{Int32State: int32(n)}}, nil
+		return &cursorpb.OneOfTypedState{State: &cursorpb.OneOfTypedState_Int32State{Int32State: int32(n)}}, nil
 	case values.TypeCodeLong:
 		n, ok := asInt64(v)
 		if !ok {
 			return nil, fmt.Errorf("aggregate state %v (%T) is not a LONG", v, v)
 		}
-		return &gen.OneOfTypedState{State: &gen.OneOfTypedState_Int64State{Int64State: n}}, nil
+		return &cursorpb.OneOfTypedState{State: &cursorpb.OneOfTypedState_Int64State{Int64State: n}}, nil
 	case values.TypeCodeFloat:
 		f, ok := asFloat32(v)
 		if !ok {
 			return nil, fmt.Errorf("aggregate state %v (%T) is not a FLOAT", v, v)
 		}
-		return &gen.OneOfTypedState{State: &gen.OneOfTypedState_FloatState{FloatState: f}}, nil
+		return &cursorpb.OneOfTypedState{State: &cursorpb.OneOfTypedState_FloatState{FloatState: f}}, nil
 	default:
 		f, ok := asFloat64(v)
 		if !ok {
 			return nil, fmt.Errorf("aggregate state %v (%T) is not a DOUBLE", v, v)
 		}
-		return &gen.OneOfTypedState{State: &gen.OneOfTypedState_DoubleState{DoubleState: f}}, nil
+		return &cursorpb.OneOfTypedState{State: &cursorpb.OneOfTypedState_DoubleState{DoubleState: f}}, nil
 	}
 }
 
 // laneValue reads a typed state of lane into the row domain (INT and LONG as
 // int64, FLOAT and DOUBLE as float64).
-func laneValue(lane values.TypeCode, s *gen.OneOfTypedState) (any, error) {
+func laneValue(lane values.TypeCode, s *cursorpb.OneOfTypedState) (any, error) {
 	switch v := s.GetState().(type) {
-	case *gen.OneOfTypedState_Int32State:
+	case *cursorpb.OneOfTypedState_Int32State:
 		if lane == values.TypeCodeInt {
 			return int64(v.Int32State), nil
 		}
-	case *gen.OneOfTypedState_Int64State:
+	case *cursorpb.OneOfTypedState_Int64State:
 		if lane == values.TypeCodeLong {
 			return v.Int64State, nil
 		}
-	case *gen.OneOfTypedState_FloatState:
+	case *cursorpb.OneOfTypedState_FloatState:
 		if lane == values.TypeCodeFloat {
 			return float64(v.FloatState), nil
 		}
-	case *gen.OneOfTypedState_DoubleState:
+	case *cursorpb.OneOfTypedState_DoubleState:
 		if lane == values.TypeCodeDouble {
 			return v.DoubleState, nil
 		}
@@ -96,8 +96,8 @@ func laneValue(lane values.TypeCode, s *gen.OneOfTypedState) (any, error) {
 	return nil, fmt.Errorf("aggregate state %v does not hold a %s", s, lane)
 }
 
-func int64State(n int64) *gen.OneOfTypedState {
-	return &gen.OneOfTypedState{State: &gen.OneOfTypedState_Int64State{Int64State: n}}
+func int64State(n int64) *cursorpb.OneOfTypedState {
+	return &cursorpb.OneOfTypedState{State: &cursorpb.OneOfTypedState_Int64State{Int64State: n}}
 }
 
 // aggregateStateTypes builds the descriptors the payload is written with: the
@@ -139,8 +139,8 @@ func newAggregateStateTypes(groupingKeys []values.Value, aggregates []expression
 }
 
 // encodeJavaPartial is StreamGrouping.getPartialAggregationResult for gs.
-func (t *aggregateStateTypes) encodeJavaPartial(keyVals []any, gs *groupState, aggregates []expressions.AggregateSpec) (*gen.PartialAggregationResult, error) {
-	par := &gen.PartialAggregationResult{}
+func (t *aggregateStateTypes) encodeJavaPartial(keyVals []any, gs *groupState, aggregates []expressions.AggregateSpec) (*cursorpb.PartialAggregationResult, error) {
+	par := &cursorpb.PartialAggregationResult{}
 	if t.groupKey != nil {
 		msg, err := values.MessageFromRowValues(t.groupKey, keyVals)
 		if err != nil {
@@ -162,8 +162,8 @@ func (t *aggregateStateTypes) encodeJavaPartial(keyVals []any, gs *groupState, a
 	return par, nil
 }
 
-func (t *aggregateStateTypes) encodeAccumulator(i int, agg expressions.AggregateSpec, gs *groupState) (*gen.AccumulatorState, error) {
-	state := &gen.AccumulatorState{}
+func (t *aggregateStateTypes) encodeAccumulator(i int, agg expressions.AggregateSpec, gs *groupState) (*cursorpb.AccumulatorState, error) {
+	state := &cursorpb.AccumulatorState{}
 	switch agg.Function {
 	case expressions.AggCount:
 		// COUNT maps a NULL to 0, so its state exists from the first row.
@@ -172,7 +172,7 @@ func (t *aggregateStateTypes) encodeAccumulator(i int, agg expressions.Aggregate
 			if expressions.IsCountStar(agg) {
 				n = gs.count
 			}
-			state.State = []*gen.OneOfTypedState{int64State(n)}
+			state.State = []*cursorpb.OneOfTypedState{int64State(n)}
 		}
 	case expressions.AggArrayAgg:
 		if gs.count > 0 {
@@ -184,7 +184,7 @@ func (t *aggregateStateTypes) encodeAccumulator(i int, agg expressions.Aggregate
 			if err != nil {
 				return nil, err
 			}
-			state.State = []*gen.OneOfTypedState{{State: &gen.OneOfTypedState_BytesState{BytesState: b}}}
+			state.State = []*cursorpb.OneOfTypedState{{State: &cursorpb.OneOfTypedState_BytesState{BytesState: b}}}
 		}
 	default:
 		if gs.counts[i] == 0 {
@@ -207,7 +207,7 @@ func (t *aggregateStateTypes) encodeAccumulator(i int, agg expressions.Aggregate
 			first = gs.maxs[i]
 		case expressions.AggBitmapConstructAgg:
 			// BitSet.toByteArray: little-endian, trailing zero bytes dropped.
-			state.State = []*gen.OneOfTypedState{{State: &gen.OneOfTypedState_BytesState{
+			state.State = []*cursorpb.OneOfTypedState{{State: &cursorpb.OneOfTypedState_BytesState{
 				BytesState: bytes.TrimRight(gs.bitmaps[i], "\x00"),
 			}}}
 			return state, nil
@@ -218,7 +218,7 @@ func (t *aggregateStateTypes) encodeAccumulator(i int, agg expressions.Aggregate
 		if err != nil {
 			return nil, err
 		}
-		state.State = []*gen.OneOfTypedState{s}
+		state.State = []*cursorpb.OneOfTypedState{s}
 		if agg.Function == expressions.AggAvg {
 			state.State = append(state.State, int64State(gs.counts[i]))
 		}
@@ -227,7 +227,7 @@ func (t *aggregateStateTypes) encodeAccumulator(i int, agg expressions.Aggregate
 }
 
 // decodeJavaPartial restores the group StreamGrouping's partial describes.
-func (t *aggregateStateTypes) decodeJavaPartial(par *gen.PartialAggregationResult, aggregates []expressions.AggregateSpec) ([]any, *groupState, error) {
+func (t *aggregateStateTypes) decodeJavaPartial(par *cursorpb.PartialAggregationResult, aggregates []expressions.AggregateSpec) ([]any, *groupState, error) {
 	var keyVals []any
 	if t.groupKey != nil {
 		msg := dynamicpb.NewMessage(t.groupKey)
@@ -253,7 +253,7 @@ func (t *aggregateStateTypes) decodeJavaPartial(par *gen.PartialAggregationResul
 	return keyVals, gs, nil
 }
 
-func (t *aggregateStateTypes) decodeAccumulator(i int, agg expressions.AggregateSpec, gs *groupState, state *gen.AccumulatorState) error {
+func (t *aggregateStateTypes) decodeAccumulator(i int, agg expressions.AggregateSpec, gs *groupState, state *cursorpb.AccumulatorState) error {
 	slots := state.GetState()
 	if len(slots) == 0 {
 		return nil
@@ -267,7 +267,7 @@ func (t *aggregateStateTypes) decodeAccumulator(i int, agg expressions.Aggregate
 	}
 	switch agg.Function {
 	case expressions.AggCount:
-		n, ok := slots[0].GetState().(*gen.OneOfTypedState_Int64State)
+		n, ok := slots[0].GetState().(*cursorpb.OneOfTypedState_Int64State)
 		if !ok || n.Int64State < 0 {
 			return fmt.Errorf("COUNT state %v is not a count", slots[0])
 		}
@@ -278,7 +278,7 @@ func (t *aggregateStateTypes) decodeAccumulator(i int, agg expressions.Aggregate
 		}
 		return nil
 	case expressions.AggArrayAgg:
-		b, ok := slots[0].GetState().(*gen.OneOfTypedState_BytesState)
+		b, ok := slots[0].GetState().(*cursorpb.OneOfTypedState_BytesState)
 		if !ok {
 			return fmt.Errorf("ARRAY_AGG state %v is not bytes", slots[0])
 		}
@@ -293,7 +293,7 @@ func (t *aggregateStateTypes) decodeAccumulator(i int, agg expressions.Aggregate
 		gs.arrays[i] = append([]any{}, elems...)
 		return nil
 	case expressions.AggBitmapConstructAgg:
-		b, ok := slots[0].GetState().(*gen.OneOfTypedState_BytesState)
+		b, ok := slots[0].GetState().(*cursorpb.OneOfTypedState_BytesState)
 		if !ok || len(b.BytesState) > 31250 {
 			return fmt.Errorf("bitmap state %v is not a bitmap", slots[0])
 		}
@@ -323,7 +323,7 @@ func (t *aggregateStateTypes) decodeAccumulator(i int, agg expressions.Aggregate
 			gs.sums[i], gs.allInt[i] = v.(float64), false
 		}
 		if agg.Function == expressions.AggAvg {
-			n, ok := slots[1].GetState().(*gen.OneOfTypedState_Int64State)
+			n, ok := slots[1].GetState().(*cursorpb.OneOfTypedState_Int64State)
 			if !ok || n.Int64State <= 0 {
 				return fmt.Errorf("AVG count %v is not positive", slots[1])
 			}
@@ -335,9 +335,9 @@ func (t *aggregateStateTypes) decodeAccumulator(i int, agg expressions.Aggregate
 	return nil
 }
 
-func isFloatState(s *gen.OneOfTypedState) bool {
+func isFloatState(s *cursorpb.OneOfTypedState) bool {
 	switch s.GetState().(type) {
-	case *gen.OneOfTypedState_FloatState, *gen.OneOfTypedState_DoubleState:
+	case *cursorpb.OneOfTypedState_FloatState, *cursorpb.OneOfTypedState_DoubleState:
 		return true
 	}
 	return false

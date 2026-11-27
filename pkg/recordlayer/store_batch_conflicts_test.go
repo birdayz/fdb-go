@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"fdb.dev/gen/demopb"
 	"fdb.dev/internal/fdbgo/transport"
 	"fdb.dev/internal/fdbwire"
 	wiretypes "fdb.dev/internal/fdbwire/types"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"

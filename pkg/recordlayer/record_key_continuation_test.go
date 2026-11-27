@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/gen"
-	"fdb.dev/gen/demopb"
 	"fdb.dev/internal/dst"
+	cursorpb "fdb.dev/internal/pb/cursor"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -34,10 +34,10 @@ func recordKeyLiteralToken(id byte, suffix []byte) []byte {
 
 func recordKeyAssertToken(raw []byte, id byte, suffix []byte) {
 	ExpectWithOffset(1, raw).To(Equal(recordKeyLiteralToken(id, suffix)))
-	var outer gen.DedupContinuation
+	var outer cursorpb.DedupContinuation
 	ExpectWithOffset(1, outer.UnmarshalVT(raw)).To(Succeed())
 	ExpectWithOffset(1, outer.LastValue).To(Equal([]byte{0x15, id}))
-	var leaf gen.KeyValueCursorContinuation
+	var leaf cursorpb.KeyValueCursorContinuation
 	ExpectWithOffset(1, leaf.UnmarshalVT(outer.InnerContinuation)).To(Succeed())
 	ExpectWithOffset(1, leaf.MagicNumber).NotTo(BeNil())
 	ExpectWithOffset(1, leaf.GetMagicNumber()).To(Equal(int64(6773487359078157740)))
@@ -494,7 +494,7 @@ var _ = Describe("Suffix-only physical record keys", func() {
 			Expect(page.records).To(Equal(1))
 			Expect(hex.EncodeToString(page.token)).To(Equal(firstHex))
 			Expect(page.rowTokens).To(Equal([][]byte{page.token}))
-			var outer gen.DedupContinuation
+			var outer cursorpb.DedupContinuation
 			Expect(outer.UnmarshalVT(page.token)).To(Succeed())
 			Expect(outer.LastValue).NotTo(BeNil())
 			Expect(outer.LastValue).To(HaveLen(0))
@@ -1508,7 +1508,7 @@ var _ = Describe("Record-key scan argument boundaries", func() {
 				Expect(page.keys).To(Equal([]tuple.Tuple{want}))
 				Expect(page.reason).To(Equal(ReturnLimitReached))
 				Expect(page.end).To(BeFalse())
-				var state gen.DedupContinuation
+				var state cursorpb.DedupContinuation
 				Expect(state.UnmarshalVT(page.token)).To(Succeed())
 				Expect(state.LastValue).To(Equal(pk))
 				resumed := recordKeyTestRead(ss, md, 14, props, page.token)
@@ -1537,7 +1537,7 @@ func TestRecordKeyDedupRestoredTupleBytes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			raw, err := (&gen.DedupContinuation{InnerContinuation: []byte{}, LastValue: tc.raw}).MarshalVT()
+			raw, err := (&cursorpb.DedupContinuation{InnerContinuation: []byte{}, LastValue: tc.raw}).MarshalVT()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1568,7 +1568,7 @@ func TestRecordKeyDedupRestoredTupleBytes(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				var decoded gen.DedupContinuation
+				var decoded cursorpb.DedupContinuation
 				if err := decoded.UnmarshalVT(encoded); err != nil {
 					t.Fatal(err)
 				}

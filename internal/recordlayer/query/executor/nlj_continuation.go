@@ -12,7 +12,7 @@ import (
 	"bytes"
 	"fmt"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -92,7 +92,7 @@ const (
 )
 
 func (w *nljContinuation) ToBytes() ([]byte, error) {
-	fmc := &gen.FlatMapContinuation{CheckValue: w.checkValue}
+	fmc := &cursorpb.FlatMapContinuation{CheckValue: w.checkValue}
 	if w.outerCont != nil && !w.outerCont.IsEnd() {
 		b, err := w.outerCont.ToBytes()
 		if err != nil {
@@ -180,7 +180,7 @@ func decodeNLJContinuation(continuation []byte) (outerContinuation []byte, resum
 	if len(continuation) == 0 {
 		return nil, nil, nil
 	}
-	fmc := &gen.FlatMapContinuation{}
+	fmc := &cursorpb.FlatMapContinuation{}
 	if uerr := recordlayer.UnmarshalAsJava(continuation, fmc); uerr != nil {
 		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (unrecognized continuation bytes)"}
 	}

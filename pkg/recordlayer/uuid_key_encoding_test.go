@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"fdb.dev/gen"
+	storagepb "fdb.dev/internal/pb/storage"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 )
@@ -22,7 +22,7 @@ func TestUUIDMessageToTuple_JavaWireFormat(t *testing.T) {
 	// constant int64(...) conversion would be range-checked and overflow.)
 	msbBits := uint64(0x550e8400e29b41d4)
 	lsbBits := uint64(0xa716446655440000)
-	msg := (&gen.UUID{
+	msg := (&storagepb.UUID{
 		MostSignificantBits:  proto.Int64(int64(msbBits)),
 		LeastSignificantBits: proto.Int64(int64(lsbBits)),
 	}).ProtoReflect()
@@ -45,7 +45,7 @@ func TestUUIDMessageToTuple_JavaWireFormat(t *testing.T) {
 	}
 
 	// Zero UUID round-trips to all-zero bytes (no sign-extension surprises).
-	zero := uuidMessageToTuple((&gen.UUID{
+	zero := uuidMessageToTuple((&storagepb.UUID{
 		MostSignificantBits:  proto.Int64(0),
 		LeastSignificantBits: proto.Int64(0),
 	}).ProtoReflect())

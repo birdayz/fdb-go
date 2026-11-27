@@ -24,7 +24,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/pkg/recordlayer"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 )

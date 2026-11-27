@@ -6,7 +6,7 @@ import (
 	"math"
 	"testing"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/pkg/recordlayer/metadatapb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"google.golang.org/protobuf/proto"

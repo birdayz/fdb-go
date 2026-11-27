@@ -19,8 +19,8 @@ go_library(
     importpath = "fdb.dev/internal/relational/metadata",
     visibility = ["//:__subpackages__"],
     deps = [
-        "//gen",
         "//internal/javahashmap",
+        "//internal/pb/storage",
         "//internal/recordlayer/protoscope",
         "//internal/relational/relapi",
         "//internal/unicode15",
@@ -50,8 +50,8 @@ go_test(
     ],
     embed = [":metadata"],
     deps = [
-        "//gen",
-        "//gen/demopb",
+        "//internal/pb/demopb",
+        "//internal/pb/storage",
         "//internal/relational/relapi",
         "//pkg/recordlayer",
         "//pkg/recordlayer/metadatapb",

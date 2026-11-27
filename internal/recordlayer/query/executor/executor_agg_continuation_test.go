@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -370,7 +370,7 @@ func TestBitmapAggregateContinuationValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var sent gen.AggregateCursorContinuation
+	var sent cursorpb.AggregateCursorContinuation
 	if err := proto.Unmarshal(encoded, &sent); err != nil {
 		t.Fatal(err)
 	}
@@ -393,14 +393,14 @@ func TestBitmapAggregateContinuationValidation(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name  string
-		state *gen.OneOfTypedState
+		state *cursorpb.OneOfTypedState
 	}{
-		{"oversize", &gen.OneOfTypedState{State: &gen.OneOfTypedState_BytesState{BytesState: make([]byte, 31251)}}},
-		{"wrong type", &gen.OneOfTypedState{State: &gen.OneOfTypedState_Int64State{Int64State: 2}}},
+		{"oversize", &cursorpb.OneOfTypedState{State: &cursorpb.OneOfTypedState_BytesState{BytesState: make([]byte, 31251)}}},
+		{"wrong type", &cursorpb.OneOfTypedState{State: &cursorpb.OneOfTypedState_Int64State{Int64State: 2}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			var msg gen.AggregateCursorContinuation
+			var msg cursorpb.AggregateCursorContinuation
 			if err := proto.Unmarshal(encoded, &msg); err != nil {
 				t.Fatal(err)
 			}

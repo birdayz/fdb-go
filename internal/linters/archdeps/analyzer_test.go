@@ -17,7 +17,7 @@ import (
 // type-checking in-process without shelling out to the go toolchain (which is
 // unavailable inside the Bazel sandbox).
 var stubPkgSources = map[string]string{
-	"fdb.dev/gen":                                   "package gen\ntype Value struct{}\n",
+	"fdb.dev/internal/pb/storage":                   "package storage\ntype UUID struct{}\n",
 	"fdb.dev/internal/relational/relapi":            "package api\nfunc Open() {}\n",
 	"fdb.dev/internal/relational/functions":         "package functions\nfunc Call() {}\n",
 	"fdb.dev/internal/relational/rowstruct":         "package rowstruct\ntype Row struct{}\n",
@@ -569,10 +569,10 @@ func TestRules(t *testing.T) {
 			want:     0,
 		},
 		{
-			name:     "L0 leaf importing gen and sibling leaf passes",
+			name:     "L0 leaf importing internal/pb and sibling leaf passes",
 			pkgPath:  "fdb.dev/pkg/recordlayer/indexpredicate",
 			filename: "pkg/recordlayer/indexpredicate/normalize.go",
-			src:      "package indexpredicate\n\nimport (\n\t_ \"fdb.dev/gen\"\n\t_ \"fdb.dev/pkg/recordlayer/protoname\"\n)\n",
+			src:      "package indexpredicate\n\nimport (\n\t_ \"fdb.dev/internal/pb/storage\"\n\t_ \"fdb.dev/pkg/recordlayer/protoname\"\n)\n",
 			want:     0,
 		},
 

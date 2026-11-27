@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 )
 
 // TestThenOfFewerThanTwoChildrenIsRefusedWhereJavaThrows pins Java's refusal of

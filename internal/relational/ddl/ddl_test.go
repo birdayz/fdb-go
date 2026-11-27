@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/internal/relational/catalog"
 	"fdb.dev/internal/relational/ddl"
 	"fdb.dev/internal/relational/metadata"

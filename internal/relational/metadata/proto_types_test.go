@@ -9,10 +9,10 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"fdb.dev/gen"
+	storagepb "fdb.dev/internal/pb/storage"
 	"fdb.dev/pkg/recordlayer/metadatapb"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -57,13 +57,13 @@ func TestIsFieldNullable_ProtoCardinality(t *testing.T) {
 func TestIsUUIDDescriptor(t *testing.T) {
 	t.Parallel()
 
-	uuidMD := (&gen.UUID{}).ProtoReflect().Descriptor()
+	uuidMD := (&storagepb.UUID{}).ProtoReflect().Descriptor()
 	if string(uuidMD.FullName()) != uuidFullName {
-		t.Fatalf("gen.UUID FullName = %q, want %q (proto regen?)",
+		t.Fatalf("storagepb.UUID FullName = %q, want %q (proto regen?)",
 			uuidMD.FullName(), uuidFullName)
 	}
 	if !isUUIDDescriptor(uuidMD) {
-		t.Error("isUUIDDescriptor(gen.UUID) = false, want true")
+		t.Error("isUUIDDescriptor(storagepb.UUID) = false, want true")
 	}
 
 	// Non-UUID message must fail the check.
@@ -374,7 +374,7 @@ func TestMessageTypeFromDescriptor_UUIDFallbackStructShape(t *testing.T) {
 	// short-circuit), the result is a 2-field struct — this pins the
 	// expected shape so callers know what the non-short-circuit path
 	// produces.
-	uuidMD := (&gen.UUID{}).ProtoReflect().Descriptor()
+	uuidMD := (&storagepb.UUID{}).ProtoReflect().Descriptor()
 	st, err := messageTypeFromDescriptor(uuidMD, true)
 	if err != nil {
 		t.Fatalf("messageTypeFromDescriptor(UUID): %v", err)

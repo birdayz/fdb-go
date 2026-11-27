@@ -15,7 +15,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -1006,7 +1006,7 @@ type flatMapCursorContinuation struct {
 }
 
 func (w *flatMapCursorContinuation) ToBytes() ([]byte, error) {
-	fmc := &gen.FlatMapContinuation{CheckValue: w.checkValue}
+	fmc := &cursorpb.FlatMapContinuation{CheckValue: w.checkValue}
 	if w.outerCont != nil {
 		b, err := w.outerCont.ToBytes()
 		if err != nil {

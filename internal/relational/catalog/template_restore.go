@@ -8,7 +8,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	catalogpb "fdb.dev/internal/pb/catalog"
 	"fdb.dev/internal/relational/keyspace"
 	"fdb.dev/internal/relational/metadata"
 	"fdb.dev/internal/relational/relapi"
@@ -291,7 +291,7 @@ func (c *RecordLayerStoreCatalog) restoreInTransaction(ctx context.Context, db *
 		return false, err
 	}
 	if existing != nil {
-		if row, ok := existing.Record.(*gen.Templates); ok && maybeCommitted && string(row.GetMETA_DATA()) == string(md) {
+		if row, ok := existing.Record.(*catalogpb.Templates); ok && maybeCommitted && string(row.GetMETA_DATA()) == string(md) {
 			return true, nil
 		}
 		return false, errRestore(api.ErrCodeDuplicateSchemaTemplate, name, version, "it is stored")
@@ -312,7 +312,7 @@ func (c *RecordLayerStoreCatalog) restoreInTransaction(ctx context.Context, db *
 			return false, err
 		}
 	}
-	if _, err := store.SaveRecord(&gen.Templates{
+	if _, err := store.SaveRecord(&catalogpb.Templates{
 		TEMPLATE_NAME:    proto.String(name),
 		TEMPLATE_VERSION: proto.Int32(int32(version)),
 		META_DATA:        md,
@@ -343,7 +343,7 @@ func (c *RecordLayerStoreCatalog) storesExactly(ctx context.Context, db *recordl
 		if err != nil || existing == nil {
 			return false, err
 		}
-		row, ok := existing.Record.(*gen.Templates)
+		row, ok := existing.Record.(*catalogpb.Templates)
 		return ok && string(row.GetMETA_DATA()) == string(md), nil
 	})
 	if err != nil {
@@ -354,7 +354,7 @@ func (c *RecordLayerStoreCatalog) storesExactly(ctx context.Context, db *recordl
 
 // storedTemplateRows reads every stored version of name, one serializable
 // range read of its rows.
-func storedTemplateRows(store *recordlayer.FDBRecordStore, name string) ([]*gen.Templates, error) {
+func storedTemplateRows(store *recordlayer.FDBRecordStore, name string) ([]*catalogpb.Templates, error) {
 	cursor := store.ScanRecordsInRange(
 		tuple.Tuple{SchemaTemplateRecordTypeKey, name},
 		tuple.Tuple{SchemaTemplateRecordTypeKey, name},
@@ -362,7 +362,7 @@ func storedTemplateRows(store *recordlayer.FDBRecordStore, name string) ([]*gen.
 		nil, recordlayer.ForwardScan(),
 	)
 	defer func() { _ = cursor.Close() }()
-	var rows []*gen.Templates
+	var rows []*catalogpb.Templates
 	for {
 		r, err := cursor.OnNext(store.Context().Context())
 		if err != nil {
@@ -371,7 +371,7 @@ func storedTemplateRows(store *recordlayer.FDBRecordStore, name string) ([]*gen.
 		if !r.HasNext() {
 			return rows, nil
 		}
-		row, ok := r.GetValue().Record.(*gen.Templates)
+		row, ok := r.GetValue().Record.(*catalogpb.Templates)
 		if !ok {
 			return nil, api.NewErrorf(api.ErrCodeInternalError, "catalog template row has unexpected type %T", r.GetValue().Record)
 		}
@@ -391,7 +391,7 @@ type historyVersion struct {
 // two are one history: with L the lower template version and H the higher, what
 // the carry keeps from each version to the next holds from L to H (WS-J section
 // 2, checks (i) to (iv)).
-func carryCompatible(name string, version int, restored *restoredMetaData, row *gen.Templates) error {
+func carryCompatible(name string, version int, restored *restoredMetaData, row *catalogpb.Templates) error {
 	storedVersion := int(row.GetTEMPLATE_VERSION())
 	refuse := func(format string, args ...any) error {
 		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,

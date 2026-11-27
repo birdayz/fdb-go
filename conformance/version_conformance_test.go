@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"github.com/google/uuid"

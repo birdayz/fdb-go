@@ -68,7 +68,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"fdb.dev/gen"
+	storagepb "fdb.dev/internal/pb/storage"
 	"fdb.dev/internal/recordlayer/protoname"
 	"fdb.dev/internal/recordlayer/protoscope"
 	"fdb.dev/pkg/recordlayer/metadatapb"
@@ -681,14 +681,14 @@ func (p *TypeProtoRepository) compileLocked() (protoreflect.FileDescriptor, erro
 	}
 	fdp := &descriptorpb.FileDescriptorProto{
 		Name:        proto.String(syntheticFileName),
-		Dependency:  []string{gen.File_tuple_fields_proto.Path()},
+		Dependency:  []string{storagepb.File_tuple_fields_proto.Path()},
 		MessageType: p.messages,
 		EnumType:    p.enums,
 	}
 	resolver := &protoregistry.Files{}
 	// Duplicate registration is not an error worth surfacing: the global
 	// registry already holds this file and all we need is local visibility.
-	_ = resolver.RegisterFile(gen.File_tuple_fields_proto)
+	_ = resolver.RegisterFile(storagepb.File_tuple_fields_proto)
 
 	// The synthesised names are RELATIVE, exactly as Java writes them; the
 	// protodesc resolver wants absolute ones. Absolutizing a CLONE keeps
@@ -735,7 +735,7 @@ func (p *TypeProtoRepository) FileDescriptorProtoForTest() *descriptorpb.FileDes
 	defer p.mu.Unlock()
 	return &descriptorpb.FileDescriptorProto{
 		Name:        proto.String(syntheticFileName),
-		Dependency:  []string{gen.File_tuple_fields_proto.Path()},
+		Dependency:  []string{storagepb.File_tuple_fields_proto.Path()},
 		MessageType: p.messages,
 		EnumType:    p.enums,
 	}

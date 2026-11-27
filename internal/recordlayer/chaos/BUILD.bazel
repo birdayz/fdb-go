@@ -35,7 +35,7 @@ go_library(
         "//pkg/relational/core/embedded:__pkg__",
     ],
     deps = [
-        "//gen/demopb",
+        "//internal/pb/demopb",
         "//internal/recordlayer/vectorcodec",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
@@ -82,9 +82,9 @@ go_test(
         "test-full",
     ],
     deps = [
-        "//gen/demopb",
         "//internal/dst",
         "//internal/dstwire",
+        "//internal/pb/demopb",
         "//internal/recordlayer/vectorcodec",
         "//internal/simfdb",
         "//pkg/fdbgo/fdb",

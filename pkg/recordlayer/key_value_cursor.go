@@ -13,7 +13,7 @@ import (
 
 	"fdb.dev/internal/recordlayer/tuplefast"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
@@ -33,7 +33,7 @@ func wrapContinuation(innerBytes []byte) ([]byte, error) {
 		return nil, nil
 	}
 	magic := continuationMagicNumber
-	msg := &gen.KeyValueCursorContinuation{
+	msg := &cursorpb.KeyValueCursorContinuation{
 		InnerContinuation: innerBytes,
 		MagicNumber:       &magic,
 	}
@@ -65,7 +65,7 @@ func unwrapContinuation(rawBytes []byte) []byte {
 	if rawBytes == nil {
 		return nil
 	}
-	msg := &gen.KeyValueCursorContinuation{}
+	msg := &cursorpb.KeyValueCursorContinuation{}
 	if err := UnmarshalVTAsJava(msg, rawBytes); err != nil {
 		return rawBytes
 	}

@@ -5,7 +5,7 @@ import (
 	"context"
 	"testing"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -35,20 +35,20 @@ func FuzzVectorScanContinuation(f *testing.F) {
 	}, 1)
 	f.Add(valid)
 	// Corrupt entry key: valid proto, key bytes are not a packed tuple.
-	corruptKey, _ := (&gen.VectorIndexScanContinuation{
-		IndexEntries: []*gen.VectorIndexScanContinuation_IndexEntry{
+	corruptKey, _ := (&cursorpb.VectorIndexScanContinuation{
+		IndexEntries: []*cursorpb.VectorIndexScanContinuation_IndexEntry{
 			{Key: []byte{0xff}, Value: tuple.Tuple{nil}.Pack()},
 		},
 		InnerContinuation: []byte{0x00, 0x00, 0x00, 0x00},
 	}).MarshalVT()
 	f.Add(corruptKey)
 	// Short inner position: Java's ListCursor ByteBuffer.getInt underflows.
-	shortInner, _ := (&gen.VectorIndexScanContinuation{
+	shortInner, _ := (&cursorpb.VectorIndexScanContinuation{
 		InnerContinuation: []byte{0x01},
 	}).MarshalVT()
 	f.Add(shortInner)
 	// Negative inner position: would index entries[-1] if accepted.
-	negativePos, _ := (&gen.VectorIndexScanContinuation{
+	negativePos, _ := (&cursorpb.VectorIndexScanContinuation{
 		InnerContinuation: []byte{0xff, 0xff, 0xff, 0xff},
 	}).MarshalVT()
 	f.Add(negativePos)
@@ -71,7 +71,7 @@ func FuzzVectorScanContinuation(f *testing.F) {
 		}
 		_ = cursor.Close()
 		// A token that fails proto parse must never produce a cursor.
-		var contProto gen.VectorIndexScanContinuation
+		var contProto cursorpb.VectorIndexScanContinuation
 		if len(data) > 0 && contProto.UnmarshalVT(data) != nil {
 			t.Fatal("unparseable continuation produced a cursor instead of an error")
 		}

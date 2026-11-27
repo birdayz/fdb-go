@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"google.golang.org/protobuf/proto"
@@ -175,7 +175,7 @@ func TestAggregateJavaPartialNoAggregates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var msg gen.AggregateCursorContinuation
+	var msg cursorpb.AggregateCursorContinuation
 	if err := proto.Unmarshal(encoded, &msg); err != nil {
 		t.Fatal(err)
 	}
@@ -210,37 +210,37 @@ func TestAggregateJavaPartialRejectsMalformed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bytesState := func(b []byte) *gen.OneOfTypedState {
-		return &gen.OneOfTypedState{State: &gen.OneOfTypedState_BytesState{BytesState: b}}
+	bytesState := func(b []byte) *cursorpb.OneOfTypedState {
+		return &cursorpb.OneOfTypedState{State: &cursorpb.OneOfTypedState_BytesState{BytesState: b}}
 	}
 	i64 := int64State
 	for _, tc := range []struct {
 		name   string
-		mutate func(*gen.PartialAggregationResult)
+		mutate func(*cursorpb.PartialAggregationResult)
 		want   string
 	}{
-		{"missing aggregate", func(p *gen.PartialAggregationResult) {
+		{"missing aggregate", func(p *cursorpb.PartialAggregationResult) {
 			p.AccumulatorStates = p.AccumulatorStates[1:]
 		}, "accumulator states"},
-		{"negative count", func(p *gen.PartialAggregationResult) {
+		{"negative count", func(p *cursorpb.PartialAggregationResult) {
 			p.AccumulatorStates[0].State[0] = i64(-1)
 		}, "not a count"},
-		{"SUM_I as a LONG", func(p *gen.PartialAggregationResult) {
+		{"SUM_I as a LONG", func(p *cursorpb.PartialAggregationResult) {
 			p.AccumulatorStates[2].State[0] = i64(3)
 		}, "does not hold a INT"},
-		{"MIN_F as bytes", func(p *gen.PartialAggregationResult) {
+		{"MIN_F as bytes", func(p *cursorpb.PartialAggregationResult) {
 			p.AccumulatorStates[10].State[0] = bytesState([]byte("x"))
 		}, "does not hold a FLOAT"},
-		{"AVG without its count", func(p *gen.PartialAggregationResult) {
+		{"AVG without its count", func(p *cursorpb.PartialAggregationResult) {
 			p.AccumulatorStates[7].State = p.AccumulatorStates[7].State[:1]
 		}, "typed states, want 2"},
-		{"AVG count zero", func(p *gen.PartialAggregationResult) {
+		{"AVG count zero", func(p *cursorpb.PartialAggregationResult) {
 			p.AccumulatorStates[7].State[1] = i64(0)
 		}, "not positive"},
-		{"two states for MAX", func(p *gen.PartialAggregationResult) {
+		{"two states for MAX", func(p *cursorpb.PartialAggregationResult) {
 			p.AccumulatorStates[9].State = append(p.AccumulatorStates[9].State, i64(1))
 		}, "typed states, want 1"},
-		{"ARRAY_AGG past its limit", func(p *gen.PartialAggregationResult) {
+		{"ARRAY_AGG past its limit", func(p *cursorpb.PartialAggregationResult) {
 			wrapper := []byte{}
 			for _, d := range []float64{1, 2, 3, 4} {
 				wrapper = append(wrapper, 0x09)
@@ -248,16 +248,16 @@ func TestAggregateJavaPartialRejectsMalformed(t *testing.T) {
 			}
 			p.AccumulatorStates[14].State[0] = bytesState(wrapper)
 		}, "past the limit"},
-		{"ARRAY_AGG not bytes", func(p *gen.PartialAggregationResult) {
+		{"ARRAY_AGG not bytes", func(p *cursorpb.PartialAggregationResult) {
 			p.AccumulatorStates[13].State[0] = i64(1)
 		}, "not bytes"},
-		{"group key not a grouping record", func(p *gen.PartialAggregationResult) {
+		{"group key not a grouping record", func(p *cursorpb.PartialAggregationResult) {
 			p.GroupKey = []byte{0xff}
 		}, "grouping key"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			var msg gen.AggregateCursorContinuation
+			var msg cursorpb.AggregateCursorContinuation
 			if err := proto.Unmarshal(encoded, &msg); err != nil {
 				t.Fatal(err)
 			}

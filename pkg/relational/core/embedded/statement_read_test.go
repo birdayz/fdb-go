@@ -21,9 +21,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
 	"fdb.dev/internal/dst"
 	"fdb.dev/internal/dstwire"
+	catalogpb "fdb.dev/internal/pb/catalog"
 	"fdb.dev/internal/relational/catalog"
 	"fdb.dev/internal/relational/connknob"
 	"fdb.dev/internal/relational/ddl"
@@ -209,7 +209,7 @@ func (h *srHarness) rewriteTemplateRow(t *testing.T, version int, tmpl *metadata
 		if err != nil {
 			return err
 		}
-		_, err = store.SaveRecord(&gen.Templates{
+		_, err = store.SaveRecord(&catalogpb.Templates{
 			TEMPLATE_NAME: proto.String(srTemplateName), TEMPLATE_VERSION: proto.Int32(int32(version)), META_DATA: md,
 		})
 		return err

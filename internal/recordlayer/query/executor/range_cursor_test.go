@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -35,7 +35,7 @@ func TestRangeCursorContinuation(t *testing.T) {
 	}
 	ids, conts := drain(nil)
 	require.Equal(t, []int64{0, 3, 6}, ids)
-	var c gen.RangeCursorContinuation
+	var c cursorpb.RangeCursorContinuation
 	require.NoError(t, proto.Unmarshal(conts[0], &c))
 	require.Equal(t, int64(3), c.GetNextPosition())
 	rest, _ := drain(conts[0])

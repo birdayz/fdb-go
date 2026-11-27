@@ -6,7 +6,7 @@
 package catalog
 
 import (
-	"fdb.dev/gen"
+	catalogpb "fdb.dev/internal/pb/catalog"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -46,7 +46,7 @@ const (
 // the proto descriptor; under normal conditions this cannot fail.
 func BuildCatalogMetaData() (*recordlayer.RecordMetaData, error) {
 	b := recordlayer.NewRecordMetaDataBuilder().
-		SetRecordsWithUnionName(gen.File_catalog_data_proto, "CatalogUnion").
+		SetRecordsWithUnionName(catalogpb.File_catalog_data_proto, "CatalogUnion").
 		// SetVersion(1): Java's CATALOG_TEMPLATE_VERSION=1; 3 addIndex bumps → v4. Without this, Go starts at 0 → v3 → StaleMetaDataVersionError on cross-engine read.
 		SetVersion(1)
 

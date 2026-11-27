@@ -8,7 +8,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/metadatapb"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 )
 
 // Tests targeting uncovered lines in metadata.go to push coverage from ~79% to ~85%.

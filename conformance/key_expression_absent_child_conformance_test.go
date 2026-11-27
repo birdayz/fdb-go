@@ -14,10 +14,10 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	catalogpb "fdb.dev/internal/pb/catalog"
 	"fdb.dev/pkg/recordlayer/metadatapb"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/internal/relational/catalog"
 	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -469,7 +469,7 @@ var _ = Describe("RFC-257 a stored template Java cannot load", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Templates{TEMPLATE_NAME: proto.String(name), TEMPLATE_VERSION: proto.Int32(1), META_DATA: c.md})
+				_, err = store.SaveRecord(&catalogpb.Templates{TEMPLATE_NAME: proto.String(name), TEMPLATE_VERSION: proto.Int32(1), META_DATA: c.md})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())

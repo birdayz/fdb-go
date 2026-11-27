@@ -14,7 +14,8 @@ import (
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
+	runtimepb "fdb.dev/internal/pb/runtime"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -107,22 +108,22 @@ func decodeRecursiveRow(b []byte, resolve protoDescriptorResolver) (QueryResult,
 // typically well before this runs, since both call sites reach it from a
 // LAZY continuation's ToBytes (see tempTableInsertContinuation /
 // recursiveUnionContinuation) that may run long after the table has moved on.
-func encodeTempTableProto(rows []QueryResult) (*gen.PTempTable, error) {
-	out := &gen.PTempTable{BufferItems: make([]*gen.PQueryResult, 0, len(rows))}
+func encodeTempTableProto(rows []QueryResult) (*runtimepb.PTempTable, error) {
+	out := &runtimepb.PTempTable{BufferItems: make([]*runtimepb.PQueryResult, 0, len(rows))}
 	for _, qr := range rows {
 		b, err := encodeRecursiveRow(qr)
 		if err != nil {
 			return nil, err
 		}
-		out.BufferItems = append(out.BufferItems, &gen.PQueryResult{
-			Datum: &gen.PQueryResult_Complex{Complex: b},
+		out.BufferItems = append(out.BufferItems, &runtimepb.PQueryResult{
+			Datum: &runtimepb.PQueryResult_Complex{Complex: b},
 		})
 	}
 	return out, nil
 }
 
 // decodeTempTableInto re-adds a PTempTable snapshot's rows into dst.
-func decodeTempTableInto(dst *TempTable, pt *gen.PTempTable, resolve protoDescriptorResolver) error {
+func decodeTempTableInto(dst *TempTable, pt *runtimepb.PTempTable, resolve protoDescriptorResolver) error {
 	for i, item := range pt.GetBufferItems() {
 		complexBytes := item.GetComplex()
 		if complexBytes == nil {
@@ -188,7 +189,7 @@ func newTempTableInsertCursor(
 ) (*tempTableInsertCursor, error) {
 	var childCont []byte
 	if len(continuation) > 0 {
-		var cont gen.TempTableInsertContinuation
+		var cont cursorpb.TempTableInsertContinuation
 		if err := recordlayer.UnmarshalVTAsJava(&cont, continuation); err != nil {
 			return nil, &recordlayer.ContinuationParseError{RawBytes: continuation, Cause: err}
 		}
@@ -238,7 +239,7 @@ func (c *tempTableInsertContinuation) ToBytes() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	msg := &gen.TempTableInsertContinuation{ChildContinuation: childBytes, TempTable: snapshot}
+	msg := &cursorpb.TempTableInsertContinuation{ChildContinuation: childBytes, TempTable: snapshot}
 	return msg.MarshalVT()
 }
 
@@ -429,7 +430,7 @@ func newRecursiveUnionCursor(
 		return c, nil
 	}
 
-	var cont gen.RecursiveCursorContinuation
+	var cont cursorpb.RecursiveCursorContinuation
 	if err := recordlayer.UnmarshalVTAsJava(&cont, continuation); err != nil {
 		return nil, &recordlayer.ContinuationParseError{RawBytes: continuation, Cause: err}
 	}
@@ -493,7 +494,7 @@ func (c *recursiveUnionContinuation) ToBytes() ([]byte, error) {
 		return nil, err
 	}
 	initial := c.isInitialState
-	msg := &gen.RecursiveCursorContinuation{
+	msg := &cursorpb.RecursiveCursorContinuation{
 		IsInitialState:          &initial,
 		TempTable:               snapshot,
 		ActiveStateContinuation: childBytes,

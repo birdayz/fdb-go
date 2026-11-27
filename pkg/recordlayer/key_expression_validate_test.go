@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/pkg/recordlayer/metadatapb"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )

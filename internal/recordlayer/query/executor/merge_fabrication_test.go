@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
+	sortingpb "fdb.dev/internal/pb/sorting"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"google.golang.org/protobuf/proto"
 )
@@ -116,8 +116,8 @@ func TestSortContinuation_PositionalRoundTripAndReject(t *testing.T) {
 	} {
 		t.Run(tc.name+"_rejected", func(t *testing.T) {
 			t.Parallel()
-			sr, _ := proto.Marshal(&gen.SortedRecord{Message: tc.message})
-			legacy, _ := proto.Marshal(&gen.MemorySortContinuation{Records: [][]byte{sr}})
+			sr, _ := proto.Marshal(&sortingpb.SortedRecord{Message: tc.message})
+			legacy, _ := proto.Marshal(&sortingpb.MemorySortContinuation{Records: [][]byte{sr}})
 			_, _, _, err := decodeSortContinuation(legacy, nil)
 			if err == nil {
 				t.Fatal("pre-positional payload must be REJECTED (no positional) — a silently dropped row is wrong results with no error")

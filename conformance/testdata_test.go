@@ -5,7 +5,7 @@ package conformance_test
 import (
 	"fmt"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 )
 
 // OrderBuilder provides a fluent interface for building test Order records

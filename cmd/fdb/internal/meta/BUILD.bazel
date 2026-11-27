@@ -34,7 +34,7 @@ go_test(
     embed = [":meta"],
     deps = [
         "//cmd/fdb/gen/fdb/config/v1:config",
-        "//gen/demopb",
+        "//internal/pb/demopb",
         "//pkg/recordlayer",
         "//pkg/recordlayer/metadatapb",
         "@org_golang_google_protobuf//proto",

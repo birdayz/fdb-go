@@ -9,7 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"fdb.dev/gen"
+	catalogpb "fdb.dev/internal/pb/catalog"
 	"fdb.dev/internal/relational/metadata"
 	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -273,7 +273,7 @@ func carryTemplate(stored *metadatapb.MetaData, rl *metadata.RecordLayerSchemaTe
 	if err != nil {
 		return nil, nil, api.WrapErrorf(err, api.ErrCodeInternalError, "template marshal")
 	}
-	tmpl, err := deserializeTemplate(&gen.Templates{
+	tmpl, err := deserializeTemplate(&catalogpb.Templates{
 		TEMPLATE_NAME:    proto.String(rl.MetadataName()),
 		TEMPLATE_VERSION: proto.Int32(int32(rl.Version())),
 		META_DATA:        payload,

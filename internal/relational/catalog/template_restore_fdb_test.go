@@ -11,10 +11,10 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"fdb.dev/gen"
+	catalogpb "fdb.dev/internal/pb/catalog"
 	"fdb.dev/pkg/recordlayer/metadatapb"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/internal/relational/keyspace"
 	"fdb.dev/internal/relational/metadata"
 	"fdb.dev/internal/relational/relapi"
@@ -94,7 +94,7 @@ func (e *restoreEnv) writeRow(version int, md []byte) {
 		if err != nil {
 			return err
 		}
-		_, err = store.SaveRecord(&gen.Templates{
+		_, err = store.SaveRecord(&catalogpb.Templates{
 			TEMPLATE_NAME: proto.String(e.name), TEMPLATE_VERSION: proto.Int32(int32(version)), META_DATA: md,
 		})
 		return err
@@ -114,7 +114,7 @@ func (e *restoreEnv) storedRow(version int) []byte {
 		if err != nil || rec == nil {
 			return err
 		}
-		out = rec.Record.(*gen.Templates).GetMETA_DATA()
+		out = rec.Record.(*catalogpb.Templates).GetMETA_DATA()
 		return nil
 	})
 	return out

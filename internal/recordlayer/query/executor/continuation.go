@@ -16,7 +16,8 @@ import (
 	"math/big"
 	"time"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
+	sortingpb "fdb.dev/internal/pb/sorting"
 	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -763,7 +764,7 @@ func encodeAggregateContinuation(
 			return nil, err
 		}
 	}
-	msg := &gen.AggregateCursorContinuation{Continuation: innerBytes}
+	msg := &cursorpb.AggregateCursorContinuation{Continuation: innerBytes}
 	if gs != nil {
 		types, err := newAggregateStateTypes(groupingKeys, aggregates)
 		if err != nil {
@@ -788,7 +789,7 @@ func decodeAggregateContinuation(data []byte, groupingKeys []values.Value, aggre
 	gs *groupState,
 	err error,
 ) {
-	msg := &gen.AggregateCursorContinuation{}
+	msg := &cursorpb.AggregateCursorContinuation{}
 	if err := recordlayer.UnmarshalAsJava(data, msg); err != nil {
 		return nil, "", nil, fmt.Errorf("failed to unmarshal aggregate continuation: %w", err)
 	}
@@ -831,7 +832,7 @@ func legacyAggregateSlots(aggregates []expressions.AggregateSpec) int {
 	return want
 }
 
-func isLegacyAggregatePartial(par *gen.PartialAggregationResult, aggregates []expressions.AggregateSpec) bool {
+func isLegacyAggregatePartial(par *cursorpb.PartialAggregationResult, aggregates []expressions.AggregateSpec) bool {
 	states := par.GetAccumulatorStates()
 	return len(states) == 1 && len(states[0].GetState()) == legacyAggregateSlots(aggregates)
 }
@@ -840,7 +841,7 @@ func isLegacyAggregatePartial(par *gen.PartialAggregationResult, aggregates []ex
 // before it wrote Java's: [count] ++ per aggregate [count, sum, sumI, allInt,
 // min, max] ++ one slot per ARRAY_AGG ++ one per BITMAP_CONSTRUCT_AGG, and a
 // group key of the packed key bytes followed by its typed values.
-func decodeLegacyAggregatePartial(par *gen.PartialAggregationResult, aggregates []expressions.AggregateSpec, resolve protoDescriptorResolver) (
+func decodeLegacyAggregatePartial(par *cursorpb.PartialAggregationResult, aggregates []expressions.AggregateSpec, resolve protoDescriptorResolver) (
 	groupKey string,
 	gs *groupState,
 	err error,
@@ -923,7 +924,7 @@ func decodeLegacyAggregatePartial(par *gen.PartialAggregationResult, aggregates 
 	// slot TYPE at a matching count) — error, never silently coerce to zero.
 	idx := 0
 	int64At := func(what string) (int64, error) {
-		v, ok := as.State[idx].State.(*gen.OneOfTypedState_Int64State)
+		v, ok := as.State[idx].State.(*cursorpb.OneOfTypedState_Int64State)
 		if !ok {
 			return 0, fmt.Errorf("aggregate continuation: %s slot %d is not int64 — not a Go-format continuation", what, idx)
 		}
@@ -931,7 +932,7 @@ func decodeLegacyAggregatePartial(par *gen.PartialAggregationResult, aggregates 
 		return v.Int64State, nil
 	}
 	doubleAt := func(what string) (float64, error) {
-		v, ok := as.State[idx].State.(*gen.OneOfTypedState_DoubleState)
+		v, ok := as.State[idx].State.(*cursorpb.OneOfTypedState_DoubleState)
 		if !ok {
 			return 0, fmt.Errorf("aggregate continuation: %s slot %d is not double — not a Go-format continuation", what, idx)
 		}
@@ -962,7 +963,7 @@ func decodeLegacyAggregatePartial(par *gen.PartialAggregationResult, aggregates 
 		// legitimate "no partial" case (nil min/max); non-empty bytes must
 		// decode and validate.
 		extremum := func(what string) (any, error) {
-			v, ok := as.State[idx].State.(*gen.OneOfTypedState_BytesState)
+			v, ok := as.State[idx].State.(*cursorpb.OneOfTypedState_BytesState)
 			if !ok {
 				return nil, fmt.Errorf("aggregate continuation: %s slot %d is not bytes — not a Go-format continuation", what, idx)
 			}
@@ -992,7 +993,7 @@ func decodeLegacyAggregatePartial(par *gen.PartialAggregationResult, aggregates 
 		if agg.Function != expressions.AggArrayAgg {
 			continue
 		}
-		v, ok := as.State[idx].State.(*gen.OneOfTypedState_BytesState)
+		v, ok := as.State[idx].State.(*cursorpb.OneOfTypedState_BytesState)
 		if !ok {
 			return "", nil, fmt.Errorf("aggregate continuation: ARRAY_AGG slot %d is not bytes — not a Go-format continuation", idx)
 		}
@@ -1016,7 +1017,7 @@ func decodeLegacyAggregatePartial(par *gen.PartialAggregationResult, aggregates 
 		if agg.Function != expressions.AggBitmapConstructAgg {
 			continue
 		}
-		v, ok := as.State[idx].State.(*gen.OneOfTypedState_BytesState)
+		v, ok := as.State[idx].State.(*cursorpb.OneOfTypedState_BytesState)
 		if !ok {
 			return "", nil, fmt.Errorf("aggregate continuation: bitmap slot %d is not bytes", idx)
 		}
@@ -1070,7 +1071,7 @@ func encodeSortContinuation(
 		}
 	}
 
-	msg := &gen.MemorySortContinuation{
+	msg := &sortingpb.MemorySortContinuation{
 		Continuation: innerBytes,
 	}
 	if innerExhausted {
@@ -1209,7 +1210,7 @@ func encodeSortContinuation(
 		if qr.PrimaryKey != nil {
 			pkBytes = qr.PrimaryKey.Pack()
 		}
-		sr := &gen.SortedRecord{
+		sr := &sortingpb.SortedRecord{
 			PrimaryKey: pkBytes,
 			Message:    jsonBytes,
 		}
@@ -1255,7 +1256,7 @@ func decodeSortContinuation(
 			return nil, nil, false, fmt.Errorf("sort continuation: expected record layout carries %T", values.PhysicalCarrierType(expectedLayout))
 		}
 	}
-	msg := &gen.MemorySortContinuation{}
+	msg := &sortingpb.MemorySortContinuation{}
 	if err := recordlayer.UnmarshalAsJava(data, msg); err != nil {
 		return nil, nil, false, fmt.Errorf("failed to unmarshal sort continuation: %w", err)
 	}
@@ -1265,7 +1266,7 @@ func decodeSortContinuation(
 		// Errors are PROPAGATED, never swallowed into a skipped record: a
 		// corrupt buffered record must fail the resume, not silently drop a
 		// row from the sorted output (wrong results, no error).
-		sr := &gen.SortedRecord{}
+		sr := &sortingpb.SortedRecord{}
 		if pErr := recordlayer.UnmarshalAsJava(srBytes, sr); pErr != nil {
 			return nil, nil, false, fmt.Errorf("failed to unmarshal sorted record %d in continuation: %w", i, pErr)
 		}

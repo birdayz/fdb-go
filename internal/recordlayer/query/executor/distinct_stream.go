@@ -10,14 +10,15 @@ import (
 	"fmt"
 	"math"
 
-	"fdb.dev/gen"
+	continuationspb "fdb.dev/internal/pb/continuations"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/recordlayer"
 )
 
 // distinctStreamCursor deduplicates a SORTED QueryResult stream by the packed
 // dedup key (distinctKey), emitting a row only when its key differs from the
 // last EMITTED row's key. Only that last key rides the continuation (a
-// gen.DedupContinuation: innerContinuation + lastValue), so a duplicate run
+// cursorpb.DedupContinuation: innerContinuation + lastValue), so a duplicate run
 // whose occurrences straddle a page break is NOT re-admitted on resume — the
 // resume-clean counterpart to executeDistinct's fresh-per-page hash-set
 // (TODO.md C5).
@@ -128,7 +129,7 @@ type distinctStreamContinuation struct {
 }
 
 func (d *distinctStreamContinuation) ToBytes() ([]byte, error) {
-	cont := &gen.DedupContinuation{
+	cont := &cursorpb.DedupContinuation{
 		InnerContinuation: d.inner,
 		LastValue:         d.lastKey,
 	}
@@ -146,7 +147,7 @@ type queryResultDistinctKeyer func(QueryResult) (string, error)
 // distinctHashCursor is the shared resume-clean hash executor for unordered
 // value DISTINCT and unordered primary-key DISTINCT. Its injected keyer picks
 // the identity; the cursor charges the packed keys to a bounded set and carries
-// that set across page boundaries through gen.DistinctHashContinuation, so a
+// that set across page boundaries through continuationspb.DistinctHashContinuation, so a
 // duplicate spanning a page boundary is not re-admitted. It does not require
 // ordered input.
 //
@@ -512,7 +513,7 @@ func (d *distinctHashContinuation) ToBytes() ([]byte, error) {
 	if d.token != 0 {
 		token := d.token
 		n := int32(d.n)
-		cont := &gen.DistinctHashContinuation{
+		cont := &continuationspb.DistinctHashContinuation{
 			InnerContinuation: d.inner,
 			StateToken:        &token,
 			StateDeltaN:       &n,
@@ -524,7 +525,7 @@ func (d *distinctHashContinuation) ToBytes() ([]byte, error) {
 	for i, k := range keys {
 		seenBytes[i] = []byte(k)
 	}
-	cont := &gen.DistinctHashContinuation{
+	cont := &continuationspb.DistinctHashContinuation{
 		InnerContinuation: d.inner,
 		SeenKeys:          seenBytes,
 	}

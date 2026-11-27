@@ -10,10 +10,11 @@ import (
 	"fmt"
 	"strings"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
+	storagepb "fdb.dev/internal/pb/storage"
 	"fdb.dev/pkg/recordlayer/metadatapb"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/internal/recordlayer/query/executor"
 	"fdb.dev/internal/recordlayer/vectorcodec"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -253,7 +254,7 @@ var _ = Describe("Continuation Token Conformance", func() {
 			{name: "unknown then known operation", version: proto.Int32(1), payload: &anypb.Any{TypeUrl: operation.TypeUrl, Value: []byte{8, 99, 8, 1}}, indexPayload: true, value: 1},
 			{name: "absent required operation", version: proto.Int32(1), payload: &anypb.Any{TypeUrl: operation.TypeUrl}, indexPayload: true, errorText: "Failed to unpack pending writes queue entry payload"},
 		} {
-			envelope, err := proto.Marshal(&gen.PendingWriteItem{Version: tc.version, Payload: tc.payload, EnqueueTimestamp: proto.Int64(123)})
+			envelope, err := proto.Marshal(&storagepb.PendingWriteItem{Version: tc.version, Payload: tc.payload, EnqueueTimestamp: proto.Int64(123)})
 			Expect(err).NotTo(HaveOccurred())
 			params := buildJavaParams()
 			if tc.rawEnvelope != nil {
@@ -826,7 +827,7 @@ var _ = Describe("Continuation Token Conformance", func() {
 			Expect(goCont).To(Equal(javaCont))
 
 			// And the bytes are the TO_NEW proto form (magic present), not raw.
-			msg := &gen.KeyValueCursorContinuation{}
+			msg := &cursorpb.KeyValueCursorContinuation{}
 			Expect(msg.UnmarshalVT(goCont)).To(Succeed())
 			Expect(msg.GetMagicNumber()).To(Equal(int64(6_773_487_359_078_157_740)))
 		})

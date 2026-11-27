@@ -7,7 +7,7 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 )
 
 // TestDiscoverUnionIsJavasDeserializeUnion: a stored union message must hold

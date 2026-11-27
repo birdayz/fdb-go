@@ -5,7 +5,7 @@ import (
 	"context"
 	"testing"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 )
 
 func TestDedupCursorBasic(t *testing.T) {
@@ -194,7 +194,7 @@ func TestDedupCursorRestoredBytes(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			raw, err := (&gen.DedupContinuation{InnerContinuation: []byte{}, LastValue: tc.raw}).MarshalVT()
+			raw, err := (&cursorpb.DedupContinuation{InnerContinuation: []byte{}, LastValue: tc.raw}).MarshalVT()
 			if err != nil {
 				t.Fatal(err)
 			}

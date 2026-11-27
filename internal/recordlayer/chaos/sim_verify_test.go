@@ -7,9 +7,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen/demopb"
 	"fdb.dev/internal/dst"
 	"fdb.dev/internal/dstwire"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/internal/simfdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"

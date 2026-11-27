@@ -7,7 +7,9 @@
   "gofumpt": {
     "exclude_files": {
       "external/gazelle\\+\\+go_deps\\+com_github_apple_foundationdb_bindings_go/": "upstream binding embedded by its decoder regression",
-      "gen/": "generated protobuf code",
+      "internal/pb/": "generated protobuf code",
+      "pkg/relational/core/parser/gen/": "ANTLR-generated parser",
+      "tools/unicode15gen/": "vendored Unicode 15.0 table generator",
       "\\.pb\\.go$": "generated protobuf code",
       "_vtproto\\.pb\\.go$": "generated vtprotobuf code",
       "_generated\\.go$": "generated wire type code"
@@ -16,7 +18,9 @@
   "noemptyiface": {
     "exclude_files": {
       "external/gazelle\\+\\+go_deps\\+com_github_apple_foundationdb_bindings_go/": "upstream binding embedded by its decoder regression",
-      "gen/": "generated protobuf code",
+      "internal/pb/": "generated protobuf code",
+      "pkg/relational/core/parser/gen/": "ANTLR-generated parser",
+      "tools/unicode15gen/": "vendored Unicode 15.0 table generator",
       "_vtproto\\.pb\\.go$": "generated vtprotobuf code",
       "\\.pb\\.go$": "generated protobuf code"
     }
@@ -24,7 +28,9 @@
   "norecover": {
     "exclude_files": {
       "external/gazelle\\+\\+go_deps\\+com_github_apple_foundationdb_bindings_go/": "upstream binding embedded by its decoder regression",
-      "gen/": "generated protobuf code",
+      "internal/pb/": "generated protobuf code",
+      "pkg/relational/core/parser/gen/": "ANTLR-generated parser",
+      "tools/unicode15gen/": "vendored Unicode 15.0 table generator",
       "\\.pb\\.go$": "generated protobuf code"
     }
   },
@@ -35,7 +41,9 @@
   },
   "typeimmutable": {
     "exclude_files": {
-      "gen/": "generated protobuf code",
+      "internal/pb/": "generated protobuf code",
+      "pkg/relational/core/parser/gen/": "ANTLR-generated parser",
+      "tools/unicode15gen/": "vendored Unicode 15.0 table generator",
       "\\.pb\\.go$": "generated protobuf code"
     }
   },

@@ -15,7 +15,7 @@ proto/
 └── README.md
 
 conformance/
-└── record_layer_demo.proto   # Test/conformance demo schema (Go: fdb.dev/gen/demopb)
+└── record_layer_demo.proto   # Test/conformance demo schema (Go: fdb.dev/internal/pb/demopb)
 ```
 
 ## Proto Organization
@@ -47,7 +47,7 @@ These protos can be modified freely for testing purposes.
 
 ## Code Generation
 
-Generated Go code is placed in `/gen/` directory.
+Generated Go code is placed in `pkg/recordlayer/metadatapb/` (public Record Layer metadata closure) and `internal/pb/...` (all internal/conformance protos).
 
 ### Generate All Protos
 
@@ -58,8 +58,8 @@ buf generate
 This will:
 1. Compile both Apple and conformance protos
 2. Generate Go code with `protoc-gen-go`
-3. Place output in `gen/` with package `fdb.dev/gen`; the demo schema goes to
-   `gen/demopb` (`fdb.dev/gen/demopb`), which production code never imports
+3. Place output in `pkg/recordlayer/metadatapb/` and `internal/pb/<area>/`; the demo schema goes to
+   `internal/pb/demopb` (`fdb.dev/internal/pb/demopb`), which production code never imports
 
 ### Buf Configuration
 
@@ -73,7 +73,7 @@ The workspace setup allows conformance protos to import Apple protos while keepi
 ### From Go Code
 
 ```go
-import "fdb.dev/gen/demopb"
+import "fdb.dev/internal/pb/demopb"
 
 // Use generated types
 order := &demopb.Order{
@@ -100,7 +100,7 @@ message MyMessage {
 1. Add `.proto` file to `conformance/proto/`
 2. Import Apple protos if needed for annotations
 3. Run `buf generate`
-4. Use generated code from `gen/` package
+4. Use generated code from `internal/pb/...` (or `pkg/recordlayer/metadatapb`)
 
 ## Linting
 

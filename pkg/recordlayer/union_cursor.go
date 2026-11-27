@@ -10,7 +10,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -78,7 +78,7 @@ func EncodeUnionContinuation(children []RecordCursorContinuation) ([]byte, error
 	if allEnd {
 		return nil, nil
 	}
-	cont := &gen.UnionContinuation{}
+	cont := &cursorpb.UnionContinuation{}
 	for i, cc := range children {
 		var b []byte
 		if !cc.IsEnd() {
@@ -101,7 +101,7 @@ func EncodeUnionContinuation(children []RecordCursorContinuation) ([]byte, error
 				cont.SecondContinuation = b
 			}
 		default:
-			state := &gen.UnionContinuation_CursorState{}
+			state := &cursorpb.UnionContinuation_CursorState{}
 			if cc.IsEnd() {
 				state.Exhausted = proto.Bool(true)
 			} else if len(b) > 0 {
@@ -129,7 +129,7 @@ func DecodeUnionContinuation(data []byte, n int) ([]RecordCursorContinuation, er
 		}
 		return out, nil
 	}
-	var parsed gen.UnionContinuation
+	var parsed cursorpb.UnionContinuation
 	if err := UnmarshalVTAsJava(&parsed, data); err != nil {
 		return nil, &RecordCoreError{Message: "invalid continuation", Cause: err}
 	}

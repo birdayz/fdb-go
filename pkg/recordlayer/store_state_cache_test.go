@@ -15,7 +15,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/metadatapb"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 )
 
 var _ = Describe("Store State Cache", func() {

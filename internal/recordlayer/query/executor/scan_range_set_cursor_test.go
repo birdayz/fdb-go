@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/gen"
+	continuationspb "fdb.dev/internal/pb/continuations"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -210,7 +210,7 @@ func marshalRangeSetContinuationForTest(
 	childStarted *bool,
 ) []byte {
 	t.Helper()
-	continuation := &gen.ScanRangeSetContinuation{
+	continuation := &continuationspb.ScanRangeSetContinuation{
 		Fingerprint:       fingerprint,
 		Choices:           choices,
 		InnerContinuation: inner,
@@ -563,7 +563,7 @@ func TestScanRangeSetCursorContinuationSnapshotsAreImmutable(t *testing.T) {
 	wrapped := result.GetContinuation()
 	child.position = 99
 	data := continuationBytesForTest(t, wrapped)
-	var decoded gen.ScanRangeSetContinuation
+	var decoded continuationspb.ScanRangeSetContinuation
 	if err := decoded.UnmarshalVT(data); err != nil {
 		t.Fatalf("decode wrapper: %v", err)
 	}
@@ -608,7 +608,7 @@ func TestScanRangeSetCursorOnlySourceExhaustedAdvances(t *testing.T) {
 				t.Fatalf("opened/pulls/materialized = %d/%d/%v", opened, pulls, materialized)
 			}
 			data := continuationBytesForTest(t, result.GetContinuation())
-			var decoded gen.ScanRangeSetContinuation
+			var decoded continuationspb.ScanRangeSetContinuation
 			if err := decoded.UnmarshalVT(data); err != nil {
 				t.Fatalf("decode continuation: %v", err)
 			}
@@ -905,7 +905,7 @@ func TestScanRangeSetCursorChildBudgetResumesSameChoice(t *testing.T) {
 			t.Fatalf("page %d: rows %v, stop %v; want one row and a child cap stop", page, rows, terminal.GetNoNextReason())
 		}
 		continuation = mustBytes(t, terminal.GetContinuation())
-		var decoded gen.ScanRangeSetContinuation
+		var decoded continuationspb.ScanRangeSetContinuation
 		if err := decoded.UnmarshalVT(continuation); err != nil {
 			t.Fatal(err)
 		}
@@ -1031,7 +1031,7 @@ func TestScanRangeSetCursorWholeRangeInitialPassGate(t *testing.T) {
 				t.Fatalf("opened branches = %v, want only empty first branch", opened)
 			}
 			data := continuationBytesForTest(t, result.GetContinuation())
-			var continuation gen.ScanRangeSetContinuation
+			var continuation continuationspb.ScanRangeSetContinuation
 			if err := continuation.UnmarshalVT(data); err != nil {
 				t.Fatalf("decode branch-start continuation: %v", err)
 			}
@@ -1208,7 +1208,7 @@ func TestScanRangeSetCursorStartContinuationPresence(t *testing.T) {
 		t.Fatalf("OnNext: %v", err)
 	}
 	data := continuationBytesForTest(t, result.GetContinuation())
-	var continuation gen.ScanRangeSetContinuation
+	var continuation continuationspb.ScanRangeSetContinuation
 	if err := continuation.UnmarshalVT(data); err != nil {
 		t.Fatalf("decode: %v", err)
 	}

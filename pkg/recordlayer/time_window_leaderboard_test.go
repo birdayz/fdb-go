@@ -5,7 +5,7 @@ import (
 	"math"
 	"math/big"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"

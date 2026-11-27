@@ -9,7 +9,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	continuationspb "fdb.dev/internal/pb/continuations"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -205,7 +205,7 @@ func parseScanRangeSetContinuation(
 	alternativeCounts []uint32,
 	compatibleFingerprints ...[]byte,
 ) ([]uint32, []byte, error) {
-	var continuation gen.ScanRangeSetContinuation
+	var continuation continuationspb.ScanRangeSetContinuation
 	if err := recordlayer.UnmarshalVTAsJava(&continuation, raw); err != nil {
 		return nil, nil, scanRangeSetContinuationError(raw, err)
 	}
@@ -517,7 +517,7 @@ type scanRangeSetContinuation struct {
 
 func (c *scanRangeSetContinuation) ToBytes() ([]byte, error) {
 	childStarted := c.childStarted
-	continuation := &gen.ScanRangeSetContinuation{
+	continuation := &continuationspb.ScanRangeSetContinuation{
 		Fingerprint:       c.fingerprint,
 		Choices:           c.choices,
 		InnerContinuation: c.innerContinuation,

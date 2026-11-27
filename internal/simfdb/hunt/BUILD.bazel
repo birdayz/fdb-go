@@ -15,9 +15,9 @@ go_library(
         "//internal/simfdb:__subpackages__",
     ],
     deps = [
-        "//gen/demopb",
         "//internal/dst",
         "//internal/dstwire",
+        "//internal/pb/demopb",
         "//internal/recordlayer/chaos",
         "//internal/simfdb",
         "//pkg/fdbgo/fdb",
@@ -36,9 +36,9 @@ go_test(
     ],
     embed = [":hunt"],
     deps = [
-        "//gen/demopb",
         "//internal/dst",
         "//internal/dstwire",
+        "//internal/pb/demopb",
         "//internal/recordlayer/chaos",
         "//internal/simfdb",
         "//pkg/fdbgo/fdb",

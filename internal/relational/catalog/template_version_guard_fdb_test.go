@@ -8,7 +8,7 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	catalogpb "fdb.dev/internal/pb/catalog"
 	"fdb.dev/internal/relational/metadata"
 	"fdb.dev/internal/relational/relapi"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -484,7 +484,7 @@ func TestFDB_LoadTemplateProtoReturnsTheStoredBytes(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		_, err = store.SaveRecord(&gen.Templates{
+		_, err = store.SaveRecord(&catalogpb.Templates{
 			TEMPLATE_NAME: proto.String("raw"), TEMPLATE_VERSION: proto.Int32(1), META_DATA: payload,
 		})
 		return err

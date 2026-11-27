@@ -9,7 +9,7 @@ go_library(
     importpath = "fdb.dev/layers/otel/otelsql/otelv1pb",
     visibility = ["//visibility:public"],
     deps = [
-        "//gen",
+        "//internal/pb/storage",
         "//pkg/recordlayer/metadatapb",
         "@org_golang_google_protobuf//reflect/protoreflect",
         "@org_golang_google_protobuf//runtime/protoimpl",

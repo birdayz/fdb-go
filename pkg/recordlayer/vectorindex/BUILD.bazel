@@ -96,10 +96,10 @@ go_test(
     embed = [":vectorindex"],
     tags = ["resources:memory:800"],
     deps = [
-        "//gen",
-        "//gen/demopb",
         "//internal/dst",
         "//internal/dstwire",
+        "//internal/pb/cursor",
+        "//internal/pb/demopb",
         "//internal/recordlayer/rabitq",
         "//internal/recordlayer/vectorcodec",
         "//internal/simfdb",
@@ -230,7 +230,7 @@ go_library(
     importpath = "fdb.dev/pkg/recordlayer/vectorindex",
     visibility = ["//visibility:public"],
     deps = [
-        "//gen",
+        "//internal/pb/cursor",
         "//internal/recordlayer/rabitq",
         "//internal/recordlayer/tuplefast",
         "//internal/recordlayer/vectorcodec",

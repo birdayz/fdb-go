@@ -15,7 +15,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -88,7 +88,7 @@ func newRecursiveCursor(
 		c.nodes = append(c.nodes, &recursiveNode{childContBefore: &recordlayer.StartContinuation{}, childContAfter: &recordlayer.StartContinuation{}, childCursor: rootCursor})
 		return c, nil
 	}
-	var parsed gen.RecursiveContinuation
+	var parsed cursorpb.RecursiveContinuation
 	if err := recordlayer.UnmarshalAsJava(continuation, &parsed); err != nil {
 		// Java: RecordCoreException("error parsing continuation").
 		return nil, &recordlayer.ContinuationParseError{Message: "recursive cursor: error parsing continuation", RawBytes: continuation, Cause: err}
@@ -292,9 +292,9 @@ func (c *recursiveCursor) buildContinuation(depth int) (recordlayer.RecordCursor
 	if depth <= 0 {
 		return nil, fmt.Errorf("recursive cursor: buildContinuation depth %d", depth)
 	}
-	msg := &gen.RecursiveContinuation{}
+	msg := &cursorpb.RecursiveContinuation{}
 	for i := 0; i < depth; i++ {
-		level := &gen.RecursiveContinuation_LevelCursor{}
+		level := &cursorpb.RecursiveContinuation_LevelCursor{}
 		contBytes, err := c.nodes[i].childContBefore.ToBytes()
 		if err != nil {
 			return nil, err

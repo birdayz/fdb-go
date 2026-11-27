@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/gen/demopb"
 	"fdb.dev/internal/dst"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"

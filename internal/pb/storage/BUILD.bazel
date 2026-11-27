@@ -1,0 +1,29 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+package(default_visibility = ["//:__subpackages__"])
+
+go_library(
+    name = "storage",
+    srcs = [
+        "pending_writes_queue.pb.go",
+        "pending_writes_queue_vtproto.pb.go",
+        "resolver_state.pb.go",
+        "resolver_state_vtproto.pb.go",
+        "string_interning_data.pb.go",
+        "string_interning_data_vtproto.pb.go",
+        "time_window_leaderboard.pb.go",
+        "time_window_leaderboard_vtproto.pb.go",
+        "tuple_fields.pb.go",
+        "tuple_fields_vtproto.pb.go",
+    ],
+    importpath = "fdb.dev/internal/pb/storage",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "@com_github_planetscale_vtprotobuf//protohelpers",
+        "@com_github_planetscale_vtprotobuf//types/known/anypb",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//runtime/protoimpl",
+        "@org_golang_google_protobuf//types/descriptorpb",
+        "@org_golang_google_protobuf//types/known/anypb",
+    ],
+)

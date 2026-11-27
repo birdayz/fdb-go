@@ -8,7 +8,7 @@ go_test(
     name = "planskip_test",
     srcs = ["planskip_bench_test.go"],
     deps = [
-        "//gen/demopb",
+        "//internal/pb/demopb",
         "//internal/recordlayer/indexfetch",
         "//internal/recordlayer/query/executor",
         "//internal/testutil/benchcluster",

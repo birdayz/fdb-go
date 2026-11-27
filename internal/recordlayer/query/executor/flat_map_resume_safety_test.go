@@ -6,7 +6,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -195,7 +195,7 @@ func TestFlatMapBuildContinuation_InnerExhausted_OmitsCheckValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ToBytes: %v", err)
 	}
-	var fmc gen.FlatMapContinuation
+	var fmc cursorpb.FlatMapContinuation
 	if err := proto.Unmarshal(b, &fmc); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}

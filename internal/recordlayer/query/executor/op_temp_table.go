@@ -14,7 +14,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -208,7 +208,7 @@ func newRangeCursor(rv *values.RangeValue, evalCtx *EvaluationContext, continuat
 		return nil, err
 	}
 	if continuation != nil {
-		var c gen.RangeCursorContinuation
+		var c cursorpb.RangeCursorContinuation
 		if err := proto.Unmarshal(continuation, &c); err != nil {
 			return nil, fmt.Errorf("invalid range continuation: %w", err)
 		}
@@ -229,7 +229,7 @@ func (c *rangeCursor) OnNext(context.Context) (recordlayer.RecordCursorResult[Qu
 	var cont recordlayer.RecordCursorContinuation = &recordlayer.EndContinuation{}
 	// Java's Continuation.isEnd: nextPosition >= endExclusive + step.
 	if c.next < c.end+c.step {
-		b, err := proto.Marshal(&gen.RangeCursorContinuation{NextPosition: proto.Int64(c.next)})
+		b, err := proto.Marshal(&cursorpb.RangeCursorContinuation{NextPosition: proto.Int64(c.next)})
 		if err != nil {
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
 		}

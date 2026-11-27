@@ -15,7 +15,7 @@ import (
 
 	"fdb.dev/internal/recordlayer/tuplefast"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/internal/recordlayer/rtree"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -286,7 +286,7 @@ func (m *multidimensionalIndexMaintainer) Scan(
 		// see prefixSkipScanCursor's doc comment. Parse it once, up front.
 		var resumePrefixBytes, resumeInnerBytes []byte
 		if len(continuation) > 0 {
-			var flatMapCont gen.FlatMapContinuation
+			var flatMapCont cursorpb.FlatMapContinuation
 			if err := UnmarshalVTAsJava(&flatMapCont, continuation); err != nil {
 				return &errorCursor[*IndexEntry]{
 					err: fmt.Errorf("MULTIDIMENSIONAL index %q: invalid prefix skip-scan continuation: %w", m.index.Name, err),
@@ -364,10 +364,10 @@ func (m *multidimensionalIndexMaintainer) scanBoundPrefix(
 	var outerContinuation []byte
 	if len(continuation) > 0 {
 		var parsed bool
-		var flatMapCont gen.FlatMapContinuation
+		var flatMapCont cursorpb.FlatMapContinuation
 		if err := UnmarshalVTAsJava(&flatMapCont, continuation); err == nil && flatMapCont.InnerContinuation != nil {
 			// Java-compatible FlatMapContinuation wrapper.
-			var cont gen.MultidimensionalIndexScanContinuation
+			var cont cursorpb.MultidimensionalIndexScanContinuation
 			if err := UnmarshalVTAsJava(&cont, flatMapCont.InnerContinuation); err == nil {
 				if cont.LastHilbertValue != nil {
 					lastHV = new(big.Int).SetBytes(cont.LastHilbertValue)
@@ -387,7 +387,7 @@ func (m *multidimensionalIndexMaintainer) scanBoundPrefix(
 		}
 		if !parsed {
 			// Fallback: try raw MultidimensionalIndexScanContinuation (old Go format).
-			var cont gen.MultidimensionalIndexScanContinuation
+			var cont cursorpb.MultidimensionalIndexScanContinuation
 			if err := UnmarshalVTAsJava(&cont, continuation); err != nil {
 				return &errorCursor[*IndexEntry]{
 					err: fmt.Errorf("MULTIDIMENSIONAL index %q: invalid continuation: %w", m.index.Name, err),
@@ -814,7 +814,7 @@ func (c *rtreeScanCursor) buildContinuation() ([]byte, error) {
 		// Prepend 0x00 to indicate positive (Java's BigInteger.toByteArray() two's-complement format).
 		hvBytes = append([]byte{0x00}, hvBytes...)
 	}
-	inner := &gen.MultidimensionalIndexScanContinuation{
+	inner := &cursorpb.MultidimensionalIndexScanContinuation{
 		LastHilbertValue: hvBytes,
 		LastKey:          c.lastKey.Pack(),
 	}
@@ -824,7 +824,7 @@ func (c *rtreeScanCursor) buildContinuation() ([]byte, error) {
 	}
 
 	// Wrap in FlatMapContinuation (matching Java's flatMapPipelined cursor).
-	outer := &gen.FlatMapContinuation{
+	outer := &cursorpb.FlatMapContinuation{
 		InnerContinuation: innerBytes,
 	}
 	if c.outerContinuation != nil {
@@ -1091,7 +1091,7 @@ func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*
 		// share field numbers 1/2 as bytes.
 		var innerCont []byte
 		if c.resumeInnerBytes != nil {
-			wrapped := &gen.FlatMapContinuation{InnerContinuation: c.resumeInnerBytes}
+			wrapped := &cursorpb.FlatMapContinuation{InnerContinuation: c.resumeInnerBytes}
 			b, werr := wrapped.MarshalVT()
 			if werr != nil {
 				return RecordCursorResult[*IndexEntry]{}, fmt.Errorf(
@@ -1120,7 +1120,7 @@ func (c *prefixSkipScanCursor) buildValueContinuation(innerResultCont RecordCurs
 	if err != nil {
 		return nil, fmt.Errorf("MULTIDIMENSIONAL prefix skip-scan: %w", err)
 	}
-	fmc := &gen.FlatMapContinuation{
+	fmc := &cursorpb.FlatMapContinuation{
 		OuterContinuation: c.priorPrefixBytes,
 		InnerContinuation: rawInner,
 	}
@@ -1147,7 +1147,7 @@ func unwrapMultidimensionalInner(cont RecordCursorContinuation) ([]byte, error) 
 	if len(b) == 0 {
 		return nil, nil
 	}
-	var fmc gen.FlatMapContinuation
+	var fmc cursorpb.FlatMapContinuation
 	if err := UnmarshalVTAsJava(&fmc, b); err != nil {
 		return nil, fmt.Errorf("invalid per-prefix continuation: %w", err)
 	}

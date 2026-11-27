@@ -30,10 +30,10 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"fdb.dev/gen"
+	catalogpb "fdb.dev/internal/pb/catalog"
 	"fdb.dev/pkg/recordlayer/metadatapb"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/internal/relational/catalog"
 	"fdb.dev/internal/relational/conformance/plandiff"
 	"fdb.dev/internal/relational/keyspace"
@@ -2433,7 +2433,7 @@ var _ = Describe("WS-J Go-stored template planned by the target", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Templates{
+			_, err = store.SaveRecord(&catalogpb.Templates{
 				TEMPLATE_NAME: proto.String(longName), TEMPLATE_VERSION: proto.Int32(int32(goTmpl.Version())), META_DATA: longBytes,
 			})
 			return nil, err
@@ -3966,7 +3966,7 @@ var _ = Describe("WS-J an unset field with a declared default reads as the targe
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Templates{TEMPLATE_NAME: proto.String(to), TEMPLATE_VERSION: proto.Int32(1), META_DATA: b})
+				_, err = store.SaveRecord(&catalogpb.Templates{TEMPLATE_NAME: proto.String(to), TEMPLATE_VERSION: proto.Int32(1), META_DATA: b})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -4264,7 +4264,7 @@ var _ = Describe("WS-J a new version carried from the target's template", func()
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Templates{TEMPLATE_NAME: proto.String(name), TEMPLATE_VERSION: proto.Int32(1), META_DATA: longBytes})
+			_, err = store.SaveRecord(&catalogpb.Templates{TEMPLATE_NAME: proto.String(name), TEMPLATE_VERSION: proto.Int32(1), META_DATA: longBytes})
 			return nil, err
 		})
 		Expect(err).NotTo(HaveOccurred())

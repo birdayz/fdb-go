@@ -10,7 +10,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/metadatapb"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 )

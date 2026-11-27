@@ -11,10 +11,10 @@ import (
 
 	"fdb.dev/internal/recordlayer/tuplefast"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/recordlayer/metadatapb"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
@@ -269,13 +269,13 @@ func FuzzConcatContinuation(f *testing.F) {
 	f.Add([]byte{0x00})
 	f.Add([]byte{0xff, 0xff, 0xff})
 	// Valid proto: second=true, continuation=[]byte{0xAB}.
-	validSecond, _ := (&gen.ConcatContinuation{
+	validSecond, _ := (&cursorpb.ConcatContinuation{
 		Second:       proto.Bool(true),
 		Continuation: []byte{0xAB},
 	}).MarshalVT()
 	f.Add(validSecond)
 	// Valid proto: second=false, no continuation.
-	validFirst, _ := (&gen.ConcatContinuation{
+	validFirst, _ := (&cursorpb.ConcatContinuation{
 		Second: proto.Bool(false),
 	}).MarshalVT()
 	f.Add(validFirst)
@@ -293,7 +293,7 @@ func FuzzConcatContinuation(f *testing.F) {
 		// A continuation that fails proto parse must surface
 		// ContinuationParseError — never silently restart (same class as
 		// OrElse; Java ConcatCursor throws RecordCoreException).
-		var contProto gen.ConcatContinuation
+		var contProto cursorpb.ConcatContinuation
 		if len(data) > 0 && contProto.UnmarshalVT(data) != nil {
 			var parseErr *ContinuationParseError
 			if !errors.As(err, &parseErr) {
@@ -313,12 +313,12 @@ func FuzzFlatMapContinuation(f *testing.F) {
 	f.Add([]byte{0x00})
 	f.Add([]byte{0xff, 0xff, 0xff})
 	// Valid proto: outer only.
-	validOuter, _ := (&gen.FlatMapContinuation{
+	validOuter, _ := (&cursorpb.FlatMapContinuation{
 		OuterContinuation: []byte{0x01},
 	}).MarshalVT()
 	f.Add(validOuter)
 	// Valid proto: outer + inner.
-	validBoth, _ := (&gen.FlatMapContinuation{
+	validBoth, _ := (&cursorpb.FlatMapContinuation{
 		OuterContinuation: []byte{0x01},
 		InnerContinuation: []byte{0x02},
 		CheckValue:        []byte{0x03},
@@ -342,7 +342,7 @@ func FuzzFlatMapContinuation(f *testing.F) {
 		// A continuation that fails proto parse must surface
 		// ContinuationParseError — never silently restart (same class as
 		// OrElse; Java RecordCursor.flatMapPipelined throws RecordCoreException).
-		var contProto gen.FlatMapContinuation
+		var contProto cursorpb.FlatMapContinuation
 		if len(data) > 0 && contProto.UnmarshalVT(data) != nil {
 			var parseErr *ContinuationParseError
 			if !errors.As(err, &parseErr) {
@@ -361,20 +361,20 @@ func FuzzOrElseContinuation(f *testing.F) {
 	f.Add([]byte{})
 	f.Add([]byte{0x00})
 	f.Add([]byte{0xff, 0xff, 0xff})
-	undecided := gen.OrElseContinuation_UNDECIDED
-	validUndecided, _ := (&gen.OrElseContinuation{
+	undecided := cursorpb.OrElseContinuation_UNDECIDED
+	validUndecided, _ := (&cursorpb.OrElseContinuation{
 		State:        &undecided,
 		Continuation: []byte{0x00, 0x00, 0x00, 0x01},
 	}).MarshalVT()
 	f.Add(validUndecided)
-	useInner := gen.OrElseContinuation_USE_INNER
-	validInner, _ := (&gen.OrElseContinuation{
+	useInner := cursorpb.OrElseContinuation_USE_INNER
+	validInner, _ := (&cursorpb.OrElseContinuation{
 		State:        &useInner,
 		Continuation: []byte{0x00, 0x00, 0x00, 0x02},
 	}).MarshalVT()
 	f.Add(validInner)
-	useOther := gen.OrElseContinuation_USE_OTHER
-	validOther, _ := (&gen.OrElseContinuation{
+	useOther := cursorpb.OrElseContinuation_USE_OTHER
+	validOther, _ := (&cursorpb.OrElseContinuation{
 		State:        &useOther,
 		Continuation: []byte{0x00, 0x00, 0x00, 0x00},
 	}).MarshalVT()
@@ -382,8 +382,8 @@ func FuzzOrElseContinuation(f *testing.F) {
 	// Out-of-range state: proto2 enums are closed in Java (unknown values land
 	// in unknown fields) but vtprotobuf assigns any varint, so this is reachable
 	// from wire input. Regression for a nil-active panic in orElseCursor.OnNext.
-	unknownState := gen.OrElseContinuation_State(99)
-	invalidState, _ := (&gen.OrElseContinuation{
+	unknownState := cursorpb.OrElseContinuation_State(99)
+	invalidState, _ := (&cursorpb.OrElseContinuation{
 		State:        &unknownState,
 		Continuation: []byte{0x00, 0x00, 0x00, 0x01},
 	}).MarshalVT()
@@ -414,12 +414,12 @@ func FuzzDedupContinuation(f *testing.F) {
 	f.Add([]byte{0x00})
 	f.Add([]byte{0xff, 0xff, 0xff})
 	// Valid proto: inner continuation only.
-	validInner, _ := (&gen.DedupContinuation{
+	validInner, _ := (&cursorpb.DedupContinuation{
 		InnerContinuation: []byte{0x01},
 	}).MarshalVT()
 	f.Add(validInner)
 	// Valid proto: inner + lastValue.
-	validBoth, _ := (&gen.DedupContinuation{
+	validBoth, _ := (&cursorpb.DedupContinuation{
 		InnerContinuation: []byte{0x01},
 		LastValue:         []byte{0x02, 0x03},
 	}).MarshalVT()
@@ -427,7 +427,7 @@ func FuzzDedupContinuation(f *testing.F) {
 	// Present-but-empty lastValue: parses at the proto level but fails the
 	// unpack step — must surface an error, never silently drop the dedup
 	// state (which would re-emit the last value as a duplicate on resume).
-	emptyLast, _ := (&gen.DedupContinuation{
+	emptyLast, _ := (&cursorpb.DedupContinuation{
 		InnerContinuation: []byte{0x01},
 		LastValue:         []byte{},
 	}).MarshalVT()
@@ -453,7 +453,7 @@ func FuzzDedupContinuation(f *testing.F) {
 		// A continuation that fails proto parse must surface
 		// ContinuationParseError — never silently restart (same class as
 		// OrElse; Java DedupCursor throws RecordCoreException).
-		var contProto gen.DedupContinuation
+		var contProto cursorpb.DedupContinuation
 		if len(data) > 0 && contProto.UnmarshalVT(data) != nil {
 			var parseErr *ContinuationParseError
 			if !errors.As(err, &parseErr) {

@@ -9,7 +9,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen/demopb"
+	"fdb.dev/internal/pb/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 )

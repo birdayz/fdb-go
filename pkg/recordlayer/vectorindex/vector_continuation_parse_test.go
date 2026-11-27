@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
+	cursorpb "fdb.dev/internal/pb/cursor"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -56,7 +56,7 @@ func TestVectorMultiPartitionContinuationInvalid(t *testing.T) {
 		{
 			name: "corrupt outer partition prefix is an error",
 			continuation: func(t *testing.T) []byte {
-				raw, err := (&gen.FlatMapContinuation{
+				raw, err := (&cursorpb.FlatMapContinuation{
 					OuterContinuation: []byte{0xff}, // not a valid packed tuple
 					InnerContinuation: contPos(0),
 				}).MarshalVT()
@@ -106,8 +106,8 @@ func TestVectorSearchCursorCorruptEntryKey(t *testing.T) {
 
 	m := &vectorIndexMaintainer{StandardIndexMaintainer: *recordlayer.NewStandardIndexMaintainer(recordlayer.IndexMaintainerState{Index: &recordlayer.Index{Name: "vec_entry"}})}
 
-	raw, err := (&gen.VectorIndexScanContinuation{
-		IndexEntries: []*gen.VectorIndexScanContinuation_IndexEntry{
+	raw, err := (&cursorpb.VectorIndexScanContinuation{
+		IndexEntries: []*cursorpb.VectorIndexScanContinuation_IndexEntry{
 			{Key: []byte{0xff}, Value: tuple.Tuple{nil}.Pack()}, // key: invalid packed tuple
 		},
 		InnerContinuation: contPos(0),
